@@ -35,10 +35,32 @@ WindowsのHOST_PLATFORM_UNSUPPORTEDを警告で成功扱いにする代行は、
 
 ## 実機受入の現在地
 
-Linux main-serverとWindows nativeへのAiterm SSHログインを確認。WindowsはPowerShell 7.6.5。
-公開版の導入はまだ行っていない。WSL既存SSH先は2回タイムアウト。このMacのlocalhost:22は
-接続拒否であり、Mac向けSSH先はオーナーへ照会中。ローカル試験をSSH実機受入へ代用しない。
-同時進行の他製品との共有AI設定導入調整も照会中。
+Linux main-serverとWindows nativeにAiterm永続PTYでSSHログインし、公開registryから
+`npm install -g @quolu/lattice@0.69.0 --registry https://registry.npmjs.org`を実行した。
+WindowsはPowerShell 7.6.5／Node 24.19.0、LinuxはNode 24.14.1。
+導入後に公開packageのCLIを実行し、空の設定と既存設定のコピーのそれぞれで初回・再実行・statusを確認。
+MCPは実際にinitializeとtools/listへ応答し、既存コピーの他登録・利用者設定・工場hookは保持された。
+これは実OS上の公開npm版による確認であり、共有AI設定本体へのsetup反映とは区別する。
+
+| 実行環境 | Claude MCP／hook | Codex MCP／hook | Grok MCP／hook | Cursor MCP／hook |
+| --- | --- | --- | --- | --- |
+| Linux SSH・公開版 | 確認済み／確認済み | 確認済み／確認済み | 確認済み／typed未対応 | 確認済み／確認済み |
+| Windows SSH・公開版 | 確認済み／typed未対応 | 確認済み／typed未対応 | 確認済み／typed未対応 | 確認済み／typed未対応 |
+| Mac | ローカル試験のみ | ローカル試験のみ | ローカル試験のみ | ローカル試験のみ |
+| WSL | 未実施 | 未実施 | 未実施 | 未実施 |
+
+実機結果：[Linux](product-setup-linux-20260910.json)、[Windows](product-setup-windows-20260910.json)。
+全機能がverifiedの場合だけexit 0とし、未対応を含む上記実機結果はpartial／exit 1を期待値として検査した。
+
+Windows bridgeは導入後に`BRIDGE_PERSISTENCE_STATE_SPLIT`を検出。設定のtarバックアップ後、
+正規の`lattice bridge reconfigure --json`で常駐設定を復旧した。再診断でinstalled、reachable=true、
+runtime=running／0.69.0、drift=[]を確認した。ただしreconfigure自体は既存工程の
+`BRIDGE_HUB_DELIVERY_UNCONFIRMED`で非0、その後もhub heartbeatのpartialが残る。
+公開面全体の正常化を成功扱いにしない。Linux bridgeは未設定のため新規公開しなかった。
+
+未完了条件：共有AI設定本体へのsetupは他製品との導入調整待ち。Macのlocalhost:22は接続拒否で
+SSH先を照会中。WSL既存SSH先は2回タイムアウト。共有設定反映、Mac／WSLの公開版SSH導入、
+既存hub配信の確認をローカル試験やCI成功へ置き換えない。
 
 ## 別ベンダー反証・公開gate
 
@@ -54,6 +76,12 @@ Grok実CLIは反証役が実行していないことを追認した。
   製品の成功扱いと解釈しない。この入力は複数binを持つ本packageの既存の有効なMCP起動を立証していない。
   実MCPの初期化・tool一覧を使った確認を受入の根拠とする。
 
-修正前の完全gateは成功：製品1908成功・5skip、sensor2308成功・183skip。
+最終完全gateは成功：製品1909成功・5skip、sensor2308成功・183skip。
 native kernel未構築による既存skipを実行済みに数えない。Grok修正後のfocused試験は14件成功。
-最終release gateと公開npm版の導入smokeは継続中。
+公開commitは`2a08f35cfa3ea1f681c398b510577b9d11ee8961`。mainへのfast-forward統合・push、
+既定ブランチ祖先検査、release commit gate、
+[公開workflow](https://github.com/kitepon/Lattice/actions/runs/34372020598)が成功した。
+公開registryの0.69.0とdist.integrityを確認し、上記2端末へ公開npm版を導入した。
+通常の[OS別CI](https://github.com/kitepon/Lattice/actions/runs/34371989024)は、確認時点で
+macOS nativeとWindows nativeが成功、Linux nativeとWSL2はrunner待ちのqueuedだった。
+このqueuedを実行成功へ丸めない。
