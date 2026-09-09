@@ -28,13 +28,14 @@ Lattice plan管理は今回導入しない。本書が本campaignの計画正本
 既存hook試験52件が成功。hookはPOSIXのClaude・Codex・Cursor対応、Windowsは
 HOST_PLATFORM_UNSUPPORTED。Grokの製品hookは未実装でありMCPとは独立して扱う。
 
-実端末への導入はAiterm永続PTYからSSHログインし、そのセッションで公式npm install、setup、
-実動作確認を行う。WindowsはPowerShell 7 native。共有AI設定への導入は端末ごとに直列実行する。
+実端末への導入はAiterm永続PTYを使い、現在のMacは直接実行、他端末はSSHログインした
+セッションで公式npm install、setup、実動作確認を行う。WindowsはPowerShell 7 native。
+共有AI設定への導入は端末ごとに直列実行する。
 失敗は成功へ丸めず、未実施は実機一覧に残す。公開はmain上のcommitに限定する。
 
 ## 現在地
 
-0.69.0をmainへ統合して公開済み。Linux／Windowsの公開版導入と隔離設定での実機smokeは成功。
-共有AI設定への反映は他製品との調整待ち、Mac／WSLのSSH導入は接続条件待ち。
+0.69.0をmainへ統合して公開済み。Mac／Linux／Windowsの公開版導入と隔離設定での実機smokeは成功。
+共有AI設定への反映は他製品との調整待ち、WSLのSSH導入は接続条件待ち。
 Windows bridgeの常駐復旧は確認したが既存hub配信はpartialが残る。
 実測と未完了条件は[検証記録](evidence/product-setup-verification-20260910.md)に記載する。

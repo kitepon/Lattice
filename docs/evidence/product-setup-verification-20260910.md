@@ -46,10 +46,11 @@ MCPは実際にinitializeとtools/listへ応答し、既存コピーの他登録
 | --- | --- | --- | --- | --- |
 | Linux SSH・公開版 | 確認済み／確認済み | 確認済み／確認済み | 確認済み／typed未対応 | 確認済み／確認済み |
 | Windows SSH・公開版 | 確認済み／typed未対応 | 確認済み／typed未対応 | 確認済み／typed未対応 | 確認済み／typed未対応 |
-| Mac | ローカル試験のみ | ローカル試験のみ | ローカル試験のみ | ローカル試験のみ |
+| Mac直接実行・公開版 | 確認済み／確認済み | 確認済み／確認済み | 確認済み／typed未対応 | 確認済み／確認済み |
 | WSL | 未実施 | 未実施 | 未実施 | 未実施 |
 
-実機結果：[Linux](product-setup-linux-20260910.json)、[Windows](product-setup-windows-20260910.json)。
+実機結果：[Linux](product-setup-linux-20260910.json)、[Windows](product-setup-windows-20260910.json)、
+[Mac](product-setup-macos-20260910.json)。
 全機能がverifiedの場合だけexit 0とし、未対応を含む上記実機結果はpartial／exit 1を期待値として検査した。
 
 Windows bridgeは導入後に`BRIDGE_PERSISTENCE_STATE_SPLIT`を検出。設定のtarバックアップ後、
@@ -58,8 +59,12 @@ runtime=running／0.69.0、drift=[]を確認した。ただしreconfigure自体�
 `BRIDGE_HUB_DELIVERY_UNCONFIRMED`で非0、その後もhub heartbeatのpartialが残る。
 公開面全体の正常化を成功扱いにしない。Linux bridgeは未設定のため新規公開しなかった。
 
-未完了条件：共有AI設定本体へのsetupは他製品との導入調整待ち。Macのlocalhost:22は接続拒否で
-SSH先を照会中。WSL既存SSH先は2回タイムアウト。共有設定反映、Mac／WSLの公開版SSH導入、
+Macはこの作業端末なので直接実行するというオーナーの指示を受け、公開npm版0.69.0をglobal installし、
+同じ6ケースの実機smokeを完了した。bridgeも0.69.0、reachable=true、drift=[]、
+hub heartbeat=acceptedを確認した。MacへのSSHを受入条件にしていた解釈は訂正する。
+
+未完了条件：共有AI設定本体へのsetupは他製品との導入調整待ち。
+WSL既存SSH先は2回タイムアウト。共有設定反映、WSLの公開版SSH導入、
 既存hub配信の確認をローカル試験やCI成功へ置き換えない。
 
 ## 別ベンダー反証・公開gate
