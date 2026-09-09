@@ -156,11 +156,22 @@ the operating AI.
 
 ```bash
 npm install -g @quolu/lattice
+lattice setup --json
 ```
 
 Requires **Node.js 22.13 or newer, except 25.x** (`engines: >=22.13 <25 || >=26`; Node 25's V8
 turboshaft WASM JIT breaks the bundled sensor, so it is blocked with a banner). The structure sensor ships inside the package — there is nothing
 else to install, and Lattice never falls back to a sensor on your `PATH`.
+
+`lattice setup`は既存のClaude・Codex・Grok・Cursor設定を検出し、LatticeのMCP登録、
+対応する製品hookの準備、設定読戻し、実MCPの初期化とtool一覧確認を一回で行う。
+AIの設定がまだ無い初回は`lattice setup --host claude --json`のように対象を指定する。
+全AIを明示する時は`--host all`を使う。再実行とnpm更新後も同じ入口である。
+
+結果はOS・AI・機能別に返す。Windows nativeの製品hookとGrokの製品hookは`unsupported`、
+利用者が無効化したMCPは`disabled`として保持する。対応MCPの登録・確認は続行し、
+全機能確認済みの`ready`だけexit 0、`partial`と`failed`はexit 1である。
+設定形式と機能表は[導入契約](https://github.com/kitepon/Lattice/blob/main/docs/01_integration-package.md#製品所有のai導入入口)を参照。
 
 ## Quick start
 
@@ -276,10 +287,14 @@ host where it is enabled; its supervised process replaces an older loaded versio
 
 ```bash
 npm install -g @quolu/lattice@latest
+lattice setup --json
 lattice --version
 lattice status --json
 lattice bridge status --json
 ```
+
+AI登録の診断は`lattice setup status --json`。`--host <AI>`で対象を限定でき、
+設定を変更せず現在の登録とMCP接続を確認する。既存の製品hook単独操作も維持する。
 
 ## Release
 
@@ -291,8 +306,9 @@ remote default branch.
 ```bash
 npm run ci
 npm run verify:release-commit
-npm publish --access public
+gh workflow run publish.yml --repo kitepon/Lattice --ref main
 npm install -g @quolu/lattice@<version>
+lattice setup --json
 lattice --version
 lattice status --json
 lattice bridge status --json

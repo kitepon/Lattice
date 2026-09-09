@@ -110,6 +110,50 @@ subagent executor・packet `isolation_contract`・fingerprint境界検証・diff
 - MCP公開toolは`lattice_sensor_*`だけ、設定は`lattice-sensor.json`、環境変数は`LATTICE_SENSOR_*`だけを使う
 - standalone installer・upgrade・uninstall・独立binは配布しない
 
+## 製品所有のAI導入入口
+
+初回・再実行・npm更新後は`lattice setup [--host claude|codex|grok|cursor|all] --json`を使う。
+host省略時は存在するAI設定directory（Claudeはuser MCP fileも）を検出し、明示hostは新規設定を作る。
+`lattice setup status [--host ...] --json`は現在の登録と実接続を診断する。
+共通制御は`src/setup-cli.mjs`、AI別pathは`src/setup-hosts.mjs`、JSON/TOML編集は
+`src/setup-config.mjs`、stdio確認は`src/setup-mcp-probe.mjs`が所有する。
+
+| AI | MCP設定 | macOS／Linux／WSL2 MCP | Windows native MCP | 製品sensor hook |
+| --- | --- | --- | --- | --- |
+| Claude | `~/.claude.json` | 対応 | 対応 | POSIX対応、Windows未対応 |
+| Codex | `~/.codex/config.toml` | 対応 | 対応 | POSIX対応、Windows未対応 |
+| Grok | `~/.grok/config.toml` | 対応 | 対応 | 未対応 |
+| Cursor | `~/.cursor/mcp.json` | 対応 | 対応 | POSIX対応、Windows未対応 |
+
+`CODEX_HOME`と`CLAUDE_CONFIG_DIR`はMCPとhookの両方で尊重する。Grokは`GROK_HOME`を尊重する。Windowsのhomeは
+`HOME`、`USERPROFILE`、OS homeの順で解決する。MCP登録名は`lattice`を維持し、
+Nodeと配布物内`bin/lattice-mcp.mjs`の絶対pathを登録する。Windowsでnpmのcmd shimや
+POSIX shellを呼ばず、native Nodeを直接起動する。
+
+JSONは既存の`jsonc-parser`、TOMLは位置情報を持つ`toml-eslint-parser`を用い、
+起動用の`command`と`args`内の配布入口だけを編集する。`--path`等の追加引数、コメント、他登録、
+環境変数、timeout、無効化設定は保持する。
+構文破損・重複key、非stdioの同名登録、通常fileでない設定はtyped failureとし上書きしない。
+変更前の設定を同じdirectoryの`.lattice-<id>.backup`付きfileへ保存し、置換後のbytesを読戻す。
+同一AIへの重複setupは`SETUP_BUSY`で拒否する。プロセスが中断してlockが残った場合は、
+実行終了を確認してから結果の対象directory内`.lattice-setup.lock`を除去し再実行する。
+異なる製品による共有AI設定の変更とは同時実行しない。
+
+結果は`lattice.setup_result.v1`。`hosts`の各要素が`host`、`mcp`、`hooks`を持ち、
+各機能は`verified`、`unsupported`、`disabled`、`failed`を区別する。MCPは設定を読戻して
+実行し、`initialize`のLattice identityと`tools/list`のsensor tool群を確認してから`verified`になる。
+hookは既存installerの実行とstatus読戻しを完了してから`verified`になる。
+Windows hookは`HOST_PLATFORM_UNSUPPORTED`、Grok hookは`HOST_FEATURE_UNSUPPORTED`。
+未対応を含む全体結果は`partial`、失敗は`failed`、全機能verifiedだけ`ready`とし、
+exitはreadyのみ0、partial／failedは1、用法違反は2を返す。
+利用者のMCP無効化は`USER_DISABLED`で残し、診断目的でも勝手に起動しない。
+Grokの`disabled_mcp_servers`による名前単位の無効化も同じように扱う。
+一機能の未対応や失敗で他の対応機能を省略しない。
+
+工場はMCP設定編集、製品hook installerの個別呼出し、登録読戻しの代行をこの入口へ置換できる。
+dotagentsの`lattice-gantt` hookは工程状態・ガント案内を扱う別機能であり、維持する。
+setupはそのhookを移植・統合・削除しない。
+
 ## 5.1 hooks導線（sensor気づかせ導線）
 
 正典: [設計契約r5](evidence/2026-08-01-sah-p1-design-contract.md)。公開構文は

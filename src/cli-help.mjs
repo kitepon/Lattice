@@ -14,6 +14,7 @@ Commands:
   runtime-errors <command>      Inspect the local runtime error store
   bridge <command>              Configure the optional network bridge
   hooks <command>               Install and run sensor-awareness hooks
+  setup [status]                AI別のMCP登録・製品hook準備・接続確認
 
 Options:
   -h, --help                    Show help
@@ -206,11 +207,20 @@ Commands:
 registerはLATTICE_BRIDGE_REGISTRAR_SSH_HOSTとLATTICE_BRIDGE_REGISTRAR_SCRIPTが
 両方設定されている時だけ動く。アドレスは送らず、remote側がssh送信元から決める。
 `,
+  setup: `Usage: lattice setup [status] [--host <claude|codex|grok|cursor|all>] [--json]
+
+host省略時は既存AI設定を検出する。明示hostは初回設定を作成する。
+setupは登録・hook準備・MCP接続確認まで実行する。更新後も同じコマンドを使う。
+statusは設定変更をせず登録とMCP接続を診断する。
+結果は機能別のverified／unsupported／disabled／failed。readyだけexit 0、partial／failedはexit 1。
+Windows製品hookとGrok製品hookは未対応として返し、MCPは独立して実行する。
+`,
   hooks: `Usage: lattice hooks <install|status|uninstall|emit> --host <claude|codex|cursor>
 `,
 });
 
 const SUBCOMMAND_USAGE = Object.freeze({
+  'setup status': 'setup status [--host <claude|codex|grok|cursor|all>] [--json]',
   status: 'status --json',
   'session-context': 'session-context --json',
   'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4> --json',

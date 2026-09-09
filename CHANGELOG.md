@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.69.0 — 2026-09-10
+
+### 追加
+
+- `lattice setup`でClaude・Codex・Grok・CursorのMCP登録と対応する製品hookの準備を一括実行する。
+  設定の読戻しと実MCPの接続確認まで行い、`lattice setup status`で機能別に診断できる。
+- 初回・再実行・更新で既存の追加引数、環境変数、他製品の登録、設定コメントを保持する。
+  JSONCとTOMLの構文を解析し、変更前の設定を保存して対象項目だけ更新する。
+- Windowsの製品hookとGrokの製品hookは機能別のtypedな未対応として返す。
+  対応するMCP登録は続行し、未対応が残る結果は非0で返す。
+
+### 修正
+
+- ClaudeとCodexの設定先指定をMCP登録と既存hook installerで共通化する。
+
 ## 0.68.3 — 2026-09-06
 
 ### 修正

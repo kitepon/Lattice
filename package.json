@@ -1,6 +1,6 @@
 {
   "name": "@quolu/lattice",
-  "version": "0.68.3",
+  "version": "0.69.0",
   "description": "Schedulability compiler for multi-agent development: observe real code boundaries, refactor the conflicting seam, recompile the plan for parallel execution",
   "author": {
     "name": "Quo / クオ at kitepon.dev",
@@ -67,6 +67,7 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "sisteransi": "^1.0.5",
+    "toml-eslint-parser": "^1.0.3",
     "tree-sitter-wasms": "^0.1.11",
     "unified": "^11.0.5",
     "web-tree-sitter": "^0.25.3"

@@ -1,0 +1,9 @@
+# 製品AI導入の所有境界
+
+LatticeがMCP登録とsensor hookの準備、設定読戻し、接続診断を所有する。
+dotagentsの工程案内lattice-gantt hookは工場所有を維持し、移植・統合しない。
+共通制御とOS／AI別の設定差をLattice内へ分離し、利用者は一回のsetupを実行する。
+未対応は機能単位で返し、対応機能の実行を妨げず、総合成功には数えない。
+
+本変更は公開契約と受入連鎖を持つため統括レーンとする。
+chained_acceptanceとdecision_evidence_requiredが成立する。別repoの書込みは行わない。

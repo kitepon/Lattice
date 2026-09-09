@@ -8,6 +8,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hostPaths } from './setup-hosts.mjs';
 
 const INFO = 'INFO: このrepoにはLattice sensor index（.lattice/sensor/）があります。コード構造の調査はsensor入口（MCP: lattice_sensor_explore 等／CLI: lattice sensor）を優先できます。';
 const HOSTS = new Set(['claude', 'codex', 'cursor']);
@@ -32,10 +33,8 @@ function failure(stdout, code, message, exit = 1, detail) {
   return exit;
 }
 
-function configPath(home, host) {
-  if (host === 'claude') return path.join(home, '.claude/settings.json');
-  if (host === 'cursor') return path.join(home, '.cursor/hooks.json');
-  return path.join(home, '.codex/hooks.json');
+function configPath(env, host) {
+  return hostPaths(host, env).hooks;
 }
 
 function eventName(host) {
@@ -650,8 +649,8 @@ function exactHandler(item, expected) {
   return JSON.stringify(item) === JSON.stringify(expected);
 }
 
-async function hostDirectory(home, host) {
-  const directory = path.dirname(configPath(home, host));
+async function hostDirectory(env, host) {
+  const directory = path.dirname(configPath(env, host));
   try {
     const info = await lstat(directory);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('not a directory');
@@ -662,15 +661,14 @@ async function hostDirectory(home, host) {
 }
 
 async function mutate(host, env, stdout, uninstall, source, platform, testHooks) {
-  const home = env.HOME ?? os.homedir();
-  if (await hostDirectory(home, host) === null) {
+  if (await hostDirectory(env, host) === null) {
     return failure(stdout, 'HOST_NOT_PRESENT', 'host home directory is not present');
   }
   let current;
   try { current = await resolveCanonical(host, source, platform); } catch {
     return failure(stdout, 'INSTALL_SOURCE_UNRESOLVED', 'install source cannot be resolved');
   }
-  const target = configPath(home, host);
+  const target = configPath(env, host);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let prestate;
     try { prestate = await readConfig(target); } catch (error) {
@@ -759,14 +757,13 @@ function statusResult(host, target, canonicalCommand, state, matches, executable
 }
 
 async function status(host, env, stdout, source, platform, testHooks) {
-  const home = env.HOME ?? os.homedir();
-  const target = configPath(home, host);
+  const target = configPath(env, host);
   let argv;
   try { argv = await resolveCanonical(host, source, platform); } catch {
     writeJson(stdout, statusResult(host, target, null, 'unreadable', 0, false, 0));
     return 1;
   }
-  if (platform === 'win32' || await hostDirectory(home, host) === null) {
+  if (platform === 'win32' || await hostDirectory(env, host) === null) {
     writeJson(stdout, statusResult(host, target, shell(argv), 'unreadable', 0, false, 0));
     return 1;
   }

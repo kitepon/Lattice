@@ -109,6 +109,14 @@ bootstrap source作成直後、初期環境commitより前に`lattice sensor ini
 
 ## MCP面（session code intelligence・ADR 0049）
 
+AIへの製品登録は`lattice setup [--host claude|codex|grok|cursor|all] --json`が所有する。
+MCP登録、対応製品hookの準備、設定読戻し、MCP初期化と公開toolの確認を一回で完了する。
+初回・再実行・更新は同じ入口を使い、診断は`lattice setup status --json`とする。
+Windows hookとGrok hookの未対応は機能単位で返し、対応MCPを継続する。
+全体partialを成功へ丸めず、利用者設定と他登録を保持する。機能表・結果・保存契約は
+[導入契約](01_integration-package.md#製品所有のai導入入口)を正本とする。
+工場の工程案内`lattice-gantt` hookは製品sensor hookと分離したまま維持する。
+
 CLI 6面とは別種の公開面として、sensorのMCP server（entrypoint `bin/lattice-mcp`）を提供する。
 plan／witness契約が消費するevidenceはCLI面・portable projectionのみであり、MCP tool出力は
 根拠にしない——graph系evidenceは`plan verify`の独立再計算＋canonical digest一致が機械的に強制し、

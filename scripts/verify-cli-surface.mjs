@@ -29,6 +29,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
  * check-syntaxの手書き列挙で既に踏んでいるので、ここは意図的に短く保つ。
  */
 const COMMANDS = [
+  ['setup'], ['setup', 'status'],
   ['status'], ['session-context'], ['factory-diagnostics'],
   ['plan', 'create'], ['plan', 'show'], ['plan', 'compile'], ['plan', 'verify'],
   ['run', 'start'], ['run', 'adapter', 'register'], ['run', 'adapter', 'list'],
@@ -55,13 +56,14 @@ const COMMANDS = [
 ];
 
 /** argvを受けるCLI入口。ここを通らないtestは、引数解析とexit契約を確かめていない。 */
-const CLI_ENTRY = /lattice\.mjs|invokeSensorCli|LATTICE_BIN|latticeBin|run(?:Todo|Runtime|Bridge|Project|Sensor)Cli|renderCliHelp/u;
+const CLI_ENTRY = /lattice\.mjs|invokeSensorCli|LATTICE_BIN|latticeBin|run(?:Todo|Runtime|Bridge|Project|Sensor|Setup)Cli|renderCliHelp/u;
 
 /**
  * group CLIの入口関数は、group tokenを落としたargvを受ける（`runBridgeCli(['status','--json'])`）。
  * 完全なtoken列だけを探すと、実際には確かめているコマンドを未確認と誤判定する。
  */
 const GROUP_ENTRY = Object.freeze({
+  setup: /runSetupCli/u,
   bridge: /runBridgeCli/u,
   hooks: /runHooksCli/u,
   todo: /runTodoCli/u,
