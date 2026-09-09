@@ -36,6 +36,6 @@ HOST_PLATFORM_UNSUPPORTED。Grokの製品hookは未実装でありMCPとは独�
 ## 現在地
 
 0.69.0をmainへ統合して公開済み。Mac／Linux／Windowsの公開版導入と隔離設定での実機smokeは成功。
-共有AI設定への反映は他製品との調整待ち、WSLのSSH導入は接続条件待ち。
-Windows bridgeの常駐復旧は確認したが既存hub配信はpartialが残る。
+共有AI設定への反映は他製品との調整待ち。WSLはオーナー確認により廃止済み・対象外。
+Windows dashboardは正規ensure入口で復旧し、LiveTR／movieのhub配信と公開HTTPSのHTTP 200を確認した。
 実測と未完了条件は[検証記録](evidence/product-setup-verification-20260910.md)に記載する。

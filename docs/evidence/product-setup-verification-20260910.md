@@ -47,7 +47,7 @@ MCPは実際にinitializeとtools/listへ応答し、既存コピーの他登録
 | Linux SSH・公開版 | 確認済み／確認済み | 確認済み／確認済み | 確認済み／typed未対応 | 確認済み／確認済み |
 | Windows SSH・公開版 | 確認済み／typed未対応 | 確認済み／typed未対応 | 確認済み／typed未対応 | 確認済み／typed未対応 |
 | Mac直接実行・公開版 | 確認済み／確認済み | 確認済み／確認済み | 確認済み／typed未対応 | 確認済み／確認済み |
-| WSL | 未実施 | 未実施 | 未実施 | 未実施 |
+| WSL | 廃止済み・対象外 | 廃止済み・対象外 | 廃止済み・対象外 | 廃止済み・対象外 |
 
 実機結果：[Linux](product-setup-linux-20260910.json)、[Windows](product-setup-windows-20260910.json)、
 [Mac](product-setup-macos-20260910.json)。
@@ -56,16 +56,22 @@ MCPは実際にinitializeとtools/listへ応答し、既存コピーの他登録
 Windows bridgeは導入後に`BRIDGE_PERSISTENCE_STATE_SPLIT`を検出。設定のtarバックアップ後、
 正規の`lattice bridge reconfigure --json`で常駐設定を復旧した。再診断でinstalled、reachable=true、
 runtime=running／0.69.0、drift=[]を確認した。ただしreconfigure自体は既存工程の
-`BRIDGE_HUB_DELIVERY_UNCONFIRMED`で非0、その後もhub heartbeatのpartialが残る。
-公開面全体の正常化を成功扱いにしない。Linux bridgeは未設定のため新規公開しなかった。
+`BRIDGE_HUB_DELIVERY_UNCONFIRMED`で非0だった。後続確認ではdashboardが応答せず、
+heartbeatは`skipped_no_dashboard`となった。
+2026-09-10の追加復旧で既存配信元から`lattice todo dashboard ensure --json`を実行し、
+LiveTR／movieとも`hub_delivered`、exit 0を確認した。登録簿のtar保存後、Macから配信中の
+dotagentsの重複登録をWindowsのLattice登録簿から正規remove入口で外した。
+公開HTTPSの両工程ページはHTTP 200で依存工程図を返した。別repoのコードや工程は変更していない。
+最終bridge診断は0.69.0でrunning、heartbeat=`accepted`、`rejected_projects=[]`を確認した。
+Linux bridgeは未設定のため新規公開しなかった。
 
 Macはこの作業端末なので直接実行するというオーナーの指示を受け、公開npm版0.69.0をglobal installし、
 同じ6ケースの実機smokeを完了した。bridgeも0.69.0、reachable=true、drift=[]、
 hub heartbeat=acceptedを確認した。MacへのSSHを受入条件にしていた解釈は訂正する。
 
 未完了条件：共有AI設定本体へのsetupは他製品との導入調整待ち。
-WSL既存SSH先は2回タイムアウト。共有設定反映、WSLの公開版SSH導入、
-既存hub配信の確認をローカル試験やCI成功へ置き換えない。
+WSLはオーナーが廃止済みと確認したため対象外とする。共有設定反映を隔離設定での試験や
+CI成功へ置き換えない。
 
 ## 別ベンダー反証・公開gate
 
