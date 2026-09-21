@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { readBridgeConfig } from '../src/bridge-config.mjs';
+import { BRIDGE_CONFIG_SCHEMA, configureBridge, readBridgeConfig, restoreBridgeConfig } from '../src/bridge-config.mjs';
 import { recoverConfiguredBridge, runBridgeCli } from '../src/bridge-cli.mjs';
+import { writeBridgeDaemonDescriptor } from '../src/bridge-daemon.mjs';
 
 function output(isTTY = false) {
   let value = '';
@@ -52,6 +54,36 @@ test('実行中の版だけのずれは既存の自動更新に任せる', async
     runtimeIdentity: runtimeIdentityDouble({ state: 'running', version: '0.0.1',
       bridge_path: bridgePath, node_path: null }),
     reconfigure: async () => { assert.fail('版だけのずれで常駐を再設定した'); } });
+});
+
+test('DHCP追従済みの本人socketを設定IPへ昇格するreconfigureは自ポート衝突にしない', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-reconfigure-rebound-'));
+  const env = { LATTICE_CONFIG_DIR: root, LATTICE_BRIDGE_INSTANCE_TOKEN: 'a'.repeat(64) };
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const reserved = await configureBridge({ address: '127.0.0.1', env });
+  const occupied = createServer();
+  await new Promise((resolve, reject) => {
+    occupied.once('error', reject);
+    occupied.listen({ host: '127.0.0.1', port: reserved.listen.port }, resolve);
+  });
+  context.after(() => new Promise((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve())));
+  const oldConfig = {
+    schema: BRIDGE_CONFIG_SCHEMA, enabled: true,
+    listen: { address: '127.0.0.9', port: occupied.address().port }, allowed_hosts: ['127.0.0.9'],
+    upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' }, hub: null,
+    updated_at: '2026-09-22T00:00:00.000Z',
+  };
+  await restoreBridgeConfig(oldConfig, { env });
+  await writeBridgeDaemonDescriptor({ config: oldConfig,
+    binding: { address: '127.0.0.1', port: oldConfig.listen.port }, env });
+  const stdout = output(); const stderr = output();
+  const code = await runBridgeCli({ argv: ['reconfigure', '--listen', '127.0.0.1', '--json'], env,
+    stdout: stdout.stream, stderr: stderr.stream,
+    daemon: { ensure: async () => {}, requestStop: async () => ({ state: 'stopped' }), clearStop: async () => {} },
+    launchAgent: launchAgentDouble(), runtimeIdentity: runtimeIdentityDouble({ state: 'running', pid: process.pid }),
+  });
+  assert.equal(code, 0, stderr.read());
+  assert.equal(JSON.parse(stdout.read()).listen.address, '127.0.0.1');
 });
 
 test('hubへ届かないsetupは設定保存を公開成功として返さない', async (context) => {

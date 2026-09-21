@@ -136,7 +136,8 @@ test('serverは同一subnetの現アドレスへ再bindし、その宛先のHost
     upstream: Object.freeze({ mode: 'url', url: `http://${LIVE}:${upstream.address().port}/` }),
     updated_at: '2026-07-25T00:00:00.000Z',
   });
-  const bridge = await startBridgeServer({ config, env, interfaces: UNCHANGED });
+  const instanceToken = 'c'.repeat(64);
+  const bridge = await startBridgeServer({ config, env, interfaces: UNCHANGED, instanceToken });
   context.after(() => bridge.close());
 
   assert.equal(bridge.configured_address, '127.0.0.9');
@@ -154,6 +155,11 @@ test('serverは同一subnetの現アドレスへ再bindし、その宛先のHost
     request.end();
   });
   assert.equal(response.status, 200, `再bind先のHostが許可されていない: ${response.text}`);
+  const health = await fetch(`http://${LIVE}:${bridge.port}/__lattice/bridge-health`, {
+    headers: { 'x-lattice-bridge-instance-token': instanceToken },
+  });
+  assert.deepEqual((await health.json()).address, LIVE,
+    'attested healthは設定済みの消えたIPではなく実bindingを返す');
 });
 
 test('設定アドレスが完全に消えたserver起動はtypedに失敗しfallbackしない', async (context) => {

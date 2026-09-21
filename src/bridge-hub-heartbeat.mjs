@@ -197,12 +197,12 @@ export function createBridgeHubHeartbeatController({
     return result;
   };
   return Object.freeze({
-    async tick({ config }) {
+    async tick({ config, force = false }) {
       if (config?.hub == null) {
         lastSentAt = null; lastResult = null; lastResultAt = null; return null;
       }
       const nowMs = now();
-      if (lastSentAt !== null && nowMs - lastSentAt < intervalMs) return lastResult;
+      if (!force && lastSentAt !== null && nowMs - lastSentAt < intervalMs) return lastResult;
       lastSentAt = nowMs;
       // 名乗る集合は、この端末が実際に配信している集合そのものを使う。登録簿から別途
       // 数え直すと、配信している側と名乗る側が別々の基準を持ち、必ずずれる（ADR 0165）。

@@ -33,6 +33,7 @@ const controller = bridgeRuntimeController({ env, instanceToken,
 let timer;
 let closing = false;
 let descriptorFingerprint = null;
+let heartbeatBinding = null;
 let checking = false;
 let failClosedError = null;
 let hubHeartbeatError = null;
@@ -53,9 +54,9 @@ try {
   }
   const config = await readBridgeConfig({ env });
   if (config === null || !config.enabled) throw Object.assign(new Error('bridge disabled'), { code: 'BRIDGE_DISABLED' });
-  await controller.reconcile();
-  await writeBridgeDaemonDescriptor({ config, env });
-  descriptorFingerprint = config.updated_at;
+  const binding = await controller.reconcile();
+  await writeBridgeDaemonDescriptor({ config, binding, env });
+  descriptorFingerprint = JSON.stringify([config.updated_at, binding.address, binding.port]);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ schema: 'lattice.bridge_daemon_error.v1',
     code: error?.code ?? 'BRIDGE_DAEMON_FAILED', message: error?.message ?? 'bridge daemon failed' })}\n`);
@@ -126,11 +127,12 @@ timer = setInterval(async () => {
       await removeBridgeDaemonActiveMarker({ env });
       process.exit(0);
     }
-    await controller.reconcile();
+    const binding = await controller.reconcile();
     failClosedError = null;
-    if (descriptorFingerprint !== config.updated_at) {
-      await writeBridgeDaemonDescriptor({ config, env });
-      descriptorFingerprint = config.updated_at;
+    const nextDescriptorFingerprint = JSON.stringify([config.updated_at, binding.address, binding.port]);
+    if (descriptorFingerprint !== nextDescriptorFingerprint) {
+      await writeBridgeDaemonDescriptor({ config, binding, env });
+      descriptorFingerprint = nextDescriptorFingerprint;
     }
     // Hub heartbeat failures are reported but never fail-close local traffic:
     // an unreachable hub is a routing problem for the hub's aggregate view,
@@ -139,7 +141,10 @@ timer = setInterval(async () => {
     // throws (sendBridgeHubHeartbeat's contract) — only a local error (e.g.
     // the terminal identity file) reaches this catch.
     try {
-      const heartbeat = await hubHeartbeat.tick({ config });
+      const bindingFingerprint = JSON.stringify([binding.address, binding.port]);
+      const forceHeartbeat = heartbeatBinding !== bindingFingerprint;
+      heartbeatBinding = bindingFingerprint;
+      const heartbeat = await hubHeartbeat.tick({ config, force: forceHeartbeat });
       // 直前に書いた指紋は、健全な状態へ戻った時にだけ捨てる。判定より前に捨てると
       // 比較相手が毎周期nullになり、同じ結果をpoll周期ごとに書き続ける。stderrの
       // 消費者が居ない常駐（WindowsのStartup launcher、LaunchAgent）では、この

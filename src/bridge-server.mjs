@@ -238,7 +238,8 @@ export async function startBridgeServer({
       // availability probe.
       response.end(`${JSON.stringify(attested
         ? { schema: 'lattice.bridge_health.v1', pid: process.pid,
-          address: currentConfig.listen.address, port: currentConfig.listen.port,
+          // 設定IPは公開networkの意図として保ち、healthは実際の待受を返す。
+          address: listenAddress, port: actualPort,
           updated_at: currentConfig.updated_at ?? null,
           version: packageJson.version, node_path: process.execPath,
           node_version: process.version, bridge_path: process.argv[1] ?? null,

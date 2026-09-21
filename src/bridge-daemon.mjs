@@ -3,12 +3,14 @@ import { randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { chmod, lstat, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { parseTree } from 'jsonc-parser';
 
 import {
   BRIDGE_PORT_MAX, BRIDGE_PORT_MIN, BridgeConfigError, bridgeConfigPaths, readBridgeConfig,
 } from './bridge-config.mjs';
+import { resolveBridgeListenAddress } from './bridge-address.mjs';
 import packageJson from '../package.json' with { type: 'json' };
 
 const DESCRIPTOR_SCHEMA = 'lattice.bridge_daemon.v1';
@@ -202,7 +204,11 @@ export async function clearBridgeStopControl({ env = process.env } = {}) {
 export async function requestBridgeDaemonStop({ env = process.env, listen = null } = {}) {
   let descriptor = null;
   try { descriptor = await readBridgeDaemonDescriptor({ env }); } catch {}
-  if (descriptor !== null && await attest(descriptor) === null
+  let config = null;
+  try { config = await readBridgeConfig({ env }); } catch (error) {
+    if (!['BRIDGE_CONFIG_INVALID', 'BRIDGE_CONFIG_MODE_INVALID'].includes(error?.code)) throw error;
+  }
+  if (descriptor !== null && await attestKnownBinding(descriptor, config) === null
     && !await bridgeEndpointAvailable({ address: descriptor.address, port: descriptor.port })) {
     return { state: 'not_running', nonce: null };
   }
@@ -243,15 +249,22 @@ export async function requestBridgeDaemonStop({ env = process.env, listen = null
   throw new BridgeConfigError('BRIDGE_DAEMON_STOP_FAILED', 'bridge daemon stop receipt timed out');
 }
 
-export async function writeBridgeDaemonDescriptor({ config, env = process.env }) {
-  const instanceToken = env.LATTICE_BRIDGE_INSTANCE_TOKEN;
+export async function writeBridgeDaemonDescriptor({ config, binding = config?.listen, identity = null,
+  env = process.env } = {}) {
+  const instanceToken = identity?.instance_token ?? env.LATTICE_BRIDGE_INSTANCE_TOKEN;
   if (typeof instanceToken !== 'string' || !/^[0-9a-f]{64}$/u.test(instanceToken)) {
     throw new BridgeConfigError('BRIDGE_INSTANCE_TOKEN_INVALID', 'bridge instance token is invalid');
   }
-  const descriptor = { schema: DESCRIPTOR_SCHEMA, pid: process.pid,
-    address: config.listen.address, port: config.listen.port,
+  if (isIP(binding?.address) === 0 || !Number.isSafeInteger(binding?.port)
+    || binding.port < BRIDGE_PORT_MIN || binding.port > BRIDGE_PORT_MAX
+    || !Number.isSafeInteger(identity?.pid ?? process.pid) || (identity?.pid ?? process.pid) <= 0
+    || identity !== null && !isIsoTimestamp(identity.started_at)) {
+    throw new BridgeConfigError('BRIDGE_DAEMON_DESCRIPTOR_INVALID', 'bridge daemon descriptor identity is invalid');
+  }
+  const descriptor = { schema: DESCRIPTOR_SCHEMA, pid: identity?.pid ?? process.pid,
+    address: binding.address, port: binding.port,
     config_updated_at: config.updated_at, instance_token: instanceToken,
-    started_at: new Date().toISOString() };
+    started_at: identity?.started_at ?? new Date().toISOString() };
   await atomicDescriptor(bridgeDaemonDescriptorPath(env), descriptor);
   await atomicDescriptor(bridgeDaemonActiveMarkerPath(env), {
     schema: ACTIVE_MARKER_SCHEMA, address: descriptor.address, port: descriptor.port,
@@ -301,10 +314,10 @@ export async function waitForBridgeSocketClose({ listen, timeoutMs = STOP_TIMEOU
   return !await bridgeEndpointAvailable(listen);
 }
 
-async function attest(descriptor) {
+async function attest(descriptor, { address = descriptor?.address } = {}) {
   if (descriptor === null) return null;
   try {
-    const response = await fetch(`http://${healthHost(descriptor.address)}:${descriptor.port}/__lattice/bridge-health`, {
+    const response = await fetch(`http://${healthHost(address)}:${descriptor.port}/__lattice/bridge-health`, {
       headers: { 'x-lattice-bridge-instance-token': descriptor.instance_token },
       signal: AbortSignal.timeout(400),
     });
@@ -312,6 +325,29 @@ async function attest(descriptor) {
     const body = await response.json();
     return body?.schema === 'lattice.bridge_health.v1' && body.pid === descriptor.pid ? body : null;
   } catch { return null; }
+}
+
+function currentBinding(config, interfaces = networkInterfaces()) {
+  if (config === null || config.enabled !== true) return null;
+  const address = resolveBridgeListenAddress({ configured: config.listen.address, interfaces }).effective;
+  return address === null ? null : { address, port: config.listen.port };
+}
+
+async function attestCurrentBinding(descriptor, config, { interfaces = networkInterfaces() } = {}) {
+  const binding = currentBinding(config, interfaces);
+  if (descriptor === null || binding === null || descriptor.port !== binding.port) return null;
+  const body = await attest(descriptor, { address: binding.address });
+  return body === null ? null : { body, binding };
+}
+
+// 設定変更から次のreconcileまでの間は、旧socketだけが本人確認に応答することがある。
+// 現在の待受に続いてdescriptorの既知の宛先を確認し、instance tokenによる本人確認を保つ。
+async function attestKnownBinding(descriptor, config, options = {}) {
+  const current = await attestCurrentBinding(descriptor, config, options);
+  if (current !== null) return current;
+  const body = await attest(descriptor);
+  return body === null ? null : { body,
+    binding: { address: descriptor.address, port: descriptor.port } };
 }
 
 const UNIDENTIFIED_RUNTIME = Object.freeze({ pid: null, version: null, node_path: null,
@@ -326,14 +362,22 @@ const UNIDENTIFIED_RUNTIME = Object.freeze({ pid: null, version: null, node_path
  * thrown: this feeds `lattice bridge status`, the command an operator reaches
  * for precisely when something is already broken.
  */
-export async function readBridgeRuntimeIdentity({ env = process.env } = {}) {
+export async function readBridgeRuntimeIdentity({ env = process.env, interfaces = networkInterfaces() } = {}) {
   let descriptor;
   try { descriptor = await readBridgeDaemonDescriptor({ env }); } catch (error) {
     if (error?.code !== 'BRIDGE_DAEMON_DESCRIPTOR_INVALID') throw error;
     return { ...UNIDENTIFIED_RUNTIME, state: 'descriptor_invalid' };
   }
   if (descriptor === null) return { ...UNIDENTIFIED_RUNTIME, state: 'not_running' };
-  const body = await attest(descriptor);
+  // 旧版daemonはDHCP移動後も設定IPをdescriptorへ残す。
+  // serverと共通の同一subnet条件で現在の待受を解決してから本人確認する。
+  let config = null;
+  try {
+    config = await readBridgeConfig({ env });
+  } catch (error) {
+    if (!['BRIDGE_CONFIG_INVALID', 'BRIDGE_CONFIG_MODE_INVALID'].includes(error?.code)) throw error;
+  }
+  const body = (await attestKnownBinding(descriptor, config, { interfaces }))?.body ?? null;
   if (body === null) return { ...UNIDENTIFIED_RUNTIME, state: 'unattested', pid: descriptor.pid };
   const text = (value) => (typeof value === 'string' ? value : null);
   return { state: 'running', pid: descriptor.pid, version: text(body.version),
@@ -344,31 +388,42 @@ export async function readBridgeRuntimeIdentity({ env = process.env } = {}) {
     last_heartbeat: body.last_heartbeat ?? null };
 }
 
-async function healthy(descriptor, config) {
-  if (descriptor === null || descriptor.address !== config.listen.address
-    || descriptor.port !== config.listen.port) return false;
-  const body = await attest(descriptor);
-  return body !== null && body.updated_at === config.updated_at;
+async function healthy(descriptor, config, options = {}) {
+  const attested = await attestCurrentBinding(descriptor, config, options);
+  return attested !== null && attested.body.updated_at === config.updated_at ? attested : null;
 }
 
-export async function ensureBridgeDaemon({ env = process.env } = {}) {
+async function preserveHealthyDescriptor(descriptor, config, options) {
+  const attested = await healthy(descriptor, config, options);
+  if (attested === null) return null;
+  if (descriptor.address === attested.binding.address && descriptor.port === attested.binding.port) return descriptor;
+  return writeBridgeDaemonDescriptor({ config, binding: attested.binding, identity: descriptor, env: options.env });
+}
+
+export async function ensureBridgeDaemon({ env = process.env, interfaces = networkInterfaces(),
+  spawnDaemon = spawn } = {}) {
   const config = await readBridgeConfig({ env });
   if (config === null || !config.enabled) throw new BridgeConfigError('BRIDGE_DISABLED', 'bridge is disabled');
   const previous = await readBridgeDaemonDescriptor({ env });
-  if (await healthy(previous, config)) return previous;
-  if (previous !== null && previous.address === config.listen.address
-    && previous.port === config.listen.port && await attest(previous) !== null) {
+  const options = { env, interfaces };
+  const alreadyHealthy = await preserveHealthyDescriptor(previous, config, options);
+  if (alreadyHealthy !== null) return alreadyHealthy;
+  if (previous !== null && previous.port === config.listen.port
+    && await attestKnownBinding(previous, config, options) !== null) {
     const deadline = Date.now() + START_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
       const reconciled = await readBridgeDaemonDescriptor({ env });
-      if (reconciled?.pid === previous.pid && await healthy(reconciled, config)) return reconciled;
+      if (reconciled?.pid === previous.pid) {
+        const healthyDescriptor = await preserveHealthyDescriptor(reconciled, config, options);
+        if (healthyDescriptor !== null) return healthyDescriptor;
+      }
     }
     throw new BridgeConfigError('BRIDGE_DAEMON_UNAVAILABLE',
       'existing bridge daemon did not reconcile the updated config');
   }
   const instanceToken = randomBytes(32).toString('hex');
-  const child = spawn(process.execPath, [path.resolve(import.meta.dirname, '../bin/lattice-bridge.mjs')], {
+  const child = spawnDaemon(process.execPath, [path.resolve(import.meta.dirname, '../bin/lattice-bridge.mjs')], {
     detached: true, stdio: 'ignore', env: { ...env, LATTICE_BRIDGE_INSTANCE_TOKEN: instanceToken },
   });
   child.unref();
@@ -376,22 +431,27 @@ export async function ensureBridgeDaemon({ env = process.env } = {}) {
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
     const descriptor = await readBridgeDaemonDescriptor({ env });
-    if (await healthy(descriptor, config)) {
+    const healthyDescriptor = await preserveHealthyDescriptor(descriptor, config, options);
+    if (healthyDescriptor !== null) {
       if (previous !== null && previous.pid !== descriptor.pid) {
-        if (await attest(previous) !== null) {
+        if (await attestCurrentBinding(previous, config, options) !== null) {
           try { process.kill(previous.pid, 'SIGTERM'); } catch {}
         }
       }
-      return descriptor;
+      return healthyDescriptor;
     }
   }
   throw new BridgeConfigError('BRIDGE_DAEMON_UNAVAILABLE', 'bridge daemon did not bind and become healthy');
 }
 
-export async function stopBridgeDaemon({ env = process.env } = {}) {
+export async function stopBridgeDaemon({ env = process.env, interfaces = networkInterfaces() } = {}) {
   const descriptor = await readBridgeDaemonDescriptor({ env });
   if (descriptor === null) return null;
-  if (await attest(descriptor) === null) {
+  let config = null;
+  try { config = await readBridgeConfig({ env }); } catch (error) {
+    if (!['BRIDGE_CONFIG_INVALID', 'BRIDGE_CONFIG_MODE_INVALID'].includes(error?.code)) throw error;
+  }
+  if (await attestKnownBinding(descriptor, config, { interfaces }) === null) {
     let alive = true;
     try { process.kill(descriptor.pid, 0); } catch { alive = false; }
     if (!alive) {

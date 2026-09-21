@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { configureBridge, disableBridge, readBridgeConfig } from '../src/bridge-config.mjs';
+import { BRIDGE_CONFIG_SCHEMA, configureBridge, disableBridge, readBridgeConfig, restoreBridgeConfig } from '../src/bridge-config.mjs';
 import { runBridgeCli } from '../src/bridge-cli.mjs';
 import {
   bridgeDaemonActiveMarkerPath, bridgeDaemonDescriptorPath, bridgeDaemonVersionDrifted,
-  ensureBridgeDaemon, readBridgeDaemonDescriptor, readBridgeStopRequest, requestBridgeDaemonStop,
-  stopBridgeDaemon, writeBridgeDaemonDescriptor,
+  ensureBridgeDaemon, readBridgeDaemonDescriptor, readBridgeRuntimeIdentity, readBridgeStopRequest, requestBridgeDaemonStop,
+  stopBridgeDaemon, writeBridgeDaemonDescriptor, writeBridgeStopReceipt,
 } from '../src/bridge-daemon.mjs';
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -19,6 +20,46 @@ const unmanagedLaunchAgent = Object.freeze({
   disable: async () => {},
   restore: async () => {},
 });
+
+const DHCP_REBOUND = '127.0.0.1';
+const DHCP_REBOUND_INTERFACES = { lo0: [{ address: DHCP_REBOUND, internal: false }] };
+
+const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+async function legacyBindingFixture(context) {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-legacy-binding-'));
+  const env = { ...process.env, LATTICE_CONFIG_DIR: root,
+    LATTICE_BRIDGE_INSTANCE_TOKEN: 'c'.repeat(64) };
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const reserved = await configureBridge({ address: DHCP_REBOUND, env,
+    upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' } });
+  const server = createServer((request, response) => {
+    if (request.url !== '/__lattice/bridge-health'
+      || request.headers['x-lattice-bridge-instance-token'] !== env.LATTICE_BRIDGE_INSTANCE_TOKEN) {
+      response.writeHead(404); response.end(); return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(`${JSON.stringify({ schema: 'lattice.bridge_health.v1', pid: process.pid,
+      address: '::1', port: server.address().port, updated_at: config.updated_at,
+      version: '0.68.1', node_path: process.execPath, node_version: process.version,
+      bridge_path: '/old/lattice-bridge.mjs', last_heartbeat: null })}\n`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '::1', port: reserved.listen.port, exclusive: true }, resolve);
+  });
+  context.after(() => closeServer(server));
+  const config = {
+    schema: BRIDGE_CONFIG_SCHEMA, enabled: true,
+    // DHCP候補はこの/24に限定する。::1はreconcile前の旧socketを模した第二のloopback。
+    listen: { address: '127.0.0.9', port: server.address().port },
+    allowed_hosts: ['127.0.0.9'], upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' }, hub: null,
+    updated_at: new Date().toISOString(),
+  };
+  await restoreBridgeConfig(config, { env });
+  await writeBridgeDaemonDescriptor({ config, binding: { address: '::1', port: config.listen.port }, env });
+  return { config, env, server };
+}
 
 async function assertBridgeIdentityGone(url, pid) {
   let response;
@@ -189,6 +230,101 @@ test('setup daemonは実socket healthまで待ち、同一port再設定を反映
   await stopBridgeDaemon({ env });
   running = false;
   await assertBridgeIdentityGone(healthUrl, descriptor.pid);
+});
+
+test('旧設定IPのdescriptorは同一subnetの実bindingをattestして同一daemonのまま収束する', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-dhcp-upgrade-'));
+  const env = { ...process.env, LATTICE_CONFIG_DIR: root,
+    LATTICE_BRIDGE_INSTANCE_TOKEN: 'd'.repeat(64) };
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const reserved = await configureBridge({ address: DHCP_REBOUND, env,
+    upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' } });
+
+  // 旧版は、DHCP rebind後も「設定した127.0.0.9」をdescriptorとhealthへ書いた。
+  // 実socketだけは同一/24の127.0.0.1で動いている状態を、OSの実interfacesを
+  // 触らず注入する。異networkを選ぶ余地はこのfixtureに無い。
+  let config;
+  const server = createServer((request, response) => {
+    if (request.url !== '/__lattice/bridge-health'
+      || request.headers['x-lattice-bridge-instance-token'] !== env.LATTICE_BRIDGE_INSTANCE_TOKEN) {
+      response.writeHead(404); response.end(); return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(`${JSON.stringify({ schema: 'lattice.bridge_health.v1', pid: process.pid,
+      address: config.listen.address, port: config.listen.port, updated_at: config.updated_at,
+      version: '0.68.1', node_path: process.execPath, node_version: process.version,
+      bridge_path: '/old/lattice-bridge.mjs', last_heartbeat: null })}\n`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: DHCP_REBOUND, port: reserved.listen.port, exclusive: true }, resolve);
+  });
+  context.after(() => closeServer(server));
+  config = {
+    schema: BRIDGE_CONFIG_SCHEMA, enabled: true,
+    listen: { address: '127.0.0.9', port: server.address().port },
+    allowed_hosts: ['127.0.0.9'], upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' }, hub: null,
+    updated_at: new Date().toISOString(),
+  };
+  await restoreBridgeConfig(config, { env });
+  await writeBridgeDaemonDescriptor({ config, env });
+
+  const before = await readBridgeDaemonDescriptor({ env });
+  assert.equal(before.address, config.listen.address, '旧descriptorは設定IPを保持している');
+  assert.equal((await readBridgeRuntimeIdentity({ env, interfaces: DHCP_REBOUND_INTERFACES })).state, 'running',
+    'statusは実bindingでattestでき、unattestedへ誤分類しない');
+
+  let spawned = false;
+  const converged = await ensureBridgeDaemon({ env, interfaces: DHCP_REBOUND_INTERFACES,
+    spawnDaemon: () => { spawned = true; throw new Error('同一daemonを二重起動した'); } });
+  assert.equal(spawned, false);
+  assert.equal(converged.pid, process.pid);
+  assert.equal(converged.address, DHCP_REBOUND);
+  assert.equal(converged.port, config.listen.port);
+  assert.equal((await readBridgeDaemonDescriptor({ env })).address, DHCP_REBOUND);
+  assert.equal(JSON.parse(await readFile(bridgeDaemonActiveMarkerPath(env), 'utf8')).address, DHCP_REBOUND);
+});
+
+test('新IPへreconcile前でも旧bindingの本人応答を待ち、二重daemonを起動しない', async (context) => {
+  const { config, env, server } = await legacyBindingFixture(context);
+  const interfaces = DHCP_REBOUND_INTERFACES;
+  setTimeout(() => {
+    server.close((error) => {
+      if (error) throw error;
+      server.listen({ host: DHCP_REBOUND, port: config.listen.port, exclusive: true });
+    });
+  }, 75);
+  let spawned = false;
+  const converged = await ensureBridgeDaemon({ env, interfaces,
+    spawnDaemon: () => { spawned = true; throw new Error('旧daemonのreconcile待機中に二重起動した'); } });
+  assert.equal(spawned, false);
+  assert.equal(converged.address, DHCP_REBOUND);
+});
+
+test('旧bindingだけで本人確認できるdescriptorも停止要求・停止を拒否しない', async (context) => {
+  const { config, env } = await legacyBindingFixture(context);
+  const receipt = (async () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const request = await readBridgeStopRequest({ env });
+      if (request !== null) {
+        await writeBridgeStopReceipt({ nonce: request.nonce, env });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('stop request was not written');
+  })();
+  assert.equal((await requestBridgeDaemonStop({ env, listen: config.listen })).state, 'stopped');
+  await receipt;
+
+  let terminated = false;
+  context.mock.method(process, 'kill', (pid, signal) => {
+    assert.equal(pid, process.pid);
+    if (signal === 'SIGTERM') { terminated = true; return; }
+    if (signal === 0 && terminated) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+  });
+  assert.equal((await stopBridgeDaemon({ env, interfaces: DHCP_REBOUND_INTERFACES })).pid, process.pid);
+  assert.equal(terminated, true);
 });
 
 test('stale descriptorの未証明PIDにはsignalを送らない', async (context) => {

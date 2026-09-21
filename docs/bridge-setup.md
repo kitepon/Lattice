@@ -64,6 +64,18 @@ fileを除去し、JSON結果の`recovery`へ処置を明示する。その後�
 自動化・隔離testではabsoluteな`LATTICE_CONFIG_DIR`で設定rootを変更できる。無効な設定、低いport、
 使用中の明示port、危険なrequest target、到達不能upstreamはsilent fallbackせずtyped errorを返す。
 
+## DHCPによるIP変更への自動追従
+
+設定したIPが端末から消え、同一subnetに次のIPがある場合、bridgeは起動時にも稼働中にも
+そのIPへ自動で待受を移す。設定ファイルのIPを書き換えたり、利用者がdisableとreconfigureを
+順番に実行したりする必要はない。設定のIPは公開するnetworkの意図を保持し、稼働記録と
+health応答は実際の待受IPを示す。生存確認も実際の待受を使い、正常なbridgeを再起動しない。
+
+Hubへ接続している場合は、待受の変更に合わせて登録を更新する。Hubは登録接続の送信元IPを
+使うため、端末が新しいIPを申告する独自経路は設けない。配信の確認結果は従来どおり
+`lattice.dashboard_delivery.v1`で返す。別subnetやloopbackへの自動切替は行わず、同一subnetに
+移動先がない場合は`BRIDGE_LISTEN_ADDRESS_ABSENT`を返す。
+
 ## 常駐が黙って死んでいないか確かめる
 
 `reachable`は「設定したaddressで誰かが応答しているか」しか答えない。常駐設定（macOSのLaunchAgent、

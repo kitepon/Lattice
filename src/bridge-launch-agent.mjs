@@ -217,12 +217,11 @@ function healthHost(address) {
   return address.includes(':') ? `[${address}]` : address;
 }
 
-async function defaultWaitReady({ config, instanceToken, env, timeoutMs = START_TIMEOUT_MS }) {
+export async function waitForBridgeLaunchAgentReady({ config, instanceToken, env, timeoutMs = START_TIMEOUT_MS }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const descriptor = await readBridgeDaemonDescriptor({ env });
-    if (descriptor?.address === config.listen.address && descriptor?.port === config.listen.port
-      && descriptor?.config_updated_at === config.updated_at) {
+    if (descriptor?.port === config.listen.port && descriptor?.config_updated_at === config.updated_at) {
       try {
         const response = await fetch(
           `http://${healthHost(descriptor.address)}:${descriptor.port}/__lattice/bridge-health`, {
@@ -231,6 +230,7 @@ async function defaultWaitReady({ config, instanceToken, env, timeoutMs = START_
           });
         const body = response.status === 200 ? await response.json() : null;
         if (body?.schema === 'lattice.bridge_health.v1' && body.pid === descriptor.pid
+          && body.address === descriptor.address && body.port === descriptor.port
           && body.updated_at === config.updated_at) return descriptor;
       } catch {}
     }
@@ -321,7 +321,7 @@ async function bootoutIfLoaded({ runner, uid }) {
 export async function installBridgeLaunchAgent({ config, env = process.env,
   runner = defaultLaunchctlRunner, uid = userId(), nodePath = process.execPath,
   bridgePath = DEFAULT_BRIDGE_PATH,
-  waitReady = defaultWaitReady, waitStopped = defaultWaitStopped,
+  waitReady = waitForBridgeLaunchAgentReady, waitStopped = defaultWaitStopped,
   stableNode = stableNodePath, previousListen = null } = {}) {
   if (config?.enabled !== true) throw fail('BRIDGE_DISABLED', 'bridge is disabled');
   const refs = bridgeLaunchAgentPaths(env);
@@ -360,7 +360,7 @@ export async function disableBridgeLaunchAgent({ snapshot, listen, env = process
 
 export async function restoreBridgeLaunchAgent({ snapshot, listen = null, env = process.env,
   runner = defaultLaunchctlRunner, uid = userId(), waitStopped = defaultWaitStopped,
-  config = undefined, waitReady = defaultWaitReady } = {}) {
+  config = undefined, waitReady = waitForBridgeLaunchAgentReady } = {}) {
   if (!snapshot || typeof snapshot.installed !== 'boolean' || typeof snapshot.loaded !== 'boolean'
     || (snapshot.installed && typeof snapshot.content !== 'string')) {
     throw new TypeError('bridge LaunchAgent snapshot required');

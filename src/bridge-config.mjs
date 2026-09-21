@@ -332,6 +332,7 @@ export async function configureBridge({
   createCandidateServer = () => createServer(),
   choosePort = () => randomInt(BRIDGE_PORT_MIN, BRIDGE_PORT_MAX + 1),
   reuseCurrentPort = true,
+  activeBinding = null,
 } = {}) {
   const normalized = validateMutation({ address, port, upstream, hub, allowedHosts });
   const refs = bridgeConfigPaths(env);
@@ -341,7 +342,11 @@ export async function configureBridge({
     const selectedPort = port ?? (reuseCurrentPort && current?.enabled && current.listen.address === address
       ? current.listen.port : null);
     const bindingUnchanged = current?.enabled === true && current.listen.address === address
-      && current.listen.port === selectedPort;
+      && current.listen.port === selectedPort
+      // activeBindingはbridge-cliがinstance tokenで本人確認した待受だけを渡す。
+      // DHCP追従済みの自分のsocketを再予約すると、無関係なport競合と誤認する。
+      || current?.enabled === true && activeBinding?.address === address
+        && activeBinding.port === selectedPort;
     let reservation = null;
     try {
       if (!bindingUnchanged) {

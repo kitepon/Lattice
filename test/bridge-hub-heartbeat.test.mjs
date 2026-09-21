@@ -186,6 +186,22 @@ test('controllerは初回tickで即送信しintervalMs未満の次tickは再送�
   assert.equal(fetchImpl.calls.length, 2, 'must send again once the interval elapses');
 });
 
+test('binding変更のforce tickはheartbeat間隔を待たずにhubへ再登録する', async (context) => {
+  const { env } = await fixture(context);
+  const fetchImpl = fetchStub(async () => jsonResponse(200, {
+    schema: 'lattice.bridge_hub_registration_result.v1', terminal_id: 't1', registered: ['p1'], adopted: [],
+  }));
+  let clock = 1_000_000;
+  const controller = createBridgeHubHeartbeatController({
+    env, fetchImpl, now: () => clock, readServedProjectIds: async () => ['p1'],
+  });
+  const config = { hub: { url: 'http://192.168.1.2:8080/' }, listen: { address: '192.168.1.10', port: 53_939 } };
+  await controller.tick({ config });
+  clock += 250;
+  await controller.tick({ config, force: true });
+  assert.equal(fetchImpl.calls.length, 2, 'DHCP rebind後は通常intervalを待たずheartbeatする');
+});
+
 test('controllerはhubが外れたら次にhubが戻った時すぐ送信する（間隔状態を持ち越さない）', async (context) => {
   const { env } = await fixture(context);
   const fetchImpl = fetchStub(async () => jsonResponse(200, {

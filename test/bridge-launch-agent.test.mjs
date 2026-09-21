@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   chmod, lstat, mkdir, readFile, realpath, rm, symlink, unlink, writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -14,8 +15,10 @@ const macOnly = { skip: process.platform === 'darwin' ? false : 'launchd is macO
 import {
   BRIDGE_LAUNCH_AGENT_LABEL, bridgeLaunchAgentPaths, describeBridgeLaunchAgent,
   disableBridgeLaunchAgent, installBridgeLaunchAgent, restoreBridgeLaunchAgent,
-  snapshotBridgeLaunchAgent,
+  snapshotBridgeLaunchAgent, waitForBridgeLaunchAgentReady,
 } from '../src/bridge-launch-agent.mjs';
+import { writeBridgeDaemonDescriptor } from '../src/bridge-daemon.mjs';
+import { configureBridge } from '../src/bridge-config.mjs';
 
 /** homebrew相当の版付きnode実体と、それを指す安定alias。 */
 async function nodeTree(root, version) {
@@ -69,6 +72,33 @@ function launchctlDouble({ lingerPrints = 0 } = {}) {
   return { runner, calls, isLoaded: () => loaded, reboot: () => { loaded = false; },
     failBootstrap: () => { bootstrapFailure = true; } };
 }
+
+test('ready判定は設定IPでなくattested descriptorの実bindingを待つ', async (context) => {
+  const { env } = await fixture(context, 'lattice-launch-ready-rebound-');
+  await mkdir(env.LATTICE_CONFIG_DIR, { recursive: true });
+  const reserved = await configureBridge({ address: '127.0.0.1', env });
+  const instanceToken = 'e'.repeat(64);
+  const server = createServer((request, response) => {
+    if (request.headers['x-lattice-bridge-instance-token'] !== instanceToken) {
+      response.writeHead(403); response.end(); return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(`${JSON.stringify({ schema: 'lattice.bridge_health.v1', pid: process.pid,
+      address: '127.0.0.1', port: server.address().port,
+      updated_at: '2026-09-22T00:00:00.000Z' })}\n`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: reserved.listen.port }, resolve);
+  });
+  context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const config = { enabled: true, listen: { address: '127.0.0.9', port: server.address().port },
+    updated_at: '2026-09-22T00:00:00.000Z' };
+  await writeBridgeDaemonDescriptor({ config, binding: { address: '127.0.0.1', port: config.listen.port },
+    env: { ...env, LATTICE_BRIDGE_INSTANCE_TOKEN: instanceToken } });
+  const ready = await waitForBridgeLaunchAgentReady({ config, instanceToken, env, timeoutMs: 300 });
+  assert.equal(ready.address, '127.0.0.1');
+});
 
 function config(port, updatedAt = '2026-07-21T00:00:00.000Z') {
   return { enabled: true, listen: { address: '127.0.0.1', port }, updated_at: updatedAt };

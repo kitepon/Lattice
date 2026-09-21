@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -15,8 +16,10 @@ import test from 'node:test';
 import {
   BRIDGE_STARTUP_LABEL, bridgeStartupFolderPaths, describeBridgeStartupFolder,
   disableBridgeStartupFolder, installBridgeStartupFolder, restoreBridgeStartupFolder,
-  snapshotBridgeStartupFolder,
+  snapshotBridgeStartupFolder, waitForBridgeStartupReady,
 } from '../src/bridge-startup-folder.mjs';
+import { writeBridgeDaemonDescriptor } from '../src/bridge-daemon.mjs';
+import { configureBridge } from '../src/bridge-config.mjs';
 
 async function fixture(context, prefix) {
   const { mkdtemp } = await import('node:fs/promises');
@@ -51,6 +54,34 @@ function taskkillDouble() {
 function config(port, updatedAt = '2026-07-21T00:00:00.000Z') {
   return { enabled: true, listen: { address: '192.168.1.11', port }, updated_at: updatedAt };
 }
+
+test('Startup ready判定は設定IPでなくattested descriptorの実bindingを待つ', async (context) => {
+  const { env } = await fixture(context, 'lattice-startup-ready-rebound-');
+  await mkdir(env.LATTICE_CONFIG_DIR, { recursive: true });
+  const reserved = await configureBridge({ address: '127.0.0.1', env });
+  const instanceToken = 'f'.repeat(64);
+  const server = createServer((request, response) => {
+    if (request.headers['x-lattice-bridge-instance-token'] !== instanceToken) {
+      response.writeHead(403); response.end(); return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(`${JSON.stringify({ schema: 'lattice.bridge_health.v1', pid: process.pid,
+      address: '127.0.0.1', port: server.address().port,
+      updated_at: '2026-09-22T00:00:00.000Z' })}\n`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: reserved.listen.port }, resolve);
+  });
+  context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const value = { enabled: true, listen: { address: '127.0.0.9', port: server.address().port },
+    updated_at: '2026-09-22T00:00:00.000Z' };
+  await writeBridgeDaemonDescriptor({ config: value,
+    binding: { address: '127.0.0.1', port: value.listen.port },
+    env: { ...env, LATTICE_BRIDGE_INSTANCE_TOKEN: instanceToken } });
+  const ready = await waitForBridgeStartupReady({ config: value, instanceToken, env, timeoutMs: 300 });
+  assert.equal(ready.address, '127.0.0.1');
+});
 
 test('installは絶対pathの引用符付き起動scriptとdescriptorをatomic writeし、supervisorへ即座に渡す', async (context) => {
   const { env } = await fixture(context, 'lattice-startup-install-');

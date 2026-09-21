@@ -405,6 +405,19 @@ export async function runBridgeCli({ argv, stdout, stderr, env = process.env,
         await clearStop({ env });
         const current = await readBridgeConfig({ env });
         const agentSnapshot = await launchAgent.snapshot({ env });
+        let activeBinding = null;
+        // DHCP追従済みdaemonの実socketを、手動で設定IPへ昇格させる場合がある。
+        // tokenでattest済みのdescriptorだけが、この同一portの予約を省略できる。
+        // それ以外の占有は従来どおりBRIDGE_PORT_UNAVAILABLEで止める。
+        if (command === 'reconfigure' && options.address !== undefined && options.port === undefined
+          && current?.enabled === true && current.listen.port !== undefined) {
+          const descriptor = await readBridgeDaemonDescriptor({ env });
+          const runtime = descriptor === null ? null : await runtimeIdentity({ env });
+          if (runtime?.state === 'running' && descriptor.address === options.address
+            && descriptor.port === current.listen.port) {
+            activeBinding = { address: descriptor.address, port: descriptor.port };
+          }
+        }
         const configured = await configureBridge({
           address: options.address ?? current?.listen.address,
           port: options.port === undefined ? (command === 'reconfigure' ? current?.listen.port ?? null : null) : options.port,
@@ -413,6 +426,7 @@ export async function runBridgeCli({ argv, stdout, stderr, env = process.env,
           allowedHosts: options.allowedHosts.length > 0 ? options.allowedHosts
             : current?.allowed_hosts?.filter((host) => host !== current.listen.address) ?? [],
           reuseCurrentPort: options.port === undefined,
+          activeBinding,
         });
         try {
           if (configured.hub !== null) await ensureDashboard({ env });
