@@ -8,6 +8,7 @@ import path from 'node:path';
 
 import packageJson from '../package.json' with { type: 'json' };
 import { isAuditPendingPhaseStatus } from './todo-audit-pending.mjs';
+import { observeStartIdentityEpochMs } from './runtime-os-observation.mjs';
 
 /**
  * The version of the code in THIS process. A daemon loads its modules once at
@@ -313,6 +314,24 @@ function processIsAlive(pid) {
   }
 }
 
+/**
+ * descriptorはdaemonが起動してから書かれるため、同じdaemonならOSが観測したbirthは
+ * descriptorのstarted_atより後にならない。後ならpidは別processへ再利用済みである。
+ * macOS/Linuxのlstartは秒精度だが、丸められたbirthが同じdaemonのdescriptor時刻を後回る
+ * ことはない。比較はstrict greaterだけにし、同じ秒のPID再利用は確定不能として拒否する。
+ * OS adapterがbirthを時刻として解釈できない時は不明のままにし、health遅延中daemonを
+ * 重複起動しない従来の拒否へ戻す。
+ */
+async function descriptorPidWasReused(descriptor, { observeProcessStartEpochMs }) {
+  try {
+    const observedAt = await observeProcessStartEpochMs(descriptor.pid);
+    const recordedAt = Date.parse(descriptor.started_at);
+    return Number.isFinite(observedAt) && Number.isFinite(recordedAt) && observedAt > recordedAt;
+  } catch {
+    return false;
+  }
+}
+
 function daemonRecordRef(refs, pid) {
   return path.join(refs.daemons, `${pid}.json`);
 }
@@ -508,7 +527,8 @@ export async function forgetTodoDashboardDaemonRecord({ env = process.env } = {}
 export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon = spawn,
   signalProcess = process.kill, isProcessAlive = processIsAlive, startupTimeoutMs = 120_000,
   legacyStopTimeoutMs = 3_000, replacementIsProcessAlive = processIsAlive,
-  attestationTimeoutMs = 2_000, strayStopTimeoutMs = 3_000 } = {}) {
+  attestationTimeoutMs = 2_000, strayStopTimeoutMs = 3_000,
+  observeProcessStartEpochMs = observeStartIdentityEpochMs } = {}) {
   const refs = paths(env);
   await mkdir(refs.root, { recursive: true, mode: 0o700 });
   // 掃除と孤児の始末の機会はここしかない。daemonの起動は全daemonが必ず通る一点であり、
@@ -523,7 +543,8 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
       return existing;
     }
     if (validDaemonDescriptor(existing) && existingAttestation === null
-      && await isProcessAlive(existing.pid)) {
+      && await isProcessAlive(existing.pid)
+      && !await descriptorPidWasReused(existing, { observeProcessStartEpochMs })) {
       const error = new Error('dashboard daemon is alive but temporarily unresponsive');
       error.code = 'DASHBOARD_DAEMON_UNRESPONSIVE';
       throw error;

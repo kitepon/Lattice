@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.69.1 — 2026-09-21
+
+### 修正
+
+- dashboard daemonのhealthが応答しない時、終了済みdaemonのPIDを無関係なprocessが再利用していても
+  生存中と誤認して`DASHBOARD_DAEMON_UNRESPONSIVE`で停止する不具合を修正。
+  OSが観測するprocess開始時刻をdescriptorの記録時刻と照合し、再利用PIDはsignalせず正規の
+  `todo dashboard ensure`によるspawn復旧へ進める。macOS・Linuxの`ps`開始時刻とWindowsの
+  PowerShell UTC ticksを同じepoch時刻へ正規化する。
+
 ## 0.69.0 — 2026-09-10
 
 ### 追加

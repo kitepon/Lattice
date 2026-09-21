@@ -3,6 +3,8 @@ import { realpath } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const WINDOWS_UNIX_EPOCH_TICKS = 621_355_968_000_000_000n;
+const WINDOWS_TICKS_PER_MILLISECOND = 10_000n;
 
 // OS観測はobserverのlocaleへ依存させない。psのlstart書式（LC_TIME）と非ASCII argvの
 // エスケープ有無（LC_CTYPE）はlocaleで変わり、同じprocessでも観測者ごとにidentity digestが
@@ -23,6 +25,23 @@ export async function observeStartIdentityRaw(pid) {
     : ['-o', 'lstart=', '-p', String(pid)];
   const { stdout } = await execFileAsync(executable, args, { encoding: 'utf8', env: osObservationEnvironment() });
   return stdout.trim();
+}
+
+/** OS固有のstart identityをUnix epoch millisecondsへ正規化する。raw identityの契約は変えない。 */
+export function processStartIdentityEpochMs(value) {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  const parsed = Date.parse(raw);
+  if (Number.isFinite(parsed)) return parsed;
+  if (!/^[0-9]+$/u.test(raw)) return null;
+  const epochMs = (BigInt(raw) - WINDOWS_UNIX_EPOCH_TICKS) / WINDOWS_TICKS_PER_MILLISECOND;
+  if (epochMs < BigInt(Number.MIN_SAFE_INTEGER) || epochMs > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(epochMs);
+}
+
+/** processのstart identityをOS差のないUnix epoch millisecondsで返す。解釈不能ならnull。 */
+export async function observeStartIdentityEpochMs(pid) {
+  return processStartIdentityEpochMs(await observeStartIdentityRaw(pid));
 }
 
 /** processのargv（`ps -o command=`）の生文字列を返す。 */

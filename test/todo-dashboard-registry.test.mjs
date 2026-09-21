@@ -356,6 +356,7 @@ test('生存中dashboardの一時的health timeoutは新daemonで孤児化せず
   const runtime = path.join(root, 'runtime');
   await mkdir(runtime, { recursive: true, mode: 0o700 });
   const daemonPid = 777_777;
+  const observedStartedAt = Date.parse('Mon Jan 01 2024 00:00:00');
   let busyPort = null;
   const busy = createServer((_request, response) => {
     setTimeout(() => {
@@ -370,7 +371,7 @@ test('生存中dashboardの一時的health timeoutは新daemonで孤児化せず
   });
   busyPort = busy.address().port;
   await writeDaemonDescriptor(runtime, { schema: 'lattice.todo_dashboard_daemon.v1',
-    pid: daemonPid, port: busyPort, started_at: new Date().toISOString() });
+    pid: daemonPid, port: busyPort, started_at: new Date(observedStartedAt + 999).toISOString() });
   const env = { ...process.env, LATTICE_DASHBOARD_RUNTIME_DIR: runtime };
   let spawnCount = 0;
   context.after(async () => {
@@ -379,9 +380,46 @@ test('生存中dashboardの一時的health timeoutは新daemonで孤児化せず
   });
   await assert.rejects(ensureTodoDashboardDaemon({ env, attestationTimeoutMs: 20,
     isProcessAlive: () => true,
+    observeProcessStartEpochMs: async () => observedStartedAt,
     spawnDaemon() { spawnCount += 1; throw new Error('must not spawn'); },
   }), (error) => error.code === 'DASHBOARD_DAEMON_UNRESPONSIVE');
   assert.equal(spawnCount, 0);
+});
+
+test('health不能でPIDが別processに再利用されたdescriptorはsignalせずspawnで復旧する', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-dashboard-pid-reuse-'));
+  const runtime = path.join(root, 'runtime');
+  await mkdir(runtime, { recursive: true, mode: 0o700 });
+  const reusedPid = 777_778;
+  const replacementPid = 777_779;
+  await writeDaemonDescriptor(runtime, { schema: 'lattice.todo_dashboard_daemon.v1', pid: reusedPid,
+    port: 49_267, started_at: '2026-01-01T00:00:00.000Z' });
+  const replacement = await currentHealthServer(replacementPid);
+  const env = { ...process.env, LATTICE_DASHBOARD_RUNTIME_DIR: runtime };
+  const signals = [];
+  let spawnCount = 0;
+  context.after(async () => {
+    await new Promise((resolve) => replacement.server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  });
+  const result = await ensureTodoDashboardDaemon({ env, startupTimeoutMs: 1_000,
+    isProcessAlive: (pid) => pid === reusedPid || pid === replacementPid,
+    replacementIsProcessAlive: (pid) => pid === replacementPid,
+    observeProcessStartEpochMs: async (pid) => {
+      assert.equal(pid, reusedPid);
+      return Date.parse('Sun Sep 21 12:00:00 2026');
+    },
+    signalProcess(pid, signal) { signals.push([pid, signal]); },
+    spawnDaemon() {
+      spawnCount += 1;
+      setTimeout(() => plantDaemonRecord(runtime, daemonDescriptor(replacementPid, replacement.port)), 25);
+      return { pid: replacementPid, unref() {}, kill() {} };
+    },
+  });
+  assert.equal(spawnCount, 1);
+  assert.equal(result.pid, replacementPid);
+  assert.deepEqual(signals, [], '再利用された無関係PIDへsignalしない');
+  assert.equal(JSON.parse(await readFile(path.join(runtime, 'daemon.json'), 'utf8')).pid, replacementPid);
 });
 
 test('新daemon起動中にlegacy再attestationを失ったPIDへはsignalしない', async (context) => {
