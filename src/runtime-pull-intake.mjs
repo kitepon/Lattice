@@ -25,6 +25,25 @@ import {
   readTodoIndependenceArtifact, readTodoStore, readTodoWitnessSet,
 } from './todo-store.mjs';
 
+export function ownScopeGrowth(taskId, finding) {
+  return finding?.kind === 'undeclared_write'
+    && Array.isArray(finding.todo_ids)
+    && finding.todo_ids.length === 1
+    && finding.todo_ids[0] === taskId
+    && typeof finding.path === 'string'
+    && finding.path.length > 0;
+}
+
+export function acceptFindings(taskId, findings) {
+  const blocking = [];
+  const added = [];
+  for (const finding of findings) {
+    if (ownScopeGrowth(taskId, finding)) added.push(finding.path);
+    else blocking.push(finding);
+  }
+  return { blocking, added_paths: [...new Set(added)].sort() };
+}
+
 export const PULL_RUN_META_SCHEMA = 'lattice.pull_run_meta.v1';
 const PULL_EVENT_SCHEMA = 'lattice.pull_run_event.v1';
 const PULL_EVENTS_FILE = 'pull-events.json';
@@ -1219,15 +1238,16 @@ export async function acceptPullTask({ repoRoot, runDir, taskId, environment = p
     const findings = [...direct, ...independent].filter((finding, index, all) => (
       index === all.findIndex((candidate) => digestArtifact(candidate) === digestArtifact(finding))
     ));
-    if (findings.length > 0) {
-      const affected = new Set(findings.flatMap((finding) => finding.todo_ids));
+    const { blocking, added_paths: addedPaths } = acceptFindings(taskId, findings);
+    if (blocking.length > 0) {
+      const affected = new Set(blocking.flatMap((finding) => finding.todo_ids));
       for (const affectedTaskId of [...affected].sort()) {
         const affectedIntake = project(current.events, current.meta).intakes
           .find((entry) => entry.task_id === affectedTaskId);
         if (!affectedIntake || affectedIntake.accepted !== null) continue;
         const intervention = { state: 'hold', reason: 'runtime_conflict',
           next_action: 'inspect_findings_and_resolve_or_split', lease_state: 'revoked',
-          detail: { findings: findings.filter((finding) => finding.todo_ids.includes(affectedTaskId)) } };
+          detail: { findings: blocking.filter((finding) => finding.todo_ids.includes(affectedTaskId)) } };
         current = await changeIntervention(runDir, current, affectedTaskId, intervention);
         const stoppedIntake = project(current.events, current.meta).intakes
           .find((entry) => entry.task_id === affectedTaskId);
@@ -1240,7 +1260,7 @@ export async function acceptPullTask({ repoRoot, runDir, taskId, environment = p
           }
         }
       }
-      fail('RUNTIME_CONFLICT_HOLD', 'observed diffがruntime conflictを生成した', { findings });
+      fail('RUNTIME_CONFLICT_HOLD', 'observed diffがruntime conflictを生成した', { findings: blocking });
     }
     if (intake.intervention.state === 'hold' && intake.intervention.reason === 'runtime_conflict') {
       const released = { state: 'none', reason: null, next_action: null,
@@ -1261,7 +1281,8 @@ export async function acceptPullTask({ repoRoot, runDir, taskId, environment = p
       events: current.events, meta: current.meta, kind: 'task_accepted', taskId,
       payload: { done_event_digest: done.event_digest,
         checkpoint_digest: checkpoint.checkpoint_digest, checkpoint,
-        head_sha: checkpoint.diff.head_sha },
+        head_sha: checkpoint.diff.head_sha,
+        ...(addedPaths.length > 0 ? { added_paths: addedPaths } : {}) },
     }));
 
     // 先着taskがacceptedになった後、planning conflictだけで待っていた後着を再投影する。
