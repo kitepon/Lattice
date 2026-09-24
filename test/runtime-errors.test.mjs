@@ -73,16 +73,17 @@ test('config欠落・malformed・disabledでは収集せずstateへ一切触れ�
   }
 });
 
-test('同一原因はfingerprint集約でcount/last_seen/sequenceだけ進む', async () => {
+test('同一原因はfingerprint集約でcount/last_seen/sequenceと発生版が進む', async () => {
   const workspace = await makeWorkspace();
   try {
     const first = recordRuntimeError('LATTICE.RUN_STORE_IO_FAILED', { ...workspace.options, now: '2026-07-18T00:00:00.000Z' });
-    const second = recordRuntimeError('LATTICE.RUN_STORE_IO_FAILED', { ...workspace.options, now: '2026-07-18T00:01:00.000Z' });
+    const second = recordRuntimeError('LATTICE.RUN_STORE_IO_FAILED', { ...workspace.options, version: '0.2.0', now: '2026-07-18T00:01:00.000Z' });
     assert.equal(first.status, 'recorded');
     assert.equal(first.fingerprint, second.fingerprint);
     const snapshot = runtimeErrorsSnapshot(0, 256, workspace.options);
     assert.equal(snapshot.runtime_errors.length, 1);
     assert.equal(snapshot.runtime_errors[0].occurrence_count, 2);
+    assert.equal(snapshot.runtime_errors[0].product_version, '0.2.0');
     assert.equal(snapshot.runtime_errors[0].message_template, 'Lattice run store IO failed');
     assert.equal(snapshot.cursor.high_watermark, 2);
   } finally {

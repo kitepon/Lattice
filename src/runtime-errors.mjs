@@ -219,7 +219,7 @@ function snapshot(options = {}) {
     version: options.version ?? 'unknown',
     state_schema_version: STATE_VERSION,
     cursor: { high_watermark: store.next_sequence - 1, acknowledged_through: store.acknowledged_through, next: rows.at(-1)?.sequence ?? afterCursor },
-    runtime_errors: rows.filter((record) => record.status === 'open').map(({ error_code, component, status, severity, fingerprint, message_template, count, first_seen, last_seen, state_schema_version }) => ({ error_code, component, status, severity, fingerprint, message_template, occurrence_count: count, first_seen, last_seen, state_schema_version })),
+    runtime_errors: rows.filter((record) => record.status === 'open').map(({ product_version, error_code, component, status, severity, fingerprint, message_template, count, first_seen, last_seen, state_schema_version }) => ({ product_version, error_code, component, status, severity, fingerprint, message_template, occurrence_count: count, first_seen, last_seen, state_schema_version })),
     resolutions: rows.filter((record) => record.status === 'resolved').map(({ fingerprint, resolved_at, reason_code }) => ({ fingerprint, resolved_at, reason_code })),
     diagnostics: {
       collection: enabled ? 'enabled' : 'disabled',
