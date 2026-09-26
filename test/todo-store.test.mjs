@@ -983,7 +983,7 @@ test('todo_plan.v2のanchor hash不一致はactivation前にfail closedする', 
     .map(({ descriptor }) => descriptor.plan_key), ['main']);
 });
 
-test('historical doneは通常writerから追加できず、import source不在はverify用annotation/hard拒否へ分離する', async (context) => {
+test('historical doneは通常writerから追加できず、import source不在は未検証のまま書込みを許す', async (context) => {
   const root = await workspace(context);
   const sourceCommit = pinnedMarkdownCommit(root);
   await appendImportedPlan(importedPlanRequest(root, { sourceCommit }));
@@ -998,8 +998,9 @@ test('historical doneは通常writerから追加できず、import source不在�
   const readable = await readTodoStore({ repoRoot: root, now: NOW });
   assert.equal(readable.members.find(({ descriptor }) => descriptor.plan_key === 'archive')
     .tasks.every(({ evidence_unverified }) => evidence_unverified), true);
-  await expectCode(readTodoStore({ repoRoot: root, now: NOW, forWrite: true }),
-    'STORE_INCONSISTENT', 'import_source_unverified');
+  const writable = await readTodoStore({ repoRoot: root, now: NOW, forWrite: true });
+  assert.equal(writable.members.find(({ descriptor }) => descriptor.plan_key === 'archive')
+    .tasks.every(({ evidence_unverified }) => evidence_unverified), true);
 });
 
 test('上限超過pinned source blobはbatch予算に収まっても未検証として拒否する', async (context) => {
@@ -1310,8 +1311,15 @@ test('reopenで差し替え済みの旧doneが指す消えたblobは書き込み
   assert.equal(started.event.kind, 'start');
 });
 
-test('現在のdoneが指す消えたblobは引き続き書き込みを拒む', async (context) => {
+test('現在のdoneが指す消えたblobは未検証と表示し、別taskの開始を止めない', async (context) => {
   const root = await danglingDoneFixture(context, { replace: false });
-  await expectCode(readTodoStore({ repoRoot: root, now: NOW, forWrite: true }),
-    'STORE_INCONSISTENT', 'evidence_unverified');
+  const writable = await readTodoStore({ repoRoot: root, now: NOW, forWrite: true });
+  assert.equal(writable.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
+  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  const started = await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
+    event: { kind: 'start', task_id: 'T2', actor: ACTOR, recorded_at: NOW,
+      payload: { override_reason: null } } });
+  assert.equal(started.event.kind, 'start');
+  const after = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.equal(after.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
 });

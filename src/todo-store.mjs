@@ -62,7 +62,6 @@ const CROSS_PLAN_RECOVERY_CLAIMS_REF = `${STORE_ROOT_REF}/.cross-plan-recovery`;
 const CROSS_PLAN_IMPORT_TRANSACTION_SCHEMA = 'lattice.todo_cross_plan_import_transaction.v1';
 const SOURCE_CUTOVER_BARRIER_REF = `${STORE_ROOT_REF}/source-cutover-recovery.json`;
 const SOURCE_CUTOVER_RECOVERY_CAPABILITY = Symbol('lattice.todo.source-cutover-recovery');
-const EVIDENCE_REPAIR_CAPABILITY = Symbol('lattice.todo.evidence-repair');
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const WRITER_CALLERS = new Set(['g4-migration', 'g5-authoring']);
 const TODO_REVISION_SCHEMAS = Object.freeze([
@@ -621,8 +620,10 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
           const decisionEvidence = event.payload.decision_evidence;
           const slotEvidence = event.payload.evidence_slots.map((slot) => slot.evidence);
           pendingVerifications.set(`phase:${event.phase_id}`, () => {
-            verifyEvidence(decisionEvidence);
-            for (const evidence of slotEvidence) verifyEvidence(evidence);
+            const context = { plan_key: plan.plan_key, phase_id: event.phase_id,
+              event_digest: event.event_digest };
+            verifyEvidence(decisionEvidence, context);
+            for (const evidence of slotEvidence) verifyEvidence(evidence, context);
           });
         }
         state.status = 'accepted'; state.decision_event_digest = event.event_digest;
@@ -633,7 +634,9 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
         }
         if (verifyEvidence) {
           const decisionEvidence = event.payload.decision_evidence;
-          pendingVerifications.set(`phase:${event.phase_id}`, () => verifyEvidence(decisionEvidence));
+          pendingVerifications.set(`phase:${event.phase_id}`, () => verifyEvidence(decisionEvidence, {
+            plan_key: plan.plan_key, phase_id: event.phase_id, event_digest: event.event_digest,
+          }));
         }
         state.status = 'rejected'; state.decision_event_digest = event.event_digest;
         state.decision_evidence = event.payload.decision_evidence;
@@ -1222,7 +1225,7 @@ function readEvidenceBlob(absoluteRepo, oid) {
   return entry.bytes;
 }
 
-function evidenceVerifier(manifest, repoRoot, hard, repair = null) {
+function evidenceVerifier(manifest, repoRoot, hard, newEventDigest = null) {
   const repositories = new Map(manifest.repositories.map((repo) => [repo.repo_id, repo.path]));
   return (descriptor, context = {}) => {
     if (!validateEvidenceDescriptor(descriptor)) fail('STORE_INCONSISTENT', 'evidence_descriptor_invalid');
@@ -1245,15 +1248,8 @@ function evidenceVerifier(manifest, repoRoot, hard, repair = null) {
       if (sha256Bytes(bytes) !== descriptor.content_digest) throw new Error('digest mismatch');
       return true;
     } catch {
-      const repairTarget = repair !== null
-        && typeof repair.taskId === 'string'
-        && context.plan_key === repair.planKey
-        && typeof context.task_id === 'string'
-        && context.task_id === repair.taskId;
-      // evidence promotionだけは、同じtaskの過去eventを新しいhard-verified eventで
-      // supersedeするためにここを通る。prospective event自身と他taskは免除しない。
-      if (repairTarget
-        && (repair.eventDigest === null || context.event_digest !== repair.eventDigest)) return false;
+      // 既存の不達は未検証として残す。新eventの証拠だけは書込み前にhard検証する。
+      if (newEventDigest !== null && context.event_digest !== newEventDigest) return false;
       if (hard) fail('STORE_INCONSISTENT', 'evidence_unverified', {
         ...context,
         next_action: context.plan_key === undefined
@@ -1416,20 +1412,14 @@ function liveReplacementPreservesListStructure(lineBytes, replacement) {
   return source !== null && target !== null && source[1] === target[1] && source[2] === target[2];
 }
 
-function importSourceVerifier(repoRoot, hard, cache = null, repair = null) {
+function importSourceVerifier(repoRoot, hard, cache = null, newEventDigest = null) {
   return (descriptor, context = {}) => {
     if (!validateTodoImportSource(descriptor)) fail('STORE_INCONSISTENT', 'import_source_descriptor_invalid');
     try {
       pinnedSourceLine(repoRoot, descriptor, cache);
       return true;
     } catch {
-      const repairTarget = repair !== null
-        && typeof repair.taskId === 'string'
-        && context.plan_key === repair.planKey
-        && typeof context.task_id === 'string'
-        && context.task_id === repair.taskId;
-      if (repairTarget
-        && (repair.eventDigest === null || context.event_digest !== repair.eventDigest)) return false;
+      if (newEventDigest !== null && context.event_digest !== newEventDigest) return false;
       if (hard) fail('STORE_INCONSISTENT', 'import_source_unverified', {
         ...context,
         next_action: 'verify_source_commit_origin_path_and_line_then_retry',
@@ -1605,14 +1595,8 @@ export async function readTodoStore(options = {}) {
       fail('STORE_INCONSISTENT', 'manifest_revision_binding_mismatch');
     }
     prefetchVerificationObjects(manifest, repoRoot, journal.events, pinnedSourceCache);
-    const evidenceRepair = options.evidenceRepairCapability === EVIDENCE_REPAIR_CAPABILITY
-      ? options.evidenceRepair ?? null : null;
-    const verifyEvidence = evidenceVerifier(
-      manifest, repoRoot, options.forWrite === true, evidenceRepair,
-    );
-    const verifyImportSource = importSourceVerifier(
-      repoRoot, options.forWrite === true, pinnedSourceCache, evidenceRepair,
-    );
+    const verifyEvidence = evidenceVerifier(manifest, repoRoot, false);
+    const verifyImportSource = importSourceVerifier(repoRoot, false, pinnedSourceCache);
     const tasks = replay(plan, journal.events, {
       now: options.now ? new Date(options.now) : new Date(),
       verifyEvidence: options.forWrite === true ? verifyEvidence : undefined,
@@ -2056,13 +2040,8 @@ export async function appendTodoEvent(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
-    const evidenceRepair = options.event.kind === 'done'
-      && options.event.payload?.done_mode === 'evidence_promotion'
-      ? { planKey: options.planKey, taskId: options.event.task_id, eventDigest: null }
-      : null;
     const store = await readTodoStore({
-      repoRoot, forWrite: true, now: options.now, evidenceRepair,
-      evidenceRepairCapability: EVIDENCE_REPAIR_CAPABILITY,
+      repoRoot, forWrite: true, now: options.now,
       // 修理扉は除去event（tombstone）の書込みだけに開く。それ以外の書込みは従来どおり
       // binding_stale で fail closed する（validateMergedGraph の注記を参照）
       tolerateStaleBindings: options.tolerateStaleBindings === true
@@ -2113,16 +2092,8 @@ export async function appendTodoEvent(options = {}) {
       [...member.journal.events, event], appendSourceCache);
     replay(member.plan, [...member.journal.events, event], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, true, {
-        planKey: member.plan.plan_key,
-        taskId: event.task_id,
-        eventDigest: event.event_digest,
-      }),
-      verifyImportSource: importSourceVerifier(repoRoot, true, appendSourceCache, {
-        planKey: member.plan.plan_key,
-        taskId: event.task_id,
-        eventDigest: event.event_digest,
-      }),
+      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, true, event.event_digest),
+      verifyImportSource: importSourceVerifier(repoRoot, true, appendSourceCache, event.event_digest),
     });
     if (options.materializedEvidence !== null && options.materializedEvidence !== undefined) {
       const asset = options.materializedEvidence;
@@ -4270,8 +4241,8 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     await protocolStage(options, 'phase_v3_marker_durable');
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, true),
-      verifyImportSource: importSourceVerifier(repoRoot, true),
+      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
+      verifyImportSource: importSourceVerifier(repoRoot, false),
     });
     const snapshot = snapshotFor(revision.desired_plan, [genesis], tasks);
     for (const [stage, ref, bytes] of [
@@ -4437,8 +4408,8 @@ export async function applyPhaseTodoRevision(options = {}) {
     const journalRef = `${base}/journal/active.jsonl`; const snapshotRef = `${base}/snapshot.json`;
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, true),
-      verifyImportSource: importSourceVerifier(repoRoot, true),
+      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
+      verifyImportSource: importSourceVerifier(repoRoot, false),
     });
     const snapshot = snapshotFor(revision.desired_plan, [genesis], tasks);
     const artifacts = [
@@ -4586,8 +4557,8 @@ export async function applyTodoRevision(options = {}) {
     }
     await protocolStage(options, 'revision_marker_durable');
 
-    const verifyEvidence = evidenceVerifier(store.manifest, repoRoot, true);
-    const verifyImportSource = importSourceVerifier(repoRoot, true);
+    const verifyEvidence = evidenceVerifier(store.manifest, repoRoot, false);
+    const verifyImportSource = importSourceVerifier(repoRoot, false);
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(), verifyEvidence, verifyImportSource,
     });
@@ -4862,8 +4833,8 @@ export async function applyTodoRevisionSet(options = {}) {
     }
     await protocolStage(options, 'revision_set_marker_durable');
 
-    const verifyEvidence = evidenceVerifier(store.manifest, repoRoot, true);
-    const verifyImportSource = importSourceVerifier(repoRoot, true);
+    const verifyEvidence = evidenceVerifier(store.manifest, repoRoot, false);
+    const verifyImportSource = importSourceVerifier(repoRoot, false);
     for (const entry of prepared) {
       const { revision, genesis } = entry;
       const tasks = replay(revision.desired_plan, [genesis], {

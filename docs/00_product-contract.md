@@ -395,9 +395,11 @@ sanitizeしたdefaultを使う。渡した値がidentifierとして不正なら`
 本文からblob descriptorを書く。dashboard故障とstructure realizationはdoneの門ではない。
 `evidence promote`は現在doneのtaskへ最新done digestで束縛した追記eventを積み、authored／importedを
 問わずevidenceだけを再束縛する。done_atとimportedはlock内の現状態を維持し、対象taskの過去evidence
-不達だけを新eventのhard検証で置き換える。以後のreplayは最新の証拠束縛だけを検証し、importedは
-完了来歴として維持したまま通常evidenceを後続revisionへcarryできる。他taskの不達と新evidence不正はstore bytes不変で拒否する
-（ADR 0183）。
+不達を新eventのhard検証で置き換える。以後のreplayは最新の証拠束縛だけを検証し、importedは
+完了来歴として維持したまま通常evidenceを後続revisionへcarryできる。複数taskの旧証拠や
+import sourceが不達でも、各taskを未検証と表示して通常の書込みと順次promoteを進める。
+`todo verify`は未検証を報告して失敗する。新eventのevidenceが不正ならstore bytes不変で
+拒否する（ADR 0183・0192）。
 監査と構造finalizationはstatusの残作業である（ADR 0159・0181）。成功は
 `lattice.todo_mutation_result.v2`一行（`note_context`を同梱する成功は
 `lattice.todo_mutation_result.v5`）、失敗とusage違反は`lattice.cli_error.v2`一行で、

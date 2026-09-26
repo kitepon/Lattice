@@ -873,15 +873,8 @@ test('evidence promoteは過去の不達だけを許し新しい不正証拠を�
   const oldObject = original.descriptor.git_blob_oid;
   await unlink(path.join(root, '.git', 'objects', oldObject.slice(0, 2), oldObject.slice(2)));
 
-  await assert.rejects(
-    readTodoStore({
-      repoRoot: root,
-      forWrite: true,
-      evidenceRepair: { planKey: 'main', taskId: 'T1', eventDigest: null },
-    }),
-    (error) => error.code === 'STORE_INCONSISTENT'
-      && error.detail.reason === 'evidence_unverified',
-  );
+  const writable = await readTodoStore({ repoRoot: root, forWrite: true });
+  assert.equal(writable.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
 
   const invalid = {
     ...original.descriptor,
@@ -902,7 +895,7 @@ test('evidence promoteは過去の不達だけを許し新しい不正証拠を�
   assert.equal(await storeDigest(root), before);
 });
 
-test('evidence promoteは同じplanの別taskにある証拠不達を隠さない', async (context) => {
+test('evidence promoteは別taskの不達を残して順に修復できる', async (context) => {
   const root = await workspace(context);
   const first = await evidenceFixture(root, 'first-task', 'first\n');
   gitOutput(root, ['add', 'first-task.txt']);
@@ -937,16 +930,29 @@ test('evidence promoteは同じplanの別taskにある証拠不達を隠さな�
     await unlink(path.join(root, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
   }
 
-  const before = await storeDigest(root);
-  const result = runCli(root, [
+  const firstResult = successJson(runCli(root, [
     'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
     '--evidence', firstReplacement.descriptorRef,
-  ]);
-  assert.equal(result.status, 1);
-  const failure = JSON.parse(result.stderr);
+  ]));
+  assert.equal(firstResult.status, 'done');
+  const stillUnverified = runCli(root, ['todo', 'verify', '--plan', 'main', '--json']);
+  assert.equal(stillUnverified.status, 1);
+  const failure = JSON.parse(stillUnverified.stderr);
   assert.equal(failure.detail.reason, 'evidence_unverified');
   assert.equal(failure.detail.task_id, 'T2');
-  assert.equal(await storeDigest(root), before);
+
+  const secondReplacement = await evidenceFixture(root, 'second-task', 'second replacement\n');
+  gitOutput(root, ['add', 'second-task.txt']);
+  gitOutput(root, [
+    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'second task replacement',
+  ]);
+  const secondResult = successJson(runCli(root, [
+    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T2',
+    '--evidence', secondReplacement.descriptorRef,
+  ]));
+  assert.equal(secondResult.status, 'done');
+  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
 });
 
 const snapshotCases = [
