@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-06 · **New:** `bugfix/CG-26` @ `7cbde95` · **Baseline:** `bugfix/CG-31` @ `c54e008` ·
 **Harness:** `scripts/agent-eval/ab-new-vs-baseline.sh`, `--model sonnet --effort high`,
-**both arms codegraph-on**, CLI blocked (0 contamination in every run),
-`CODEGRAPH_NO_PROMPT_HOOK=1`. Every index measured on was **fully rebuilt**, never
+**both arms lattice-sensor-on**, CLI blocked (0 contamination in every run),
+`LATTICE_SENSOR_NO_PROMPT_HOOK=1`. Every index measured on was **fully rebuilt**, never
 incrementally synced (CG-33).
 
 Baseline is the CG-31 tip, not `main`, so every number here isolates CG-26. Read the three
@@ -75,7 +75,7 @@ of it, and `renderCeiling` is `hardCeiling − floor` rather than `hardCeiling �
 
 ## Deterministic measurement — the primary evidence
 
-Same clean-rebuilt index, same query, both builds. One `codegraph_explore` per repo.
+Same clean-rebuilt index, same query, both builds. One `lattice_sensor_explore` per repo.
 Reproduce with `node scripts/agent-eval/probe-suite-envelope.mjs` (added by this task).
 
 | repo | base source | new source | Δ | base files | new files | ceiling behaviour |
@@ -124,7 +124,7 @@ SOURCE, where the answer group reads 55.5%, and it passes on both arms.
 | tool calls | 4 [3–4] | 4 [3–5] | **3** [2–4] | 5 [4–5] | 4 | 4 [3–5] |
 | Read | **0** | 0 | **0** | 0 | **0** | 0 |
 | Grep/Glob | 0 | 0 | 0 | 0 | 0 | 0 |
-| codegraph calls | 3 [2–3] | 3 [2–3] | **3** [2–3] | 4 [3–4] | 3 | 3 [2–4] |
+| lattice sensor calls | 3 [2–3] | 3 [2–3] | **3** [2–3] | 4 [3–4] | 3 | 3 [2–4] |
 | occupancy share | **36.6%** | 37.6% | **38.2%** | 47.2% | 44.8% | 40.8% |
 | allocation efficiency | **99.2%** | 94.7% | 81.9% | 82.5% | 75.8% | 87.6% |
 

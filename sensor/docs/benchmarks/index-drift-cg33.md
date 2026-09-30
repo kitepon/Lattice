@@ -1,19 +1,19 @@
 # Index drift: incremental sync vs. full rebuild (CG-33)
 
 Measured 2026-08-06. A live, auto-sync-maintained index **does not converge** to
-a clean full rebuild of the identical working tree. On codegraph's own repo,
+a clean full rebuild of the identical working tree. On lattice sensor's own repo,
 **4.3% of distinct edges were wrong**, in both directions, overwhelmingly
 `calls` edges.
 
 This matters because it is silent: nothing warns, nothing surfaces it, and the
 README tells users the index is never stale and there is nothing to re-run.
 Retrieval quality decays invisibly, and the user-visible symptom — an agent
-falling back to Read — reads as "codegraph isn't very good" rather than "this
+falling back to Read — reads as "lattice sensor isn't very good" rather than "this
 index needs rebuilding."
 
 ## Result
 
-Subject: codegraph's own `.codegraph/codegraph.db`, long-lived and
+Subject: lattice sensor's own `.lattice/sensor/sensor.db`, long-lived and
 incrementally synced, against a full rebuild of the same tree with the same
 build. Edges compared as distinct `(source, target, kind)` triples.
 
@@ -79,7 +79,7 @@ identical graph still picked a different candidate.
   and re-inserts each as the reference that created it (the `metadata.refName`
   stamp). The existing orphan sweep then resolves them against the post-sync
   graph — the same input a rebuild resolves from. Kill switch:
-  `CODEGRAPH_NO_REBIND=1`.
+  `LATTICE_SENSOR_NO_REBIND=1`.
 
 The delta is compared **per file**, not as one name set over the whole batch: a
 commit that adds `collect` to a new file while an unrelated changed file already
@@ -125,7 +125,7 @@ named `push`, or a Rust method named `join`. **The full rebuild is the wrong one
 here** — converging would mean teaching sync to manufacture thousands of wrong
 edges. Left as is, deliberately.
 
-### `codegraph status` — decided: no drift metric
+### `lattice sensor status` — decided: no drift metric
 
 The issue asked whether `status` should surface divergence. Decision: **no**.
 
@@ -154,7 +154,7 @@ agent had actually named by symbol, which rendered **251 chars of a 10,970
 reservation**. After a full re-index — no code change — the same query answers
 correctly. That incident is what prompted this measurement; see CG-24.
 
-Severity scales with churn and index age. codegraph's own repo shows 4.3%;
+Severity scales with churn and index age. lattice sensor's own repo shows 4.3%;
 a repo under heavier active development plausibly drifts further.
 
 ## Reproducing
@@ -164,9 +164,9 @@ Snapshot the live index **before** rebuilding — the original artifact for this
 investigation was destroyed by re-indexing over it:
 
 ```bash
-cp .codegraph/codegraph.db /tmp/live.db          # snapshot FIRST
-node dist/bin/codegraph.js index .               # full rebuild
-node scripts/agent-eval/diff-index-drift.mjs /tmp/live.db .codegraph/codegraph.db
+cp .lattice/sensor/sensor.db /tmp/live.db          # snapshot FIRST
+node dist/bin/lattice-sensor.js index .               # full rebuild
+node scripts/agent-eval/diff-index-drift.mjs /tmp/live.db .lattice/sensor/sensor.db
 ```
 
 Exit code is 0 when converged, 1 when drifted. To re-confirm determinism, diff
@@ -174,14 +174,14 @@ two consecutive rebuilds — that must report 0.
 
 To reproduce the *regression* rather than measure a live index, replay real
 commits through `sync`: clone the repo, check out `HEAD~N`, index, then
-`git checkout <sha> && codegraph sync` for each commit in order, snapshot the
+`git checkout <sha> && lattice sensor sync` for each commit in order, snapshot the
 database, and diff it against a rebuild of the final tree. That is what produced
 the table above, and the unit-scale version of it is
 `__tests__/sync-rebuild-convergence.test.ts`.
 
 ## Note on probing an index
 
-The index file is `.codegraph/codegraph.db`. There is no `graph.db`. `sqlite3`
+The index file is `.lattice/sensor/sensor.db`. There is no `graph.db`. `sqlite3`
 against a mistyped path **creates an empty database** rather than failing, and
 every subsequent query then answers from an empty schema — which reads exactly
 like a stale pre-migration index. That produced a wrong root cause during this

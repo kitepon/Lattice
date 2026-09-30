@@ -22,29 +22,29 @@ Nothing is emitted from the product and nothing leaves the machine.
 Pick by the question you are actually asking. All three metrics print in both.
 
 **Isolating a retrieval change — `ab-new-vs-baseline.sh`.** New build (HEAD) vs
-a baseline build (a git ref), **both arms codegraph-on**, same task. This is
-the harness the three metrics were built for: with codegraph on in both arms,
+a baseline build (a git ref), **both arms lattice-sensor-on**, same task. This is
+the harness the three metrics were built for: with lattice sensor on in both arms,
 every number is measuring the change rather than adoption.
 
 ```bash
-RUNS=3 scripts/agent-eval/ab-new-vs-baseline.sh /tmp/codegraph-corpus/express \
+RUNS=3 scripts/agent-eval/ab-new-vs-baseline.sh /tmp/lattice-sensor-corpus/express \
   "Add a charset option to res.send and wire it through" main
 ```
 
 It builds each arm, indexes a throwaway copy of the target, **pre-warms a
-codegraph daemon per run**, runs the task `RUNS` times per arm, prints the three
+lattice sensor daemon per run**, runs the task `RUNS` times per arm, prints the three
 metric blocks under each run, and ends with the side-by-side table below. The
 pre-warm is load-bearing and must not be removed: without it the agent dives
-into Read/grep before codegraph finishes its ~2–3s startup, and the run measures
+into Read/grep before lattice sensor finishes its ~2–3s startup, and the run measures
 attach latency instead of retrieval.
 
-**With vs without codegraph — `run-all.sh`.** Codegraph-on against an empty MCP
+**With vs without lattice sensor — `run-all.sh`.** Lattice sensor-on against an empty MCP
 config. A different question: displacement and adoption, not the effect of a
 change. Multi-turn is where occupancy is actually charged, so separate turns
 with `||`.
 
 ```bash
-scripts/agent-eval/run-all.sh /tmp/codegraph-corpus/gin \
+scripts/agent-eval/run-all.sh /tmp/lattice-sensor-corpus/gin \
   "How does gin route requests through its middleware chain?||\
 Where is the 404 / no-route case handled in that same chain?"
 ```
@@ -85,10 +85,10 @@ each), then one table puts the arms side by side:
   behavior
     duration (s)                                    24 [18–35]              26 [24–30]
     Read                                                     0                       1
-    codegraph calls                                    2 [1–2]                       2
+    lattice sensor calls                                    2 [1–2]                       2
 
   residual context occupancy (CG-7) — tokens still resident at end of run
-    codegraph residual (tok)             11,549 [7,193–12,591]  10,388 [10,373–10,447]
+    lattice sensor residual (tok)             11,549 [7,193–12,591]  10,388 [10,373–10,447]
     file-access residual (tok)                     231 [0–242]     1,661 [1,306–1,663]
     → retrieval residual (tok)           11,780 [7,193–12,833]  12,034 [11,753–12,051]
     → share of final context               23.3% [15.8%–24.9%]     23.8% [23.4%–23.9%]
@@ -105,7 +105,7 @@ each), then one table puts the arms side by side:
     pooled efficiency                                    96.9%                   82.0%
     per-run efficiency                     100.0% [92.5%–100.0%]   81.9% [81.9%–82.0%]
 
-  contamination — the CLI must never be how codegraph is reached
+  contamination — the CLI must never be how lattice sensor is reached
     CLI calls that RETURNED output                           0                       0
     CLI attempts blocked                                     0                       0
 ```
@@ -154,14 +154,14 @@ should read the table itself:
   citation, and an agent can use a file without ever naming it — to rule it out,
   or to build a model it writes up from elsewhere. The error is one-sided. Only
   compare builds on the **same question**, and never quote the number as
-  "codegraph wastes N% of what it returns." The corpus median sits in the
+  "lattice sensor wastes N% of what it returns." The corpus median sits in the
   eighties because these are flow questions whose answers walk the whole chain;
   the discrimination lives at p25 and below.
 - **Occupancy shares do not transfer between hosts.** These are Claude Code on a
   nominal 200k window (`CG_WINDOW_TOKENS` overrides it). Window size, system
   prompt, and compaction policy all differ elsewhere. The *ratio between the
   arms* is the part that travels; the percentages are not a claim about Cursor.
-- **Compare the right pair.** In a with/without A/B that is codegraph's residual
+- **Compare the right pair.** In a with/without A/B that is lattice sensor's residual
   against the without-arm's **file-access** residual (Read + Grep/Glob + Bash) —
   the two ways an agent gets the same bytes into its head. Counting only the
   Read tool scores as "read nothing" a run that reached for `cat` through Bash.
@@ -175,7 +175,7 @@ should read the table itself:
   own window and only its summary returns. Sufficiency *does* follow the
   subagent thread (a delegation is judged by what the subagent did first), so
   the two metrics treat delegation differently on purpose.
-- **Deferred tool schemas land in occupancy's `base`.** `codegraph_explore` is
+- **Deferred tool schemas land in occupancy's `base`.** `lattice_sensor_explore` is
   deferred: `ToolSearch` pulls the schema in later, and that injection is not a
   tool result. The fixed-overhead line prices the part present from the start.
 
@@ -183,21 +183,21 @@ should read the table itself:
 
 ## Contamination — read this row first
 
-Both harnesses run every arm with the codegraph CLI blocked: a PATH with the
+Both harnesses run every arm with the lattice sensor CLI blocked: a PATH with the
 binary symlinked out, plus a `PreToolUse` hook that blocks absolute-path
 invocations (`no-cli-shim.sh`, shared by both). Both layers exist because both
-were needed — an agent denied `codegraph` on PATH ran `find / -iname
-"*codegraph*"` and invoked it by absolute path.
+were needed — an agent denied `lattice-sensor` on PATH ran `find / -iname
+"*lattice sensor*"` and invoked it by absolute path.
 
 The contamination row is the detection half, and it is not redundant with the
 prevention half: prevention fails silently the next time the binary lands
 somewhere new.
 
 - In a **with/without** A/B, a CLI call means the without-arm was not without
-  codegraph. 14 of 15 without-arm runs in one 7-repo pass did this before the
+  lattice sensor. 14 of 15 without-arm runs in one 7-repo pass did this before the
   shim existed; **any older result from this harness should be assumed
   contaminated**.
-- In a **new/baseline** A/B, both arms are codegraph-on, so a CLI call is not a
+- In a **new/baseline** A/B, both arms are lattice-sensor-on, so a CLI call is not a
   leak but an **attribution** failure that breaks all three metrics at once:
   output arriving through Bash is charged to Bash in the occupancy table, and an
   explore issued through the CLI is not a tool call at all, so it never reaches

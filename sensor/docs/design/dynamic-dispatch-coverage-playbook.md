@@ -289,8 +289,8 @@ Coverage decides whether a flow *exists* in the graph. A second class of change 
 whether the answer explore returns is *sufficient* — how the byte envelope is divided across
 the files it found. Same pass bar (Read → 0, no wall-clock regression), same `--model sonnet
 --effort high` rule, but the harness is `ab-new-vs-baseline.sh` (new build vs baseline build,
-**both codegraph-on**) rather than `run-all.sh`'s with-vs-without, because the question is
-whether a change to codegraph helped, not whether codegraph helps.
+**both lattice-sensor-on**) rather than `run-all.sh`'s with-vs-without, because the question is
+whether a change to lattice sensor helped, not whether lattice sensor helps.
 
 | Change | Repos | Result |
 |---|---|---|
@@ -300,11 +300,11 @@ whether a change to codegraph helped, not whether codegraph helps.
 
 Two harness lessons from that run, both now baked into `ab-new-vs-baseline.sh`:
 
-- **Name codegraph in the prompt for this class of A/B.** Whether the agent picks the tool at
+- **Name lattice sensor in the prompt for this class of A/B.** Whether the agent picks the tool at
   all is an adoption axis a retrieval change does not touch; a run that never calls explore
-  measures nothing about how explore divides its bytes (one pre-run: 0 codegraph calls, 3
+  measures nothing about how explore divides its bytes (one pre-run: 0 lattice sensor calls, 3
   Reads). It is not a forced-Read-0 — the agent stays free to fall back, which is the bar.
-- **`CODEGRAPH_NO_PROMPT_HOOK=1` on both arms.** The machine's ambient front-load hook resolves
+- **`LATTICE_SENSOR_NO_PROMPT_HOOK=1` on both arms.** The machine's ambient front-load hook resolves
   to whatever is in `dist/`, which the script itself rewrites between arms.
 
 ---

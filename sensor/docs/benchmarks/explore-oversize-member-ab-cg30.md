@@ -2,13 +2,13 @@
 
 **Date:** 2026-08-06 · **New:** `bugfix/CG-30` · **Baseline:** `main` @ `d6d1728` ·
 **Harness:** `scripts/agent-eval/ab-new-vs-baseline.sh`, `--model sonnet --effort high`,
-**both arms codegraph-on**, CLI blocked (0 contamination in every run),
-`CODEGRAPH_NO_PROMPT_HOOK=1`.
+**both arms lattice-sensor-on**, CLI blocked (0 contamination in every run),
+`LATTICE_SENSOR_NO_PROMPT_HOOK=1`.
 
 CG-30 bounds how far a cluster's top member may overshoot what its file may spend: past 1.5x it
 is windowed on whole lines instead of emitted whole. The risk the A/B exists to price is the one
 CLAUDE.md names — a section that is no longer sufficient sends the agent to Read, and one or two
-of those teach it to stop calling codegraph at all.
+of those teach it to stop calling lattice sensor at all.
 
 **Verdict: no regression, and the deterministic win is unambiguous.** The behavioural bar holds
 (Read/Grep ~0, no abandonment, allocation efficiency 100% on the repo where the bound engages),
@@ -29,7 +29,7 @@ allocation-miss call the new arm produced is matched by two recall-miss calls in
 Same index, same query, both builds. This is the primary evidence; the agent runs below only
 price the risk.
 
-**django** — `codegraph explore "How does a QuerySet turn into SQL and fetch rows from the
+**django** — `lattice sensor explore "How does a QuerySet turn into SQL and fetch rows from the
 database?"`
 
 | | baseline | new |
@@ -68,7 +68,7 @@ envelope, and a member bigger than the whole response ceiling makes the file van
 | runs | 5 | 5 | 3 | 3 | 2 | 2 |
 | duration (s) | 39 [36–71] | 35 [35–60] | 39 [37–51] | 34 [28–46] | 52 [43–60] | 41 [40–42] |
 | tool calls | 3 [3–10] | 4 [3–23] | 4 [3–4] | 3 | 4 [3–5] | 4 [3–4] |
-| codegraph calls | 2 [2–3] | 2 [0–3] | 2 [2–3] | 2 | 3 [2–4] | 3 [2–3] |
+| lattice sensor calls | 2 [2–3] | 2 [0–3] | 2 [2–3] | 2 | 3 [2–4] | 3 [2–3] |
 | Read | 0 [0–5] | 0 [0–13] | 0 [0–1] | 0 | 0 | 0 |
 | Grep/Glob | 0 | 0 | 0 | 0 | 0 | 0 |
 | occupancy share | 33.1% [30.7%–49.5%] | 34.4% [29.3%–47.3%] | 28.9% [26.4%–37.3%] | 30.1% [28.6%–31.9%] | 43.0% | 39.3% |
@@ -88,7 +88,7 @@ identical bytes, so it is variance by construction. excalidraw: 0 misses in eith
 **Where the new arm looks worse, and why it is not read as a regression:**
 
 - *django duration, ~10% slower median.* Ranges overlap (36–71 vs 35–60) at n=5, and one
-  baseline run lost its codegraph attach entirely (0 codegraph calls, 13 Reads, 23 tool calls),
+  baseline run lost its lattice sensor attach entirely (0 lattice sensor calls, 13 Reads, 23 tool calls),
   which distorts that arm's spread in both directions.
 - *gin allocation efficiency 88.5% vs 98.3%.* The builds are byte-identical on gin. This is the
   metric's documented relativity — attribution is by citation and the agent's follow-up queries
@@ -96,7 +96,7 @@ identical bytes, so it is variance by construction. excalidraw: 0 misses in eith
 - *excalidraw occupancy/duration.* Call-count noise: one of the two new-arm runs made a 4th
   explore call where the baseline made 2–3, and duration, envelope and occupancy all follow it.
   Per-call envelope is flat (20,015 vs 19,446 chars/call), Read/Grep stay 0, tool calls match.
-  CLAUDE.md's own worked example records 3–10 codegraph calls on this prompt.
+  CLAUDE.md's own worked example records 3–10 lattice sensor calls on this prompt.
 
 ## Caveat carried forward
 

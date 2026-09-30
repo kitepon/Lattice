@@ -229,7 +229,12 @@ describe('a named file on a saturated response takes nothing a lower file is owe
     const lower = r.file(LOWER);
     expect(lower?.skipped ?? null).toBeNull();
     // Funded in full: the named file above took nothing the lower file is owed.
-    expect(lower?.funded ?? 0).toBeGreaterThanOrEqual(lower?.allowance ?? Infinity);
+    // Lattice: the render loop's running text names the explore tool once, and
+    // `lattice_sensor_explore` is 5 chars longer than upstream's name, so funding
+    // runs up to that much under upstream's calibration. The delivered source is
+    // byte-identical (measured 2026-09-30); the named file takes none of it.
+    const TOOL_NAME_DELTA = 5;
+    expect(lower?.funded ?? 0).toBeGreaterThanOrEqual((lower?.allowance ?? Infinity) - TOOL_NAME_DELTA);
     // And delivered in full, to the line: a render stops at the last WHOLE line
     // that fits (#2062), so it may come in under its reservation by less than
     // one line, never by more. More is the final ceiling fit taking source to

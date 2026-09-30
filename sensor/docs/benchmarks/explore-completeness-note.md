@@ -2,12 +2,12 @@
 
 **Date:** 2026-09-28 · **New:** `claude/nostalgic-mccarthy-31c89d` (measured at `024d88b9`, then
 rebased onto #2071) · **Baseline:** `main` @ `724b5dee` (#2068) · **Harness:** `scripts/agent-eval/ab-new-vs-baseline.sh`, `--model
-sonnet --effort high`, both arms codegraph-on, CLI blocked, `CODEGRAPH_NO_PROMPT_HOOK=1`, every
+sonnet --effort high`, both arms lattice-sensor-on, CLI blocked, `LATTICE_SENSOR_NO_PROMPT_HOOK=1`, every
 index rebuilt per arm.
 
 ## The defect
 
-On the tiers with `includeCompletenessSignal` (>= 500 indexed files), every `codegraph_explore`
+On the tiers with `includeCompletenessSignal` (>= 500 indexed files), every `lattice_sensor_explore`
 response ended with the same line:
 
 > **Complete source for N files is included above — do NOT re-read them.** … Reserve Read for a
@@ -32,7 +32,7 @@ flag. The last sentence also offered Read, which explore output must never do.
   > **Verbatim source for 2 files is included above — treat it as already Read.** Trimmed for
   > size: `rpcProtocol.ts`; gap markers and file headers name what was elided (e.g.
   > `RPCProtocol._receiveOneMessage`, `MessageIO.serializeReplyOK`, …). For those, or anything
-  > under "Not shown above", make ANOTHER codegraph_explore with those exact names instead of
+  > under "Not shown above", make ANOTHER lattice_sensor_explore with those exact names instead of
   > reading the files — it returns their source with line numbers.
 
   Elided methods are offered as `Owner.member` (django has 110 `as_sql`s). Containers are never
@@ -86,7 +86,7 @@ Four questions, three runs per arm, against `724b5dee`.
 The change was exercised. Of the 29 explore responses the new arm's agents received, 20 carried
 the trimmed note (4 naming elided methods). The baseline agents received "Complete source … Reserve
 Read" on 26 of 29, and on this build all but one of those are false. One pre-explore Bash call in
-the new arm happens before any codegraph output and is noise. Load average was 30–95 from other
+the new arm happens before any lattice sensor output and is noise. Load average was 30–95 from other
 work on the machine, so durations are indicative only.
 
 ### Earlier round, against `e63fe2ec`

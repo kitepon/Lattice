@@ -425,7 +425,7 @@ off this bug; the real figure is ~90%). Sum **per-turn assistant `usage`** for t
 > results: the excalidraw cut above, a sonnet 3-turn campaign that read 23% when the truth was
 > 56%, and an Opus re-measure that read 19% when the truth was 62% and invented a token
 > *regression* on two repos. The error is one-sided — it under-counts whichever arm takes more
-> turns, always the without-arm — so it always understates codegraph. If you are reading a
+> turns, always the without-arm — so it always understates lattice sensor. If you are reading a
 > token figure produced before this date, re-derive it.
 
 Reproduce:

@@ -1,6 +1,6 @@
 # Cross-call explore session state
 
-`codegraph_explore` answers every call as if it were the first one. It has no idea what it
+`lattice_sensor_explore` answers every call as if it were the first one. It has no idea what it
 already sent this session, so a 4th call happily re-serves the spine the 1st call already
 delivered (the #1500 report: 4 calls on a 2-call tier budget), and the tier's call budget
 can only be *asked* for in prose the agent ignores.
@@ -82,7 +82,7 @@ sections are never recorded.
 
 ## Inspecting it
 
-The CG-4 diagnostic (`CODEGRAPH_EXPLORE_DEBUG`, see
+The CG-4 diagnostic (`LATTICE_SENSOR_EXPLORE_DEBUG`, see
 [explore-budget-allocation.md](./explore-budget-allocation.md)) carries a `session` block
 on every report:
 
@@ -102,7 +102,7 @@ distinguishable.
 
 A call that would re-send source an earlier call already delivered sends a **pointer**
 instead. Never a bare omission: an insufficient-feeling response is precisely what sends an
-agent to Read, and one or two of those early in a session teach it to abandon codegraph
+agent to Read, and one or two of those early in a session teach it to abandon lattice sensor
 entirely. So the replacement carries the file, the symbols, the line spans, and the two
 facts that make the copy usable — that it came from THIS conversation, and that the file has
 not changed since:
@@ -128,7 +128,7 @@ source" guarantee (the same shape #1474 uses for drift), and once in
 | Content | A span is withheld only if the file still hashes to the bytes that span was sliced from |
 | Size | Only a covered run of ≥ `MIN_COVERED_LINES` (8) is replaced |
 | Remainder | New source under `MIN_DELTA_CHARS` (160) folds into the pointer instead of getting its own fence |
-| Kill switch | `CODEGRAPH_EXPLORE_DEDUP=0` renders as if the session had no history |
+| Kill switch | `LATTICE_SENSOR_EXPLORE_DEDUP=0` renders as if the session had no history |
 
 The **content** gate is a fingerprint (`length:sha1-prefix`) recorded per file per call, NOT
 the index's drift flag. They answer different questions: two calls inside one drift window
@@ -175,15 +175,15 @@ wanted to emit," never as a saving; over-reading it inflates the win ~7×.
 ## The all-pointer guard
 
 If dedup suppresses everything and nothing new takes its place, the response would be
-pointers only — the shape that reads as "codegraph found nothing". The render loop keeps the
+pointers only — the shape that reads as "lattice sensor found nothing". The render loop keeps the
 first fully-suppressed file's real section in hand and splices it back when the loop ends
 with zero new source. It costs a re-serve of one file on the one call shape where dedup
 would otherwise have saved everything. That is the safe direction, and it is why "no
 duplicate ranges across calls" holds for every call that had anything new to say, rather
 than universally.
 
-CG-20 ran that gate on a real agent — client-go and excalidraw, both arms codegraph-on,
-n=3 and n=6 per arm. **Read = 0 in all 24 runs**, no `isError`, codegraph last in every run,
+CG-20 ran that gate on a real agent — client-go and excalidraw, both arms lattice-sensor-on,
+n=3 and n=6 per arm. **Read = 0 in all 24 runs**, no `isError`, lattice sensor last in every run,
 and the "Read a file we returned" / "Read a file we did not return" buckets empty on both
 arms, with back-references demonstrably reaching the agent in 8 of the 9 multi-call runs. The
 guard never fired on a real query — the thinnest of those 21 calls still carried 12,011 chars

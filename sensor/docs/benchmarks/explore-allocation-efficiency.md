@@ -5,7 +5,7 @@
 > point: which metric answers which question, which harness to run, and how to
 > read the arm-comparison table.
 
-**What it measures:** of the bytes a `codegraph_explore` response spent, what
+**What it measures:** of the bytes a `lattice_sensor_explore` response spent, what
 share went to files the agent's answer actually drew on.
 
 ```
@@ -124,7 +124,7 @@ chain, naming most files on it. The metric is byte-weighted, so it is dominated
 by whether the *largest* allocations landed on cited files — which is exactly
 the #1500 question, and also why the typical run scores in the eighties. The
 discrimination lives in the p25 and below, not around the median. **Never quote
-the median as "codegraph wastes 10% of what it returns."**
+the median as "lattice sensor wastes 10% of what it returns."**
 
 **The tail is where the signal is.** The lowest run in the corpus is 20.1%:
 `cg8-val` — excalidraw's `canvasNonce` question, the documented data-flow
@@ -136,7 +136,7 @@ reproduces it without anyone marking an answer set.
 
 ### New-build vs baseline-build — the intended use
 
-Medians over the existing CG-15/CG-21/CG-22 A/B arms, both arms codegraph-on:
+Medians over the existing CG-15/CG-21/CG-22 A/B arms, both arms lattice-sensor-on:
 
 | Pass / repo | baseline | new |
 |---|---|---|

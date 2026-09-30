@@ -2916,8 +2916,12 @@ export class QueryBuilder {
    */
   getUnresolvedReferencesFrom(fromNodeId: string): UnresolvedReference[] {
     if (!this.stmts.getUnresolvedFromNode) {
+      // Insertion (extraction) order, stated: without ORDER BY the row order
+      // follows whichever index the planner picks — (from_node_id,
+      // reference_name) returns name order — and readers that stable-sort by
+      // position then break ties differently from build to build.
       this.stmts.getUnresolvedFromNode = this.db.prepare(
-        'SELECT * FROM unresolved_refs WHERE from_node_id = ?'
+        'SELECT * FROM unresolved_refs WHERE from_node_id = ? ORDER BY id'
       );
     }
     const rows = this.stmts.getUnresolvedFromNode.all(fromNodeId) as UnresolvedRefRow[];

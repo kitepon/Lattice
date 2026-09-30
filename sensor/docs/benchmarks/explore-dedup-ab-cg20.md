@@ -3,10 +3,10 @@
 **Date:** 2026-08-05 · **New:** `feature/CG-2` @ `7a7ea30` (CG-17 session state + CG-18 dedup)
 · **Baseline:** `c65d56c` **by SHA** (main's tip when the epic branched) · **Harness:**
 `scripts/agent-eval/ab-new-vs-baseline.sh`, `--model sonnet --effort high`, **both arms
-codegraph-on**, `CODEGRAPH_NO_PROMPT_HOOK=1` on both.
+lattice-sensor-on**, `LATTICE_SENSOR_NO_PROMPT_HOOK=1` on both.
 
 This is the epic's hard gate. Returning *less* on a repeat call is the exact shape CLAUDE.md
-says drives Read fallback and then teaches the agent to abandon codegraph for the rest of the
+says drives Read fallback and then teaches the agent to abandon lattice sensor for the rest of the
 session, so the gate is about risk first and win second.
 
 **Verdict: bars 1–3 pass cleanly and bar 4 is not met.** Read is **0 in all 24 runs of both
@@ -32,7 +32,7 @@ produces a second and third explore whose symbol bags overlap the first:
 | `kubernetes/client-go` | Go | 2,454 | medium (2 calls / 28K) | "how does a shared informer keep its cache in sync and deliver events?" |
 | `excalidraw/excalidraw` | TS/React | 672 | medium (2 calls / 28K) | "how does updating an element re-render the canvas on screen?" |
 
-Each prompt is wrapped `Use codegraph to answer: <question>` — identical on every arm, the CG-22
+Each prompt is wrapped `Use lattice sensor to answer: <question>` — identical on every arm, the CG-22
 wrapper. That is **not** a forced-Read-0: fallback stays free, which is exactly what bar 1
 measures.
 
@@ -48,7 +48,7 @@ Three, because no single one answers the gate:
   `parse-run.mjs` (that branch is where all three feedback metrics live; this branch's copy
   predates them). Bars 2–4.
 - **A duplicate-residual measure**, written for this gate. CG-7's occupancy counts the chars of
-  codegraph results resident in the window but **cannot tell a byte the agent already holds from
+  lattice sensor results resident in the window but **cannot tell a byte the agent already holds from
   one it has never seen** — which is the only distinction dedup makes. This one reads the
   *rendered markdown* of every explore response in a run (so it measures both arms the same way;
   the CG-4 diagnostic sidecar exists only on the new build), reconstructs the `(file, source
@@ -112,7 +112,7 @@ slice, so this needed checking):
 
 ## Agent A/B — the four bars
 
-`explore` = `codegraph_explore` calls · `cgResidual` = codegraph chars still resident at end of
+`explore` = `lattice_sensor_explore` calls · `cgResidual` = lattice sensor chars still resident at end of
 run, CG-7 · `dup%` = share of served source the agent had already been given.
 
 | repo | arm | n | explore | **Read** | Grep | cgResidual (med) | per call | dur (med) | **dup%** |
@@ -134,8 +134,8 @@ The failure mode is silent, so it was measured three ways, all clean across 24 r
 
 - **Zero `isError` responses** in either arm. (One or two early in a session is what teaches
   abandonment; there were none.)
-- **codegraph is the last tool called in every single run** — 0 Read/Grep/Glob/Bash calls after
-  the final codegraph call, in both arms.
+- **lattice sensor is the last tool called in every single run** — 0 Read/Grep/Glob/Bash calls after
+  the final lattice sensor call, in both arms.
 - Call counts do not collapse in the new arm: 2–3 on client-go, 1–3 on excalidraw, the same
   spread the baseline shows.
 
@@ -211,7 +211,7 @@ Kept in the record rather than smoothed:
 | bar | result |
 |---|---|
 | 1. Read must not increase | **PASS** — 0 Reads in 24/24 runs, both arms |
-| 2. No abandonment | **PASS** — 0 `isError`, codegraph last in every run, no call collapse |
+| 2. No abandonment | **PASS** — 0 `isError`, lattice sensor last in every run, no call collapse |
 | 3. Buckets must not shift to "Read a file we returned" / "another explore" | **PASS** — both failure buckets empty on both arms |
 | 4. Residual occupancy actually drops | **NOT MET** — flat per call, and unreachable given CG-18's reallocation rule |
 
@@ -229,7 +229,7 @@ best case, 5.4% fewer response bytes carrying 11.1% more unique source.
 This is a judgement call against the letter of bar 4, and it is cheap to reverse in either
 direction:
 
-- runtime: `CODEGRAPH_EXPLORE_DEDUP=0` disables dedup without a rebuild;
+- runtime: `LATTICE_SENSOR_EXPLORE_DEDUP=0` disables dedup without a rebuild;
 - source: `git revert 7a7ea30 ab38d1f 4e94860 fc31b1e` removes CG-17 + CG-18 entirely;
 - the third option, if occupancy really is the goal: **bank the reclaimed bytes instead of
   re-spending them**, which reverses CG-18's freed-budget rule and buys at most the duplicate

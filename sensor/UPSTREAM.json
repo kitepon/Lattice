@@ -19,7 +19,8 @@
     "CLAUDE.md": "docs/UPSTREAM-CLAUDE.md",
     "src/bin/codegraph.ts": "src/bin/lattice-sensor.ts",
     "docs/benchmarks/codegraph-ab-matrix.md": "docs/benchmarks/lattice-sensor-ab-matrix.md",
-    "docs/design/agent-codegraph-adoption.md": "docs/design/agent-lattice-sensor-adoption.md"
+    "docs/design/agent-codegraph-adoption.md": "docs/design/agent-lattice-sensor-adoption.md",
+    "docs/design/codegraph-ui-design-spec.md": "docs/design/lattice-sensor-ui-design-spec.md"
   },
   "skip": [
     "site/",
@@ -141,6 +142,6 @@
     "The rename to LATTICE_SENSOR_* / lattice-sensor is carried as an ordinary local change: git resolves it as ours, so no rename rules are needed. Do not add textual substitution to the sync path — the rename is selective (some CODEGRAPH_* names are deliberately kept) and cannot be reproduced by rules.",
     "lattice_only paths are never deleted by a sync even when absent upstream.",
     "conflict_policy exists so a resolution is decided once, not re-litigated every sync. When a conflict is resolved by hand, add the path and the reason here — an entry that only says 'ours' without a why is worse than none.",
-    "After a sync, upstream's NEW lines carry upstream names (CodeGraph/codegraph/CODEGRAPH_*). The 2026-09-30 sync applied a post-merge rename over sensor code so src/, __tests__/, scripts/ and the kernel keep zero codegraph mentions, then fixed what build and tests exposed. Resolve conflicts on names only after that rename, or the same rename difference re-conflicts."
+    "After a sync, upstream's NEW lines carry upstream names (CodeGraph/codegraph/CODEGRAPH_*). Run scripts/upstream-rename.mjs --write over sensor code (and --prose over sensor/docs) BEFORE resolving conflicts, so both sides of a hunk carry the same names, then fix what build and tests expose. src/, __tests__/, scripts/, the kernel and docs/ keep zero codegraph mentions (test/lattice-sensor-runtime.test.mjs)."
   ]
 }

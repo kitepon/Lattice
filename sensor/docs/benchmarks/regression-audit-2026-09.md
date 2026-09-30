@@ -1,6 +1,6 @@
 # Release-to-main correctness repairs (September 2026)
 
-Compared the installed `@colbymchenry/codegraph@1.6.0` npm bundle (release
+Compared the installed `@kitepon/Lattice@1.6.0` npm bundle (release
 `dfccdf62547fcd76d343344d823a0e1998d3a89f`) with main
 `3ed73bc127323e63153bf6ec8354afa82ce36aaf`. Both ran with the bundle's Node
 24.16.0 on Linux x64, identical fixture revisions/settings and separate
@@ -226,25 +226,25 @@ use a new output directory and an unindexed fixture for each run. For WASM:
 
 ```sh
 mkdir -p "$BENCH_OUT"
-test ! -e "$BENCH_FIXTURE/.codegraph"
-CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_UPDATE_CHECK=1 \
-CODEGRAPH_KERNEL=0 CODEGRAPH_WASM_RELAUNCHED=1 \
-CODEGRAPH_PARSE_WORKERS=1 CODEGRAPH_RESOLVE_WORKERS=1 \
-CODEGRAPH_NO_PARALLEL_RESOLVE=1 RAYON_NUM_THREADS=1 \
+test ! -e "$BENCH_FIXTURE/.lattice/sensor"
+LATTICE_SENSOR_TELEMETRY=0 DO_NOT_TRACK=1 LATTICE_SENSOR_NO_UPDATE_CHECK=1 \
+LATTICE_SENSOR_KERNEL=0 LATTICE_SENSOR_WASM_RELAUNCHED=1 \
+LATTICE_SENSOR_PARSE_WORKERS=1 LATTICE_SENSOR_RESOLVE_WORKERS=1 \
+LATTICE_SENSOR_NO_PARALLEL_RESOLVE=1 RAYON_NUM_THREADS=1 \
 taskset -c 0 "$BENCH_NODE" --liftoff-only --max-old-space-size=1024 \
   scripts/benchmarks/measure-index.cjs \
   "$BENCH_ENGINE" "$BENCH_FIXTURE" "$BENCH_OUT" wasm
-mv "$BENCH_FIXTURE/.codegraph" "$BENCH_OUT/index"
+mv "$BENCH_FIXTURE/.lattice/sensor" "$BENCH_OUT/index"
 ```
 
-For native, change `CODEGRAPH_KERNEL=1` and the final argument to `native`.
+For native, change `LATTICE_SENSOR_KERNEL=1` and the final argument to `native`.
 Use an available CPU from the host's affinity mask. Repeat sequentially in
 baseline/fixed, fixed/baseline, baseline/fixed order. The outer runner enforces
 the stated time/RSS ceilings, samples RSS, and preserves every database.
 
 The full commands, outer runners, source/build fingerprints, every attempted
 run, RSS samples and final JSON summaries are retained under
-`/data/workspace/codegraph-regression/review-followup/`. `artifacts/perf-summary.json`
+`/data/workspace/lattice-sensor-regression/review-followup/`. `artifacts/perf-summary.json`
 contains the complete-pair statistics; `artifacts/perf-manifest.json` records
 all attempts, including the rejected preflights and interrupted last run.
 The original audit artifacts and indexes remain unchanged.
@@ -310,7 +310,7 @@ remain.
 
 Commands, the preserved pre-change engine, scripts, all attempts, databases,
 checks and full SQL comparisons are in
-`/data/workspace/codegraph-regression/review-followup/cache-optimization/`;
+`/data/workspace/lattice-sensor-regression/review-followup/cache-optimization/`;
 `REPORT.md` and `artifacts/summary.json` consolidate the evidence.
 
 
@@ -318,7 +318,7 @@ checks and full SQL comparisons are in
 
 **All four fresh native indexes and their full database checks completed.** The
 old three stops were SIGTERM from the audit runner's 180-second wall timer, not
-CodeGraph rejecting a large project or running out of memory. Those interrupted
+LatticeSensor rejecting a large project or running out of memory. Those interrupted
 artifacts are unchanged. They lack CPU/progress traces, so their precise wait
 sites cannot be reconstructed retrospectively.
 
@@ -419,8 +419,8 @@ settings unchanged. For example, from a built checkout (all engine/fixture/outpu
 paths absolute; the output directory must not exist):
 
 ```bash
-CODEGRAPH_KERNEL=1 CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1 CODEGRAPH_NO_UPDATE_CHECK=1 \
-CODEGRAPH_WASM_RELAUNCHED=1 python3 scripts/benchmarks/observe-index.py /absolute/run-before -- \
+LATTICE_SENSOR_KERNEL=1 LATTICE_SENSOR_TELEMETRY=0 DO_NOT_TRACK=1 LATTICE_SENSOR_NO_UPDATE_CHECK=1 \
+LATTICE_SENSOR_WASM_RELAUNCHED=1 python3 scripts/benchmarks/observe-index.py /absolute/run-before -- \
   /absolute/node --liftoff-only --max-old-space-size=1024 \
   scripts/benchmarks/measure-index.cjs /absolute/built-before /absolute/pinned-fixture \
   /absolute/run-before native
@@ -428,7 +428,7 @@ CODEGRAPH_WASM_RELAUNCHED=1 python3 scripts/benchmarks/observe-index.py /absolut
 
 Watch `progress.ndjson` and `resources.ndjson`; inspect CPU deltas, thread wait
 states and phase progress before stopping an apparently slow child. Archive that
-run's owned `.codegraph` directory before the next fresh run. Use the same source,
+run's owned `.lattice/sensor` directory before the next fresh run. Use the same source,
 flags and observer on both sides; run sequentially. Do not treat an external
 execution deadline as a product failure or compare incomplete databases.
 
@@ -444,5 +444,5 @@ no full-suite rerun, Mac validation, or new npm release is claimed.
 Full commands, four complete databases, raw observations, diagnostic startup
 failure (a worker inherited the preload; fixed before the four measured runs),
 reports, graph comparisons and harness checks are retained in
-`/data/workspace/codegraph-regression/review-followup/timeout-diagnosis/`.
+`/data/workspace/lattice-sensor-regression/review-followup/timeout-diagnosis/`.
 `artifacts/summary.json` and `artifacts/provenance.json` consolidate the evidence.

@@ -69,8 +69,19 @@ describe('CG-30 — an oversize cluster member is bounded, not unbounded', () =>
     fs.cpSync(FIXTURE_SRC, testDir, { recursive: true });
     fs.rmSync(path.join(testDir, '.lattice/sensor'), { recursive: true, force: true });
 
-    cg = LatticeSensor.initSync(testDir);
-    await cg.indexAll();
+    // Lattice: index the fixture without value-reference edges. They are a
+    // Lattice extraction addition; the extra graph links change which files the
+    // query admits (the starved file then drops for `max-files`, not budget), and
+    // this fixture measures upstream's allocator bound on upstream's graph shape.
+    const valueRefs = process.env.LATTICE_SENSOR_VALUE_REFS;
+    process.env.LATTICE_SENSOR_VALUE_REFS = '0';
+    try {
+      cg = LatticeSensor.initSync(testDir);
+      await cg.indexAll();
+    } finally {
+      if (valueRefs === undefined) delete process.env.LATTICE_SENSOR_VALUE_REFS;
+      else process.env.LATTICE_SENSOR_VALUE_REFS = valueRefs;
+    }
 
     // The per-file budget is only observable through the diagnostic sidecar, and
     // the whole gate is "emitted vs what the file was allowed to spend".

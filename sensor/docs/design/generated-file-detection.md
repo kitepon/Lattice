@@ -46,7 +46,7 @@ read file headers per request.
 - `files.generated INTEGER NOT NULL DEFAULT 0` (schema v9) + a **partial** index
   `idx_files_generated ON files(path) WHERE generated = 1`, so lookups cost the generated
   minority, not the repo.
-- `QueryBuilder.generatedPredicateFor(paths)` / `CodeGraph.generatedFilePredicate(paths)` —
+- `QueryBuilder.generatedPredicateFor(paths)` / `LatticeSensor.generatedFilePredicate(paths)` —
   one bounded probe up front, `O(1)` per comparison after, unioned with the path check.
 
 ### Why a bounded lookup and not a cached set
@@ -98,7 +98,7 @@ sliced view, not a copy, so the fast path allocates nothing.
 - **Microbenchmark** (`detectGeneratedFile` over a whole corpus, 5 passes):
   4.6 µs/file on client-go (2,453 files, 14.2 MB, 82% generated — the worst case, where the
   gate passes and the full line scan runs), 7.3 µs/file on this repo's `src`.
-- **End-to-end** `codegraph init` on client-go, n=3 alternating arms
+- **End-to-end** `lattice sensor init` on client-go, n=3 alternating arms
   (current build vs. the same build with the content scan stubbed out):
 
   | arm | runs (s) | median |

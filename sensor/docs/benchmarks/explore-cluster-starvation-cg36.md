@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-06 · **Baseline:** `feature/CG-24` @ `76ab1fe` (the CG-24 epic tip) ·
 **Harness:** `scripts/agent-eval/probe-file-spend.mjs` and `probe-suite-envelope.mjs` over the
-deterministic 6-repo corpus at `/tmp/codegraph-corpus`, clean full-rebuilt indexes (CG-33), plus
+deterministic 6-repo corpus at `/tmp/lattice-sensor-corpus`, clean full-rebuilt indexes (CG-33), plus
 two hermetic fixtures through `probe-allocation.mjs`. No agent A/B: the claim is which bytes go
 to which file, and the agent runs are far too noisy to see a 2K shift.
 

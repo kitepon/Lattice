@@ -77,7 +77,7 @@ source.
 > 3. **Window, never signature, for tiers 0–1.** A body too big for what is left
 >    is cut to its head plus the lines where it calls the question's other
 >    symbols, and each hole names the explore query that returns it
->    (`codegraph_explore \`compiler.py:871-1001\``).
+>    (`lattice_sensor_explore \`compiler.py:871-1001\``).
 > 4. **Line anchors** (`query-paths.ts`): `file:line`, `file:a-b`, `#La-Lb`, and
 >    prose `lines a-b` / `L a-L b` next to a path. A range renders as exactly that
 >    span (cluster path, ranked first).

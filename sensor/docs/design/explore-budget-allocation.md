@@ -1,6 +1,6 @@
 # Explore budget allocation — the instrument and the baseline
 
-`codegraph_explore` has a fixed byte envelope (`getExploreOutputBudget().maxOutputChars`,
+`lattice_sensor_explore` has a fixed byte envelope (`getExploreOutputBudget().maxOutputChars`,
 hard-capped at 25K so the host never externalizes the result). **How that envelope gets
 divided among files** is decided by a long chain of gates, tiers and caps spread across
 `handleExplore` — and until CG-4 that chain was unobservable. You could read an explore
@@ -10,8 +10,8 @@ This document covers the diagnostic that makes it measurable, and the baseline i
 
 ## The diagnostic
 
-Set `CODEGRAPH_EXPLORE_DEBUG` and every `codegraph_explore` call (MCP tool or
-`codegraph explore` CLI) emits one report:
+Set `LATTICE_SENSOR_EXPLORE_DEBUG` and every `lattice_sensor_explore` call (MCP tool or
+`lattice sensor explore` CLI) emits one report:
 
 | value | sink |
 |---|---|
@@ -46,7 +46,7 @@ file goes unnoticed.
 ## Baseline (2026-08-03, this repo at `main`)
 
 ```
-codegraph explore "how does explore allocate its output budget across files" --path .
+lattice sensor explore "how does explore allocate its output budget across files" --path .
 ```
 
 469 files indexed → small tier (`maxOutputChars` 18,000, `maxCharsPerFile` 3,800,
@@ -163,7 +163,7 @@ files that survive the filter's `≥2 non-test candidates` escape hatch are down
 
 ### Measured effect
 
-Before/after on the same indexes, deterministic (`CODEGRAPH_EXPLORE_DEBUG` diagnostic, both
+Before/after on the same indexes, deterministic (`LATTICE_SENSOR_EXPLORE_DEBUG` diagnostic, both
 arms same build system, baseline = `bd86ad2`):
 
 | repo · query | before | after |
@@ -171,7 +171,7 @@ arms same build system, baseline = `bd86ad2`):
 | this repo · self-query fixture | 72% to eval scripts, `tools.ts` 18.5% | scripts **0%**, `tools.ts` #1 |
 | this repo · `handleExplore buildFlowFromNamedSymbols …` | 82% to eval scripts | `tools.ts` 48% + `index.ts` 32% |
 | this repo · "how is error handling done" | 58% to eval scripts, `tools.ts` delivered 0 | transport/tools/cobol/api |
-| this repo · "what languages does codegraph support" | 63% to `scripts/add-lang/*` | grammars/index/cli |
+| this repo · "what languages does lattice sensor support" | 63% to `scripts/add-lang/*` | grammars/index/cli |
 | this repo · "main components of the indexing pipeline" | — | **byte-identical** |
 | payroll-go fixture | generated 57.4%, answer 25.6% | answer **61.5%**, generated **23.5%** |
 | express · route a request | 59% to `test/*` | `application.js` + `response.js` |
@@ -365,7 +365,7 @@ The query explores this repo, so **uncommitted edits to `src/mcp/tools.ts` chang
 result** — the index picks them up and scores shift (the same query on the CG-4 working
 tree reported tools.ts at 13–19% depending on the sync state). Measure against a clean
 tree: restore `src/mcp/tools.ts` from `main`, remove `src/mcp/explore-diagnostics.ts`,
-`codegraph sync`, then run the built `dist/` binary (which still carries the instrument).
+`lattice sensor sync`, then run the built `dist/` binary (which still carries the instrument).
 Restore afterwards.
 
 ---
@@ -975,7 +975,7 @@ without over-fitting:
 ### Agent A/B
 
 `scripts/agent-eval/ab-new-vs-baseline.sh`, baseline pinned to `1cbac0af` by SHA, Sonnet
-`--effort high`, `RUNS=2`, prompts of the form `Use codegraph to answer: <question>`. Raw logs are
+`--effort high`, `RUNS=2`, prompts of the form `Use lattice sensor to answer: <question>`. Raw logs are
 not committed. The three questions: vscode's rpcProtocol serialization and dispatch (the reported
 shape); django's `SQLCompiler.as_sql` / `pre_sql_setup` / `get_select`; and tokio's worker `run` /
 `run_task` / `next_task` / `steal_work` / `park`.

@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-06 · **New:** `bugfix/CG-31` · **Baseline:** `bugfix/CG-30` @ `0d014a6` ·
 **Harness:** `scripts/agent-eval/ab-new-vs-baseline.sh`, `--model sonnet --effort high`,
-**both arms codegraph-on**, CLI blocked (0 contamination in every run),
-`CODEGRAPH_NO_PROMPT_HOOK=1`. Every index measured on was **fully rebuilt**, never
+**both arms lattice-sensor-on**, CLI blocked (0 contamination in every run),
+`LATTICE_SENSOR_NO_PROMPT_HOOK=1`. Every index measured on was **fully rebuilt**, never
 incrementally synced (CG-33).
 
 Baseline is the CG-30 tip, not `main`, so every number here isolates CG-31. CG-30's own A/B
@@ -45,7 +45,7 @@ symbol-bag queries.
 
 ## Deterministic measurement — the primary evidence
 
-Same clean-rebuilt index, same query, both builds. One `codegraph_explore` per repo.
+Same clean-rebuilt index, same query, both builds. One `lattice_sensor_explore` per repo.
 
 | repo | base source | new source | Δ | base files | new files |
 |---|---|---|---|---|---|
@@ -98,7 +98,7 @@ honestly in `afterCG31`.
 | tool calls | 3 [3–4] | 3 [3–4] | **4** [3–4] | 5 [4–5] | **4** [3–4] | 5 [4–5] |
 | Read | 0 [0–1] | 0 | **0** | 1 [0–2] | 1 [0–1] | 1 [0–2] |
 | Grep/Glob | 0 | 0 | 0 | 0 | 0 | 0 |
-| codegraph calls | 2 | 2 [2–3] | 3 [2–3] | 3 [2–3] | 2 | 3 [2–3] |
+| lattice sensor calls | 2 | 2 [2–3] | 3 [2–3] | 3 [2–3] | 2 | 3 [2–3] |
 | occupancy share | **32.1%** [31.1%–36.1%] | 33.8% [28.7%–42.1%] | **40.0%** [36.6%–43.3%] | 40.8% [40.3%–41.4%] | **29.7%** [28.3%–31.1%] | 33.5% [29.8%–37.2%] |
 | allocation efficiency | 96.8% | 98.9% | 88.2% | 97.2% | **91.2%** | 85.0% |
 

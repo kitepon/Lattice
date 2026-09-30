@@ -47,7 +47,7 @@ child list, not "the" field (§Extractor config, §Extension).
 > node type or field removed; new ones: capture checking, XML literals,
 > `uses_clause`, `early_defs`, …). Wasm = the release asset, sha256
 > `37d7fe5a91ca98941dc05493b0c05a0df0f36df5035890fa00b02497c68aaac3`; C sources
-> from the tag's `src/` (shas in `codegraph-kernel/build.rs`). The record below
+> from the tag's `src/` (shas in `lattice-sensor-kernel/build.rs`). The record below
 > describes the original port.
 
 - **Production wasm**: `src/extraction/wasm/tree-sitter-scala.wasm`, sha256

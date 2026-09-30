@@ -20,7 +20,7 @@ call `owners.save` the database. Validation pictures: `gothinkster/node-express-
 `brocoders/nestjs-boilerplate`, `nestjs/nest/sample`, `fastapi/full-stack-fastapi-template`,
 `Netflix/dispatch`, `spring-projects/spring-petclinic`, `spring-petclinic/spring-petclinic-kotlin`,
 `dotnet-architecture/eShopOnWeb`, `jqlang/jq`, `redis/redis`, `android/nowinandroid`,
-`Dimillian/IceCubesApp`, `TryGhost/Ghost` — each shot headlessly (`codegraph ui --no-open` + Playwright)
+`Dimillian/IceCubesApp`, `TryGhost/Ghost` — each shot headlessly (`lattice sensor ui --no-open` + Playwright)
 and read against the mobile app's picture.
 
 **Goal.** The two pictures — **Screens** (`#/screens`, design spec §3.12) and **Steps**
@@ -28,7 +28,7 @@ and read against the mobile app's picture.
 SvelteKit web app, and a monorepo that has both, as they are on the mobile app today. "As good" is
 defined precisely in §1 below; it is not "draws something".
 
-Companion reading, in this order: `docs/design/codegraph-ui-design-spec.md` §1 (principles), §3.12,
+Companion reading, in this order: `docs/design/lattice-sensor-ui-design-spec.md` §1 (principles), §3.12,
 §3.13, §3.14; `CHANGELOG.md` `[Unreleased]` (the user-facing description of what shipped);
 `docs/design/dynamic-dispatch-coverage-playbook.md` (the coverage rules and the validation method —
 **"partial coverage is worse than none"** governs everything here); `CLAUDE.md` (tests, kernel, docs).
@@ -118,8 +118,8 @@ All three are **JS-family only** (`supportsBranchGuards`), Swift for guards. Pyt
   (`ui/src/lib/adapter.ts`), `NavigationDriver.stepsHref` is **required** (a host driver must add it).
 - Conditions vocabulary: `ui/src/lib/conditions.ts` (`WHEN`/`AND`/`OR`/`NOT` tokens, `scenarios`, common-prefix factoring). Both views use it.
 - Tests: `__tests__/ui-steps-api.test.ts` (real RN + Expo fixture, end to end — **copy its shape for every new framework**), `ui-steps-model.test.ts`, `ui-conditions.test.ts`, `branch-guards.test.ts` (guards, arguments, triggers), `ui-screens-model.test.ts`, `expo-router.test.ts` (routed fixture + `buildScreens`).
-- **Kernel parity:** TypeScript/JS *extraction* runs in the Rust kernel (`codegraph-kernel/src/tsjs/`); the TS extractor is the wasm fallback. Any extractor change → mirror in Rust, `npm run build:kernel`, test on both paths (`CODEGRAPH_KERNEL=0` for wasm) plus `kernel-tsjs-parity.test.ts`. Resolvers, synthesizers and the request-time readings are TS-only — no parity work.
-- Verify visually: `npm run build` → `codegraph index` in the target project → `codegraph ui --no-open --port 4747 <project path>` → `GET /api/steps?symbol=<route name>` → headless playwright (`createRequire` from a repo that has it; `waitUntil: 'load'`, not `networkidle` — the viewer holds an SSE stream). See the auto-memory note `codegraph-viewer-workflow`.
+- **Kernel parity:** TypeScript/JS *extraction* runs in the Rust kernel (`lattice-sensor-kernel/src/tsjs/`); the TS extractor is the wasm fallback. Any extractor change → mirror in Rust, `npm run build:kernel`, test on both paths (`LATTICE_SENSOR_KERNEL=0` for wasm) plus `kernel-tsjs-parity.test.ts`. Resolvers, synthesizers and the request-time readings are TS-only — no parity work.
+- Verify visually: `npm run build` → `lattice sensor index` in the target project → `lattice sensor ui --no-open --port 4747 <project path>` → `GET /api/steps?symbol=<route name>` → headless playwright (`createRequire` from a repo that has it; `waitUntil: 'load'`, not `networkidle` — the viewer holds an SSE stream). See the auto-memory note `lattice-sensor-viewer-workflow`.
 
 ---
 
@@ -433,12 +433,12 @@ names and the frameworks detected, so the viewer does not guess).
 channels, FastAPI prefixed routers, ASP.NET endpoint groups: node counts, edge precision spot-checks, pictures). One agent
 A/B so far, `bradtraversy/proshop_mern` (small, Express + React), `scripts/agent-eval/run-all.sh`, Sonnet/high, 2 runs per
 arm, a daemon pre-warmed before each with-run, the CLI shim on (0 leaks): *"How does submitting the login form reach the
-database, and what does the API respond with when the password is wrong?"* — with codegraph 14s / 14s, 2 tool calls, 0 Read,
+database, and what does the API respond with when the password is wrong?"* — with lattice sensor 14s / 14s, 2 tool calls, 0 Read,
 0 Grep, 1–2 explores, the full path named (`submitHandler → login → POST /api/users/login → authUser → User.findOne →
 matchPassword → 401`); without 18s / 37s, 14 / 8 tool calls, 7 / 1 Read plus Bash `cat`s and a subagent. Tokens 153k/165k vs
 237k/369k. The pass bar (§4 of the playbook) holds on the small repo. **Still open:** the medium / large rows (Ghost,
 immich, cal.com / twenty), ≥3 prompts per framework, and a control repo. The driver lives in the session scratchpad
-(`ab-proshop.sh`: pre-warm `serve --mcp` with `CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS` high and `CODEGRAPH_WASM_RELAUNCHED=1`,
+(`ab-proshop.sh`: pre-warm `serve --mcp` with `LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS` high and `LATTICE_SENSOR_WASM_RELAUNCHED=1`,
 then `run-all.sh` per run with its own `AGENT_EVAL_OUT`); re-create it from the memory note.
 
 Small fixtures live in the tests. For the real bar, index these and record the results in
@@ -464,10 +464,10 @@ control repos.
 ## 6. Conventions and gotchas (learned the hard way this session)
 
 - **Extractor changes need the Rust twin** (§2.4). A TS-only extractor patch silently does nothing on
-  a machine with the kernel binary staged — tests pass under `CODEGRAPH_KERNEL=0` and fail by default.
+  a machine with the kernel binary staged — tests pass under `LATTICE_SENSOR_KERNEL=0` and fail by default.
 - **Function-as-value capture is what makes handlers visible**: JSX attribute values, `on*` options,
   object shorthand members (`return { handleX }`) are capture sites (`TS_JS_SPEC.dispatch` in
-  `extraction/function-ref.ts`, mirrored in `codegraph-kernel/src/tsjs/fnref.rs`). The gate is
+  `extraction/function-ref.ts`, mirrored in `lattice-sensor-kernel/src/tsjs/fnref.rs`). The gate is
   "defined in this file or imported" — a handler that comes out of a hook destructure in another file is
   found through `contains`, and P0's route handlers through `references`. When a handler folds that
   should be a box, check which of these it fell through.
@@ -488,7 +488,7 @@ control repos.
 - **Known flake**: `__tests__/mcp-daemon.test.ts` "daemon idle-times-out" fails under full-suite load
   (~1 in 3 runs) and passes alone. Not related to any of this.
 - **Do not commit or push** unless asked; the session's work is uncommitted on `main`'s working tree of
-  `~/Development/CodeGraph/codegraph` (27 modified, 12 new files as of this writing) — branch first
+  `~/Development/LatticeSensor/lattice sensor` (27 modified, 12 new files as of this writing) — branch first
   (`feature/…`) when you do.
 
 ---

@@ -14,7 +14,7 @@ Three measurements, in order. **The epic's gate is the last one** ([§CG-22](#cg
 
 **Date:** 2026-08-04 · **New:** `feature/CG-1` @ `edce18f` · **Baseline:** `main` @ `49c11fc`
 · **Harness:** `scripts/agent-eval/ab-new-vs-baseline.sh`, `RUNS=3`, `--model sonnet --effort high`
-on every arm · **Both arms codegraph-on.**
+on every arm · **Both arms lattice-sensor-on.**
 
 This is the epic's pass gate. The deterministic probes (CG-6/CG-14) prove the budget moved;
 only an agent A/B proves the agent stopped reading.
@@ -37,13 +37,13 @@ widened to compensate. Root cause and the smallest honest fix are in [§Root cau
 `ab-new-vs-baseline.sh` builds and indexes each arm separately (CG-5's generated-file flag is
 an index-time decision, so each arm must index with its own build), pre-warms a persistent
 daemon per run, and runs the same flow question 3× per arm. Both arms run with
-`CODEGRAPH_NO_PROMPT_HOOK=1` — the machine's ambient front-load hook resolves to whatever is
+`LATTICE_SENSOR_NO_PROMPT_HOOK=1` — the machine's ambient front-load hook resolves to whatever is
 in `dist/` and would inject context through a second, uncontrolled channel.
 
-Each prompt names codegraph as the lookup tool. That is **not** a forced-Read-0: the agent
+Each prompt names lattice sensor as the lookup tool. That is **not** a forced-Read-0: the agent
 stays free to Read whenever explore's answer is insufficient, which is exactly what bar 1
 measures. It removes the one noise source that would otherwise swamp the signal — in a
-pre-run without it, one express run made **0 codegraph calls and 3 Reads**, measuring adoption
+pre-run without it, one express run made **0 lattice sensor calls and 3 Reads**, measuring adoption
 (an axis this change does not touch) rather than allocation.
 
 Envelope share is measured with `parse-run.mjs --envelope --answer <glob>`, which parses the
@@ -66,7 +66,7 @@ the arms below (express: 82% baseline → 100% new).
 
 ## Results
 
-`explore` = codegraph_explore calls · `Read` = Read tool calls · `answer%` = share of the
+`explore` = lattice_sensor_explore calls · `Read` = Read tool calls · `answer%` = share of the
 source envelope going to the files that answer the question. Three runs per arm, reported as
 the range — run-to-run variance is large and a single run means nothing.
 
@@ -97,7 +97,7 @@ Answer set: `mutateElement.ts`, `App.tsx`, `renderer/**`, `scene/**`, `component
 
 The clearest win: **29% faster at the median with one fewer explore call per run**, no Read in
 either arm. Concentration is why — the new arm resolves the flow in 2 calls where the baseline
-takes 3–4. (One baseline run burned a turn on a hallucinated `codegraph_..._explore` tool name;
+takes 3–4. (One baseline run burned a turn on a hallucinated `lattice_sensor_..._explore` tool name;
 counted as-is.)
 
 ### express — control — "how does res.send decide Content-Type and ETag?"
@@ -121,7 +121,7 @@ made. It is not agent variance — see below.
 Deterministic replay of the divergent run's own query on both builds, same index, no agent:
 
 ```
-codegraph explore "res.send Content-Type ETag generateETag setETag" --path <express>
+lattice sensor explore "res.send Content-Type ETag generateETag setETag" --path <express>
 ```
 
 | file | baseline | new |
@@ -210,7 +210,7 @@ RUNS=3 AGENT_EVAL_OUT=/tmp/ab-express \
 node scripts/agent-eval/parse-run.mjs /tmp/ab-express/run-new-2.jsonl --answer 'lib/**'
 
 # the deterministic core of the failure, no agent needed:
-CODEGRAPH_EXPLORE_DEBUG=1 node dist/bin/codegraph.js \
+LATTICE_SENSOR_EXPLORE_DEBUG=1 node dist/bin/lattice-sensor.js \
   explore "res.send Content-Type ETag generateETag setETag" --path <express>
 ```
 
@@ -220,7 +220,7 @@ CODEGRAPH_EXPLORE_DEBUG=1 node dist/bin/codegraph.js \
 
 **Date:** 2026-08-04 · **New:** `feature/CG-1` @ `fca7d87` (CG-21) · **Baseline:** `main`
 (unchanged) · same harness, same three prompts, same repos, `--model sonnet --effort high`,
-both arms codegraph-on. **n=6 per arm** on express and excalidraw (two pooled batches of 3 —
+both arms lattice-sensor-on. **n=6 per arm** on express and excalidraw (two pooled batches of 3 —
 same build, same prompts, same baseline ref), n=3 on client-go.
 
 **Verdict: all four bars pass.** Bar 1 — the hard gate that failed above — is clean:
@@ -315,8 +315,8 @@ Design and coverage: [`../design/explore-budget-allocation.md`](../design/explor
 **Date:** 2026-08-04 · **New:** `feature/CG-1` @ `abee46c` (`src/` identical to CG-21's
 `fca7d87`; the two commits since are docs) · **Baseline:** `main` @ `49c11fc`, passed to the
 harness as that SHA rather than as `main`, so the ref cannot drift · `RUNS=3`,
-`--model sonnet --effort high` on every arm, both arms codegraph-on,
-`CODEGRAPH_NO_PROMPT_HOOK=1` on both · same three repos, same three questions.
+`--model sonnet --effort high` on every arm, both arms lattice-sensor-on,
+`LATTICE_SENSOR_NO_PROMPT_HOOK=1` on both · same three repos, same three questions.
 
 **This is the epic's gate.** CG-21's re-run above was measured by the task that wrote the fix;
 this one re-measures it at the setup the failing run used, from a clean clone of each repo.
@@ -409,7 +409,7 @@ The reproducer named in CG-22's acceptance, run on both builds in this session, 
 each build indexing its own copy:
 
 ```
-CODEGRAPH_EXPLORE_DEBUG=1 codegraph explore \
+LATTICE_SENSOR_EXPLORE_DEBUG=1 lattice sensor explore \
   "res.send Content-Type ETag generateETag setETag" --path <express>
 ```
 
@@ -449,8 +449,8 @@ Bars were **not** re-baselined; they are CG-15's four, unchanged.
 ## Honest notes on the setup
 
 - **The prompt wrapper is reconstructed.** The record preserved the three questions verbatim
-  but not the sentence that names codegraph as the lookup tool. Every arm and every repo here
-  used the identical wrapper `Use codegraph to answer: <question>`, so the comparison is
+  but not the sentence that names lattice sensor as the lookup tool. Every arm and every repo here
+  used the identical wrapper `Use lattice sensor to answer: <question>`, so the comparison is
   internally exact; it may differ by a few words from CG-15's.
 - **Excalidraw is at a newer tip** (677 files, was 672) — same tier, same budget.
 - Full suite green on the measured build: 171 files, **2,868 passed**, 6 skipped, 0 failures.
@@ -461,11 +461,11 @@ Bars were **not** re-baselined; they are CG-15's four, unchanged.
 # clone fresh (never eval on a private repo), index with the build under test, then per repo:
 RUNS=3 MODEL=sonnet EFFORT=high AGENT_EVAL_OUT=/tmp/ab-express \
   scripts/agent-eval/ab-new-vs-baseline.sh <express> \
-  "Use codegraph to answer: how does res.send decide Content-Type and ETag?" 49c11fc
+  "Use lattice sensor to answer: how does res.send decide Content-Type and ETag?" 49c11fc
 
 node scripts/agent-eval/parse-run.mjs /tmp/ab-express/run-new-2.jsonl --answer 'lib/**'
 
 # the deterministic core, no agent needed:
-CODEGRAPH_EXPLORE_DEBUG=1 node dist/bin/codegraph.js \
+LATTICE_SENSOR_EXPLORE_DEBUG=1 node dist/bin/lattice-sensor.js \
   explore "res.send Content-Type ETag generateETag setETag" --path <express>
 ```

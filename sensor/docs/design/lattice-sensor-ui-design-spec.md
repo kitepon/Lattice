@@ -1,14 +1,14 @@
-# codegraph ui — design specification
+# lattice sensor ui — design specification
 
-Authoritative visual + interaction spec for the `codegraph ui` viewer (Kommandr epics CG-39 → CG-48 → CG-56;
+Authoritative visual + interaction spec for the `lattice sensor ui` viewer (Kommandr epics CG-39 → CG-48 → CG-56;
 Pro layers in docker-app DOCKERAPP-10). Companion to the design proposal ("Reading the graph") and the
 interactive prototype; the prototype's stylesheet is appended verbatim at the end and is the source of truth
-for every measurement below. Screenshots: `CodeGraph/codegraph-web-prototype/screenshots/` (also attached to
+for every measurement below. Screenshots: `LatticeSensor/lattice-sensor-web-prototype/screenshots/` (also attached to
 the Kommandr epics).
 
 Design proposal: https://claude.ai/code/artifact/58336c87-9780-4018-8c04-37fe53236e96
 Prototype: https://claude.ai/code/artifact/304bffb6-72d6-49c7-8f3a-9e4f244909f8
-Prototype sources: `CodeGraph/codegraph-web-prototype/` (`proto.css`, `proto.js`, `extract.mjs`, `build.mjs`)
+Prototype sources: `LatticeSensor/lattice-sensor-web-prototype/` (`proto.css`, `proto.js`, `extract.mjs`, `build.mjs`)
 
 ## 1. Principles (non-negotiable)
 
@@ -84,7 +84,7 @@ Container/type kinds get a `--press` fill.
 ## 3. Layout and components
 
 ### 3.1 App shell
-- Grid rows: **top bar 48px** / **trail bar 34px** / main. Top bar: brand (10px hollow square mark + "CodeGraph" 600 14px +
+- Grid rows: **top bar 48px** / **trail bar 34px** / main. Top bar: brand (10px hollow square mark + "LatticeSensor" 600 14px +
   "ui" in `--ink-3`), view tabs (`Map · Symbol · Flow`, 5px 10px padding, active = 2px `--ink` bottom border), search input
   (30px tall, `--paper-2` fill, `--rule-soft` border → `--ink` on focus, max-width 720px), project stats in `--ink-2` 12px.
   Bottom rule of the top bar is `--rule` (1px); the trail bar's is `--rule-soft`.
@@ -200,7 +200,7 @@ first), then the name-only continuations under 0.6 as mono rows with their confi
 then the count of further resolved calls and the symbols never reached. Its height is arithmetic like a card's
 (`endCapText` builds the strings, `endCapHeight` measures them, the component renders exactly those), and the card it
 hangs off opens at the dispatch line and tints it `--accent-soft`. One cap per stopping symbol, not per flow.
-The verdict comes from `src/graph/dynamic-boundary-report.ts` — the detector `codegraph_explore` announces boundaries
+The verdict comes from `src/graph/dynamic-boundary-report.ts` — the detector `lattice_sensor_explore` announces boundaries
 with — so the strip and the MCP answer cannot disagree.
 
 ### 3.6 Map (`#/map`)
@@ -282,19 +282,19 @@ settled at 400 ms (capped at 3 s). Both start with the first subscriber and stop
 
 Three banner variants, because what follows the dash is what the screen actually did:
 - **Symbol view** — "indexed line ranges may be shifted; showing the file's current source. The next sync picks it up." The whole
-  CURRENT file replaces the body (parity with `codegraph_node` on a drifted file, issue #1474) and every line-anchored marking goes
+  CURRENT file replaces the body (parity with `lattice_sensor_node` on a drifted file, issue #1474) and every line-anchored marking goes
   with the old numbering: gutter ports, call-site links, the definition-name weight, the `?hl=` highlight, and the callee rail's
   anchoring — its rows stack in source order and draw no connector. Above 400 lines the banner links to the whole-file view instead.
 - **Whole file (`?src=1`)** — the same, plus "with the call arcs, ports and rail switched off". The source still pages in; only the
   margins go.
 - **File outline** — "the outline below is the shape the file had when it was indexed", with a link to the current source.
 
-Measured: banner 360 ms after a save; toast 440 ms after `codegraph sync` returns; 0 requests in 4 idle seconds.
+Measured: banner 360 ms after a save; toast 440 ms after `lattice sensor sync` returns; 0 requests in 4 idle seconds.
 
 ### 3.9 Export (CG-55)
 "Copy image" and "Download SVG" on the Flow strip's header and in the Map's side panel. The image renders the **light** theme
 whatever the viewer is set to, at **2x** device pixels for the raster, with **24px** of `--paper` padding around the drawing and a
-"CodeGraph" mark in 11px `--mono` `--ink-3` at the bottom right; a caption in the same type sits at the bottom left, naming the path
+"LatticeSensor" mark in 11px `--mono` `--ink-3` at the bottom right; a caption in the same type sits at the bottom left, naming the path
 or the root. SVG keeps fonts as `font-family` **stacks** (no embedding) and inlines the token colours as literal hex. PNG for an
 8-hop strip stays under 1 MB.
 
@@ -392,7 +392,7 @@ The viewer's only write.
 writes. It opens a **one-field inline form** as a second row inside the bar (never a dialog: naming a walk is a thought the
 reader is already having, and anything modal stops the reading to ask about filing). The row is a 12px `--ink-2` sans label,
 a **30px** `--paper` input with a `--rule-soft` border exactly like the search box, `Save`/`Cancel`, and an 11.5px hint that
-says what will happen *before* it happens: `3 hops · saved to .codegraph/ui/trails`, or, in `--amber`,
+says what will happen *before* it happens: `3 hops · saved to .lattice/sensor/ui/trails`, or, in `--amber`,
 `Replaces the saved trail of the same name.` The name is pre-filled with the current symbol's; Escape closes; a failure
 (a read-only checkout, a full disk) prints in `--accent` beside the buttons rather than vanishing. The trail bar's grid row
 is `auto` for this — it keeps its 34px on its own and grows only while the form is open.
@@ -412,15 +412,15 @@ one symbol — showing the closest match."*, `--ink-3` for a hop that merely mov
 in it cannot be stitched: the row opens the longest run of *consecutive* resolved hops and says so — `Opens hops 2–4 of 6.` —
 and a trail where nothing resolves is drawn `--ink-3` and is not clickable.
 
-**Where it lives.** One JSON file per trail under `.codegraph/ui/trails/<slug>.json`, written atomically (temp + rename),
-newest save first. `.codegraph/.gitignore` already ignores everything, so a trail is local by default; `Export` downloads the
+**Where it lives.** One JSON file per trail under `.lattice/sensor/ui/trails/<slug>.json`, written atomically (temp + rename),
+newest save first. `.lattice/sensor/.gitignore` already ignores everything, so a trail is local by default; `Export` downloads the
 same file for a reader who wants to commit it somewhere. Each hop is stored as its **qualified name, kind and file** with the
 node id kept only as a fast path — a node id contains its start line, so a trail keyed on ids would break the first time
 anybody edited the code it describes, which is exactly when it matters. Saving under an existing name replaces that trail and
 keeps its `createdAt`.
 
 **What a write has to be.** `POST /api/trails` and `DELETE /api/trails/<id>`, under `/api/` and nowhere else, carrying the
-`X-CodeGraph-UI` header and `Content-Type: application/json` — neither of which a cross-origin form can produce without a
+`X-LatticeSensor-UI` header and `Content-Type: application/json` — neither of which a cross-origin form can produce without a
 CORS preflight this server answers none of. `--read-only` refuses both and the screens say so in the answering side's own
 words instead of showing a Save that fails.
 
@@ -832,8 +832,8 @@ its rows), and one `in order` reading per framework in `ui-steps-api-servers.tes
 - No native modules; no runtime dependency for the UI itself; the CLI serves **`dist/viewer/`** over `node:http`, loopback only.
   (Not `dist/ui/` — `src/ui/` is the engine's *terminal* ui and tsc already compiles it there; see `ui/README.md`.)
 
-### 4.1 The component library (`@colbymchenry/codegraph-ui`, CG-61)
-The same `ui/src` tree builds a second way — `svelte-package` into `ui/dist` — so CodeGraph Pro renders the Symbol view, the Flow
+### 4.1 The component library (`@kitepon/Lattice-ui`, CG-61)
+The same `ui/src` tree builds a second way — `svelte-package` into `ui/dist` — so LatticeSensor Pro renders the Symbol view, the Flow
 strip, the Map and the type-hierarchy tree over its own in-process engine reads without forking a component. One tree, because a fork is a second answer to
 the same question about the same graph.
 - **One seam: `GraphAdapter`** (`ui/src/lib/adapter.ts`) — eleven methods answering the `Wire*` shapes verbatim. `createHttpAdapter()`
@@ -850,7 +850,7 @@ the same question about the same graph.
   line) is not themable: the Symbol view measures those against each other to put a callee row beside the line that calls it.
 - Versioned with the engine (`scripts/sync-ui-version.mjs`), because the payload shapes are versioned with the binary that serves
   them. **Prepared, not published**: `"private": true` is the guard and `scripts/pack-npm.sh` only packs it under
-  `CODEGRAPH_PACK_UI=1`.
+  `LATTICE_SENSOR_PACK_UI=1`.
 
 **Beyond the mobile app.** The Steps picture reaches the same bar on an HTTP API — Express, NestJS, FastAPI,
 Spring (Java / Kotlin), ASP.NET and the rest (§3.13, "Servers"); the Screens picture still rests on Expo Router's

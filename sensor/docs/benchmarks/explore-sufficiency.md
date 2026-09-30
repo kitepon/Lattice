@@ -5,7 +5,7 @@
 > point: which metric answers which question, which harness to run, and how to
 > read the arm-comparison table.
 
-**What it measures:** whether a `codegraph_explore` response was *enough* — read
+**What it measures:** whether a `lattice_sensor_explore` response was *enough* — read
 off what the agent did next, which the harness was throwing away.
 
 The agent tells us on every call. It reads a file, or it explores again, or it
@@ -14,7 +14,7 @@ each point at a different fix:
 
 | Next action | Bucket | What it means |
 |---|---|---|
-| another codegraph call | `explore again` | insufficient — the response did not answer |
+| another lattice sensor call | `explore again` | insufficient — the response did not answer |
 | `Read` of a file we **returned** | `Read a file we returned` | **allocation**: right file, wrong bytes |
 | `Read` of a file we did **not** return | `Read a file we did not return` | **recall**: the file never surfaced |
 | `Grep` / `Glob` | `Grep/Glob` | recall, weaker signal — still hunting |
@@ -30,7 +30,7 @@ Harness-only. Nothing is emitted from the product and nothing leaves the machine
 Every run prints it — `run-all.sh` and anything else that calls `parse-run.mjs`:
 
 ```bash
-scripts/agent-eval/run-all.sh /tmp/codegraph-corpus/express \
+scripts/agent-eval/run-all.sh /tmp/lattice-sensor-corpus/express \
   "How does res.send decide the Content-Type and ETag?"
 
 # Or over a log you already have:
@@ -44,7 +44,7 @@ node scripts/agent-eval/parse-run.mjs /tmp/agent-eval/run-headless-with.jsonl
       0   0%  Read a file we did not return  recall: file never surfaced
       0   0%  Grep/Glob                      recall (weak): still hunting for the file
       0   0%  moved on / answered            sufficient
-    1. "res.send Content-Type ETag generation" [3 files] → codegraph_explore
+    1. "res.send Content-Type ETag generation" [3 files] → lattice_sensor_explore
     2. "response.js res.send function body" [3 files] → Read response.js
 ```
 

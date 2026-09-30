@@ -6,7 +6,7 @@ found the symptom at every build including pre-epic.
 
 ## The report
 
-On a 1,414-line Svelte store, `codegraph_explore` never returned `queueMessage`
+On a 1,414-line Svelte store, `lattice_sensor_explore` never returned `queueMessage`
 (L1087) or `flushQueuedMessages` (L1102) — on a bare symbol bag *or* a prose
 question — even though their file won rank #1 with score 127 and 67.3% of the
 envelope. What came back instead was the same-stem `QueuedMessage` **interface** at

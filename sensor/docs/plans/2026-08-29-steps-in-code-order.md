@@ -38,7 +38,7 @@ person wants from a handler. They want *the flow of the code*: first the lookup,
 token and answer 200, **else** answer 401. "I think this should show the flow/order of the code. That would be way more
 useful to me." Build that.
 
-Read first, in this order: spec §3.13 and §3.14 (`docs/design/codegraph-ui-design-spec.md`), then
+Read first, in this order: spec §3.13 and §3.14 (`docs/design/lattice-sensor-ui-design-spec.md`), then
 `docs/plans/2026-08-28-steps-and-screens-for-apis-and-web.md` §2 and §6 (how the pictures work and the gotchas), then the
 auto-memory note `steps-for-apis-2026-08-28` (the two facts that made Steps work, the screenshot harness), then the files in
 §3 below. `CLAUDE.md` for tests, docs and the no-kernel-work rule (this plan is all request-time: no extractor changes).
@@ -123,7 +123,7 @@ which, what ends an arm. The tree cannot draw `authUser → 200 under jwt.sign` 
 | Box words and looks | `ui/src/lib/steps-model.ts` (`kindWord`, `stepLabel`, `stepSub`, `triggerWords`), `ui/src/components/steps/StepNode.svelte` | reuse the box verbatim; only the arrangement is new |
 | The view, URL, panel | `ui/src/views/StepsView.svelte` (`rewrite`, `navigate`, the panel with `Start here →`, the summary's `through` checkbox), `ui/src/lib/navigation.ts` `stepsHref` / `StepsHrefOptions`, `ui/src/lib/router.svelte.ts`, `App.svelte` | add `view` to the options and the route |
 | Tests to copy the shape of | `__tests__/ui-steps-api-servers.test.ts` (four frameworks in one fixture), `ui-steps-cross-tier.test.ts`, `nextjs.test.ts`, `ui-steps-model.test.ts` (pure model), `ui-conditions.test.ts` | |
-| Headless pictures | the auto-memory note: `shoot.mjs` (Playwright over `codegraph ui --no-open`, one shot per hash URL; **never `npm run build` while a `codegraph ui` runs**); `scripts/try-repo.sh <preset>` to clone + index + open | proshop, express-realworld, nest-boilerplate, next-saas-starter, fastapi-template are the presets |
+| Headless pictures | the auto-memory note: `shoot.mjs` (Playwright over `lattice sensor ui --no-open`, one shot per hash URL; **never `npm run build` while a `lattice sensor ui` runs**); `scripts/try-repo.sh <preset>` to clone + index + open | proshop, express-realworld, nest-boilerplate, next-saas-starter, fastapi-template are the presets |
 
 The walk's caps and budgets (`MAX_CALL_SITES`, `MAX_WHEN_SITES`, fold depth, fan-out, steps per picture) apply unchanged;
 the rail draws the same steps the tree does, so it costs one more structured read per site, nothing more.
@@ -285,7 +285,7 @@ early exit, and the tree mode is byte-for-byte the picture it is today.
   program's records must come from the same pass that made the link, or a step appears twice.
 - **The index keeps only the last segment of a deep member call**; every call text in the rail must come from
   `callSitesForFile` (as the tree's do), never from the edge's `refName`.
-- **Never `npm run build` while a `codegraph ui` server is running** (it loads modules lazily and hangs); the harness in
+- **Never `npm run build` while a `lattice sensor ui` server is running** (it loads modules lazily and hangs); the harness in
   the memory note kills its server group on exit for that reason.
 
 ---

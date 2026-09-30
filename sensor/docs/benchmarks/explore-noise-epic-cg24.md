@@ -1,6 +1,6 @@
 # Epic resolution — explore response noise (CG-24)
 
-Worked 2026-08-05 → 2026-08-06. Started from one bad `codegraph_explore` response
+Worked 2026-08-05 → 2026-08-06. Started from one bad `lattice_sensor_explore` response
 in a real session and ended with four shipped fixes, one open defect, and five
 issues closed because measurement contradicted them.
 
@@ -110,7 +110,7 @@ deterministic probe disagreed with them and the probe won.
 
 Two specific traps this cost real time on, both now guarded in tooling:
 
-- **`.codegraph/graph.db` does not exist** — the index is `codegraph.db`, and
+- **`.lattice/sensor/graph.db` does not exist** — the index is `sensor.db`, and
   `sqlite3` against a mistyped path *creates* an empty database rather than
   failing. An empty schema reads exactly like a stale pre-migration index. This
   produced a wrong root cause. `diff-index-drift.mjs` refuses a missing path.

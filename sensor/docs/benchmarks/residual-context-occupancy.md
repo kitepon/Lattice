@@ -9,7 +9,7 @@
 still occupy once the question has been answered — and therefore how much
 headroom every following turn has to work in.
 
-This is the metric issue [#1500](https://github.com/colbymchenry/codegraph/issues/1500)
+This is the metric issue [#1500](https://github.com/kitepon/Lattice/issues/1500)
 was actually about. The reporter was looking at a live Cursor session: explore's
 output was still resident after the answer, so it was charged against everything
 that came next. Our A/B harness ran one headless question to completion and
@@ -25,13 +25,13 @@ The harness now measures it, over multi-turn sessions.
 
 ```bash
 # One repo, one three-turn session, both arms:
-scripts/agent-eval/run-all.sh /tmp/codegraph-corpus/gin \
+scripts/agent-eval/run-all.sh /tmp/lattice-sensor-corpus/gin \
   "How does gin route requests through its middleware chain?||\
 Where is the 404 / no-route case handled in that same chain?||\
 What would I change to add a per-route middleware that runs before the global ones?"
 
 # The 7 README repos (default: 3 turns per session, RUNS=4 per arm):
-CORPUS=/tmp/codegraph-corpus RUNS=2 scripts/agent-eval/bench-readme.sh
+CORPUS=/tmp/lattice-sensor-corpus RUNS=2 scripts/agent-eval/bench-readme.sh
 node scripts/agent-eval/parse-bench-readme.mjs /tmp/ab-readme
 ```
 
@@ -49,7 +49,7 @@ Every arm prints:
 ```
 Residual context occupancy at end of run:
   final context       54,950 tok   27.5% of 200k window
-  codegraph           13,941 tok   25.4% of ctx    7.0% of 200k win   (31,312 chars, 2 results)
+  lattice sensor           13,941 tok   25.4% of ctx    7.0% of 200k win   (31,312 chars, 2 results)
   Read                     0 tok    0.0% of ctx    0.0% of 200k win   (0 chars, 0 results)
   Grep/Glob                0 tok    0.0% of ctx    0.0% of 200k win   (0 chars, 0 results)
   Bash                     0 tok    0.0% of ctx    0.0% of 200k win   (0 chars, 0 results)
@@ -60,7 +60,7 @@ Residual context occupancy at end of run:
   measure: 2.25 chars/tok measured ±0.9% · turns 6 · compactions 0
 ```
 
-The comparison is codegraph's residual in the with-arm against **file-access**
+The comparison is lattice sensor's residual in the with-arm against **file-access**
 (Read + Grep/Glob + Bash) in the without-arm — the two ways an agent gets the
 same bytes into its head. Bash matters: on small repos the without-arm often
 reaches for `cat`/`grep` through Bash rather than the Read tool, and counting
@@ -131,38 +131,38 @@ question.
 
 ---
 
-## The without-arm was never actually without codegraph
+## The without-arm was never actually without lattice sensor
 
 Establishing this baseline turned up a contamination channel that had been open
 the whole time, and it invalidates any number this harness produced for an arm
 that had Bash.
 
-The without-arm gets an empty MCP config, so it has no codegraph tool. It still
-has **Bash** — and the target repo still carries the `.codegraph/` index the
-with-arm needs, with the `codegraph` binary on PATH. Agents find that. In the
-first clean-looking 7-repo pass, **14 of 15 without-arm runs ran `codegraph
-explore` through Bash**, one of them by way of `ls .codegraph && codegraph
-explore …`. That arm was measuring codegraph-over-CLI against codegraph-over-MCP,
-not codegraph against its absence.
+The without-arm gets an empty MCP config, so it has no lattice sensor tool. It still
+has **Bash** — and the target repo still carries the `.lattice/sensor/` index the
+with-arm needs, with the `lattice-sensor` binary on PATH. Agents find that. In the
+first clean-looking 7-repo pass, **14 of 15 without-arm runs ran `lattice sensor
+explore` through Bash**, one of them by way of `ls .lattice/sensor && lattice sensor
+explore …`. That arm was measuring lattice-sensor-over-CLI against lattice-sensor-over-MCP,
+not lattice sensor against its absence.
 
 It cuts the other way too. When the *with*-arm shells out, the output arrives as
-a Bash result and is attributed to Bash — understating what codegraph itself
+a Bash result and is attributed to Bash — understating what lattice sensor itself
 occupies. One of 15 with-arm runs did this.
 
 The fix is in `run-all.sh`: both arms now run on a PATH where the CLI is hidden,
-so the MCP server is the only way to reach codegraph and stays the A/B's single
+so the MCP server is the only way to reach lattice sensor and stays the A/B's single
 variable. The binary usually shares a directory with tools the run needs — here
 `claude` sits right next to it — so the directory is substituted in place by one
-of symlinks to every entry except `codegraph`, which keeps PATH order and
+of symlinks to every entry except `lattice-sensor`, which keeps PATH order and
 precedence intact. The run aborts if `claude` or `node` did not survive.
 
 Prevention alone would fail silently the next time the binary lands somewhere
 new, so there is detection as well: `parse-run.mjs` flags any Bash command naming
-codegraph, and `parse-bench-readme.mjs` drops contaminated without-arm runs from
+lattice sensor, and `parse-bench-readme.mjs` drops contaminated without-arm runs from
 the aggregate (`CG_INCLUDE_CONTAMINATED=1` keeps them).
 
 **Anyone re-reading older A/B results from this harness should assume the
-without-arm may have been using codegraph.**
+without-arm may have been using lattice sensor.**
 
 ---
 
@@ -189,11 +189,11 @@ other. Settling whether the published Opus figures still hold needs a matched
 Reproduce with:
 
 ```bash
-CORPUS=/tmp/codegraph-corpus scripts/agent-eval/bench-readme.sh   # RUNS=4 CG_TURNS=3
+CORPUS=/tmp/lattice-sensor-corpus scripts/agent-eval/bench-readme.sh   # RUNS=4 CG_TURNS=3
 node scripts/agent-eval/parse-bench-readme.mjs /tmp/ab-readme
 ```
 
-### The finding: codegraph's residual is 82% HIGHER, on all seven repos
+### The finding: lattice sensor's residual is 82% HIGHER, on all seven repos
 
 ```
 repo        turns W→WO   final ctx W→WO   residual W→WO       % of ctx W→WO   % of window W→WO
@@ -205,13 +205,13 @@ okhttp      6/14         61k→59k          20k→16k   (+27%)    33.2%→27.6% 
 gin         6/15.5       56k→49k          15k→8k    (+79%)    26.3%→16.7%      7.3%→4.1%
 alamofire   10/31        76k→65k          34k→32k    (+7%)    44.7%→50.6%     16.9%→15.8%
 
-AVERAGE: retrieval residual 82% HIGHER with codegraph · share-of-context 27% HIGHER
+AVERAGE: retrieval residual 82% HIGHER with lattice sensor · share-of-context 27% HIGHER
 ```
 
-W = codegraph's responses still resident. WO = Read + Grep/Glob + Bash results
+W = lattice sensor's responses still resident. WO = Read + Grep/Glob + Bash results
 still resident. `turns` is median assistant turns per session.
 
-**Seven of seven.** There is no repo where codegraph leaves less behind. On
+**Seven of seven.** There is no repo where lattice sensor leaves less behind. On
 vscode it leaves **67k tokens resident against the without-arm's 18k** — a third
 of a 200k window, gone before turn 4 starts. The only near-tie is Alamofire
 (+7%), and it is a tie because that arm's share-of-context is actually *lower*
@@ -222,23 +222,23 @@ of a 200k window, gone before turn 4 starts. The only near-tie is Alamofire
 704k vs 302k — while leaving *less* behind. Throughput and stock are different
 quantities and they point opposite ways here:
 
-- codegraph front-loads **one large verbatim payload** (2 explore calls on gin,
+- lattice sensor front-loads **one large verbatim payload** (2 explore calls on gin,
   each tens of thousands of dense source characters) and that payload **stays
   resident** for every turn after it;
 - Read/Grep/Bash churn **many small results** (gin: ~6 reads + ~5 bash per run),
   most of which are re-derivation the agent then discards, and which evict.
 
-**This corroborates issue [#1500](https://github.com/colbymchenry/codegraph/issues/1500)
+**This corroborates issue [#1500](https://github.com/kitepon/Lattice/issues/1500)
 on our own harness.** The reporter's complaint was exactly this axis, and until
 this campaign we had no measurement that could see it. Note for anyone reading
 git history: the aggregator originally printed this as "-82% *lower* with
-codegraph" — a sign bug, fixed at `520ed9d`. The honest number is the entire
+lattice sensor" — a sign bug, fixed at `520ed9d`. The honest number is the entire
 point of the metric; do not soften it.
 
-**Fixed overhead.** codegraph's tool schema + MCP instructions cost **+546 tok**
+**Fixed overhead.** lattice sensor's tool schema + MCP instructions cost **+546 tok**
 of context before any tool is called (median with-arm `ctxBase` minus median
 without-arm `ctxBase`, averaged over repos). Paid whether or not the agent ever
-calls codegraph. Small — the residual, not the schema, is where the context goes.
+calls lattice sensor. Small — the residual, not the schema, is where the context goes.
 
 ### Throughput in the same campaign (sonnet · 3 turns)
 
@@ -250,7 +250,7 @@ such.**
 > wrong in one direction. It came off `result.usage`, which reports only the last
 > turn in current Claude Code, so it under-counted whichever arm took more turns —
 > always the without-arm. It reported a 23% token saving where the real figure is
-> **56%**, and showed **vscode processing 98% *more* tokens with codegraph** when
+> **56%**, and showed **vscode processing 98% *more* tokens with lattice sensor** when
 > it in fact processes **41% fewer**. Re-derived below from the same raw logs
 > (`/tmp/ab-readme-sonnet3turn`) with tokens summed per assistant turn.
 > **Cost, time and tool calls were never affected** — they are unchanged.
@@ -292,11 +292,11 @@ uncontaminated and no run was dropped.
 
 But **29 attempts were blocked** — 26 in the without-arm (in **26 of its 28
 sessions**) and 3 in the with-arm. Ninety-three percent of without-arm sessions
-tried to reach codegraph through Bash and were stopped by the sanitized PATH +
+tried to reach lattice sensor through Bash and were stopped by the sanitized PATH +
 PreToolUse hook (`no-cli-shim.sh`). That is not a hypothetical channel the
 harness guards out of caution; it is the agent's *default* move once it notices
-`.codegraph/` in the tree. **`no-cli-shim.sh` is load-bearing** — without it this
-campaign would have been codegraph-over-CLI vs codegraph-over-MCP, exactly as the
+`.lattice/sensor/` in the tree. **`no-cli-shim.sh` is load-bearing** — without it this
+campaign would have been lattice-sensor-over-CLI vs lattice-sensor-over-MCP, exactly as the
 earlier 14-of-15 pass was (see the section above). Check the contamination row
 before believing any number from this harness.
 
@@ -344,7 +344,7 @@ POOLED allocation efficiency: 86.7% over 110 calls / 1.9M chars
 **Settled.** The metric exists, it is measured rather than estimated, and it runs
 over multi-turn sessions — the regime where occupancy is actually charged. As of
 2026-08-05 there is a baseline across the 7 README repos (above) to compare
-future changes against, and it says codegraph's residual is **higher**, on every
+future changes against, and it says lattice sensor's residual is **higher**, on every
 repo. (Before that campaign this section claimed such a baseline existed when it
 did not; it does now, and it is one regime — `claude-sonnet-5`, 3 turns — not a
 general result.)
@@ -366,10 +366,10 @@ general result.)
   enough to reach compaction on a 200k window, so the compaction and
   micro-compaction paths are implemented and instrumented but effectively
   untested by this baseline — no run here triggered either.
-- **Deferred tool schemas land in `base`.** `codegraph_explore` is a deferred
+- **Deferred tool schemas land in `base`.** `lattice_sensor_explore` is a deferred
   tool: the initial listing carries its name, and `ToolSearch` pulls the full
   schema in later. That injection is not a tool result, so its tokens are
-  counted as base rather than attributed to codegraph. The fixed-overhead line
+  counted as base rather than attributed to lattice sensor. The fixed-overhead line
   (with-arm `ctxBase` minus without-arm `ctxBase`) prices the part that is
   present from the start.
 - **Subagent contexts are not counted.** A `Task` subagent has its own window;
@@ -397,16 +397,16 @@ line ~195), as a second `>` note under the same table.
 > **A note on context.** The efficiency table above measures *throughput* —
 > tokens processed, tools called, dollars spent to reach one answer. It does not
 > measure what is still sitting in the window afterward, and on that axis
-> CodeGraph costs more, not less. Across the same seven repos in multi-turn
-> sessions, CodeGraph's responses leave **~80% more retrieval context resident**
+> LatticeSensor costs more, not less. Across the same seven repos in multi-turn
+> sessions, LatticeSensor's responses leave **~80% more retrieval context resident**
 > at the end of a session than the file-reading agent's do — on VS Code, 67k
 > tokens against 18k. The mechanism is the same one that makes it fast:
-> CodeGraph returns one dense, verbatim payload that answers the question and
+> LatticeSensor returns one dense, verbatim payload that answers the question and
 > then stays in the window, where a grep-and-read agent churns many small results
 > that get evicted. Fewer tokens *processed* and a larger persistent *footprint*
 > are both real. If you are running long sessions in a small window, budget for
 > it. Measured, per-repo:
-> [`docs/benchmarks/residual-context-occupancy.md`](docs/benchmarks/residual-context-occupancy.md).
+> [`docs/benchmarks/residual-context-occupancy.md`](residual-context-occupancy.md).
 
 Three notes on the drafting, if it gets edited:
 
