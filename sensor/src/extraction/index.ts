@@ -1152,12 +1152,18 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, em
   // on disk → those files are silently dropped from the index. (#541) With -s the
   // path follows a TAB after the `<mode> <object> <stage>` prefix.
   const gitlinkRels: string[] = [];
+  // Lattice owns `.lattice/` (its ToDo store, run worktrees, adapter registry):
+  // the FS walks and the watcher never descend into it (isLatticeStateDir), and
+  // git's listing must agree — an untracked script written there by a run is not
+  // project source, and counting it made status report the index stale mid-run.
+  const inLatticeState = (rel: string): boolean => rel.split('/').some((part) => isLatticeStateDir(part));
   const tracked = lsFilesStaged(gitOpts);
   for (const entry of tracked.split('\0')) {
     if (!entry) continue;
     const tab = entry.indexOf('\t');
     if (tab === -1) continue; // --stage always emits "<mode> <object> <stage>\t<path>"
     const rel = entry.slice(tab + 1);
+    if (inLatticeState(rel)) continue;
     if (entry.slice(0, 6) === '160000') {
       gitlinkRels.push(rel); // an unexpanded gitlink — recursed into below, not a source file itself
       continue;
@@ -1171,6 +1177,7 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, em
   const untracked = execFileSync('git', ['ls-files', '-z', '-o', '--exclude-standard'], gitOpts);
   for (const rel of untracked.split('\0')) {
     if (!rel) continue;
+    if (inLatticeState(rel)) continue;
     if (rel.endsWith('/')) {
       // git only emits a trailing-slash directory entry for an embedded repo.
       // Guard with a .git check anyway, and skip anything else exactly as git
@@ -1447,6 +1454,10 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
       return;
     }
 
+    // Lattice owns `.lattice/`: the full scan and git listing skip it, so a
+    // change there is never pending (a run's untracked scripts would otherwise
+    // read as an added file and mark the index stale).
+    if (filePath.split('/').some((part) => isLatticeStateDir(part))) return;
     // Added (`??`) / modified files inside an excluded dir must not enter the
     // index — match against the repo-relative path, same as the full scan. (#766)
     if (ig.ignores(rel)) return;

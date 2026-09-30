@@ -113,5 +113,6 @@ describe('an unchanged file over the size limit is not reported as drifted (#191
     } finally {
       cg.close();
     }
-  });
+    // Indexes a 1.4 MB file: over the 5 s default on the Windows factory runner.
+  }, 30_000);
 });

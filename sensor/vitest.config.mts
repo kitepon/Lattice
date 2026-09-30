@@ -32,6 +32,7 @@ export default defineConfig({
       '__tests__/ui-entrypoints-api.test.ts', // starts the UI server, which serves the built viewer
       '__tests__/cli-install-init.test.ts', // `install` is refused in Lattice (BUNDLING.md)
       '__tests__/wsl-shared-index.test.ts', // Lattice keeps one fixed state path; no WSL sibling dir
+      '__tests__/bundle-launcher.test.ts', // the standalone release bundle is not a Lattice distribution (BUNDLING.md)
     ],
     // Suites that spawn the built CLI need a current dist/ (#1879).
     globalSetup: ['./__tests__/global-setup-dist.ts'],

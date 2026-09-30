@@ -1114,7 +1114,7 @@ describe('FileWatcher', () => {
       await cg.waitUntilWatcherReady();
       const before = fs.statSync(file);
       const quotedFile = file.replace(/'/g, "''");
-      execFileSync('powershell.exe', ['-NoProfile', '-Command',
+      execFileSync('pwsh', ['-NoProfile', '-Command',
         `(Get-Item -LiteralPath '${quotedFile}').LastAccessTimeUtc = [DateTime]::UtcNow.AddDays(-2)`]);
       await waitFor(() => events > 0, 5000);
       expect(fs.statSync(file).mtimeMs).toBe(before.mtimeMs);

@@ -34,7 +34,9 @@ import { resolveProjectFile } from '../security';
 import { ApiError, badRequest } from './respond';
 
 /** Where trails live, relative to the project root. Forward slashes always. */
-export const TRAILS_RELATIVE_DIR = `${LATTICE_SENSOR_DIR}/ui/trails`;
+// Lattice's data dir is two segments (`.lattice/sensor`), joined with the host
+// separator — split it so Windows gets the promised forward slashes too.
+export const TRAILS_RELATIVE_DIR = [...LATTICE_SENSOR_DIR.split(/[\\/]/), 'ui', 'trails'].join('/');
 
 /** The only `version` this build writes, and the only one it reads. */
 export const TRAIL_FORMAT_VERSION = 1;
