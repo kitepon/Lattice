@@ -11,15 +11,16 @@
     "method": "git archive (pristine tree)"
   },
   "synced_at": {
-    "commit": "49c11fc2e0c02170742be8411e66a31af611f4b7",
-    "date": "2026-08-03"
+    "commit": "7639c787e48be92ea4ca83c5c014d8dd480de470",
+    "date": "2026-09-30"
   },
   "path_map": {
     "codegraph-kernel": "lattice-sensor-kernel",
     "CLAUDE.md": "docs/UPSTREAM-CLAUDE.md",
     "src/bin/codegraph.ts": "src/bin/lattice-sensor.ts",
     "docs/benchmarks/codegraph-ab-matrix.md": "docs/benchmarks/lattice-sensor-ab-matrix.md",
-    "docs/design/agent-codegraph-adoption.md": "docs/design/agent-lattice-sensor-adoption.md"
+    "docs/design/agent-codegraph-adoption.md": "docs/design/agent-lattice-sensor-adoption.md",
+    "docs/design/codegraph-ui-design-spec.md": "docs/design/lattice-sensor-ui-design-spec.md"
   },
   "skip": [
     "site/",
@@ -28,7 +29,8 @@
     "assets/",
     "install.sh",
     "install.ps1",
-    "package-lock.json"
+    "package-lock.json",
+    "vitest.workspace.mts"
   ],
   "lattice_only": [
     ".npmignore",
@@ -48,7 +50,8 @@
     "lattice-sensor-kernel/src/tsjs/spawn_invokes.rs"
   ],
   "accepted_deletions": [
-    ".kommandr/"
+    ".kommandr/",
+    ".claude/"
   ],
   "conflict_policy": [
     {
@@ -90,6 +93,46 @@
       "path": "scripts/build-kernel.sh",
       "resolution": "manual",
       "why": "path_map applies (codegraph-kernel -> lattice-sensor-kernel) and Lattice stages prebuilds where its own loader looks."
+    },
+    {
+      "path": "src/db/migrations.ts",
+      "resolution": "manual",
+      "why": "Both sides number migrations independently. Lattice databases in the field carry Lattice's numbers (9-12 as of 2026-09-30), so upstream's migrations are carried ABOVE the highest Lattice number (upstream 9-11 became 13-15) and CURRENT_SCHEMA_VERSION is the highest carried number. Never reuse a number a field database may already record."
+    },
+    {
+      "path": "lattice-sensor-kernel/src/buffers.rs",
+      "resolution": "manual",
+      "why": "EDGE_KINDS order is the wire contract with src/types.ts. When both sides append a kind, append Lattice's first (invokes, then navigates as of 2026-09-30) in BOTH files, and bump the array length."
+    },
+    {
+      "path": "src/directory.ts",
+      "resolution": "manual",
+      "why": "Lattice keeps one fixed state path (.lattice/sensor) with no LATTICE_SENSOR_DIR override and no per-host variant; other Lattice components address the index by that path. Upstream's WSL-on-Windows-drive sibling (#995) is not taken: latticeSensorRelativeDirFor returns the fixed path, and the WSL constants exist only so upstream's WSL diagnostics compile (they stay dormant)."
+    },
+    {
+      "path": "src/bin/lattice-sensor.ts",
+      "resolution": "manual",
+      "why": "Take upstream's commands except: install/uninstall/upgrade stay refused (BUNDLING.md, ADR 0049/0059), and no dynamic import of ../installer or ../upgrade. callers/callees take upstream's per-definition implementation (#1512/#1639/#1473) PLUS Lattice's contract used by src/sensor-adapter.mjs, todo-structure-source-adapter and seam-cost: --exact-path with exactPath/exactResolution, and edgeKind/valueRef/valueWrite on every listed node. The root adapter accepts upstream's did-you-mean suffix on 'Symbol \"X\" not found'."
+    },
+    {
+      "path": "src/search/query-utils.ts",
+      "resolution": "manual",
+      "why": "Lattice's isRunnableTestFile and upstream's isTestPath are the same narrow test-suite check; upstream's structure is taken and isRunnableTestFile is kept as an alias."
+    },
+    {
+      "path": "__tests__/mcp-daemon.test.ts",
+      "resolution": "manual",
+      "why": "A daemon hello without the -lattice. version marker is a foreign product (ADR 0049 Decision 5③) and fails the session closed. Upstream version-mismatch fixtures must use a marked version and the `sensor` hello field to exercise the same-product path."
+    },
+    {
+      "path": "vitest.config.mts",
+      "resolution": "manual",
+      "why": "Upstream moved its config to vitest.config.mts + vitest.workspace.mts. Lattice uses vitest.config.mts alone (the workspace needs the Svelte plugin for ui-package.test.ts) and keeps an exclude list for suites whose surface Lattice does not operate: install/update machinery, the Svelte viewer build, and the WSL sibling state dir. Those files are still synced so the next sync sees upstream's changes."
+    },
+    {
+      "path": "__tests__/global-setup-dist.ts",
+      "resolution": "manual",
+      "why": "Lattice keeps ui/ sources (its pure-TS models are exercised by engine tests) but does not build or ship the viewer. The viewer build runs only when package.json defines build:ui; a non-JSON package.json (the isolated fixtures) falls back to whether ui/ exists."
     }
   ],
   "notes": [
@@ -98,6 +141,7 @@
     "A sync target must be a descendant of synced_at. Pointing --ref at an older commit would move the marker backwards while the tree stays new.",
     "The rename to LATTICE_SENSOR_* / lattice-sensor is carried as an ordinary local change: git resolves it as ours, so no rename rules are needed. Do not add textual substitution to the sync path — the rename is selective (some CODEGRAPH_* names are deliberately kept) and cannot be reproduced by rules.",
     "lattice_only paths are never deleted by a sync even when absent upstream.",
-    "conflict_policy exists so a resolution is decided once, not re-litigated every sync. When a conflict is resolved by hand, add the path and the reason here — an entry that only says 'ours' without a why is worse than none."
+    "conflict_policy exists so a resolution is decided once, not re-litigated every sync. When a conflict is resolved by hand, add the path and the reason here — an entry that only says 'ours' without a why is worse than none.",
+    "After a sync, upstream's NEW lines carry upstream names (CodeGraph/codegraph/CODEGRAPH_*). Run scripts/upstream-rename.mjs --write over sensor code (and --prose over sensor/docs) BEFORE resolving conflicts, so both sides of a hunk carry the same names, then fix what build and tests expose. src/, __tests__/, scripts/, the kernel and docs/ keep zero codegraph mentions (test/lattice-sensor-runtime.test.mjs)."
   ]
 }

@@ -37,39 +37,77 @@ echo '{"mcpServers":{}}' > "$OUT/mcp-empty.json"
 
 echo "###### lattice-sensor: $CG_BIN"
 echo "###### repo:      $REPO"
-echo "###### question:  $Q"
+echo "###### turns:     ${#TURNS[@]}"
+for t in "${TURNS[@]}"; do echo "######   - $t"; done
 echo
 
-# Headless arm: claude -p with stream-json -> exact tool sequence + tokens/cost.
+# Pull the session id out of a segment's result event so the next turn can
+# --resume it (rather than minting a --session-id, which needs a valid uuid).
+session_id_of() {
+  node -e '
+    const fs=require("fs");
+    for (const l of fs.readFileSync(process.argv[1],"utf8").split("\n").reverse()) {
+      if (!l) continue; let e; try { e=JSON.parse(l) } catch { continue }
+      if (e.session_id) { console.log(e.session_id); break }
+    }' "$1" 2>/dev/null
+}
+
+# Headless arm: claude -p with stream-json -> exact tool sequence + tokens/cost
+# + residual context occupancy. One session, one segment file per turn.
 headless() {
   local label="$1" cfg="$2"
   echo "############################## HEADLESS [$label] ##############################"
-  ( cd "$REPO" && claude -p "$Q" \
-      --output-format stream-json --verbose \
-      --permission-mode bypassPermissions \
-      --model "${MODEL:-sonnet}" --effort "${EFFORT:-high}" \
-      --max-budget-usd 4 \
-      --strict-mcp-config --mcp-config "$cfg" \
-      > "$OUT/run-$label.jsonl" 2>"$OUT/run-$label.err" )
-  echo "exit $? -> $OUT/run-$label.jsonl ($(wc -l < "$OUT/run-$label.jsonl" | tr -d ' ') lines)"
+  local sid="" seg=0 out="" files=()
+  : > "$OUT/run-$label.err"
+  for q in "${TURNS[@]}"; do
+    seg=$((seg + 1))
+    out="$OUT/run-$label.jsonl"
+    [ "$seg" -gt 1 ] && out="$OUT/run-$label.t$seg.jsonl"
+    local resume=()
+    [ -n "$sid" ] && resume=(--resume "$sid")
+    ( cd "$REPO" && PATH="$ARM_PATH" claude -p "$q" \
+        --output-format stream-json --verbose \
+        --permission-mode bypassPermissions \
+        --model "${MODEL:-sonnet}" --effort "${EFFORT:-high}" \
+        --max-budget-usd 4 \
+        --strict-mcp-config --mcp-config "$cfg" \
+        --settings "$ARM_SETTINGS" \
+        ${resume[@]+"${resume[@]}"} \
+        </dev/null > "$out" 2>>"$OUT/run-$label.err" )
+    echo "exit $? -> $out ($(wc -l < "$out" | tr -d ' ') lines) [turn $seg/${#TURNS[@]}]"
+    files+=("$out")
+    sid="$(session_id_of "$out")"
+    if [ -z "$sid" ] && [ "$seg" -lt "${#TURNS[@]}" ]; then
+      echo "  WARN: no session_id in $out — later turns would start a FRESH context; stopping this arm"
+      break
+    fi
+  done
   tail -2 "$OUT/run-$label.err" 2>/dev/null
-  node "$HARNESS/parse-run.mjs" "$OUT/run-$label.jsonl" 2>&1 || true
+  node "$HARNESS/parse-run.mjs" "${files[@]}" 2>&1 || true
   echo
 }
 
+# CG_ARMS=with|without|both — re-run one arm without redoing the other.
+ARMS="${CG_ARMS:-both}"
 if [ "$MODE" = headless ] || [ "$MODE" = all ]; then
-  headless "headless-with"    "$OUT/mcp-lattice-sensor.json"
-  headless "headless-without" "$OUT/mcp-empty.json"
+  case "$ARMS" in both|with)    headless "headless-with"    "$OUT/mcp-lattice-sensor.json";; esac
+  case "$ARMS" in both|without) headless "headless-without" "$OUT/mcp-empty.json";; esac
+  # Both arms' three metrics on one screen. The per-arm blocks above say WHY a
+  # number moved (which query fell short, which file was never cited); this says
+  # whether it moved at all. CG_ARMS=with|without leaves one arm's logs from an
+  # earlier invocation in $OUT, and comparing against those is the point of the
+  # split — so this runs whichever arms have logs, not only a fresh pair.
+  node "$HARNESS/compare-arms.mjs" "$OUT" headless-with headless-without 2>&1 || true
 fi
 
 if [ "$MODE" = tmux ] || [ "$MODE" = all ]; then
   echo "############################## INTERACTIVE [with] ##############################"
   CLAUDE_EXTRA_ARGS="--model ${MODEL:-sonnet} --effort ${EFFORT:-high} --strict-mcp-config --mcp-config $OUT/mcp-lattice-sensor.json" \
-    bash "$HARNESS/itrun.sh" "$REPO" "int-with" "$Q" 2>&1 || echo "[itrun WITH failed]"
+    bash "$HARNESS/itrun.sh" "$REPO" "int-with" "${TURNS[0]}" 2>&1 || echo "[itrun WITH failed]"
   echo
   echo "############################## INTERACTIVE [without] ##############################"
   CLAUDE_EXTRA_ARGS="--model ${MODEL:-sonnet} --effort ${EFFORT:-high} --strict-mcp-config --mcp-config $OUT/mcp-empty.json" \
-    bash "$HARNESS/itrun.sh" "$REPO" "int-without" "$Q" 2>&1 || echo "[itrun WITHOUT failed]"
+    bash "$HARNESS/itrun.sh" "$REPO" "int-without" "${TURNS[0]}" 2>&1 || echo "[itrun WITHOUT failed]"
   echo
 fi
 echo "############################## RUN-ALL COMPLETE ##############################"

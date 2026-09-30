@@ -157,7 +157,7 @@ const DEFAULT_BUILD_OPTIONS: Required<BuildContextOptions> = {
  * they tell you something exists, not how it works.
  */
 const HIGH_VALUE_NODE_KINDS: NodeKind[] = [
-  'function', 'method', 'class', 'interface', 'type_alias', 'struct', 'trait',
+  'function', 'method', 'class', 'interface', 'type_alias', 'struct', 'union', 'trait',
   'component', 'route', 'variable', 'constant', 'enum', 'module', 'namespace',
 ];
 
@@ -171,6 +171,7 @@ const DEFAULT_FIND_OPTIONS: Required<FindRelevantContextOptions> = {
   minScore: 0.3,
   edgeKinds: [],
   nodeKinds: HIGH_VALUE_NODE_KINDS, // Filter out imports/exports by default
+  seedNames: [],         // Segment-vocab supplement — filled by the facade
 };
 
 // Re-export the low-confidence sentinel (defined in a dependency-free leaf so
@@ -187,6 +188,7 @@ export { LOW_CONFIDENCE_MARKER } from './markers';
 export class ContextBuilder {
   private projectRoot: string;
   private queries: QueryBuilder;
+
   private traverser: GraphTraverser;
 
   constructor(
@@ -197,6 +199,21 @@ export class ContextBuilder {
     this.projectRoot = projectRoot;
     this.queries = queries;
     this.traverser = traverser;
+  }
+
+  /**
+   * Whether the project's `lattice-sensor.json` `deprioritize` patterns cover this
+   * path (#982). Explore ranks through its own path scorer as well as through
+   * `searchNodes`, so the lever has to be applied here too or the setting would
+   * only half-work — and explore is the surface #982 actually reports on.
+   *
+   * Only the -15 relevance penalty is shared. Explore's hard `continue` filters
+   * and its non-production budget cap are deliberately NOT joined: those REMOVE
+   * content, and `deprioritize` is a ranking lever by definition — `exclude` is
+   * the lever for taking things out of reach.
+   */
+  private isDeprioritized(filePath: string): boolean {
+    return this.queries.getDeprioritizedPathMatcher()?.(filePath) ?? false;
   }
 
   /**
@@ -265,7 +282,14 @@ export class ContextBuilder {
 
     // Return formatted output or raw context
     if (opts.format === 'markdown') {
-      return formatContextAsMarkdown(context)
+      // Bounded candidate set (entry points + subgraph + code blocks), so the
+      // DB-backed generated check is one probe, not a per-comparison query.
+      const isGenerated = this.queries.generatedPredicateFor([
+        ...entryPoints.map((n) => n.filePath),
+        ...Array.from(subgraph.nodes.values(), (n) => n.filePath),
+        ...codeBlocks.map((b) => b.filePath),
+      ]);
+      return formatContextAsMarkdown(context, isGenerated)
         + this.buildCallPathsSection(subgraph)
         + (subgraph.confidence === 'low' ? this.buildLowConfidenceNote(entryPoints) : '');
     } else if (opts.format === 'json') {
@@ -388,6 +412,12 @@ export class ContextBuilder {
         ? `renders <${String(m.via || 'child')}>`
         : m.synthesizedBy === 'vue-handler'
         ? `Vue @${String(m.event || 'event')} handler`
+        : m.synthesizedBy === 'http-client'
+        ? `HTTP ${String(m.method || 'GET')} ${String(m.href || '')} — the client's call onto its own route${at}`
+        : m.synthesizedBy === 'queue-job'
+        ? `queue job ${m.event ? `\`${String(m.event)}\`` : ''}${m.queue ? ` on \`${String(m.queue)}\`` : ''}${at}`
+        : m.synthesizedBy === 'event-bus' && m.channel === 'socket'
+        ? `socket message ${m.event ? `\`${String(m.event)}\`` : ''}${m.tier === 'client→server' ? ' → server' : m.tier === 'server→client' ? ' → client' : ''}${at}`
         : `event ${m.event ? `\`${String(m.event)}\`` : ''}${at}`;
       synthByPair.set(`${e.source}>${e.target}`, label);
     }
@@ -453,13 +483,37 @@ export class ContextBuilder {
 
     // Step 2: Look up exact matches for extracted symbols
     let exactMatches: SearchResult[] = [];
-    if (symbolsFromQuery.length > 0) {
+    if (symbolsFromQuery.length > 0 || opts.seedNames.length > 0) {
       try {
-        // Get more results so we can apply co-location boosting before trimming
-        exactMatches = this.queries.findNodesByExactName(symbolsFromQuery, {
-          limit: Math.ceil(opts.searchLimit * 5),
-          kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
-        });
+        if (symbolsFromQuery.length > 0) {
+          // Get more results so we can apply co-location boosting before trimming
+          exactMatches = this.queries.findNodesByExactName(symbolsFromQuery, {
+            limit: Math.ceil(opts.searchLimit * 5),
+            kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
+          });
+        }
+
+        // Step 2a: segment-vocabulary seeds. Word-level query terms cannot
+        // reach camelCase names through FTS (one token per name), so the
+        // caller resolves query words → names via the segment vocab and hands
+        // them in as seedNames. Merged at a dampened score — a symbol the
+        // query names outright must outrank a segment-derived one — but
+        // BEFORE the co-location boost below, because several seeds landing
+        // in one file (pinFeedIfNearBottom + feedAtBottom + handleFeedScroll)
+        // is exactly the evidence that file is the answer.
+        if (opts.seedNames.length > 0) {
+          const seedResults = this.queries.findNodesByExactName(opts.seedNames, {
+            limit: Math.ceil(opts.searchLimit * 3),
+            kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
+          });
+          const known = new Set(exactMatches.map((r) => r.node.id));
+          for (const r of seedResults) {
+            if (known.has(r.node.id)) continue;
+            known.add(r.node.id);
+            exactMatches.push({ ...r, score: r.score * 0.6 });
+          }
+          logDebug('Segment seed matches', { seedNames: opts.seedNames, added: known.size });
+        }
 
         // Co-location boost: when multiple extracted symbols appear in the same file,
         // those results are much more likely to be what the user is looking for.
@@ -496,7 +550,7 @@ export class ContextBuilder {
     // like RestController, BulkRequest, AllocationService — not nodes named exactly that.
     // Also tries stem variants: "caching" → "cache" finds Cache, CacheBuilder.
     if (symbolsFromQuery.length > 0) {
-      const definitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait',
+      const definitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'union', 'trait',
         'protocol', 'enum', 'type_alias'];
       // Expand symbols with stem variants for broader definition matching
       const expandedSymbols = new Set(symbolsFromQuery);
@@ -536,6 +590,35 @@ export class ContextBuilder {
       exactMatches = exactMatches.slice(0, Math.ceil(opts.searchLimit * 3));
     }
 
+    // Step 2c: Match an exact Han filename (with or without its extension).
+    // Keep this separate from natural-language terms so partial Chinese words
+    // do not become broad FTS queries.
+    const filenameQuery = query.trim();
+    const hasHanInFilename = Array.from(filenameQuery).some(
+      (char) => /\p{Script_Extensions=Han}/u.test(char)
+    );
+    const allowsFileNodes = options.nodeKinds === undefined
+      || options.nodeKinds.length === 0
+      || options.nodeKinds.includes('file');
+    const exactFileMatches: SearchResult[] = [];
+
+    if (hasHanInFilename && allowsFileNodes) {
+      const candidates = [
+        ...this.queries.getNodesByName(filenameQuery)
+          .filter((node) => node.kind === 'file'),
+        ...this.queries.getFileNodesByNamePrefix(`${filenameQuery}.`),
+      ];
+      for (const node of candidates) {
+        const fileName = path.basename(node.filePath);
+        const fileExtension = path.extname(fileName);
+        const fileStem = fileExtension
+          ? fileName.slice(0, -fileExtension.length)
+          : fileName;
+        const isExactMatch = fileName === filenameQuery || fileStem === filenameQuery;
+        if (isExactMatch) exactFileMatches.push({ node, score: 1 });
+      }
+    }
+
     // Step 3: Run text search for natural language term matching
     // This catches file-name and node-name matches that semantic search may miss,
     // which is critical for template-heavy codebases (e.g., Liquid/Shopify themes)
@@ -552,7 +635,7 @@ export class ContextBuilder {
         // but are almost never what exploration queries want.
         const searchKinds = opts.nodeKinds && opts.nodeKinds.length > 0
           ? opts.nodeKinds
-          : ['file', 'module', 'class', 'struct', 'interface', 'trait', 'protocol',
+          : ['file', 'module', 'class', 'struct', 'union', 'interface', 'trait', 'protocol',
              'function', 'method', 'property', 'field', 'variable', 'constant',
              'enum', 'enum_member', 'type_alias', 'namespace', 'export',
              'route', 'component'] as NodeKind[];
@@ -747,7 +830,7 @@ export class ContextBuilder {
     // LIKE reliably finds these substring matches. Results are appended with
     // guaranteed slots so they don't compete with higher-scoring prefix matches.
     if (symbolsFromQuery.length > 0) {
-      const camelDefinitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait',
+      const camelDefinitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'union', 'trait',
         'protocol', 'enum', 'type_alias'];
       // Callable kinds participate too: in service-layer codebases the
       // camel-infix definers of a queried FIELD are methods/functions
@@ -805,7 +888,12 @@ export class ContextBuilder {
           if (searchIdSet.has(r.node.id)) continue;
           if (isTestFile(r.node.filePath) && !isTestQuery) continue;
 
-          const pathScore = scorePathRelevance(r.node.filePath, query);
+          const pathScore = scorePathRelevance(
+            r.node.filePath,
+            query,
+            undefined,
+            this.isDeprioritized(r.node.filePath),
+          );
           const brevityBonus = Math.max(0, 6 - (name.length - titleCased.length) / 4);
           termCandidates.push({ node: r.node, score: 8 + brevityBonus + pathScore });
         }
@@ -892,7 +980,12 @@ export class ContextBuilder {
         const compoundResults: SearchResult[] = [];
         for (const [, entry] of compoundTermMap) {
           if (entry.terms.size >= 2) {
-            const pathScore = scorePathRelevance(entry.node.filePath, query);
+            const pathScore = scorePathRelevance(
+              entry.node.filePath,
+              query,
+              undefined,
+              this.isDeprioritized(entry.node.filePath),
+            );
             const brevityBonus = Math.max(0, 6 - entry.node.name.length / 8);
             compoundResults.push({
               node: entry.node,
@@ -922,6 +1015,16 @@ export class ContextBuilder {
     // If someone searches "terminal" and finds `import { TerminalPanel }`,
     // they want the TerminalPanel class, not the import statement
     filteredResults = this.resolveImportsToDefinitions(filteredResults);
+
+    // An exact filename is the query's requested entry point. Keep it ahead of
+    // broader text matches before applying the entry-point cap.
+    if (exactFileMatches.length > 0) {
+      const exactFileIds = new Set(exactFileMatches.map((result) => result.node.id));
+      filteredResults = [
+        ...exactFileMatches,
+        ...filteredResults.filter((result) => !exactFileIds.has(result.node.id)),
+      ];
+    }
 
     // Cap entry points so traversal budget isn't spread too thin.
     // With 36 entry points and maxNodes=120, each gets only 3 nodes — useless.
@@ -970,7 +1073,7 @@ export class ContextBuilder {
     // before reaching extends/implements neighbors. This dedicated step
     // ensures subclasses and superclasses always appear in results.
     // Budget: up to maxNodes/4 hierarchy nodes to avoid flooding.
-    const typeHierarchyKinds = new Set<string>(['class', 'interface', 'struct', 'trait', 'protocol']);
+    const typeHierarchyKinds = new Set<string>(['class', 'interface', 'struct', 'union', 'trait', 'protocol']);
     const maxHierarchyNodes = Math.ceil(opts.maxNodes / 4);
     let hierarchyNodesAdded = 0;
     for (const result of filteredResults) {
@@ -1150,7 +1253,7 @@ export class ContextBuilder {
 
     // Edge recovery: BFS with many entry points leaves most nodes disconnected.
     // Discover edges between already-selected nodes to recover connectivity.
-    const recoveryKinds: EdgeKind[] = ['calls', 'extends', 'implements', 'references', 'overrides'];
+    const recoveryKinds: EdgeKind[] = ['calls', 'extends', 'implements', 'references', 'overrides', 'navigates'];
     const recoveredEdges = this.queries.findEdgesBetweenNodes(
       [...finalNodes.keys()],
       recoveryKinds,

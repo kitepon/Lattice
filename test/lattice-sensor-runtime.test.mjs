@@ -59,10 +59,11 @@ test('現行実行・配布・test・active contract面へ廃止名を再混入�
   // upstream追従の境界層だけは廃止名を名指しできる。sensor/の由来である
   // CodeGraphとのpath対応・repo URLを扱うのが仕事であり、名を伏せると
   // 写像が書けない。境界の正本はsensor/UPSTREAM.jsonで、ここはその読者。
-  // この3ファイル以外への再混入は引き続き違反である。
+  // この4ファイル以外への再混入は引き続き違反である。
   const upstreamBoundary = new Set([
     'scripts/upstream-sync.mjs',
     'scripts/upstream-check.mjs',
+    'scripts/upstream-rename.mjs',
     'test/upstream-sync.test.mjs',
   ]);
   const violations = [];

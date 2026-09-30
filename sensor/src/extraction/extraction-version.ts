@@ -29,4 +29,6 @@
 // bumped to 25 independently, so the two "25"s meant different output — 26 is
 // the first value that means one thing. Carries upstream's extraction changes
 // across 54 commits plus its native kernel work.
-export const EXTRACTION_VERSION = 26;
+// 28 (2026-09-30): upstream sync 49c11fc..7639c78. Upstream reached 27 on its own,
+// so 27 would name upstream-only output; 28 is above both (ADR 0155 Decision 5).
+export const EXTRACTION_VERSION = 28;

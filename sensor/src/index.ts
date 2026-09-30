@@ -5,6 +5,7 @@
  * knowledge graph from any codebase.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   Node,
@@ -47,6 +48,7 @@ import {
   createResolver,
   ResolutionResult,
 } from './resolution';
+import { hasSynthesisPattern } from './resolution/callback-synthesizer';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
@@ -54,8 +56,10 @@ import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { getLatticeSensorDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
+import ignore from 'ignore';
+import { loadDeprioritizePatterns } from './project-config';
 import { LatticeSensorPackageVersion } from './mcp/version';
-import { segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
+import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
 import { createYielder } from './resolution/cooperative-yield';
 import { minRefsForPool } from './resolution/resolver-pool';
 
@@ -187,6 +191,39 @@ export class LatticeSensor {
     } catch {
       // Best-effort: ranking still works without it.
     }
+    // Down-weight the peripheral trees the project named in `lattice-sensor.json`
+    // `deprioritize` — indexed and findable, but never outranking real code
+    // (#982). Ranking-only, so a bad pattern costs relevance, never recall.
+    //
+    // Read LAZILY, not once here: `wireLayers` runs from the constructor and
+    // from `reopenIfReplaced`, so a matcher built here would freeze at whatever
+    // the config said when the project opened. The MCP server caches one
+    // LatticeSensor per root for its whole lifetime, so editing `lattice-sensor.json`
+    // would appear to do nothing until the process restarted — `exclude` and
+    // `include` do not behave that way. `loadDeprioritizePatterns` is
+    // mtime-cached, so this costs one `stat`; the compiled matcher is memoized
+    // on the pattern array's identity, which the cache keeps stable.
+    let cachedPatterns: string[] | undefined;
+    let cachedMatcher: ReturnType<typeof ignore> | undefined;
+    this.queries.setDeprioritizedPathMatcher((filePath: string): boolean => {
+      try {
+        const patterns = loadDeprioritizePatterns(this.projectRoot);
+        if (patterns.length === 0) return false;
+        if (patterns !== cachedPatterns) {
+          cachedPatterns = patterns;
+          cachedMatcher = ignore().add(patterns);
+        }
+        const rel = path.isAbsolute(filePath)
+          ? path.relative(this.projectRoot, filePath)
+          : filePath;
+        if (!rel || rel.startsWith('..')) return false;
+        return cachedMatcher!.ignores(rel.split(path.sep).join('/'));
+      } catch {
+        // Ranking must never take the search down with it.
+        return false;
+      }
+    });
+
     this.orchestrator = new ExtractionOrchestrator(this.projectRoot, this.queries);
     this.resolver = createResolver(this.projectRoot, this.queries);
     this.graphManager = new GraphQueryManager(this.queries);
@@ -196,6 +233,25 @@ export class LatticeSensor {
       this.queries,
       this.traverser
     );
+  }
+
+  /**
+   * Set when this instance followed a database replaced on disk (#1902): the
+   * next sync that can run reconciles the whole tree, because whatever the old
+   * handle absorbed since the rebuild never reached the new file.
+   */
+  private pendingFullReconcile = false;
+
+  /** How long a recreated, not-yet-indexed database is treated as a rebuild in progress. */
+  private static readonly RECREATE_GRACE_MS = 120_000;
+
+  /** The database file at the path was written within the recreate grace window. */
+  private isFreshlyRecreated(): boolean {
+    try {
+      return Date.now() - fs.statSync(getDatabasePath(this.projectRoot)).mtimeMs < LatticeSensor.RECREATE_GRACE_MS;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -211,18 +267,32 @@ export class LatticeSensor {
    *
    * POSIX-only in practice: `isReplacedOnDisk` never fires on Windows (an open
    * file can't be unlinked there, and st_ino is unreliable).
+   *
+   * Refuses (returns false) while an index/sync holds the index mutex: closing
+   * the handle that run is writing through would break it mid-flight. `sync()`
+   * performs the same check itself once it holds the mutex (#1902), so the
+   * replaced file is still picked up — by that sync, or by the caller's retry.
    */
   reopenIfReplaced(): boolean {
+    if (this.indexMutex.isLocked()) return false;
+    return this.reopenReplacedDatabase();
+  }
+
+  /** The body of {@link reopenIfReplaced}, without the in-flight-sync guard. */
+  private reopenReplacedDatabase(): boolean {
     if (!this.db.isReplacedOnDisk()) return false;
     const dbPath = this.db.getPath();
     // Open the live file FIRST — if that throws (e.g. mid-recreate), the old
     // handle stays in place and the caller retries on the next query, rather
     // than leaving this instance with no connection at all.
-    const fresh = DatabaseConnection.open(dbPath);
+    const fresh = DatabaseConnection.open(dbPath, { readOnly: this.db.readOnly });
     const stale = this.db;
     this.db = fresh;
     this.queries = new QueryBuilder(fresh.getDb());
     this.wireLayers();
+    // Whoever reopened — a sync, or a tool call's self-heal — the next sync
+    // must reconcile the whole tree (#1902).
+    this.pendingFullReconcile = true;
     // Releasing the dead handle also frees the leaked db/-wal/-shm fds that were
     // pinning the unlinked inode (#925).
     try { stale.close(); } catch { /* the old inode is gone; closing just frees fds */ }
@@ -315,14 +385,19 @@ export class LatticeSensor {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
     const queries = new QueryBuilder(db.getDb());
 
     const instance = new LatticeSensor(db, queries, resolvedRoot);
 
     // Sync if requested
-    if (options.sync) {
-      await instance.sync();
+    if (options.sync && !options.readOnly) {
+      try {
+        await instance.sync();
+      } catch (err) {
+        instance.destroy();
+        throw err;
+      }
     }
 
     return instance;
@@ -379,7 +454,7 @@ export class LatticeSensor {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string): LatticeSensor {
+  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly'> = {}): LatticeSensor {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -395,7 +470,7 @@ export class LatticeSensor {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
     const queries = new QueryBuilder(db.getDb());
 
     return new LatticeSensor(db, queries, resolvedRoot);
@@ -482,6 +557,7 @@ export class LatticeSensor {
         walValve.start();
       }
       try {
+        const gitState = this.orchestrator.beginGitIndexState(true);
         const before = this.queries.getNodeAndEdgeCount();
         // Mark the index as in-flight BEFORE any writes: a run killed
         // mid-index (OOM, SIGKILL, the #850 liveness watchdog) leaves this
@@ -670,6 +746,11 @@ export class LatticeSensor {
           } catch { /* metadata is advisory — never fail an index over it */ }
         }
 
+        if (result.success && result.filesErrored === 0 &&
+          (result.filesDiscovered === undefined || result.filesIndexed + result.filesSkipped >= result.filesDiscovered)) {
+          this.orchestrator.finishGitIndexState(gitState, true);
+        }
+
         // Reconcile the scan's ground truth against what the pipeline
         // accounted for. A shortfall means files were silently dropped
         // (observed in the wild: a run under heavy load came up 37 files
@@ -746,7 +827,8 @@ export class LatticeSensor {
   }
 
   /**
-   * Sync with current file state (incremental update)
+   * Sync with current file state (incremental update).
+   * Throws LockUnavailableError if the cross-process write lock is unavailable.
    *
    * Uses a mutex to prevent concurrent indexing operations.
    */
@@ -754,8 +836,43 @@ export class LatticeSensor {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
-      } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      } catch (err) {
+        throw new LockUnavailableError(
+          `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      // A full rebuild in another process (`lattice sensor index` → recreate)
+      // unlinks the database and creates a new file at the same path. A
+      // long-lived instance — the MCP daemon's watcher — would otherwise keep
+      // "syncing" into the dead inode, and nothing it wrote there is visible
+      // to anyone (#1902). Follow the path before writing (one stat), and
+      // widen a scoped sync to a full one: whatever the old handle absorbed
+      // since the rebuild is gone, so the new file has to be reconciled whole.
+      // If the reopen fails (the rebuild is mid-way), report lock contention
+      // so the watcher keeps its pending files and retries.
+      try {
+        this.reopenReplacedDatabase();
+      } catch (err) {
+        this.fileLock.release();
+        throw new LockUnavailableError(
+          `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (this.pendingFullReconcile) {
+        // `lattice sensor index` recreates the file, THEN takes the write lock in
+        // indexAll. A sync landing in that gap would otherwise run a full
+        // reconcile of the empty file and hold the lock the rebuild is about
+        // to ask for. A fresh file with no index_state yet is that rebuild:
+        // step aside (lock contention, the watcher retries) and reconcile in
+        // full once it is done. Bounded, so a rebuild that died before
+        // indexing does not park the watcher forever.
+        if (this.getIndexState() === null && this.isFreshlyRecreated()) {
+          this.fileLock.release();
+          throw new LockUnavailableError('A rebuild of this index is in progress; retry when it finishes.');
+        }
+        // Cleared only once this run completes (below): a sync that throws
+        // must leave the full catch-up for the next one.
+        options = { ...options, paths: undefined };
       }
       // Defer WAL auto-checkpointing for the whole incremental run, exactly
       // as indexAll does for the bulk path (#1231): sync's store loop and its
@@ -791,7 +908,29 @@ export class LatticeSensor {
           try { return this.queries.isNameSegmentVocabEmpty(); } catch { return false; }
         })();
 
-        const result = await this.orchestrator.sync(options.onProgress, options.paths);
+        // Writer-side backstop for deferred WAL checkpointing (#1539): sync
+        // previously armed the valve but never called backpressure(), so the
+        // hard/file caps were never enforced during daemon catch-up — only
+        // timer-driven PASSIVE checkpoints ran, and a query-pool reader could
+        // pin frames while the WAL grew without a bound.
+        const backpressure = walValve ? () => walValve!.backpressure() : undefined;
+        const fullReconcile = !options.paths || options.paths.length === 0;
+        const gitState = this.orchestrator.beginGitIndexState(fullReconcile);
+
+        // An interrupted index may have absorbed its changed files before
+        // resolution/synthesis. Detect those orphans BEFORE this sync adds refs.
+        let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
+          this.queries.getUnresolvedReferencesCount() > 0;
+        if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
+        const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure,
+          (filePath, content) => {
+            if (!refreshSynthesis && (this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
+              this.queries.wasSynthesisInput(filePath) ||
+              (content !== undefined && hasSynthesisPattern(filePath, content)))) {
+              refreshSynthesis = true;
+              this.queries.setMetadata('synthesis_pending', '1');
+            }
+          });
 
         // Fold the store phase's WAL BEFORE the post-store reads below
         // (resolution reads on the main thread) — same rationale as
@@ -889,7 +1028,35 @@ export class LatticeSensor {
                   current: done,
                   total: totalPasses,
                 });
-              }
+              },
+              backpressure,
+              false
+            );
+          }
+        }
+
+        // Re-open resolution edges this sync may have invalidated ELSEWHERE in
+        // the repo (CG-33). Everything above re-resolves references in the
+        // changed files; this covers the opposite direction — references in
+        // files the sync never touched whose answer depended on a definition
+        // that just appeared or disappeared. Without it a synced index never
+        // converges to a full rebuild: measured at 4.3% of distinct edges wrong
+        // on lattice sensor's own index, in both directions, mostly `calls`. The
+        // resurrected refs are pending rows, so the orphan sweep immediately
+        // below is what resolves them — batched, yielding, multi-pass, exactly
+        // as a full index resolves.
+        //
+        // `definitionDelta` is empty for a body-only edit, so the overwhelmingly
+        // common sync pays one branch. LATTICE_SENSOR_NO_REBIND=1 disables it.
+        if (result.definitionDelta && process.env.LATTICE_SENSOR_NO_REBIND !== '1') {
+          const tRebind = Date.now();
+          const rebound = this.orchestrator.resurrectStaleResolutionEdges(
+            result.definitionDelta,
+            result.changedFilePaths ?? []
+          );
+          if (process.env.LATTICE_SENSOR_SYNTH_TIMINGS) {
+            console.error(
+              `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${result.definitionDelta.length} changed names, ${rebound} edges re-opened)`
             );
           }
         }
@@ -907,6 +1074,9 @@ export class LatticeSensor {
         // Grind them down with the batched resolver; this also makes a bare
         // `lattice sensor sync` the recovery command for a wedged index. On a
         // healthy index this is one COUNT query.
+        result.pendingRefsProcessed = 0;
+        result.pendingRefsResolved = 0;
+        result.pendingRefsUnresolved = 0;
         const orphanCount = this.queries.getUnresolvedReferencesCount();
         if (orphanCount > 0) {
           options.onProgress?.({
@@ -915,7 +1085,7 @@ export class LatticeSensor {
             total: orphanCount,
           });
 
-          await this.resolveReferencesBatched(
+          const recovery = await this.resolveReferencesBatched(
             (current, total) => {
               options.onProgress?.({
                 phase: 'resolving',
@@ -929,8 +1099,13 @@ export class LatticeSensor {
                 current: done,
                 total: totalPasses,
               });
-            }
+            },
+            backpressure,
+            false
           );
+          result.pendingRefsProcessed = recovery.stats.total;
+          result.pendingRefsResolved = recovery.stats.resolved;
+          result.pendingRefsUnresolved = recovery.stats.unresolved;
         }
 
         if (filesChanged || orphanCount > 0) {
@@ -943,9 +1118,16 @@ export class LatticeSensor {
           await this.resolver.resolveDeferredThisMemberRefs();
         }
 
+        if (refreshSynthesis) {
+          await this.resolver.refreshSynthesis(this.db.getPath(), (done, total) => {
+            options.onProgress?.({ phase: 'linking', current: done, total });
+          }, backpressure);
+          this.queries.setMetadata('synthesis_pending', '0');
+        }
+
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread — see indexAll's call site.
-        if (filesChanged || result.filesRemoved > 0 || orphanCount > 0) {
+        if (filesChanged || result.filesRemoved > 0 || orphanCount > 0 || refreshSynthesis) {
           await this.db.runMaintenance();
         }
 
@@ -961,6 +1143,16 @@ export class LatticeSensor {
           }
         } catch { /* vocab is advisory — never fail a sync over it */ }
 
+        // A killed full index leaves this marker at `indexing`. Sync repairs
+        // missing files, pending refs, and (on open) dropped indexes, so a
+        // successful recovery must also close the metadata state (#1556).
+        if (fullReconcile && this.getIndexState() === 'indexing') {
+          try { this.queries.setMetadata('index_state', 'complete'); } catch { /* advisory */ }
+        }
+
+        this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
+
+        if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
         return result;
       } finally {
         // Mirror indexAll's teardown: stop the valve, then restore the
@@ -988,6 +1180,31 @@ export class LatticeSensor {
   // ===========================================================================
 
   /**
+   * Whether an OS watcher event points at a file whose index metadata is still
+   * current. Used on Windows to discard NTFS last-access notifications, which
+   * libuv reports through fs.watch as ordinary change events (#1451).
+   */
+  private isIndexedFileStateCurrent(filePath: string): boolean {
+    const tracked = this.queries.getFileByPath(filePath);
+    if (!tracked) return false;
+
+    try {
+      const stat = fs.statSync(path.join(this.projectRoot, filePath));
+      return (
+        stat.isFile() &&
+        Number.isFinite(stat.mtimeMs) &&
+        Number.isFinite(tracked.modifiedAt) &&
+        stat.size === tracked.size &&
+        Math.floor(stat.mtimeMs) === Math.floor(tracked.modifiedAt)
+      );
+    } catch {
+      // Missing/inaccessible files must still reach sync so removals and
+      // transient filesystem failures are reconciled rather than hidden.
+      return false;
+    }
+  }
+
+  /**
    * Start watching for file changes and auto-syncing.
    *
    * Uses native OS file events (FSEvents on macOS, inotify on Linux 19+,
@@ -1003,18 +1220,13 @@ export class LatticeSensor {
       this.projectRoot,
       async (paths?: string[]) => {
         const result = await this.sync({ paths });
-        // sync() returns this exact zero-shape iff it failed to acquire the
-        // file lock (a real empty sync always has filesChecked > 0 because
-        // scanDirectory ran). Surface that to the watcher as a typed error
-        // so it keeps pendingFiles + reschedules instead of clearing them
-        // (#449).
-        if (result.filesChecked === 0 && result.durationMs === 0) {
-          throw new LockUnavailableError();
-        }
         const filesChanged = result.filesAdded + result.filesModified + result.filesRemoved;
         return { filesChanged, durationMs: result.durationMs };
       },
-      options
+      options,
+      process.platform === 'win32'
+        ? (filePath) => this.isIndexedFileStateCurrent(filePath)
+        : undefined
     );
 
     return this.watcher.start();
@@ -1038,12 +1250,11 @@ export class LatticeSensor {
   }
 
   /**
-   * True once live watching has permanently degraded (OS watch-resource
-   * exhaustion, or a write lock held past the retry budget) and auto-sync is
-   * disabled until the next {@link watch} call. Distinct from `!isWatching()`:
-   * a stopped/never-started watcher is inactive but NOT degraded. MCP tools use
-   * this to surface a whole-index "results may be stale" notice, since
-   * `getPendingFiles()` goes empty once watching stops (#876).
+   * True once live watching has degraded, or while a re-armed watcher has not
+   * completed its full catch-up. Distinct from `!isWatching()`: a stopped or
+   * never-started watcher is inactive but NOT degraded. MCP tools use this for
+   * a whole-index stale notice, since pending files are lost when watching
+   * stops (#876, #1959).
    */
   isWatcherDegraded(): boolean {
     return this.watcher?.isDegraded() ?? false;
@@ -1052,6 +1263,16 @@ export class LatticeSensor {
   /** The reason live watching degraded, or null if it is healthy (#876). */
   getWatcherDegradedReason(): string | null {
     return this.watcher?.getDegradedReason() ?? null;
+  }
+
+  /** Re-arm a lock-degraded watcher; its stale state persists until a full sync. */
+  rearmWatcherAfterLockContention(): boolean {
+    return this.watcher?.rearmAfterLockContention() ?? false;
+  }
+
+  /** True while a re-armed watcher owes a full reconcile of missed changes. */
+  isWatcherRecovering(): boolean {
+    return this.watcher?.isRecoveringFromLock() ?? false;
   }
 
   /**
@@ -1093,6 +1314,43 @@ export class LatticeSensor {
    */
   getLastIndexedAt(): number | null {
     return this.queries.getLastIndexedAt();
+  }
+
+  /**
+   * How far the last sync got and how many files it left behind — the cheapest
+   * marker of "has this index moved". One query; safe to call on every
+   * filesystem event a live viewer sees.
+   */
+  getIndexRevision(): { lastIndexedAt: number | null; fileCount: number } {
+    return this.queries.getIndexRevision();
+  }
+
+  /**
+   * Files re-indexed strictly after `since`, newest first — what a sync just
+   * picked up. `total` is the real count, `paths` is capped at `limit`.
+   */
+  getFilesIndexedSince(since: number, limit: number): { paths: string[]; total: number } {
+    return this.queries.getFilesIndexedSince(since, limit);
+  }
+
+  /**
+   * Forget everything held in memory about rows another process may have
+   * changed.
+   *
+   * The query layer keeps an LRU of nodes by id, invalidated by writes made
+   * through THIS instance — which is exactly right for a process that owns the
+   * index, and wrong for one that is only reading a database somebody else is
+   * writing. A long-lived reader (the `lattice sensor ui` server, a daemon holding a
+   * graph open across an agent's edits) will otherwise answer `getNode(id)`
+   * with a row a sync deleted minutes ago, while every SQL-backed query beside
+   * it reports the truth — a disagreement that reads as a bug in whichever
+   * screen shows both.
+   *
+   * Cheap (clearing a bounded Map) and safe to call whenever the database file
+   * looks like it moved.
+   */
+  dropReadCaches(): void {
+    this.queries.clearCache();
   }
 
   /**
@@ -1187,7 +1445,8 @@ export class LatticeSensor {
     // resolution is timer-driven passive checkpoints, which the pool's
     // continuous reads keep perpetually partial — the WAL then accretes the
     // whole phase's write volume (22GB on a 4.6GB DB at kernel scale).
-    backpressure?: () => Promise<void> | null
+    backpressure?: () => Promise<void> | null,
+    synthesize: boolean = true
   ): Promise<ResolutionResult> {
     return this.resolver.resolveAndPersistBatched(onProgress, undefined, onSynthesisProgress, {
       dbPath: this.db.getPath(),
@@ -1198,14 +1457,15 @@ export class LatticeSensor {
       // just degrade to scans until the recreate.
       bulkEdgeLoad: {
         begin: () => this.db.beginBulkEdgeLoad(),
-        end: () => this.db.endBulkEdgeLoad(),
+        end: () => this.db.endBulkEdgeLoad({ deferSynthesisSite: true }),
+        deferred: () => this.db.createSynthesisSiteIndex(),
       },
       refIndexLoad: {
         begin: () => this.db.beginBulkRefLoad(),
         end: () => this.db.endBulkRefLoad(),
       },
       backpressure,
-    });
+    }, synthesize);
   }
 
   /**
@@ -1278,10 +1538,224 @@ export class LatticeSensor {
   }
 
   /**
+   * Get many nodes by id in ONE round-trip (LRU-cache aware).
+   *
+   * The batch form of {@link getNode}. Anything resolving a list of edges to
+   * their endpoints — a caller list, a callee rail, an impact set — must use
+   * this rather than a `getNode` per edge: a symbol with 500 callers is 500
+   * queries otherwise. Ids that name nothing are simply absent from the map.
+   */
+  getNodesByIds(ids: readonly string[]): Map<string, Node> {
+    return this.queries.getNodesByIds(ids);
+  }
+
+  /**
+   * Every symbol carrying an exact qualified name.
+   *
+   * The identity that survives a re-index. A node's id contains its start line,
+   * so any edit ABOVE a symbol gives it a different id — anything that has to
+   * name the same symbol across two indexes (a saved trail, a bookmark, a
+   * review comment) has to key on this instead, and then disambiguate the
+   * result by kind and file. Index-backed; unlike
+   * {@link GraphQueryManager.findByQualifiedName} it takes no pattern and scans
+   * nothing.
+   */
+  getNodesByQualifiedName(qualifiedName: string): Node[] {
+    return this.queries.getNodesByQualifiedNameExact(qualifiedName);
+  }
+
+  /**
+   * Outgoing edges for many source nodes at once — the batch form of
+   * {@link getOutgoingEdges}. See {@link QueryBuilder.getOutgoingEdgesFrom}.
+   */
+  getOutgoingEdgesFrom(nodeIds: readonly string[], kinds?: Edge['kind'][]): Edge[] {
+    return this.queries.getOutgoingEdgesFrom(nodeIds, kinds);
+  }
+
+  /**
+   * Fan-in (incoming edge count) for many nodes at once — the "hub" signal,
+   * without a query per node. See {@link QueryBuilder.countIncomingEdges}.
+   */
+  getFanIn(ids: readonly string[]): Map<string, number> {
+    return this.queries.countIncomingEdges(ids);
+  }
+
+  /**
+   * Incoming edges for many target nodes at once — the mirror of
+   * {@link getOutgoingEdgesFrom}. See {@link QueryBuilder.getIncomingEdgesTo}.
+   */
+  getIncomingEdgesTo(nodeIds: readonly string[], kinds?: Edge['kind'][]): Edge[] {
+    return this.queries.getIncomingEdgesTo(nodeIds, kinds);
+  }
+
+  /**
+   * Fan-out (outgoing edge count) for many nodes at once — the mirror of
+   * {@link getFanIn}. See {@link QueryBuilder.countOutgoingEdges}.
+   */
+  getFanOut(ids: readonly string[]): Map<string, number> {
+    return this.queries.countOutgoingEdges(ids);
+  }
+
+  /**
+   * Symbols nothing in the index points at, by kind — the candidate set the
+   * dead code report (`src/graph/dead-code.ts`) applies its exclusions to.
+   *
+   * Every edge kind except `contains` counts as a reference, so a method is
+   * not "reached" by the class that holds it. An unreferenced symbol is not
+   * yet a dead one: see {@link buildDeadCodeReport}.
+   */
+  getUnreferencedNodes(
+    kinds: readonly Node['kind'][],
+    limit: number
+  ): Array<{ node: Node; generated: boolean }> {
+    return this.queries.getUnreferencedNodes(kinds, limit);
+  }
+
+  /**
+   * Which of the given names are carried by more than one symbol, at least one
+   * of which something references — the names a "nothing reaches this" claim
+   * must not be made about, because the resolver may have picked the twin.
+   */
+  getAmbiguousReferencedNames(names: Iterable<string>): Set<string> {
+    return this.queries.getAmbiguousReferencedNames(names);
+  }
+
+  /**
+   * Which of the given languages this index records an export marker for. A
+   * language with none has no "reachable from outside" signal at all.
+   */
+  getLanguagesWithExports(languages: Iterable<string>): Set<string> {
+    return this.queries.getLanguagesWithExports(languages);
+  }
+
+  /**
+   * Which of the given names the index holds an unresolved reference to — the
+   * resolver saw the name and could not decide what it meant. A symbol with
+   * such a name can never be called unreferenced.
+   */
+  getUnresolvedNamesAmong(names: Iterable<string>): Set<string> {
+    return this.queries.getUnresolvedNamesAmong(names);
+  }
+
+  /**
+   * Which of the given symbols extend or implement a type outside the index —
+   * an ancestor the resolver could not follow, so it has no edge (#1973).
+   */
+  getUnresolvedSupertypeSourcesAmong(nodeIds: Iterable<string>): Set<string> {
+    return this.queries.getUnresolvedSupertypeSourcesAmong(nodeIds);
+  }
+
+  /**
+   * The symbols with the most distinct dependents, most first — the index's
+   * hubs. Distinct dependents, not edges: a helper called forty times from one
+   * function has one dependent, and it is dependents a blast radius grows from.
+   */
+  getTopDependedOn(limit: number): Array<{ nodeId: string; dependents: number }> {
+    return this.queries.getTopDependedOn(limit);
+  }
+
+  /**
+   * The graph's executable roots — files that run something at module level (a
+   * CLI, a worker entry, a script), ranked by calls x the number of other files
+   * they reach. A statement at the top level of a file is recorded as an edge
+   * out of the *file* node, which is what makes these visible at all.
+   */
+  getTopCallingFiles(
+    limit: number
+  ): Array<{ nodeId: string; filePath: string; calls: number; reaches: number; score: number }> {
+    return this.queries.getTopCallingFiles(limit);
+  }
+
+  /**
+   * How many other files depend on each of the given files, counted through
+   * their symbols (an `imports` edge points at the symbol, not the file).
+   * A zero means nothing else in the index reaches into that file.
+   */
+  getFileDependentCounts(filePaths: string[]): Map<string, number> {
+    return new Map(
+      this.queries.getFileDependentCounts(filePaths).map((row) => [row.filePath, row.dependents])
+    );
+  }
+
+  /**
+   * How far each of the given files reaches out: distinct other files their
+   * symbols touch, and how many references that is. The mirror of
+   * {@link getFileDependentCounts}; a test file's reach is what it exercises.
+   */
+  getFileReachCounts(filePaths: string[]): Map<string, { reaches: number; refs: number }> {
+    return new Map(
+      this.queries
+        .getFileReachCounts(filePaths)
+        .map((row) => [row.filePath, { reaches: row.reaches, refs: row.refs }])
+    );
+  }
+
+  /** The `file` nodes for the given paths, in one query. */
+  getFileNodes(filePaths: string[]): Node[] {
+    return this.queries.getFileNodes(filePaths);
+  }
+
+  /**
+   * Roll the edge table up to module granularity, for a file → module
+   * assignment the caller decides.
+   *
+   * The architecture map's single query: cross-module edge counts by kind,
+   * the `declared` subset of each (see {@link QueryBuilder.aggregateModuleGraph}),
+   * and the busiest symbol pairs behind each link. Read-only, and bounded by
+   * the number of modules rather than the number of edges.
+   */
+  getModuleAggregation(
+    assignments: ReadonlyArray<{ filePath: string; module: string }>,
+    options: {
+      kinds: readonly Edge['kind'][];
+      minConfidence: number;
+      topPairsPerLink: number;
+      pairKinds: readonly Edge['kind'][];
+    }
+  ): ReturnType<QueryBuilder['aggregateModuleGraph']> {
+    return this.queries.aggregateModuleGraph(assignments, options);
+  }
+
+  /**
+   * Every ordered pair of files where one reaches into the other — the edge
+   * list a cycle finder runs on. See {@link QueryBuilder.getCrossFileDependencyPairs}.
+   */
+  getFileDependencyPairs(minConfidence = 0): Array<{ source: string; target: string }> {
+    return this.queries.getCrossFileDependencyPairs(minConfidence);
+  }
+
+  /**
+   * References from a symbol that never resolved to an indexed node — the
+   * calls and type mentions that leave the index. Lets a reader account for
+   * the call sites that have no callee row instead of implying there are none.
+   */
+  getUnresolvedReferencesFrom(nodeId: string): UnresolvedReference[] {
+    return this.queries.getUnresolvedReferencesFrom(nodeId);
+  }
+
+  /**
+   * The same, for every symbol in a FILE at once, in line order.
+   *
+   * One indexed lookup instead of one per symbol — the whole-file reader needs
+   * it for every line it draws. See
+   * {@link QueryBuilder.getUnresolvedReferencesInFile}.
+   */
+  getUnresolvedReferencesInFile(filePath: string, limit?: number): UnresolvedReference[] {
+    return this.queries.getUnresolvedReferencesInFile(filePath, limit);
+  }
+
+  /**
    * Get all nodes in a file
    */
   getNodesInFile(filePath: string): Node[] {
     return this.queries.getNodesByFile(filePath);
+  }
+
+  /**
+   * Get all nodes in several files, in one batched query.
+   */
+  getNodesInFiles(filePaths: readonly string[]): Node[] {
+    return this.queries.getNodesByFiles(filePaths);
   }
 
   /**
@@ -1324,6 +1798,11 @@ export class LatticeSensor {
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
     return this.queries.searchNodes(query, options);
+  }
+
+  /** Lexical evidence for an empty explore result; does not alter retrieval. */
+  getExploreMissDiagnostics(query: string) {
+    return this.queries.getExploreMissDiagnostics(query);
   }
 
   /**
@@ -1516,7 +1995,16 @@ export class LatticeSensor {
    * null when fewer than 3 valid (non-test) routes exist.
    */
   getRoutingManifest(limit?: number): {
-    entries: Array<{ url: string; handler: string; handlerFile: string; handlerLine: number; handlerKind: string }>;
+    entries: Array<{
+      url: string;
+      handler: string;
+      handlerFile: string;
+      handlerLine: number;
+      handlerKind: string;
+      routeId: string;
+      routeFile: string;
+      routeLine: number;
+    }>;
     topHandlerFile: string | null;
     topHandlerFileCount: number;
     totalRoutes: number;
@@ -1568,6 +2056,37 @@ export class LatticeSensor {
    */
   getFiles(): FileRecord[] {
     return this.queries.getAllFiles();
+  }
+
+  /**
+   * A `(path) => boolean` generated-file test over a BOUNDED candidate list,
+   * unioning the index-time content-banner flag with the filename convention
+   * (#1500). One query up front, O(1) per call after — built for use inside a
+   * ranking comparator, where re-querying per comparison would be quadratic.
+   *
+   * Pass every path you might ask about; a path outside the list falls back to
+   * the filename check alone.
+   */
+  generatedFilePredicate(filePaths: Iterable<string>): (filePath: string) => boolean {
+    return this.queries.generatedPredicateFor(filePaths);
+  }
+
+  /**
+   * A `(path) => boolean` ambient-declaration test over a BOUNDED candidate
+   * list: true for a file that declares nothing but types, originates no call
+   * edge, and that nothing in the index depends on — an ambient `.d.ts` of
+   * global shims, vendored typings, module augmentation (CG-28). Structural
+   * rather than extension-based, and deliberately narrow: see
+   * `QueryBuilder.getAmbientDeclarationPathsAmong` for why each condition is
+   * there, in particular why a `types.ts` the codebase imports is NOT flagged.
+   */
+  ambientDeclarationFilePredicate(filePaths: Iterable<string>): (filePath: string) => boolean {
+    return this.queries.ambientDeclarationPredicateFor(filePaths);
+  }
+
+  /** How many indexed files are flagged tool-generated. Reported by `status`. */
+  getGeneratedFileCount(): number {
+    return this.queries.countGeneratedFiles();
   }
 
   // ===========================================================================
@@ -1743,7 +2262,17 @@ export class LatticeSensor {
   }
 
   /**
-   * Find dead code (unreferenced symbols)
+   * Find unreferenced symbols — the RAW candidate set.
+   *
+   * Non-exported symbols of the given kinds with no incoming edge but
+   * `contains`. That is a fact, not a claim: on this engine's own index it
+   * returns ~2 500 symbols, of which about 20 are actually unreachable. The
+   * rest are overrides, framework registrations, mis-resolved twins and
+   * references the extractor never recorded.
+   *
+   * For a list anybody should act on, use `buildDeadCodeReport` from
+   * `src/graph/dead-code.ts`, which applies the exclusions and counts every one
+   * of them. This method is kept as-is because it is a published API.
    *
    * @param kinds - Node kinds to check (default: functions, methods, classes)
    * @returns Array of unreferenced nodes
@@ -1799,7 +2328,23 @@ export class LatticeSensor {
     query: string,
     options?: FindRelevantContextOptions
   ): Promise<Subgraph> {
-    return this.contextBuilder.findRelevantContext(query, options);
+    // Segment-vocab supplement: FTS keeps camelCase names as single tokens,
+    // so a word-level query ("auto-scroll to bottom") can never reach
+    // `pinFeedIfNearBottom` through search alone. Resolve the query's words
+    // against name_segment_vocab (same precision rules as the prompt hook:
+    // co-occurrence, else rare singles, verified against live nodes) and hand
+    // the names down as dampened exact-name seeds. Callers that pass their
+    // own seedNames keep them; failures degrade to no supplement.
+    let seedNames = options?.seedNames;
+    if (seedNames === undefined) {
+      try {
+        seedNames = this.getSegmentMatches(extractSegmentSearchWords(query), 8)
+          .map((m) => m.name);
+      } catch {
+        seedNames = [];
+      }
+    }
+    return this.contextBuilder.findRelevantContext(query, { ...options, seedNames });
   }
 
   /**

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.71.0 — 2026-09-30
+
+### sensor: 上流 CodeGraph の追従（49c11fc..7639c78、368コミット）
+
+- 上流の抽出・解決・explore・MCPの改良を取り込んだ（fix 191、feat 56、perf 3）。主なもの:
+  名前解決の精度向上、Expo Routerの画面遷移（`navigates` 辺）、生成ファイルの内容判定、
+  索引の書き手ロック（二重writerの防止）、sub-projectの自動採用、explore の予算配分の改良、
+  定義ごとにまとめる `callers`/`callees`、存在しない記号を近い名前へ黙って置き換えない（候補を提示）。
+- 索引は開いた時点で段階的に更新される。DBスキーマは15、抽出版（EXTRACTION_VERSION）は28へ上がる。
+  手動の再索引は要らない。
+- Latticeの契約は保つ: 状態の置き場は `.lattice/sensor` に固定、install/uninstall/upgrade は拒否、
+  `callers`/`callees --exact-path` と各要素の `edgeKind`/`valueRef`/`valueWrite`、実行モードの申告（ADR 0049）。
+  決着の理由は `sensor/UPSTREAM.json` に記録した。
+
+### 修正
+
+- 索引の合成段階が、Latticeの辺の列（confidence・resolved_by）を持たない一時表を使い、
+  SQLの列数不一致で失敗していたのを直した。
+- C/C++で、関数形マクロと同名の呼び出しを「値の読み取り」として数えていたのを直した（wasm・nativeとも）。
+- 未解決参照の読み出し順が索引の選び方で変わり、手順表示の順が揺れていたのを、挿入順に固定した。
+- Lattice本体が、sensorの「記号が無い」に候補の提示が付いた形も「無い」と読むようにした。
+- sensorがgitの一覧経由で `.lattice/`（Latticeの状態置き場）の中のファイルを索引し、変更として数えていたのを直した。
+  runが置くscriptが「追加」と数えられ、実行中の再compileが索引を古いと判定して、findingの記録を拒んでいた。
+- Windowsで、viewerのtrailの置き場のパスに `\` が混じり、保存が拒否されていたのを直した。
+
 ## 0.70.0 — 2026-09-30
 
 ### 追加

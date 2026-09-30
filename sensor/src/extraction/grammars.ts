@@ -172,6 +172,67 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.tofu': 'terraform',
 };
 
+/** MPEG transport stream: fixed 188-byte packets, each opening with 0x47. */
+const MPEG_TS_PACKET_SIZE = 188;
+const MPEG_TS_SYNC_BYTE = 0x47;
+/**
+ * Consecutive packets whose sync byte must line up before a file counts as
+ * video — 3 KB of head. A stream shorter than that is cheap to parse anyway;
+ * the cost #1910 is about comes from clips hundreds of KB long.
+ */
+const MPEG_TS_MIN_PACKETS = 16;
+/**
+ * Share of the head that must be control bytes (below 0x20, other than the
+ * whitespace ones) for it to count as binary. Compressed audio and video put
+ * about one byte in eight there; source text puts none.
+ */
+const MPEG_TS_MIN_CONTROL_SHARE = 1 / 64;
+/**
+ * How many bytes of a file's head `isMpegTransportStream` needs — enough to
+ * see `MPEG_TS_MIN_PACKETS` sync bytes plus the packets between them.
+ */
+export const MPEG_TS_SNIFF_BYTES = MPEG_TS_PACKET_SIZE * MPEG_TS_MIN_PACKETS;
+
+/**
+ * Whether these leading bytes are an MPEG transport stream — the OTHER thing a
+ * `.ts` file can be. Golden video fixtures (`testdata/*.ts`, e2e clips) share
+ * TypeScript's extension, and tree-sitter takes ~28 s to chew through a 900 KB
+ * clip for zero symbols (#1910), so the decision has to be made from the head
+ * of the file, before any parse.
+ *
+ * Two conditions, both required:
+ *   1. the sync byte 0x47 sits at every 188-byte packet boundary of the first
+ *      `MPEG_TS_MIN_PACKETS` packets — every packet of a transport stream
+ *      opens with it, and nothing else pads to 188;
+ *   2. the head is binary: at least `MPEG_TS_MIN_CONTROL_SHARE` of it is
+ *      control bytes, as any compressed payload is.
+ * 0x47 is the letter `G`, so (1) alone could match source whose lines happen
+ * to put a `G` at every 188-byte stride. Checking for a single NUL was not
+ * enough to close that: one NUL in a comment is still TypeScript. (2) asks for
+ * dozens of control bytes, which no source file carries.
+ *
+ * `head` is the first `MPEG_TS_SNIFF_BYTES` (or fewer) bytes of the file.
+ */
+export function isMpegTransportStream(head: Uint8Array): boolean {
+  const lastSync = MPEG_TS_PACKET_SIZE * (MPEG_TS_MIN_PACKETS - 1);
+  if (head.length <= lastSync) return false;
+  for (let off = 0; off <= lastSync; off += MPEG_TS_PACKET_SIZE) {
+    if (head[off] !== MPEG_TS_SYNC_BYTE) return false;
+  }
+  let control = 0;
+  for (let i = 0; i < head.length; i++) {
+    const b = head[i]!;
+    // Tab, newline, vertical tab, form feed and carriage return are text.
+    if (b < 0x20 && (b < 0x09 || b > 0x0d)) control++;
+  }
+  return control >= head.length * MPEG_TS_MIN_CONTROL_SHARE;
+}
+
+/** Whether `filePath` carries the one extension MPEG-TS shares with a language. */
+export function hasMpegTsExtension(filePath: string): boolean {
+  return filePath.length > 3 && filePath.slice(-3).toLowerCase() === '.ts';
+}
+
 /**
  * Whether a file is one LatticeSensor can parse, based purely on its extension.
  * This is the single source of truth for "should we index this file" — derived
@@ -497,8 +558,39 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
 }
 
 /**
+ * A class/struct BASE CLAUSE — `struct Derived : Base {`, `class Foo final :
+ * public Bar, private Baz {`, `struct D : ns::B<T> {` — which is never valid
+ * C. In C the only thing that can follow `struct <tag>` is `{`, `;`, `*`, an
+ * identifier (declarator), or a closing `)`: a bit-field's `:` sits after a
+ * member NAME inside the body (`unsigned a : 3;`), a ternary's `:` is
+ * separated from the tag by `)` / `*` / a declarator (`sizeof(struct foo) :
+ * 0`), and a label such as `struct_end:` has no whitespace after `struct`. An
+ * optional access specifier / `virtual` after the colon and an optional
+ * `final` before it cover the spelled-out forms; the base may be scoped
+ * (`ns::Base`) and carry template arguments, and must be followed by the
+ * body's `{` or a `,` introducing the next base — prose like
+ * `struct timeval: seconds and microseconds` inside a string never has that
+ * terminator. Comments are stripped before the scan (see `looksLikeCpp`).
+ */
+const CPP_BASE_CLAUSE_RE =
+  /\b(?:class|struct)\s+\w+\s*(?:final\s*)?:\s*(?:(?:public|protected|private|virtual)\s+)*[A-Za-z_][\w:]*(?:\s*<[^{};]*>)?\s*[{,]/;
+
+/** Block and line comments, for a code-only scan. Lazy block match → linear. */
+const C_COMMENT_RE = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/**
  * Heuristic: does a .h file contain C++ constructs?
- * Checks the first ~8KB for patterns that are unique to C++ and never valid C.
+ *
+ * Two passes. The first checks the first ~8KB for patterns that are unique to
+ * C++ and never valid C. The second scans the FULL source for a class/struct
+ * base clause (`CPP_BASE_CLAUSE_RE`): a large header with a long C-compatible
+ * preamble — include guards, `#define`s, plain C typedefs — can put its only
+ * C++ signal past the sample, and the cost of that miss is the C extractor
+ * (classTypes: []) dropping the derived type entirely and minting a phantom
+ * `function Base` from the base clause instead (#1592). The base-clause regex
+ * is anchored on a `struct`/`class` keyword followed by a tag and a colon, a
+ * shape with no C reading, so widening it to the whole file cannot drag a C
+ * header over to C++.
  */
 function looksLikeCpp(source: string): boolean {
   const sample = source.substring(0, 8192);
@@ -511,7 +603,15 @@ function looksLikeCpp(source: string): boolean {
   // routed through the C extractor (which extracts no classes), and its class
   // definition silently vanishes. The two-token shape (`<KW> <MACRO> <Name>`
   // before a `[:{]`) never occurs in valid C, so this can't misclassify C headers.
-  return /\bnamespace\b|\bclass\s+\w+\s*[:{]|\b(?:class|struct)\s+[A-Z][A-Z0-9_]+\s+\w+\s*(?:final\s*)?[:{]|\btemplate\s*<|\b(?:public|private|protected)\s*:|\bvirtual\b|\busing\s+(?:namespace\b|\w+\s*=)/.test(sample);
+  if (/\bnamespace\b|\bclass\s+\w+\s*[:{]|\b(?:class|struct)\s+[A-Z][A-Z0-9_]+\s+\w+\s*(?:final\s*)?[:{]|\btemplate\s*<|\b(?:public|private|protected)\s*:|\bvirtual\b|\busing\s+(?:namespace\b|\w+\s*=)/.test(sample)) {
+    return true;
+  }
+  // Plain `struct Derived : Base` (no export macro, no `class` keyword, no
+  // explicit access section) — the #1159 branch above only recognizes the
+  // macro-annotated form. Scanned over the whole file, not the sample, with
+  // comments removed so a doc comment's prose (`struct foo: x, y`) can't
+  // flip a C header.
+  return CPP_BASE_CLAUSE_RE.test(source.replace(C_COMMENT_RE, ' '));
 }
 
 /**
@@ -520,6 +620,19 @@ function looksLikeCpp(source: string): boolean {
 function looksLikeObjc(source: string): boolean {
   const sample = source.substring(0, 8192);
   return /@(?:interface|implementation|protocol|synthesize)\b/.test(sample);
+}
+
+/**
+ * Whether a language has a tree-sitter grammar of its own.
+ *
+ * Narrower than {@link isLanguageSupported}, which also answers true for the
+ * formats handled by custom extractors (SFCs, Liquid, Razor, YAML, XML,
+ * properties) — those have extraction but no grammar, so anything that needs to
+ * PARSE the file (the viewer's syntax classification, for one) has to ask this
+ * instead.
+ */
+export function hasTreeSitterGrammar(language: string | undefined | null): boolean {
+  return !!language && language in WASM_GRAMMAR_FILES;
 }
 
 /**

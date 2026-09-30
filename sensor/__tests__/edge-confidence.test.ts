@@ -98,7 +98,7 @@ describe('migration v9: edges.confidence / edges.resolved_by columns (ADR 0048)'
 
     runMigrations(raw, 8);
 
-    expect(getCurrentVersion(raw)).toBe(12);
+    expect(getCurrentVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
     expect(getCurrentVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
 
     const colsAfter = raw.prepare('PRAGMA table_info(edges)').all() as Array<{ name: string }>;
@@ -135,14 +135,14 @@ describe('migration v9: edges.confidence / edges.resolved_by columns (ADR 0048)'
       .run('A', 'B', 'calls', JSON.stringify({ confidence: 0.9, resolvedBy: 'import' }), null, null, null);
 
     runMigrations(raw, 8);
-    expect(getCurrentVersion(raw)).toBe(12);
+    expect(getCurrentVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
 
     // Re-running from the now-current version is the real-world idempotency
     // case (every `DatabaseConnection.open` does this on every startup):
     // migration v9 is filtered out (version > fromVersion) and it must not
     // throw or touch the already-backfilled data.
     expect(() => runMigrations(raw, getCurrentVersion(raw))).not.toThrow();
-    expect(getCurrentVersion(raw)).toBe(12);
+    expect(getCurrentVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
 
     // The migration's own idempotency guards (PRAGMA table_info column
     // check, `confidence IS NULL`/`resolved_by IS NULL` backfill predicates)
@@ -152,7 +152,7 @@ describe('migration v9: edges.confidence / edges.resolved_by columns (ADR 0048)'
     // version record reverts.
     raw.prepare('DELETE FROM schema_versions WHERE version = 9').run();
     expect(() => runMigrations(raw, 8)).not.toThrow();
-    expect(getCurrentVersion(raw)).toBe(12);
+    expect(getCurrentVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
 
     const row = raw
       .prepare('SELECT confidence, resolved_by FROM edges WHERE target = ?')

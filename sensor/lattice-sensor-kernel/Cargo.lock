@@ -223,6 +223,7 @@ name = "lattice-sensor-kernel"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "libc",
  "napi",
  "napi-build",
  "napi-derive",

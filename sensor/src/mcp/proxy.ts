@@ -30,7 +30,9 @@ import { LatticeSensorPackageVersion, isLatticeVersion } from './version';
 import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
+import { ExploreSessionState } from './explore-session-state';
 import { getTelemetry, ClientInfo } from '../telemetry';
+import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
 import type { MCPEngine } from './engine';
 
 /** Default poll cadence for the PPID watchdog (same as the direct server). */
@@ -260,6 +262,10 @@ export interface LocalHandshakeDeps {
  * never costs the old fall-back-to-direct robustness.
  */
 export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<void> {
+  // The proxy is long-lived and can serve fallback tool calls in-process. Match
+  // direct/daemon mode by killing this launcher if its main thread wedges, so an
+  // MCP host retry cannot accumulate abandoned `serve --mcp` wrapper processes.
+  const livenessWatchdog: WatchdogHandle | null = installMainThreadWatchdog();
   let daemonStatus: 'connecting' | 'ready' | 'failed' = 'connecting';
   let daemonSocket: net.Socket | null = null;
   let clientInitId: unknown = undefined;   // suppress the daemon's reply to the forwarded initialize
@@ -282,6 +288,10 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // new session starts), these would otherwise hang forever; we re-serve them
   // in-process so the host always gets a reply.
   const inflight = new Map<unknown, string>();
+  // Explore call history for the ONE host connection this proxy serves (CG-17).
+  // Only the daemon-unavailable fallback below uses it; when the daemon is up,
+  // the tracking happens on the daemon's own MCPSession.
+  const exploreSession = new ExploreSessionState();
   const trackInflight = (line: string): void => {
     try {
       const m = JSON.parse(line) as JsonRpc;
@@ -296,6 +306,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   };
   const shutdown = (): void => {
     if (shuttingDown) return; shuttingDown = true;
+    try { livenessWatchdog?.stop(); } catch { /* ignore */ }
     try { daemonSocket?.destroy(); } catch { /* ignore */ }
     try { engine?.stop(); } catch { /* ignore */ }
     process.exit(0);
@@ -326,7 +337,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       try {
         await ensureEngine();
         const params = (msg.params || {}) as { name: string; arguments?: Record<string, unknown> };
-        const result = await engine!.getToolHandler().execute(params.name, params.arguments || {});
+        const result = await engine!.getToolHandler().execute(params.name, params.arguments || {}, exploreSession);
         writeClient({ jsonrpc: '2.0', id, result });
         getTelemetry().recordUsage('mcp_tool', params.name, !result.isError, telemetryClient);
       } catch (err) {
