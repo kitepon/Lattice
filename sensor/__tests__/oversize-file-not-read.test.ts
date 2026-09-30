@@ -113,6 +113,8 @@ describe('an unchanged file over the size limit is not reported as drifted (#191
     } finally {
       cg.close();
     }
-    // Indexes a 1.4 MB file: over the 5 s default on the Windows factory runner.
-  }, 30_000);
+    // The Windows factory runner's first read of this freshly written 1.4 MB .js
+    // takes ~34 s (measured 2026-09-30: statSync 0 ms, first readFileSync 34,152 ms,
+    // a second read 1 ms — scan-on-first-open, not this code). Room for that.
+  }, 90_000);
 });
