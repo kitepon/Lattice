@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.70.0 — 2026-09-30
+
+### 追加
+
+- `todo phase accept --evidence <file>` と `todo phase reject --reason <text> --evidence <file>` を追加した。
+  commit済みの監査fileから、reviewのevent digest・証拠記述子・必須evidence slotをLatticeが組み立てる。
+  これまでは記述子（blob oid・sha256）と自己digestを手で書くしかなく、監査を閉じられなかった。
+  必須slotが複数あるPhaseは、1つの証拠を流用せず `--input` を案内する。
+
+### 修正
+
+- `phase accept|reject --input` の形が合わない時、期待する形と `--evidence` の案内をerrorへ載せる。
+
 ## 0.69.5 — 2026-09-26
 
 ### 修正

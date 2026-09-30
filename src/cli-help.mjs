@@ -141,6 +141,8 @@ Write commands:
       # 実際に受理する最新契約のJSON Schemaを返す（storeを読まない）。
       # 入力が契約に合わないときは、違反フィールドのpathがerror detailへ載る
   phase review --plan <key> --phase <id> --reason <text>
+  phase accept --plan <key> --phase <id> --evidence <file>  # 監査fileから入力を機械が組む
+  phase reject --plan <key> --phase <id> --reason <text> --evidence <file>
   phase <accept|reject> --plan <key> --phase <id> --input <file>
   phase reopen --plan <key> --phase <id> --reason <text> [--override-reason <text>]
   phase close-unaudited --plan <key> --phase <id> --reason <text>
@@ -278,8 +280,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
     + ' | baseline --reason <text> [--except <plan_key>]...',
   'todo phase status': 'todo phase status --plan <key>',
   'todo phase review': 'todo phase review --plan <key> --phase <id> --reason <text>',
-  'todo phase accept': 'todo phase accept --plan <key> --phase <id> --input <file>',
-  'todo phase reject': 'todo phase reject --plan <key> --phase <id> --input <file>',
+  'todo phase accept': 'todo phase accept --plan <key> --phase <id> --evidence <file> | --input <file>',
+  'todo phase reject': 'todo phase reject --plan <key> --phase <id> --reason <text> --evidence <file> | --input <file>',
   'todo phase reopen': 'todo phase reopen --plan <key> --phase <id> --reason <text> [--override-reason <text>]',
   'todo phase close-unaudited': 'todo phase close-unaudited --plan <key> --phase <id> --reason <text>',
   'todo phase baseline': 'todo phase baseline --reason <text> [--except <plan_key>]...',
