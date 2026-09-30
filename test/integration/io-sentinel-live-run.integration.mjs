@@ -69,7 +69,7 @@ test('実runで、宣言scope外の書き込みを走行中に観測して警報
   // T2は`src/beta.mjs`だけを宣言するが、実際には`src/alpha.mjs`——T1の宣言scope——へも書く。
   // 宣言と実writeが食い違わない限り、実行時競合は原理的に一度も起きない。
   await writeFile(path.join(repoRoot, 'adapter-config.json'),
-    `${JSON.stringify({ mode: 'deterministic', hold_ms: 4_000, extra_writes: ['src/alpha.mjs'] })}\n`);
+    `${JSON.stringify({ mode: 'deterministic', hold_ms: 15_000, extra_writes: ['src/alpha.mjs'] })}\n`);
 
   const git = (...args) => ok(invoke('git', ['-c', 'user.email=a@example.invalid',
     '-c', 'user.name=a', ...args], repoRoot), `git ${args[0]}`);
