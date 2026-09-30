@@ -60,3 +60,16 @@ test('windows-nativeの全commandはPowerShell 7だけで実行する', async ()
   for (const step of windowsSteps) assert.match(step[0], /shell:\s+pwsh/u);
   assert.doesNotMatch(reusable, /(?:bash|cmd|powershell)(?:\.exe)?[^\n]*\{0\}/iu);
 });
+
+test('工場CIは現役runnerの3環境だけを要求する', async () => {
+  const caller = await readFile(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
+  const reusable = await readFile(
+    path.join(repoRoot, '.github/workflows/product-full-ci.yml'),
+    'utf8',
+  );
+
+  // 退役したlabelを要求すると、jobはrunner待ちのまま24時間で打ち切られる（2026-09 実被弾）。
+  assert.match(caller, /options:\s+\[all, macos-native, linux-workstation, windows-native\]/u);
+  assert.ok(reusable.includes(`'["macos-native","linux-workstation","windows-native"]'`));
+  for (const source of [caller, reusable]) assert.doesNotMatch(source, /linux-native|wsl2/u);
+});
