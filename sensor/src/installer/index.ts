@@ -3,7 +3,8 @@
  *
  * Multi-target: writes MCP server config + instructions for the
  * agents the user picks (Claude Code, Cursor, Codex CLI, opencode,
- * Hermes Agent, Gemini CLI, Antigravity IDE).
+ * Hermes Agent, Gemini CLI, Antigravity IDE, Kiro, and GitHub
+ * Copilot in VS Code / the Copilot CLI / JetBrains IDEs).
  * Defaults to the Claude-only behavior for backwards compatibility
  * when no targets are explicitly chosen and nothing else is detected.
  *
@@ -27,7 +28,7 @@ import type { AgentTarget, Location, TargetId } from './targets/types';
 // installer must stay importable even when native modules can't load).
 import { watchDisabledReason } from '../sync/watch-policy';
 import { isGitRepo, isSyncHookInstalled, installGitSyncHook } from '../sync/git-hooks';
-import { getLatticeSensorDir, latticeSensorRelativeDir } from '../directory';
+import { getLatticeSensorDir } from '../directory';
 import { getTelemetry, TELEMETRY_DOCS } from '../telemetry';
 
 // Backwards-compat: keep these named exports — downstream code may
@@ -135,7 +136,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   } else if (useDefaults) {
     location = 'global';
   } else {
-    // If every selected target is global-only (e.g. Codex), skip the
+    // If every selected target is global-only (e.g. the Copilot CLI), skip the
     // prompt and force user-wide — project-local would just produce
     // skip warnings.
     const allGlobalOnly = targets.every((t) => !t.supportsLocation('local'));
@@ -276,9 +277,10 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   // is chosen deliberately and install never indexes a surprise directory (e.g. a
   // shell sitting in $HOME). Same next step regardless of global/local scope.
   clack.note(
-    location === 'local'
+    (location === 'local'
       ? 'lattice sensor init        # build this project’s graph (one time; auto-syncs after)'
-      : 'cd <your-project>\nlattice sensor init        # build a project’s graph (one time; auto-syncs after)',
+      : 'cd <your-project>\nlattice sensor init        # build a project’s graph (one time; auto-syncs after)') +
+      '\n# (lattice sensor install --init does both steps in one command)',
     'Next: index a project',
   );
 
@@ -319,8 +321,8 @@ export type UninstallStatus = 'removed' | 'not-configured' | 'unsupported';
  * Per-target outcome of an uninstall sweep. `removed` means we deleted
  * at least one thing; `not-configured` means the agent had no latticeSensor
  * config at this location (nothing to do); `unsupported` means the
- * agent has no config concept for this location (e.g. Codex is
- * global-only, so a `local` uninstall skips it).
+ * agent has no config concept for this location (e.g. the Copilot CLI
+ * is global-only, so a `local` uninstall skips it).
  */
 export interface UninstallReport {
   id: TargetId;
@@ -459,8 +461,8 @@ export async function runUninstaller(opts: RunUninstallerOptions): Promise<void>
     const sel = await clack.select({
       message: 'Remove LatticeSensor from all your projects, or just this one?',
       options: [
-        { value: 'global' as const, label: 'All projects (global)', hint: '~/.claude, ~/.cursor, ~/.codex, ~/.config/opencode, ~/.hermes, ~/.gemini, ~/.kiro' },
-        { value: 'local'  as const, label: 'Just this project (local)', hint: './.claude, ./.cursor, ./opencode.jsonc, ./.gemini, ./.kiro' },
+        { value: 'global' as const, label: 'All projects (global)', hint: '~/.claude, ~/.cursor, ~/.codex, ~/.config/opencode, ~/.hermes, ~/.gemini, ~/.kiro, ~/.copilot, ~/.config/github-copilot' },
+        { value: 'local'  as const, label: 'Just this project (local)', hint: './.claude, ./.cursor, ./.vscode, ./opencode.jsonc, ./.gemini, ./.kiro' },
       ],
       initialValue: 'global' as const,
     });
@@ -504,8 +506,9 @@ export async function runUninstaller(opts: RunUninstallerOptions): Promise<void>
 
   // Step 4: for local uninstall, the index dir is separate — point at
   // `uninit` so the user knows it's still there (and how to remove it).
-  if (location === 'local' && fs.existsSync(getLatticeSensorDir(process.cwd()))) {
-    clack.log.info(`The ${latticeSensorRelativeDir()}/ index for this project is still here. Run \`latticeSensor uninit\` to delete it.`);
+  const indexDir = location === 'local' ? getLatticeSensorDir(process.cwd()) : null;
+  if (indexDir && fs.existsSync(indexDir)) {
+    clack.log.info(`The ${path.basename(indexDir)}/ index for this project is still here. Run \`lattice sensor uninit\` to delete it.`);
   }
 
   // Step 4b: the CLI binary itself (global uninstall only — a project-scoped

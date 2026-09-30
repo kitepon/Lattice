@@ -15,13 +15,15 @@ import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { terminateChild } from './child-process';
 import { LatticeSensor } from '../src';
+import { terminateChild } from './child-process';
+import { once } from 'events';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
-  return spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+  return spawn(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // Pin to direct (in-process) mode. #172 is a contract about the in-process
@@ -113,6 +115,7 @@ describe('MCP initialize handshake (issue #172)', () => {
       await terminateChild(child);
       child = null;
     }
+    child = null;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

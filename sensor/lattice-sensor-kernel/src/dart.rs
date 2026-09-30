@@ -126,6 +126,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     node_ids: Vec<String>,
@@ -156,6 +157,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
         node_ids: Vec::new(),
@@ -266,7 +268,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
 
         let qualified = {
             let mut parts: Vec<&str> = Vec::new();
@@ -398,7 +401,7 @@ impl<'t> Walker<'t> {
         while let Some(parent) = p {
             if matches!(
                 parent.kind(),
-                "class_definition" | "mixin_declaration" | "extension_declaration" | "enum_declaration"
+                "class_definition" | "mixin_declaration" | "extension_declaration" | "extension_type_declaration" | "enum_declaration"
             ) {
                 return parent.child_by_field_name("name").map(|n| self.text(n));
             }
@@ -596,6 +599,7 @@ impl<'t> Walker<'t> {
     // --- the main walk (visitNode, tree-sitter.ts:936-1303) ---------------
 
     fn visit(&mut self, node: Node<'t>) {
+        stack_guard!();
         // The visitNode hook (dart.ts:144-157) — the constants branch.
         if node.kind() == "static_final_declaration" {
             let mut cursor = node.walk();
@@ -629,7 +633,11 @@ impl<'t> Walker<'t> {
                 self.extract_function(node);
                 return;
             }
-            "class_definition" | "mixin_declaration" | "extension_declaration" => {
+            // `extension_type_declaration` is Dart 3.3's extension type. It is a
+            // different node from `extension_declaration` above, which is the
+            // older `extension` — the names are near neighbours and only one of
+            // them was listed.
+            "class_definition" | "mixin_declaration" | "extension_declaration" | "extension_type_declaration" => {
                 self.extract_class(node);
                 return;
             }
@@ -669,6 +677,7 @@ impl<'t> Walker<'t> {
     // --- extractFunction / extractMethod (:1517 / :1737) ------------------
 
     fn extract_function(&mut self, node: Node<'t>) {
+        stack_guard!();
         // No receiver hook. Name first (resolveName inside extract_name).
         let name = self.extract_name(node);
         if name == "<anonymous>" {
@@ -770,6 +779,7 @@ impl<'t> Walker<'t> {
     // --- extractClass (:1679) — classes, mixins, extensions ---------------
 
     fn extract_class(&mut self, node: Node<'t>) {
+        stack_guard!();
         let resolved_body = self.resolve_body(node);
         // No skipBodilessClass. Anonymous `extension on String` → the name
         // fallback finds the ON type's type_identifier — a class named after
@@ -800,6 +810,7 @@ impl<'t> Walker<'t> {
     // --- extractEnum (:1914) ----------------------------------------------
 
     fn extract_enum(&mut self, node: Node<'t>) {
+        stack_guard!();
         let body = match self.resolve_body(node) {
             Some(b) => b,
             None => return,
@@ -1242,6 +1253,7 @@ impl<'t> Walker<'t> {
     }
 
     fn type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
+        stack_guard!();
         if node.kind() == "type_identifier" {
             let name = self.text(node);
             if !name.is_empty() && !is_builtin_type(name) {
@@ -1260,6 +1272,7 @@ impl<'t> Walker<'t> {
     // --- visitFunctionBody (:5129-5286) — dart rows -----------------------
 
     fn visit_body(&mut self, node: Node<'t>) {
+        stack_guard!();
         self.maybe_capture_fn_refs(node);
 
         let kind = node.kind();
@@ -1369,6 +1382,7 @@ impl<'t> Walker<'t> {
     /// normalizeValue with DART_SPEC's one layer (`argument` → fan out).
     /// Named arguments are NOT captured (named_argument is not a layer).
     fn normalize_fn_ref_value(&mut self, v: Node<'t>, from: u32, depth: u32) {
+        stack_guard!();
         if depth > 4 {
             return;
         }
@@ -1399,6 +1413,7 @@ impl<'t> Walker<'t> {
     }
 
     fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+        stack_guard!();
         if depth > 12 {
             return;
         }

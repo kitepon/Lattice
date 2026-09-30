@@ -7,6 +7,20 @@ import * as path from 'path';
 const LATTICE_STATE_DIR = '.lattice';
 const SENSOR_STATE_DIR = 'sensor';
 
+/**
+ * The per-project data directory, as upstream's name for it. Lattice has one
+ * fixed path (no `LATTICE_SENSOR_DIR` override, no per-host variant), so this is
+ * {@link latticeSensorRelativeDir} under the name upstream code imports.
+ */
+export const DEFAULT_LATTICE_SENSOR_DIR = path.join(LATTICE_STATE_DIR, SENSOR_STATE_DIR);
+
+/**
+ * Upstream's WSL-on-a-Windows-drive data directory (#995). Lattice does not
+ * place an index here — see {@link latticeSensorRelativeDirFor} — and the name is
+ * kept only so upstream's WSL diagnostics compile unchanged.
+ */
+export const WSL_LATTICE_SENSOR_DIR = `${DEFAULT_LATTICE_SENSOR_DIR}-wsl`;
+
 /** Stable repository-relative owner path. It deliberately has no legacy override. */
 export function latticeSensorRelativeDir(): string {
   return path.join(LATTICE_STATE_DIR, SENSOR_STATE_DIR);
@@ -20,14 +34,39 @@ export function isLatticeStateDir(name: string): boolean {
   return name === LATTICE_STATE_DIR;
 }
 
+/**
+ * The data directory for one project. Upstream picks a WSL-only sibling for a
+ * project on a Windows drive (#995); Lattice keeps the single fixed owner path
+ * on every host, because `.lattice/` is Lattice's state root and other Lattice
+ * components address the sensor index by that path. The WSL factory lane is
+ * retired, and a WSL user sharing a tree with Windows-native Lattice must run
+ * only one of them against it.
+ */
+export function latticeSensorRelativeDirFor(_projectRoot: string): string {
+  return latticeSensorRelativeDir();
+}
+
 /** Absolute sensor state directory for a project. */
 export function getLatticeSensorDir(projectRoot: string): string {
   return path.join(projectRoot, LATTICE_STATE_DIR, SENSOR_STATE_DIR);
 }
 
 /**
- * Check if a project has been initialized with LatticeSensor
- * Requires both .lattice/sensor/ directory AND sensor.db to exist
+ * Check if a project has been initialized with LatticeSensor.
+ *
+ * Requires `.lattice/sensor/sensor.db` to exist AND to carry the lattice sensor
+ * schema. A file that merely exists — empty, or a SQLite database with no
+ * tables, as an interrupted `init` or a stray `touch` leaves behind — used to
+ * count as initialized, so one such file in an ANCESTOR directory (worst
+ * case: `$HOME`) captured the upward resolution of every project beneath it
+ * and made their real indexes unreachable (#1895).
+ *
+ * The probe is cheap and gated so hot callers (the prompt hook, MCP root
+ * resolution on every call) pay one `stat`: file size, then a read-only
+ * SQLite open with a single `sqlite_master` lookup — memoized per path +
+ * mtime + size so an unchanged db is never reopened. A database that cannot
+ * be inspected counts as initialized (see probeSchema) — only a proven-absent
+ * schema, or a file SQLite refuses as not a database, says no.
  */
 export function isInitialized(projectRoot: string): boolean {
   const sensorDir = getLatticeSensorDir(projectRoot);
@@ -36,7 +75,88 @@ export function isInitialized(projectRoot: string): boolean {
   }
   // Must have sensor.db, not just .lattice/sensor folder
   const dbPath = path.join(sensorDir, 'sensor.db');
-  return fs.existsSync(dbPath);
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(dbPath);
+  } catch {
+    return false;
+  }
+  return hasLatticeSensorSchema(dbPath, st);
+}
+
+/**
+ * `sensor.db` exists at `projectRoot` but does not carry the schema, and
+ * `init` can add it in place: an empty file, or a SQLite database without the
+ * lattice sensor tables (#1895). A file that is not SQLite at all is NOT this case —
+ * see {@link hasForeignDbFile}.
+ */
+export function hasSchemalessDb(projectRoot: string): boolean {
+  const dbPath = path.join(getLatticeSensorDir(projectRoot), 'sensor.db');
+  let st: fs.Stats;
+  try { st = fs.statSync(dbPath); } catch { return false; }
+  if (!st.isFile() || isInitialized(projectRoot)) return false;
+  return st.size === 0 || probeSchema(dbPath) === 'no-schema';
+}
+
+/**
+ * `sensor.db` exists at `projectRoot` and is not a SQLite database (no
+ * header magic): SQLite refuses to open it, so `init` cannot rebuild it in
+ * place. The caller must say so rather than promise a repair; nothing here
+ * deletes the file.
+ */
+export function hasForeignDbFile(projectRoot: string): boolean {
+  const dbPath = path.join(getLatticeSensorDir(projectRoot), 'sensor.db');
+  let st: fs.Stats;
+  try { st = fs.statSync(dbPath); } catch { return false; }
+  return st.isFile() && st.size > 0 && probeSchema(dbPath) === 'not-sqlite';
+}
+
+/** A SQLite file header is 100 bytes; anything shorter cannot hold a schema. */
+const SQLITE_HEADER_SIZE = 100;
+/** SQLITE_NOTADB: SQLite read the file and it is not a database. */
+const SQLITE_NOTADB = 26;
+const schemaProbeCache = new Map<string, { mtimeMs: number; size: number; ok: boolean }>();
+
+function hasLatticeSensorSchema(dbPath: string, st: fs.Stats): boolean {
+  if (!st.isFile() || st.size < SQLITE_HEADER_SIZE) return false;
+  const cached = schemaProbeCache.get(dbPath);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.ok;
+  const probe = probeSchema(dbPath);
+  const ok = probe === 'schema' || probe === 'unknown';
+  schemaProbeCache.set(dbPath, { mtimeMs: st.mtimeMs, size: st.size, ok });
+  return ok;
+}
+
+/**
+ * What `sensor.db` holds, asked of SQLite itself through a read-only
+ * connection: the lattice sensor schema, a database without it, not a database at
+ * all (SQLITE_NOTADB), or `unknown` — locked, busy, a WAL db in a directory we
+ * cannot create `-shm` in (read-only checkout, mount, another user's tree),
+ * disk I/O. Callers treat `unknown` as initialized: the pre-existing behaviour
+ * for a database we cannot inspect.
+ *
+ * The file is never read through a descriptor of our own, not even for its
+ * 16-byte header. Closing ANY descriptor on a database file drops every POSIX
+ * lock this process holds on it, including those of a connection it already
+ * has open (sqlite.org/howtocorrupt.html §2.2.1) — and the MCP server resolves
+ * projects through isInitialized on every call while it holds the index as
+ * its writer. SQLite's own connections share one lock table per file, so a
+ * second connection opened and closed here leaves the first one's locks alone.
+ */
+function probeSchema(dbPath: string): 'schema' | 'no-schema' | 'not-sqlite' | 'unknown' {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { DatabaseSync } = require('node:sqlite');
+  let db: any = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'nodes'").get();
+    return row !== undefined ? 'schema' : 'no-schema';
+  } catch (error) {
+    return (error as { errcode?: number })?.errcode === SQLITE_NOTADB ? 'not-sqlite' : 'unknown';
+  } finally {
+    // Never hold the handle: Windows file locking would block the owner.
+    try { db?.close(); } catch { /* already closed */ }
+  }
 }
 
 /**
@@ -92,6 +212,46 @@ export function unsafeIndexRootReason(projectRoot: string): string | null {
     return 'a parent of your home directory';
   }
   return null;
+}
+
+/**
+ * `dev:ino` for a path, or null if it can't be stat'd or the platform doesn't
+ * report a usable inode. Read as bigints: WSL DrvFs (`/mnt/c`) reports inodes
+ * above 2^53, where a plain number rounds nearby inodes onto one value. Windows
+ * st_ino is unreliable across handle reopens, so we deliberately return null
+ * there — the deleted-but-open-inode hazard this guards (#925) is a POSIX
+ * file-semantics issue that doesn't arise on Windows (an open file can't be
+ * unlinked).
+ */
+export function statInode(p: string): string | null {
+  if (process.platform === 'win32') return null;
+  try {
+    const s = fs.statSync(p, { bigint: true });
+    return `${s.dev}:${s.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether two resolved index roots are one index spelled two ways — a symlinked
+ * checkout, or a case-variant on a case-insensitive mount (macOS, NTFS, WSL
+ * DrvFs `/mnt/c`), where `realpathSync` keeps the caller's casing (#1057).
+ * Compares the identity of both data directories as they are NOW, so an inode
+ * reused after a delete can't match: the deleted root no longer stats. Windows
+ * has no usable inode, so it compares the on-disk-cased native realpaths.
+ */
+export function isSameIndexRoot(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (process.platform === 'win32') {
+    try {
+      return fs.realpathSync.native(getLatticeSensorDir(a)) === fs.realpathSync.native(getLatticeSensorDir(b));
+    } catch {
+      return false;
+    }
+  }
+  const id = statInode(getLatticeSensorDir(a));
+  return id !== null && id === statInode(getLatticeSensorDir(b));
 }
 
 export function findNearestLatticeSensorRoot(startPath: string): string | null {
@@ -152,6 +312,8 @@ export function findIndexedSubprojectRoots(
   root: string,
   opts: { maxDepth?: number; max?: number } = {},
 ): string[] {
+  // A stray workspace manifest must not enable scanning home or broader roots (#1454).
+  if (unsafeIndexRootReason(root) !== null) return [];
   const maxDepth = opts.maxDepth ?? 4;
   const max = opts.max ?? 64;
   const out: string[] = [];
@@ -172,6 +334,65 @@ export function findIndexedSubprojectRoots(
   return out;
 }
 
+/** Result of {@link resolveServerRoot}. */
+export interface ServerRootResolution {
+  /** The project root to serve as the default, or null when none resolved. */
+  root: string | null;
+  /** True when `root` was adopted from the down-scan rather than the up-walk. */
+  viaSubScan: boolean;
+  /**
+   * Indexed sub-projects the down-scan saw when it ran but could NOT adopt
+   * (zero or several candidates). Empty when the up-walk resolved or the scan
+   * was skipped. Callers surface these so "no default project" errors can say
+   * what IS reachable (#1607).
+   */
+  candidates: string[];
+}
+
+/**
+ * Whether `base` is a plausible workspace root for the sub-project down-scan.
+ * Mirrors `planFrontload`'s manifest gate, widened to accept a bare `.git`
+ * entry — the #1606 shape is a workspace container holding only agent config
+ * and a `.git`, with every build manifest living in the indexed children. The
+ * user's home directory and the filesystem root are never eligible: a stray
+ * manifest there must not turn server startup into a scan that could adopt an
+ * unrelated project (#1454 documents that failure mode for the prompt-hook).
+ */
+function eligibleForSubprojectScan(base: string): boolean {
+  if (base === path.parse(base).root) return false;
+  let home: string | null = null;
+  try { home = os.homedir(); } catch { home = null; }
+  if (home && (base === home || base === path.resolve(home))) return false;
+  if (looksLikeProjectRoot(base)) return true;
+  return fs.existsSync(path.join(base, '.git'));
+}
+
+/**
+ * Resolve the project root an MCP server should serve as its DEFAULT project
+ * (#1606). Up-walk first (`findNearestLatticeSensorRoot` — the common case, and
+ * cheap). When nothing is indexed at or above `searchFrom`, run the bounded
+ * sub-project down-scan `planFrontload` already uses, behind the workspace
+ * gate above: EXACTLY ONE indexed sub-project is unambiguous and is adopted
+ * as the root; zero or several yield no root, with the candidates carried so
+ * the caller can name them instead of failing silently (#1607).
+ *
+ * `opts.subprojectScan: false` skips the down-scan entirely (the per-tool-call
+ * retry path throttles it; the up-walk always runs).
+ */
+export function resolveServerRoot(
+  searchFrom: string,
+  opts: { subprojectScan?: boolean } = {},
+): ServerRootResolution {
+  const up = findNearestLatticeSensorRoot(searchFrom);
+  if (up) return { root: up, viaSubScan: false, candidates: [] };
+  if (opts.subprojectScan === false) return { root: null, viaSubScan: false, candidates: [] };
+  const base = path.resolve(searchFrom);
+  if (!eligibleForSubprojectScan(base)) return { root: null, viaSubScan: false, candidates: [] };
+  const subs = findIndexedSubprojectRoots(base);
+  if (subs.length === 1) return { root: subs[0]!, viaSubScan: true, candidates: subs };
+  return { root: null, viaSubScan: false, candidates: subs };
+}
+
 /**
  * Unicode-aware word-boundary emulation for the keyword lists below. JS's `\b`
  * is ASCII-only — it fires only at `[A-Za-z0-9_]` edges — so it can never bound
@@ -188,8 +409,9 @@ const NOT_WORD_AFTER = /(?![\p{L}\p{N}_])/u.source;
  * Structural keywords matched as EXACT words (boundary on both sides): short
  * or ambiguous tokens where prefix matching would false-positive ("flow" in
  * "flower", "path" in "pathological"). Grouped by language; a term appears once
- * even when several languages share it ("como" is Portuguese for how AND
- * unaccented-typed Spanish "cómo").
+ * even when several languages share it. Ambiguous everyday words like PT/ES
+ * "como" and DE "wie" are excluded: the hook instead requires another strong
+ * keyword, a verified code token, or indexed prose segments (#1654).
  */
 const STRUCTURAL_WORDS = [
   // English — the pre-#1126 list minus what moved to STRUCTURAL_STEMS: the
@@ -198,17 +420,16 @@ const STRUCTURAL_WORDS = [
   'how', 'where', 'tracing', 'flows?', 'paths?', 'reach(?:es|ed)?', 'wired?', 'breaks?', 'why does',
   // French (où=where, flux=flow, chemin=path, casse=breaks)
   'comment', 'où', 'flux', 'chemins?', 'casse',
-  // Spanish (cómo/como=how, dónde/donde=where, flujo=flow, ruta/camino=path,
+  // Spanish (cómo=how, dónde/donde=where, flujo=flow, ruta/camino=path,
   // rompe=breaks, llaman / quién llama = call(s) — bare "llama" is excluded:
   // it's also the animal/model name in English prompts)
   'cómo', 'dónde', 'donde', 'flujos?', 'rutas?', 'caminos?', 'rompe', 'llaman', 'quién llama', 'quien llama',
-  // Portuguese (como=how — also covers unaccented Spanish; onde=where,
-  // fluxo=flow, caminho=path)
-  'como', 'onde', 'fluxos?', 'caminhos?',
-  // German (wie=how, wo/woher/wohin=where, Pfad=path, Fluss/Ablauf=flow,
+  // Portuguese (onde=where, fluxo=flow, caminho=path)
+  'onde', 'fluxos?', 'caminhos?',
+  // German (wo/woher/wohin=where, Pfad=path, Fluss/Ablauf=flow,
   // bricht/kaputt=breaks, ruft=calls, hängt=depends — "hängt … von X ab"
   // splits the separable verb "abhängen", so the "abhäng" stem can't catch it)
-  'wie', 'wo', 'woher', 'wohin', 'pfade?', 'fluss', 'ablauf', 'bricht', 'kaputt', 'ruft', 'hängt',
+  'wo', 'woher', 'wohin', 'pfade?', 'fluss', 'ablauf', 'bricht', 'kaputt', 'ruft', 'hängt',
   // Italian (dove=where, flusso=flow, percorso/i=path)
   'dove', 'flusso', 'percors[oi]',
   // Russian (как=how, где=where, путь/пути=path, работает=works)
@@ -449,6 +670,33 @@ export function isStructuralPrompt(prompt: string): boolean {
 }
 
 /**
+ * Claude Code persists `UserPromptSubmit` hook stdout above this many
+ * characters to a file and shows the model a ~2 KB preview instead (#1694).
+ * Measured on Claude Code 2.1.261; documented in the hooks reference as a
+ * 10,000-character cap on hook output strings.
+ */
+export const CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT = 10_000;
+
+/**
+ * Max characters of explore text injected by `lattice sensor prompt-hook` before
+ * truncation. Must stay under {@link CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT} so
+ * the host delivers the payload inline. 9,000 leaves ~1k for the
+ * `<lattice_sensor_context>` wrapper and the `projectPath` nudge lines appended
+ * after the cap is applied.
+ */
+export const PROMPT_HOOK_INJECTION_MAX = 9_000;
+
+/**
+ * Cap explore text for the prompt-hook injection, preserving the existing
+ * "call lattice_sensor_explore for the rest" notice when truncated.
+ */
+export function capPromptHookInjection(text: string, max = PROMPT_HOOK_INJECTION_MAX): string {
+  return text.length > max
+    ? `${text.slice(0, max)}\n…(truncated; call lattice_sensor_explore for the rest)`
+    : text;
+}
+
+/**
  * What the front-load hook should do for a prompt issued from a directory.
  */
 export interface FrontloadPlan {
@@ -582,11 +830,11 @@ function ensureGitignore(gitignorePath: string): boolean {
  */
 export function createDirectory(projectRoot: string): void {
   const sensorDir = getLatticeSensorDir(projectRoot);
-  const dbPath = path.join(sensorDir, 'sensor.db');
 
-  // Only throw if LatticeSensor is actually initialized (db exists)
-  // .lattice/sensor/ folder alone is fine
-  if (fs.existsSync(dbPath)) {
+  // Only throw if LatticeSensor is actually initialized (db with a schema).
+  // .lattice/sensor/ folder alone — or a schema-less sensor.db left by an
+  // interrupted init (#1895) — is fine: initialize() adds the schema to it.
+  if (isInitialized(projectRoot)) {
     throw new Error(`LatticeSensor already initialized in ${projectRoot}`);
   }
 
@@ -749,4 +997,15 @@ export function validateDirectory(projectRoot: string): {
     valid: errors.length === 0,
     errors,
   };
+}
+
+/**
+ * Claude Code injects `<task-notification>…</task-notification>` blocks as
+ * `user` messages when a background agent finishes, and UserPromptSubmit
+ * hooks receive them exactly like typed prompts (#1832). The whole prompt
+ * must be that single envelope; a user question that merely mentions the
+ * marker is still a prompt.
+ */
+export function isTaskNotification(prompt: string): boolean {
+  return /^\s*<task-notification>[\s\S]*<\/task-notification>\s*$/.test(prompt);
 }

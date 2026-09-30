@@ -22,12 +22,14 @@ import * as path from 'path';
 import * as os from 'os';
 import { LatticeSensor } from '../src';
 import { terminateChild } from './child-process';
+import { once } from 'events';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
   // --no-watch keeps the test deterministic and avoids watcher startup noise.
-  return spawn(process.execPath, [BIN, 'serve', '--mcp', '--no-watch'], {
+  return spawn(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp', '--no-watch'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;
@@ -90,6 +92,7 @@ describe('MCP project resolution via roots/list (issue #196)', () => {
       await terminateChild(child);
       child = null;
     }
+    child = null;
     fs.rmSync(cwdDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
   });

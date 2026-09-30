@@ -88,6 +88,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     nodes_meta: Vec<NodeMeta>,
@@ -119,6 +120,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
         nodes_meta: Vec::new(),
@@ -225,7 +227,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
         let end_line = node.end_position().row as u32 + 1;
 
         let qualified = extra.qualified_name.unwrap_or_else(|| {
@@ -378,6 +381,7 @@ impl<'t> Walker<'t> {
     // --- visitNode ------------------------------------------------------------
 
     fn visit_node(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         let mut skip_children = false;
 
@@ -415,10 +419,12 @@ impl<'t> Walker<'t> {
     }
 
     fn visit_function_body(&mut self, body: Node<'t>) {
+        stack_guard!();
         self.visit_for_calls_and_structure(body);
     }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
 
@@ -446,6 +452,7 @@ impl<'t> Walker<'t> {
     // --- extractors --------------------------------------------------------------
 
     fn extract_function(&mut self, node: Node<'t>) {
+        stack_guard!();
         // (getReceiverType only matches method_declaration's receiver field —
         // function_declaration has none, so no reroute happens here)
         let name = self.extract_name(node);
@@ -522,6 +529,7 @@ impl<'t> Walker<'t> {
 
     /// extractTypeAlias for Go: type_spec → struct / interface / plain alias.
     fn extract_type_alias(&mut self, node: Node<'t>) -> bool {
+        stack_guard!();
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             return false;
@@ -840,6 +848,7 @@ impl<'t> Walker<'t> {
     /// (constraint_elem) and struct embedding (field_declaration without a
     /// field_identifier), plus the field_declaration_list recursion.
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
+        stack_guard!();
         let extends_kind = edge_kind_index("extends").unwrap();
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
@@ -892,6 +901,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
+        stack_guard!();
         if node.kind() == "type_identifier" {
             let type_name = self.text(node).to_string();
             if !type_name.is_empty() && !is_builtin_type(&type_name) {
@@ -978,6 +988,7 @@ impl<'t> Walker<'t> {
     /// normalizeValue with GO_SPEC's transparent layers (literal_element,
     /// expression_list — both fan out to named children).
     fn normalize_fn_ref_value(&mut self, v: Node<'t>, from: u32, depth: u32) {
+        stack_guard!();
         if depth > 4 {
             return;
         }
@@ -996,6 +1007,31 @@ impl<'t> Walker<'t> {
                     row: p.row,
                 });
             }
+            // #1820: preserve the receiver of a method value.
+            "selector_expression" => {
+                let field = v
+                    .child_by_field_name("field")
+                    .or_else(|| v.named_child(v.named_child_count().saturating_sub(1)));
+                let Some(field) = field else { return };
+                let name = self.text(field);
+                if name.is_empty() || is_stoplisted(name) {
+                    return;
+                }
+                let value = self.text(v);
+                if !value.split('.').all(|part| {
+                    !part.is_empty() && part.chars().enumerate().all(|(i, c)| {
+                        c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+                    })
+                }) { return; }
+                let p = field.start_position();
+                self.fn_ref_cands.push(Cand {
+                    from,
+                    name: value.to_string(),
+                    line: p.row as u32 + 1,
+                    column_byte: field.start_byte(),
+                    row: p.row,
+                });
+            }
             "literal_element" | "expression_list" => {
                 for i in 0..v.named_child_count() {
                     if let Some(c) = v.named_child(i) {
@@ -1008,6 +1044,7 @@ impl<'t> Walker<'t> {
     }
 
     fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+        stack_guard!();
         if depth > 12 {
             return;
         }
@@ -1036,6 +1073,7 @@ impl<'t> Walker<'t> {
         let mut seen: HashSet<(String, String)> = HashSet::new();
         for c in cands {
             if !c.name.starts_with("this.")
+                && !c.name.contains('.')
                 && !c.name.contains("::")
                 && !self.defined_fn_names.contains(&c.name)
                 && !self.imported_names.contains(&c.name)

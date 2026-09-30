@@ -9,7 +9,11 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 12;
+// Lattice numbered its own migrations 9–12 before the 2026-09-30 upstream sync;
+// upstream independently numbered 9–11. Lattice databases in the field are at 12,
+// so upstream's three are carried as 13–15 (same idea as EXTRACTION_VERSION: the
+// merged number must be above both, never a pick).
+export const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * Migration definition
@@ -214,6 +218,72 @@ const migrations: Migration[] = [
       db.exec(`
         UPDATE edges SET resolved_by = json_extract(metadata, '$.resolvedBy')
         WHERE metadata IS NOT NULL AND resolved_by IS NULL
+      `);
+    },
+  },
+  {
+    version: 13,
+    description:
+      'Add files.generated — index-time content-header generated-file detection for ranking (#1500)',
+    up: (db) => {
+      // DDL only — instant on any size database, and NO backfill: the flag is
+      // derived from file CONTENT, which this migration has no access to (the
+      // files table stores a hash, not the bytes). Migrated rows therefore stay
+      // 0 until the next full index re-extracts them, and every reader unions
+      // the flag with the path-only check, so an un-backfilled database keeps
+      // exactly the pre-#1500 behavior instead of regressing. `sync` heals it
+      // file-by-file as files change. This is why the CHANGELOG entry says a
+      // re-index is required to pick up the new detection.
+      //
+      // ALTER TABLE has no IF NOT EXISTS, so guard for idempotency — a database
+      // created from current schema.sql already has the column (matters when
+      // migrations are re-run from an older recorded version, as the v6
+      // regression test does). Keep in lockstep with schema.sql.
+      const cols = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'generated')) {
+        db.exec('ALTER TABLE files ADD COLUMN generated INTEGER NOT NULL DEFAULT 0');
+      }
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1'
+      );
+    },
+  },
+  {
+    version: 14,
+    description: 'Track synthesis inputs and stabilize synthesis traversal for incremental refresh (#1988)',
+    up: (db) => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_nodes_kind;
+        CREATE INDEX idx_nodes_kind ON nodes(kind, file_path, start_line, id);
+        CREATE TABLE IF NOT EXISTS synthesis_inputs (
+          file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+          WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
+        UPDATE edges SET metadata = json_set(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.synthesizedBy', 'go-method-contains')
+          WHERE kind = 'contains' AND provenance IS NULL AND EXISTS (
+            SELECT 1 FROM nodes s JOIN nodes t ON t.id = edges.target
+            WHERE s.id = edges.source AND s.language = 'go' AND t.language = 'go'
+              AND s.kind IN ('struct', 'class', 'interface', 'enum', 'type_alias') AND t.kind = 'method'
+              AND s.file_path != t.file_path
+          );
+        INSERT OR REPLACE INTO project_metadata(key, value, updated_at)
+          VALUES ('synthesis_pending', '1', 0);
+      `);
+    },
+  },
+  {
+    version: 15,
+    description: 'Guard synthesis metadata lookups against malformed JSON',
+    up: (db) => {
+      // Existing v14 (upstream v10) indexes keep their old expression under IF NOT EXISTS.
+      // Rebuild transactionally; the guarded v10 definition also lets older
+      // databases containing malformed metadata reach this migration safely.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_edges_synthesis_site;
+        CREATE INDEX idx_edges_synthesis_site
+          ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+          WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
       `);
     },
   },

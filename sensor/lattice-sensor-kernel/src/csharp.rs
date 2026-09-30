@@ -130,6 +130,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     /// Node id string per row — ids COLLIDE for same-(kind, name, line) nodes
@@ -162,6 +163,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
         node_ids: Vec::new(),
@@ -318,7 +320,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
         let end_line = node.end_position().row as u32 + 1; // no resolveBody for csharp
 
         let qualified = {
@@ -500,6 +503,7 @@ impl<'t> Walker<'t> {
     // --- the dispatcher (visitNode, C#-relevant branches) -----------------------
 
     fn visit_node(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         let mut skip_children = false;
 
@@ -571,10 +575,12 @@ impl<'t> Walker<'t> {
     // --- visitFunctionBody ------------------------------------------------------
 
     fn visit_function_body(&mut self, body: Node<'t>) {
+        stack_guard!();
         self.visit_for_calls_and_structure(body);
     }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
 
@@ -626,6 +632,7 @@ impl<'t> Walker<'t> {
     // --- extractors --------------------------------------------------------------
 
     fn extract_class(&mut self, node: Node<'t>) {
+        stack_guard!();
         // skipBodilessClass unset: a bodiless `record Empty;` still mints a node.
         let name = self.extract_name(node);
         let extra = Extra {
@@ -656,6 +663,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_struct(&mut self, node: Node<'t>) {
+        stack_guard!();
         // Body gate — EXCEPT C# positional records (`record struct M(…);`,
         // node type record_declaration), complete definitions with no body.
         // A bodiless `struct Fwd;` mints NO node. (#831)
@@ -685,6 +693,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_interface(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
@@ -703,6 +712,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_enum(&mut self, node: Node<'t>) {
+        stack_guard!();
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
         let extra = Extra {
@@ -890,6 +900,7 @@ impl<'t> Walker<'t> {
     /// extractMethod (1737) — method_declaration + constructor_declaration.
     /// Signature is ALWAYS undefined (no getSignature hook); isAsync is real.
     fn extract_method(&mut self, node: Node<'t>) {
+        stack_guard!();
         if !self.inside_class_like() {
             // Unreachable on non-erroring C# (top-level `void M(){}` parses as
             // local_function_statement; erroring files defer) — mirror the TS
@@ -924,6 +935,7 @@ impl<'t> Walker<'t> {
     /// extractFunction — only reachable for a method outside any class
     /// (unreachable on non-erroring C#; kept faithful to the generic tail).
     fn extract_function(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
@@ -1087,6 +1099,7 @@ impl<'t> Walker<'t> {
     /// (object initializers are initializer_expression), so this is
     /// unreachable — mirrored from the shared TS path like java.rs.
     fn extract_anonymous_class(&mut self, node: Node<'t>, body: Node<'t>) {
+        stack_guard!();
         let type_node = node
             .child_by_field_name("constructor")
             .or_else(|| node.child_by_field_name("type"))
@@ -1243,6 +1256,7 @@ impl<'t> Walker<'t> {
 
     /// walkCsharpTypePosition (5955).
     fn walk_type_position(&mut self, node: Node<'t>, from_row: u32) {
+        stack_guard!();
         match node.kind() {
             "predefined_type" => {}
             "identifier" => {
@@ -1362,6 +1376,7 @@ impl<'t> Walker<'t> {
     /// normalizeValue (function-ref.ts:525) for CSHARP_SPEC: bare identifiers,
     /// the transparent `argument` layer, and the `this.Member` special.
     fn normalize_fn_ref_value(&mut self, v: Node<'t>, from: u32, depth: u32) {
+        stack_guard!();
         if depth > 4 {
             return;
         }
@@ -1412,6 +1427,7 @@ impl<'t> Walker<'t> {
     }
 
     fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+        stack_guard!();
         if depth > 12 {
             return;
         }

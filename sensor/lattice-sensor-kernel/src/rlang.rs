@@ -69,6 +69,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
 }
@@ -92,6 +93,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
     };
@@ -181,7 +183,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
 
         // buildQualifiedName (tree-sitter.ts:1447-1460): non-file stack names
         // joined `::` (namespacePrefix is always empty for R).
@@ -299,6 +302,7 @@ impl<'t> Walker<'t> {
     // else plain recursion over namedChildren in order.
 
     fn visit(&mut self, node: Node<'t>) {
+        stack_guard!();
         if self.hook(node) {
             return;
         }
@@ -314,6 +318,7 @@ impl<'t> Walker<'t> {
 
     /// The visitNode hook (r.ts:180-309). Returns true when consumed.
     fn hook(&mut self, node: Node<'t>) -> bool {
+        stack_guard!();
         match node.kind() {
             "call" => self.hook_call(node),
             "binary_operator" => self.hook_binary_operator(node),
@@ -322,6 +327,7 @@ impl<'t> Walker<'t> {
     }
 
     fn hook_call(&mut self, node: Node<'t>) -> bool {
+        stack_guard!();
         let fname = match self.callee_name(node) {
             Some(f) => f,
             None => return false,
@@ -406,6 +412,7 @@ impl<'t> Walker<'t> {
     }
 
     fn hook_binary_operator(&mut self, node: Node<'t>) -> bool {
+        stack_guard!();
         let op = match node.child_by_field_name("operator") {
             Some(o) => self.text(o),
             None => return false,
@@ -478,6 +485,7 @@ impl<'t> Walker<'t> {
     /// `list(…)` entries become methods. Non-method argument subtrees are
     /// NEVER visited (`representation(…)`, `signature(…)` invisible).
     fn extract_class_members(&mut self, class_call: Node<'t>, class_row: u32) {
+        stack_guard!();
         let args = match class_call.child_by_field_name("arguments") {
             Some(a) => a,
             None => return,
@@ -544,6 +552,7 @@ impl<'t> Walker<'t> {
     /// `method` node positioned at the ARGUMENT node, signature from the raw
     /// parameters text, body walked hook-aware inside the method scope.
     fn emit_method_arg(&mut self, entry: Node<'t>) {
+        stack_guard!();
         let entry_name = match entry.child_by_field_name("name") {
             Some(n) => n,
             None => return,

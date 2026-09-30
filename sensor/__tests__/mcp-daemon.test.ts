@@ -35,10 +35,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { LatticeSensor } from '../src';
 import { getDaemonSocketPath } from '../src/mcp/daemon-paths';
+import { LatticeSensorPackageVersion } from '../src/mcp/version';
+import { once } from 'events';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
+import { recordSpawns, removeSpawnLog, settleLosingCandidates } from './daemon-candidates';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
@@ -48,14 +53,16 @@ interface SpawnedServer {
   stderr: string[];
 }
 
-function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}): SpawnedServer {
-  const child = spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}, args: string[] = []): SpawnedServer {
+  // Record the daemon candidates this launcher spawns, for the teardown.
+  const recorder = recordSpawns(cwd);
+  const child = spawn(process.execPath, [...WASM_RUNTIME_FLAGS, ...recorder.args, BIN, 'serve', '--mcp', ...args], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // #618: the daemon-attach log line is now off by default; opt the test
     // harness into it (LATTICE_SENSOR_MCP_LOG_ATTACH=1) so the attach assertions
     // below can still observe a successful attach. A per-test env still wins.
-    env: { LATTICE_SENSOR_MCP_LOG_ATTACH: '1', ...process.env, ...env },
+    env: { LATTICE_SENSOR_MCP_LOG_ATTACH: '1', ...process.env, ...recorder.env, ...env },
   }) as ChildProcessWithoutNullStreams;
   // Swallow spawn/EPIPE errors so killing a child mid-write can't surface as an
   // unhandled error that crashes the vitest worker.
@@ -171,6 +178,15 @@ async function waitProcessExit(pid: number, timeoutMs: number): Promise<boolean>
   return waitFor(() => !isAlive(pid), timeoutMs).then(() => true).catch(() => false);
 }
 
+async function staleIndex(root: string): Promise<Buffer> {
+  fs.writeFileSync(path.join(root, 'app.ts'), 'export function originalSymbol() {}\n');
+  const cg = LatticeSensor.openSync(root);
+  try { await cg.indexAll(); } finally { cg.close(); }
+  const before = fs.readFileSync(path.join(root, '.lattice/sensor', 'sensor.db'));
+  fs.writeFileSync(path.join(root, 'app.ts'), 'export function changedSymbol() {}\n');
+  return before;
+}
+
 describe('Shared MCP daemon (issue #411)', () => {
   let tempDir: string;   // the (possibly symlinked) path processes are spawned with
   let realRoot: string;  // its canonical form — what the daemon keys paths on
@@ -184,7 +200,18 @@ describe('Shared MCP daemon (issue #411)', () => {
   });
 
   afterEach(async () => {
-    killTree(...servers.map((s) => s.child));
+    // The runtime flags avoid an intermediate relaunch process. Wait for each
+    // actual server to exit before removing its Windows working directory.
+    await Promise.all(servers.map(async ({ child }) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, 'exit');
+      child.kill('SIGKILL');
+      await exited;
+    }));
+    // Racing launchers may each have spawned a daemon candidate, and a loser
+    // can still be starting on a loaded machine. Stopping the winner first
+    // would let it take over the fixture being removed (#1773).
+    await settleLosingCandidates(tempDir, () => readLockPid(realRoot));
     // The daemon is detached (not a tracked child) — reap it explicitly via the
     // pid it recorded, so a test can't leak a background daemon. Guard against
     // our own pid: the version-mismatch test plants `pid: process.pid` in the
@@ -192,11 +219,61 @@ describe('Shared MCP daemon (issue #411)', () => {
     const daemonPid = readLockPid(realRoot);
     if (daemonPid && daemonPid !== process.pid && isAlive(daemonPid)) {
       try { process.kill(daemonPid, 'SIGKILL'); } catch { /* race */ }
+      await waitProcessExit(daemonPid, 5000);
     }
     await new Promise((r) => setTimeout(r, 50));
     servers.length = 0;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
+    removeSpawnLog(tempDir);
+    await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }, 45_000);
+
+  it.runIf(process.platform !== 'win32')('stops despite a socket still waiting for its client hello (#1963)', async () => {
+    const server = spawnServer(tempDir);
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    await waitFor(() => findResponse(server.stdout, 1), 10000);
+    // The lock is written before the socket is bound; an attached proxy proves
+    // the daemon is listening (#1773).
+    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 10000);
+    const pid = await waitFor(() => readLockPid(realRoot), 10000);
+    const raw = net.connect(getDaemonSocketPath(realRoot));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        raw.once('data', () => resolve());
+        raw.once('error', reject);
+      });
+      process.kill(pid, 'SIGTERM');
+      expect(await waitProcessExit(pid, 1500)).toBe(true);
+      expect(fs.existsSync(path.join(realRoot, '.lattice/sensor', 'writer.pid'))).toBe(false);
+    } finally {
+      raw.destroy();
+    }
+  }, 20000);
+
+  it('a disconnect before client hello leaves no phantom session and the idle reaper exits (#1356)', async () => {
+    const server = spawnServer(tempDir, {
+      LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '800',
+      LATTICE_SENSOR_DAEMON_MAX_IDLE_MS: '0',
+      LATTICE_SENSOR_DAEMON_CLIENT_SWEEP_MS: '0',
+    });
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    await waitFor(() => findResponse(server.stdout, 1), 10000);
+    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 10000);
+    const pid = await waitFor(() => readLockPid(realRoot), 10000);
+    const raw = net.connect(getDaemonSocketPath(realRoot));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        raw.once('data', () => resolve());
+        raw.once('error', reject);
+      });
+      raw.destroy();
+      server.child.stdin.end();
+      expect(await waitProcessExit(pid, 8000)).toBe(true);
+      expect(readDaemonLog(realRoot)).toContain('Shutting down (idle timeout; clients=0)');
+      expect(fs.existsSync(path.join(realRoot, '.lattice/sensor', 'writer.pid'))).toBe(false);
+    } finally { raw.destroy(); }
+  }, 20000);
 
   it('two invocations share ONE detached daemon; both attach as proxies', async () => {
     const env = { LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '15000' };
@@ -309,6 +386,102 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(fs.existsSync(path.join(realRoot, '.lattice/sensor', 'daemon.log'))).toBe(false);
   }, 20000);
 
+  it.each(['2', '0'])('direct stdio honors query pool size=%s and exits after concurrent reads', async (size) => {
+    fs.writeFileSync(path.join(tempDir, 'app.ts'), 'export function directSymbol() { return 42; }\n');
+    const cg = await LatticeSensor.open(tempDir);
+    try { await cg.indexAll(); } finally { cg.close(); }
+    const server = spawnServer(tempDir, {
+      LATTICE_SENSOR_NO_DAEMON: '1', LATTICE_SENSOR_QUERY_POOL_SIZE: size,
+    }, ['--no-watch', '--path', tempDir]);
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    await waitFor(() => findResponse(server.stdout, 1), 10000);
+    await waitFor(() => server.stderr.some((l) => l.includes(size === '0'
+      ? 'Query pool disabled' : 'Query pool: up to 2 worker thread(s)')), 10000, 25, 'direct query pool configuration');
+    const ids = [2, 3, 4, 5, 6, 7];
+    for (const id of ids) {
+      sendMessage(server.child, {
+        jsonrpc: '2.0', id, method: 'tools/call',
+        params: { name: 'lattice_sensor_explore', arguments: { query: 'directSymbol' } },
+      });
+    }
+    const replies = await Promise.all(ids.map((id) => waitFor(() => findResponse(server.stdout, id), 15000)));
+    for (const reply of replies) {
+      expect(reply.error).toBeUndefined();
+      expect(reply.result.isError).toBeFalsy();
+      expect(reply.result.content[0].text).toContain('directSymbol');
+      expect(reply.result).not.toHaveProperty('_cgExploreEmission');
+    }
+    const exited = new Promise<number | null>((resolve) => server.child.once('exit', resolve));
+    server.child.stdin.end();
+    expect(await exited).toBe(0);
+  }, 30000);
+
+  it('direct stdio queries multiple projects without a default index', async () => {
+    fs.rmSync(path.join(tempDir, '.lattice/sensor'), { recursive: true, force: true });
+    for (const name of ['alpha', 'beta']) {
+      const root = path.join(tempDir, name);
+      fs.mkdirSync(root);
+      fs.writeFileSync(path.join(root, 'app.ts'), `export function ${name}Symbol() { return 42; }\n`);
+      const cg = await LatticeSensor.init(root);
+      try { await cg.indexAll(); } finally { cg.close(); }
+    }
+    const server = spawnServer(tempDir, {
+      LATTICE_SENSOR_NO_DAEMON: '1', LATTICE_SENSOR_QUERY_POOL_SIZE: '2',
+    }, ['--no-watch', '--path', tempDir]);
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    await waitFor(() => findResponse(server.stdout, 1), 10000);
+    await waitFor(() => server.stderr.some((l) => l.includes('Query pool: up to 2')), 10000);
+    for (const [i, name] of ['alpha', 'beta'].entries()) {
+      sendMessage(server.child, {
+        jsonrpc: '2.0', id: i + 2, method: 'tools/call',
+        params: { name: 'lattice_sensor_explore', arguments: { query: `${name}Symbol`, projectPath: path.join(tempDir, name) } },
+      });
+    }
+    for (const [i, name] of ['alpha', 'beta'].entries()) {
+      const reply = await waitFor(() => findResponse(server.stdout, i + 2), 15000);
+      expect(reply.result.isError).toBeFalsy();
+      expect(reply.result.content[0].text).toContain(`${name}Symbol`);
+    }
+    sendMessage(server.child, {
+      jsonrpc: '2.0', id: 4, method: 'tools/call',
+      params: { name: 'lattice_sensor_explore', arguments: { query: 'alphaSymbol' } },
+    });
+    const missing = await waitFor(() => findResponse(server.stdout, 4), 10000);
+    expect(missing.result.isError).toBeFalsy();
+    expect(missing.result.content[0].text).toContain('projectPath');
+    expect(fs.existsSync(path.join(tempDir, '.lattice/sensor'))).toBe(false);
+  }, 30000);
+
+  it('proxy fallback enables the query pool when no live writer holds the project', async () => {
+    const net = await import('net');
+    const sockPath = getDaemonSocketPath(realRoot);
+    const miniServer = net.createServer((sock) => {
+      sock.end(JSON.stringify({
+        sensor: '1.4.1-lattice.999', pid: process.pid, socketPath: sockPath, protocol: 1,
+      }) + '\n');
+    });
+    await new Promise<void>((resolve) => miniServer.listen(sockPath, resolve));
+    try {
+      const server = spawnServer(tempDir, { LATTICE_SENSOR_QUERY_POOL_SIZE: '2' }, ['--no-watch']);
+      servers.push(server);
+      sendInitialize(server.child, `file://${tempDir}`, 1);
+      await waitFor(() => findResponse(server.stdout, 1), 10000);
+      sendMessage(server.child, {
+        jsonrpc: '2.0', id: 2, method: 'tools/call',
+        params: { name: 'lattice_sensor_files', arguments: {} },
+      });
+      const reply = await waitFor(() => findResponse(server.stdout, 2), 10000);
+      expect(reply.error).toBeUndefined();
+      expect(reply.result.isError).toBeFalsy();
+      expect(server.stderr.some((l) => l.includes('serving this session in-process'))).toBe(true);
+      expect(server.stderr.some((l) => l.includes('Query pool: up to 2'))).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => miniServer.close(() => resolve()));
+    }
+  }, 30000);
+
   it('clears a stale (dead-pid) lockfile and a fresh daemon takes over', async () => {
     // Plant a lockfile pointing at a definitely-dead pid + the real socket path.
     fs.writeFileSync(
@@ -335,6 +508,212 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(livePid).not.toBe(999_999);
     expect(isAlive(livePid!)).toBe(true);
   }, 40000);
+
+  it('preserves paired daemon/writer locks when their live PID may have been reused', async () => {
+    const env = { LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '30000' };
+    const first = spawnServer(tempDir, env);
+    servers.push(first);
+    sendInitialize(first.child, `file://${tempDir}`, 1);
+    await waitFor(() => findResponse(first.stdout, 1), 10000);
+    await waitFor(() => countListeningLines(realRoot) >= 1, 10000);
+    // Listening precedes engine initialization. Do not kill SQLite while its
+    // initial connection is still being configured for this fixture.
+    sendMessage(first.child, {
+      jsonrpc: '2.0', id: 10, method: 'tools/call',
+      params: { name: 'lattice_sensor_status', arguments: {} },
+    });
+    const ready = await waitFor(() => findResponse(first.stdout, 10), 10000);
+    expect(ready.result?.isError).not.toBe(true);
+    expect(JSON.stringify(ready.result)).toContain('Lattice Sensor Status');
+    const killedPid = readLockPid(realRoot)!;
+
+    // End the first proxy before simulating PID reuse. Otherwise it can switch
+    // to a fallback writer while this test prepares the replacement locks/DB.
+    first.child.stdin.end();
+    await waitFor(() => first.child.exitCode !== null, 5000);
+    process.kill(killedPid, 'SIGKILL');
+    expect(await waitProcessExit(killedPid, 8000)).toBe(true);
+
+    // Model OS PID reuse without risking another process: the stale lock now
+    // names this live vitest worker, but no daemon answers the leftover socket.
+    const daemonPath = path.join(realRoot, '.lattice/sensor', 'daemon.pid');
+    const writerPath = path.join(realRoot, '.lattice/sensor', 'writer.pid');
+    const staleDaemonLock = JSON.stringify({
+      pid: process.pid,
+      version: LatticeSensorPackageVersion,
+      socketPath: getDaemonSocketPath(realRoot),
+      startedAt: Date.now() - 60_000,
+    });
+    const staleWriterLock = JSON.stringify({
+      pid: process.pid,
+      mode: 'daemon',
+      startedAt: Date.now() - 60_000,
+    }) + '\n';
+    fs.writeFileSync(daemonPath, staleDaemonLock);
+    fs.writeFileSync(writerPath, staleWriterLock);
+
+    // Make the index stale by changing the source, without opening a new
+    // SQLite writer against the database of the daemon we just killed.
+    const before = fs.readFileSync(path.join(realRoot, '.lattice/sensor', 'sensor.db'));
+    fs.writeFileSync(path.join(realRoot, 'app.ts'), 'export function changedSymbol() {}\n');
+    const second = spawnServer(tempDir, env);
+    servers.push(second);
+    sendInitialize(second.child, `file://${tempDir}`, 2);
+    const response = await waitFor(() => findResponse(second.stdout, 2), 12000);
+    expect(response.result.serverInfo.name).toBe('lattice-sensor');
+    await waitFor(
+      () => second.stderr.some((line) =>
+        line.includes('Attached to shared daemon') || line.includes('Shared daemon unavailable')
+      ),
+      30000, // The nominal 6s retry loop takes up to 26s on the Windows VM.
+      25,
+      'the proxy to attach or fall back',
+    );
+
+    expect(second.stderr.some((line) => line.includes('Attached to shared daemon'))).toBe(false);
+    expect(countListeningLines(realRoot)).toBe(1);
+    expect(fs.readFileSync(daemonPath, 'utf8')).toBe(staleDaemonLock);
+    expect(fs.readFileSync(writerPath, 'utf8')).toBe(staleWriterLock);
+    expect(isAlive(process.pid)).toBe(true);
+
+    sendMessage(second.child, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'lattice_sensor_status', arguments: {} },
+    });
+    const toolResponse = await waitFor(() => findResponse(second.stdout, 3), 5000);
+    expect(toolResponse.error).toBeUndefined();
+    expect(toolResponse.result?.isError).not.toBe(true);
+    expect(JSON.stringify(toolResponse.result)).toContain('Lattice Sensor Status');
+    expect(second.stderr.some((line) => line.includes('Serving reads in-process without auto-sync'))).toBe(true);
+    second.child.stdin.end();
+    await waitFor(() => second.child.exitCode !== null, 5000);
+    expect(fs.readFileSync(path.join(realRoot, '.lattice/sensor', 'sensor.db'))).toEqual(before);
+    expect(fs.readFileSync(writerPath, 'utf8')).toBe(staleWriterLock);
+  }, 50000);
+
+  it('does not replace a live legacy lock with a second daemon', async () => {
+    const pidPath = path.join(realRoot, '.lattice/sensor', 'daemon.pid');
+    fs.writeFileSync(pidPath, `${process.pid}\n`);
+
+    const server = spawnServer(tempDir, { LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '15000' });
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    const response = await waitFor(() => findResponse(server.stdout, 1), 12000);
+    expect(response.result.serverInfo.name).toBe('lattice-sensor');
+
+    await waitFor(
+      () => server.stderr.some((line) =>
+        line.includes('Attached to shared daemon') || line.includes('Shared daemon unavailable')
+      ),
+      30000, // The nominal 6s retry loop takes up to 26s on the Windows VM.
+      25,
+      'the proxy to attach or fall back',
+    );
+
+    expect(server.stderr.some((line) => line.includes('Attached to shared daemon'))).toBe(false);
+    expect(fs.readFileSync(pidPath, 'utf8')).toBe(`${process.pid}\n`);
+    expect(countListeningLines(realRoot)).toBe(0);
+    expect(isAlive(process.pid)).toBe(true);
+
+    sendMessage(server.child, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'lattice_sensor_status', arguments: {} },
+    });
+    const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 5000);
+    expect(toolResponse).toMatchObject({
+      error: { message: expect.stringContaining('live legacy daemon') },
+    });
+  }, 40000);
+
+  it('does not start a fallback writer when the daemon lock is unreadable', async () => {
+    const pidPath = path.join(realRoot, '.lattice/sensor', 'daemon.pid');
+    fs.mkdirSync(pidPath);
+
+    const server = spawnServer(tempDir);
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    await waitFor(
+      () => server.stderr.some((line) => line.includes('Shared daemon unavailable')),
+      30000, // The nominal 6s retry loop takes up to 26s on the Windows VM.
+      25,
+      'the proxy to fall back',
+    );
+
+    sendMessage(server.child, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'lattice_sensor_status', arguments: {} },
+    });
+    const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 5000);
+    expect(toolResponse).toMatchObject({
+      error: { message: expect.stringContaining('daemon lock could not be read') },
+    });
+  }, 40000);
+
+  it.each([null, 'daemon', 'fallback'])('proxy falls back to read-only mode on a daemon version mismatch (writer: %s)', async (mode) => {
+    const before = await staleIndex(realRoot);
+    const writerPath = path.join(realRoot, '.lattice/sensor', 'writer.pid');
+    const writer = JSON.stringify({ pid: process.pid, mode, startedAt: Date.now() });
+    if (mode) fs.writeFileSync(writerPath, writer);
+    const net = await import('net');
+    const sockPath = getDaemonSocketPath(realRoot);
+    // Plant a live-pid lockfile so the launcher treats the lock as held, and a
+    // mini-server that answers with a mismatched-but-marked-version hello
+    // (a same-product skew; an unmarked version is a foreign product, ADR 0049).
+    fs.writeFileSync(
+      path.join(realRoot, '.lattice/sensor', 'daemon.pid'),
+      JSON.stringify({ pid: process.pid, version: '1.4.1-lattice.999', socketPath: sockPath, startedAt: Date.now() }),
+    );
+    const miniServer = net.createServer((sock) => {
+      sock.write(JSON.stringify({
+        sensor: '1.4.1-lattice.999',
+        pid: process.pid,
+        socketPath: sockPath,
+        protocol: 1,
+      }) + '\n');
+    });
+    await new Promise<void>((resolve) => miniServer.listen(sockPath, () => resolve()));
+
+    try {
+      const server = spawnServer(tempDir);
+      servers.push(server);
+      sendInitialize(server.child, `file://${tempDir}`, 1);
+      // Despite the mismatched daemon, the client still gets an initialize
+      // response — the proxy answers the handshake locally and, refusing to
+      // attach across the version mismatch, serves the session in-process.
+      const resp = await waitFor(() => findResponse(server.stdout, 1), 10000);
+      expect(resp.result.serverInfo.name).toBe('lattice-sensor');
+      await waitFor(
+        () => server.stderr.some((l) => l.includes('serving this session in-process')),
+        6000,
+      );
+
+      sendMessage(server.child, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'lattice_sensor_status', arguments: {} },
+      });
+      const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 5000);
+      expect(toolResponse.error).toBeUndefined();
+      expect(toolResponse.result?.isError).not.toBe(true);
+      expect(JSON.stringify(toolResponse.result)).toContain('Lattice Sensor Status');
+      expect(fs.existsSync(writerPath)).toBe(mode !== null);
+      expect(server.stderr.some((l) => l.includes('Serving reads in-process without auto-sync:'))).toBe(true);
+      server.child.stdin.end();
+      await waitFor(() => server.child.exitCode !== null, 5000);
+      expect(fs.readFileSync(path.join(realRoot, '.lattice/sensor', 'sensor.db'))).toEqual(before);
+      expect(readLockPid(realRoot)).toBe(process.pid);
+      if (mode) expect(fs.readFileSync(writerPath, 'utf8')).toBe(writer);
+    } finally {
+      await new Promise<void>((resolve) => miniServer.close(() => resolve()));
+    }
+  }, 30000);
 
   // ADR 0049 Decision 5③ (hello bisection): a mismatched hello version with
   // the `-lattice.` marker is the SAME product at a different build (e.g. a
@@ -431,15 +810,29 @@ describe('Shared MCP daemon (issue #411)', () => {
     servers.push(server);
     sendInitialize(server.child, `file://${tempDir}`, 1);
     await waitFor(() => findResponse(server.stdout, 1), 10000);
-    await waitFor(() => (readLockPid(realRoot) ?? 0) > 0, 8000);
+    // initialize is answered locally, and a PID file can belong to a daemon
+    // still starting. Establish a real live session before measuring silence.
+    const attached = await waitFor(
+      () => server.stderr.find((line) => line.includes('Attached to shared daemon')),
+      10000,
+    );
+    sendMessage(server.child, {
+      jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: 'lattice_sensor_status', arguments: {} },
+    });
+    const status = await waitFor(() => findResponse(server.stdout, 2), 10000);
+    expect(status.error).toBeUndefined();
+    expect(status.result?.isError).not.toBe(true);
+    expect(JSON.stringify(status.result)).toContain('Lattice Sensor Status');
     const daemonPid = readLockPid(realRoot)!;
+    expect(attached).toContain(`(pid ${daemonPid},`);
     expect(isAlive(daemonPid)).toBe(true);
 
     // Stay silent well past several backstop windows. The live session's peer is
     // provably alive, so the daemon must keep running (and never log a backstop
     // shutdown), with its lockfile intact.
     await new Promise((r) => setTimeout(r, 4000)); // > 3× maxIdle
-    expect(isAlive(daemonPid)).toBe(true);
+    expect(isAlive(daemonPid), readDaemonLog(realRoot) + '\n' + server.stderr.join('\n')).toBe(true);
     expect(readDaemonLog(realRoot)).not.toContain('inactivity backstop');
     expect(readLockPid(realRoot)).toBe(daemonPid);
   }, 30000);

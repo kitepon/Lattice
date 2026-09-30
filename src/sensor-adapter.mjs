@@ -125,7 +125,11 @@ function parseJson(stdout) {
 }
 
 function isExactSymbolAbsent(stdout, target) {
-  return stripAnsi(stdout).trim() === `ℹ Symbol "${target}" not found`;
+  // The sensor may append did-you-mean candidates (upstream #1473). They are
+  // suggestions, never a substitution: the exact symbol is still absent.
+  const text = stripAnsi(stdout).trim();
+  const absent = `ℹ Symbol "${target}" not found`;
+  return text === absent || (text.startsWith(`${absent} — did you mean: `) && !text.includes('\n'));
 }
 
 function exactSymbolCandidates(value, target) {

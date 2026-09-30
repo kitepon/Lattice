@@ -152,6 +152,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     node_ids: Vec<String>,
@@ -182,6 +183,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
         node_ids: Vec::new(),
@@ -264,6 +266,7 @@ fn first_simple_identifier<'t>(node: Option<Node<'t>>) -> Option<Node<'t>> {
 /// lastNamedOfType (function-ref.ts:600): rightmost matching DESCENDANT in
 /// document order (deeper matches override).
 fn last_simple_identifier<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    stack_guard!();
     let mut found: Option<Node<'t>> = None;
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else { continue };
@@ -332,7 +335,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
         let end_line = node.end_position().row as u32 + 1; // no resolveBody for swift
 
         let qualified = {
@@ -560,6 +564,7 @@ impl<'t> Walker<'t> {
     // --- the dispatcher (visitNode, Swift-relevant branches) -----------------------
 
     fn visit_node(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         let mut skip_children = false;
 
@@ -632,6 +637,7 @@ impl<'t> Walker<'t> {
     /// THE DEDICATED PROPERTY BRANCH (tree-sitter.ts:1113-1193, #1020).
     /// Returns skipChildren.
     fn dedicated_property_branch(&mut self, node: Node<'t>) -> bool {
+        stack_guard!();
         let owner_row = self.top_row();
         let info = self.swift_property_info(node);
         let mut computed_prop: Option<(u32, String)> = None;
@@ -707,6 +713,7 @@ impl<'t> Walker<'t> {
     }
 
     fn walk_attr_args(&mut self, n: Node<'t>) {
+        stack_guard!();
         self.extract_static_member_ref(n);
         for i in 0..n.named_child_count() {
             if let Some(c) = n.named_child(i) {
@@ -718,10 +725,12 @@ impl<'t> Walker<'t> {
     // --- visitFunctionBody ---------------------------------------------------------
 
     fn visit_function_body(&mut self, body: Node<'t>) {
+        stack_guard!();
         self.visit_for_calls_and_structure(body);
     }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
 
@@ -775,6 +784,7 @@ impl<'t> Walker<'t> {
     // --- extractors -----------------------------------------------------------------
 
     fn extract_function(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
@@ -802,6 +812,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_method(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
@@ -823,6 +834,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_class(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
@@ -845,6 +857,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_struct(&mut self, node: Node<'t>) {
+        stack_guard!();
         // Body gate (:1876) — bodiless mints nothing (record exemption is C#).
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
@@ -869,6 +882,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_enum(&mut self, node: Node<'t>) {
+        stack_guard!();
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
         let extra = Extra {
@@ -903,6 +917,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_interface(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
@@ -1154,6 +1169,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
+        stack_guard!();
         if node.kind() == "type_identifier" {
             let type_name = self.text(node).to_string();
             if !type_name.is_empty() && !is_builtin_type(&type_name) {
@@ -1341,6 +1357,7 @@ impl<'t> Walker<'t> {
     }
 
     fn normalize_fn_ref_value(&mut self, v: Node<'t>, from: u32, depth: u32) {
+        stack_guard!();
         if depth > 4 {
             return;
         }
@@ -1405,6 +1422,7 @@ impl<'t> Walker<'t> {
     }
 
     fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+        stack_guard!();
         if depth > 12 {
             return;
         }

@@ -59,7 +59,15 @@ CREATE TABLE IF NOT EXISTS edges (
     FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
 );
 
--- Files: Tracked source files
+-- Files: Tracked source files.
+-- `generated` is the index-time verdict from extraction/generated-detection.ts:
+-- the filename convention (*.pb.go, *.g.dart, …) OR a generation banner in the
+-- file's header. Go's convention is a CONTENT marker, so a generated
+-- `payroll.go` beside hand-written use-cases is invisible to the path check
+-- alone (#1500) — deciding it here means ranking never reads file headers per
+-- request. Migration v9 adds the column to existing databases; rows keep the
+-- 0 default until the next full index, so readers treat it as a hint that
+-- only ever ADDS to the path signal, never overrides it.
 CREATE TABLE IF NOT EXISTS files (
     path TEXT PRIMARY KEY,
     content_hash TEXT NOT NULL,
@@ -72,7 +80,8 @@ CREATE TABLE IF NOT EXISTS files (
     -- the stamp existed; sync treats any mismatch with the running engine as a
     -- pending change so extractor upgrades heal incrementally (v12).
     extraction_version INTEGER NOT NULL DEFAULT 0,
-    errors TEXT -- JSON array
+    errors TEXT, -- JSON array
+    generated INTEGER NOT NULL DEFAULT 0
 );
 
 -- Unresolved References: References that need resolution after full indexing.
@@ -107,7 +116,7 @@ CREATE TABLE IF NOT EXISTS unresolved_refs (
 -- =============================================================================
 
 -- Node indexes
-CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind, file_path, start_line, id);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
@@ -184,9 +193,13 @@ CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
   ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
 
--- File indexes
+-- File indexes.
+-- idx_files_generated is PARTIAL: the generated set is a small minority of any
+-- repo, so a lookup that intersects a bounded candidate list with it stays
+-- proportional to the generated files, not to the repo.
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
+CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1;
 
 -- Unresolved refs indexes
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node_id);
@@ -196,6 +209,16 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node
 CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
 CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
+-- Sync's third-file wiring lookup must not scan every synthesized edge.
+-- CASE short-circuits malformed metadata; keep these expressions identical
+-- in migrations and synthesis queries so SQLite can use the partial index.
+CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+    WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
+
+-- Retain the cheap source-gate verdict when a later sync deletes the source.
+CREATE TABLE IF NOT EXISTS synthesis_inputs (
+    file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+);
 
 -- Project metadata for version/provenance tracking
 CREATE TABLE IF NOT EXISTS project_metadata (

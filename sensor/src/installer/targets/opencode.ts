@@ -19,15 +19,26 @@
  *     instructions — same convention Codex CLI uses.
  *   - No permissions concept.
  *
- * Config shape uses opencode's wrapper:
+ * Config shape uses OpenCode 2's native wrapper (also read by 1.18+):
  *   {
  *     "$schema": "https://opencode.ai/config.json",
- *     "mcp": { "latticeSensor": { "type": "local", "command": [...], "enabled": true } }
+ *     "mcp": {
+ *       "servers": {
+ *         "lattice-sensor": {
+ *           "type": "local",
+ *           "command": [...],
+ *           "disabled": false,
+ *           "codemode": false
+ *         }
+ *       }
+ *     }
  *   }
  *
- * The shape differs from Claude/Cursor — opencode uses `mcp.<name>`
- * (not `mcpServers`), takes `command` as a string array combining
- * binary + args, and includes an explicit `enabled` flag.
+ * OpenCode 2 puts servers under `mcp.servers` (not `mcp.<name>`), uses
+ * `disabled` instead of `enabled`, and defaults tools through Code Mode —
+ * `codemode: false` keeps `lattice_sensor_explore` on the provider's native
+ * tool list (#1698). Pre-#1698 installs wrote the v1 `mcp.lattice sensor` +
+ * `enabled` shape; re-install migrates, uninstall removes either.
  *
  * Reads + writes go through `jsonc-parser` so any `//` and `/* *\/`
  * comments the user has added to their `.jsonc` survive idempotent
@@ -115,12 +126,25 @@ function parseConfig(text: string): Record<string, any> {
   return result as Record<string, any>;
 }
 
-function getOpencodeServerEntry(): { type: string; command: string[]; enabled: boolean } {
+function getOpencodeServerEntry(): {
+  type: string;
+  command: string[];
+  disabled: boolean;
+  codemode: boolean;
+} {
   return {
     type: 'local',
-    command: ['latticeSensor', 'serve', '--mcp'],
-    enabled: true,
+    command: ['lattice-sensor', 'serve', '--mcp'],
+    disabled: false,
+    // Keep lattice_sensor_explore on the native tool list — OpenCode 2's
+    // default Code Mode would otherwise hide the one-tool server (#1698).
+    codemode: false,
   };
+}
+
+/** True when either the OpenCode 2 native entry or a pre-#1698 v1 entry is present. */
+function hasLatticeSensorEntry(config: Record<string, any>): boolean {
+  return !!(config.mcp?.servers?.lattice/sensor || config.mcp?.lattice/sensor);
 }
 
 const FORMATTING = { tabSize: 2, insertSpaces: true, eol: '\n' };
@@ -137,7 +161,7 @@ class OpencodeTarget implements AgentTarget {
   detect(loc: Location): DetectionResult {
     const file = configPath(loc);
     const config = parseConfig(readConfigText(file));
-    const alreadyConfigured = !!config.mcp?.latticeSensor;
+    const alreadyConfigured = hasLatticeSensorEntry(config);
     // Global: the XDG dir is what current opencode creates on first run; the
     // legacy %APPDATA% dir still counts as "opencode present" so a re-install
     // can sweep the stale pre-#535 entry out of it.
@@ -176,7 +200,7 @@ class OpencodeTarget implements AgentTarget {
     const target = configPath(loc);
     const snippet = JSON.stringify({
       $schema: 'https://opencode.ai/config.json',
-      mcp: { latticeSensor: getOpencodeServerEntry() },
+      mcp: { servers: { latticeSensor: getOpencodeServerEntry() } },
     }, null, 2);
     return `# Add to ${target}\n\n${snippet}\n`;
   }
@@ -199,10 +223,12 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   }
 
   const config = parseConfig(text);
-  const before = config.mcp?.latticeSensor;
+  const before = config.mcp?.servers?.lattice/sensor;
   const after = getOpencodeServerEntry();
+  const hasLegacy = !!config.mcp?.lattice/sensor;
 
-  if (jsonDeepEqual(before, after)) {
+  // Native entry already matches and no v1 leftover → nothing to do.
+  if (jsonDeepEqual(before, after) && !hasLegacy) {
     return { path: file, action: 'unchanged' };
   }
 
@@ -214,9 +240,18 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
     text = applyEdits(text, schemaEdits);
   }
 
+  // Migrate pre-#1698 `mcp.lattice sensor` (+ enabled) off the file so OpenCode 2
+  // keeps only the native entry where `codemode` survives normalization.
+  if (hasLegacy) {
+    const legacyEdits = modify(text, ['mcp', 'lattice-sensor'], undefined, {
+      formattingOptions: FORMATTING,
+    });
+    text = applyEdits(text, legacyEdits);
+  }
+
   // Surgical edit — preserves comments, formatting, and order of
   // every key we don't touch.
-  const edits = modify(text, ['mcp', 'latticeSensor'], after, {
+  const edits = modify(text, ['mcp', 'servers', 'lattice-sensor'], after, {
     formattingOptions: FORMATTING,
   });
   const updated = applyEdits(text, edits);
@@ -226,26 +261,50 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 }
 
 /**
- * Surgically drop `mcp.lattice/sensor` from one config file. Leaves sibling
- * servers, comments, and formatting untouched; drops an emptied `mcp`
- * wrapper too. Shared by uninstall and the legacy-%APPDATA% sweep.
+ * Surgically drop our LatticeSensor entry from one config file — either the
+ * OpenCode 2 native `mcp.servers.lattice sensor` or a pre-#1698 `mcp.lattice sensor`.
+ * Leaves sibling servers, comments, and formatting untouched; drops emptied
+ * `mcp.servers` / `mcp` wrappers too. Shared by uninstall and the
+ * legacy-%APPDATA% sweep.
  */
 function removeMcpEntryAt(file: string): WriteResult['files'][number] {
   if (!fs.existsSync(file)) return { path: file, action: 'not-found' };
-  const text = readConfigText(file);
+  let text = readConfigText(file);
   const config = parseConfig(text);
-  if (!config.mcp?.latticeSensor) return { path: file, action: 'not-found' };
+  if (!hasLatticeSensorEntry(config)) return { path: file, action: 'not-found' };
 
-  let edits = modify(text, ['mcp', 'latticeSensor'], undefined, {
-    formattingOptions: FORMATTING,
-  });
-  let updated = applyEdits(text, edits);
+  let updated = text;
+  if (config.mcp?.servers?.lattice/sensor) {
+    const edits = modify(updated, ['mcp', 'servers', 'lattice-sensor'], undefined, {
+      formattingOptions: FORMATTING,
+    });
+    updated = applyEdits(updated, edits);
+  }
+  // Re-parse after the native removal so a file that held BOTH shapes
+  // (unusual, but possible mid-migration) still drops the v1 leftover.
+  const mid = parseConfig(updated);
+  if (mid.mcp?.lattice/sensor) {
+    const edits = modify(updated, ['mcp', 'lattice-sensor'], undefined, {
+      formattingOptions: FORMATTING,
+    });
+    updated = applyEdits(updated, edits);
+  }
+
+  // If `mcp.servers` is now an empty object, drop that wrapper.
+  let afterParsed = parseConfig(updated);
+  if (afterParsed.mcp?.servers && typeof afterParsed.mcp.servers === 'object' &&
+      Object.keys(afterParsed.mcp.servers).length === 0) {
+    const edits = modify(updated, ['mcp', 'servers'], undefined, {
+      formattingOptions: FORMATTING,
+    });
+    updated = applyEdits(updated, edits);
+    afterParsed = parseConfig(updated);
+  }
 
   // If `mcp` is now an empty object, drop the wrapper too.
-  const afterParsed = parseConfig(updated);
   if (afterParsed.mcp && typeof afterParsed.mcp === 'object' &&
       Object.keys(afterParsed.mcp).length === 0) {
-    edits = modify(updated, ['mcp'], undefined, { formattingOptions: FORMATTING });
+    const edits = modify(updated, ['mcp'], undefined, { formattingOptions: FORMATTING });
     updated = applyEdits(updated, edits);
   }
 
