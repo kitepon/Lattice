@@ -60,6 +60,7 @@ import {
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
   TERMINAL_AUDIT_PHASE_ID,
+  todoPhaseDefinitions,
   readTodoIndependenceArtifact,
   readTodoSeamProposalArtifact,
   readTodoStore,
@@ -974,18 +975,86 @@ function validatePhaseDecisionInput(value, outcome) {
     && isTodoDigest(value.input_digest) && value.input_digest === todoSelfDigest(value, 'input_digest');
 }
 
+// `--input`の形が合わないとき、期待形をerrorへ同梱する（ADR 0130）。自己digestは入口が補うので
+// 空でよい（ADR 0181）。証拠記述子を手で作らせないために、ふつうは`--evidence`を案内する。
+const PHASE_DECISION_EXPECTED = Object.freeze({
+  accept: '{ "schema": "lattice.phase_accept_input.v1", "review_event_digest": "<phase reviewのevent_digest>",'
+    + ' "decision_evidence": <evidence記述子>, "evidence_slots": [{ "slot_id": "<必須slot>", "evidence": <evidence記述子> }],'
+    + ' "input_digest": "" }',
+  reject: '{ "schema": "lattice.phase_reject_input.v1", "review_event_digest": "<phase reviewのevent_digest>",'
+    + ' "reason": "<text>", "decision_evidence": <evidence記述子>, "input_digest": "" }',
+  note: 'input_digestは入口が計算する。証拠fileがcommit済みなら、`--evidence <file>`で'
+    + 'review_event_digest・記述子・必須slotを機械が埋める。evidence記述子の形はEVIDENCE_DESCRIPTOR_EXPECTEDを見る。',
+});
+
 async function phaseDecision({ repoRoot, env, planKey, phaseId, outcome, inputRef }) {
-  const input = await readRevisionInput(repoRoot, inputRef, {
-    validate: (value) => validatePhaseDecisionInput(value, outcome),
-    invalidCode: 'PHASE_DECISION_INVALID', invalidReason: 'phase_decision_schema_or_digest_invalid',
-    // phase decision入力はrevision契約と別形状。既定のrevision explainを誤って当てない。
-    explain: null,
-  });
+  let input;
+  try {
+    input = await readRevisionInput(repoRoot, inputRef, {
+      validate: (value) => validatePhaseDecisionInput(value, outcome),
+      invalidCode: 'PHASE_DECISION_INVALID', invalidReason: 'phase_decision_schema_or_digest_invalid',
+      // phase decision入力はrevision契約と別形状。既定のrevision explainを誤って当てない。
+      explain: null,
+    });
+  } catch (error) {
+    if (error instanceof TodoStoreError && error.code === 'PHASE_DECISION_INVALID') {
+      throw new TodoStoreError('PHASE_DECISION_INVALID', 'phase_decision_schema_or_digest_invalid', undefined, {
+        expected: PHASE_DECISION_EXPECTED[outcome], note: PHASE_DECISION_EXPECTED.note,
+        evidence_descriptor: EVIDENCE_DESCRIPTOR_EXPECTED,
+        next_action: `lattice todo phase ${outcome} --plan ${planKey} --phase ${phaseId}`
+          + (outcome === 'reject' ? ' --reason <text>' : '') + ' --evidence <repo内の監査file>',
+      });
+    }
+    throw error;
+  }
   const payload = outcome === 'accept'
     ? { review_event_digest: input.review_event_digest, decision_evidence: input.decision_evidence,
       evidence_slots: input.evidence_slots }
     : { review_event_digest: input.review_event_digest, reason: input.reason,
       decision_evidence: input.decision_evidence };
+  return phaseMutation({ repoRoot, env, planKey, phaseId, kind: `phase_${outcome}`, payload });
+}
+
+/**
+ * `--evidence <file>`から判断入力を組み立てる（ADR 0181の下書き受理をphase判断へ広げる）。
+ * review_event_digestはstoreの現在のreviewから、記述子は`todo done`と同じ処理でcommit済み
+ * fileから作る。必須slotが1つならその証拠で埋める。複数slotへ1つの証拠を流用すると
+ * 「各slotを別々に確かめた」ことを偽るので、その場合は`--input`で明示させる。
+ */
+async function phaseDecisionFromEvidence({ repoRoot, env, planKey, phaseId, outcome, evidenceRef, reason }) {
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ plan }) => plan.plan_key === planKey);
+  if (member === undefined) {
+    throw new TodoStoreError('PHASE_DECISION_INVALID', 'plan_not_active', undefined, { plan_key: planKey });
+  }
+  const state = member.phases.find(({ phase_id: current }) => current === phaseId);
+  const definition = todoPhaseDefinitions(member.plan).find(({ phase_id: current }) => current === phaseId);
+  if (state === undefined || definition === undefined) {
+    throw new TodoStoreError('PHASE_DECISION_INVALID', 'phase_not_found', undefined, {
+      plan_key: planKey, phase_id: phaseId,
+      phases: todoPhaseDefinitions(member.plan).map(({ phase_id: id }) => id),
+    });
+  }
+  if (state.status !== 'reviewing' || state.review_event_digest === null) {
+    throw new TodoStoreError('PHASE_DECISION_INVALID', 'phase_not_reviewing', undefined, {
+      plan_key: planKey, phase_id: phaseId, status: state.status,
+      next_action: `lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>`,
+    });
+  }
+  if (outcome === 'accept' && definition.required_evidence_slots.length !== 1) {
+    throw new TodoStoreError('PHASE_DECISION_INVALID', 'multiple_evidence_slots_need_input', undefined, {
+      required_evidence_slots: definition.required_evidence_slots,
+      expected: PHASE_DECISION_EXPECTED.accept, evidence_descriptor: EVIDENCE_DESCRIPTOR_EXPECTED,
+      next_action: `lattice todo phase accept --plan ${planKey} --phase ${phaseId} --input <file>`,
+    });
+  }
+  const evidence = await resolveDoneEvidence({
+    repoRoot, evidenceRef, evidenceMessage: null, planKey, taskId: `${phaseId}-${outcome}`,
+  });
+  const payload = outcome === 'accept'
+    ? { review_event_digest: state.review_event_digest, decision_evidence: evidence,
+      evidence_slots: definition.required_evidence_slots.map((slotId) => ({ slot_id: slotId, evidence })) }
+    : { review_event_digest: state.review_event_digest, reason, decision_evidence: evidence };
   return phaseMutation({ repoRoot, env, planKey, phaseId, kind: `phase_${outcome}`, payload });
 }
 
@@ -3989,14 +4058,22 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env 
     action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: argv[3], phaseId: argv[5],
       kind: 'phase_review', payload: { reason: argv[7] } });
   } else if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
-    const flags = matchFlagCommand(argv, ['phase', argv[1]], {
-      known: ['plan', 'phase', 'input'], required: ['plan', 'phase', 'input'],
+    const outcome = argv[1];
+    const flags = matchFlagCommand(argv, ['phase', outcome], {
+      known: ['plan', 'phase', 'input', 'evidence', 'reason'], required: ['plan', 'phase'],
     });
-    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase)
-      && isAuthoringPathToken(flags.input)) {
+    const base = flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase);
+    if (base && isAuthoringPathToken(flags.input) && flags.evidence === undefined && flags.reason === undefined) {
       action = (repoRoot) => phaseDecision({
         repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
-        outcome: argv[1], inputRef: flags.input,
+        outcome, inputRef: flags.input,
+      });
+    } else if (base && flags.input === undefined && isAuthoringPathToken(flags.evidence)
+      && (outcome === 'accept' ? flags.reason === undefined
+        : typeof flags.reason === 'string' && flags.reason.length > 0)) {
+      action = (repoRoot) => phaseDecisionFromEvidence({
+        repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
+        outcome, evidenceRef: flags.evidence, reason: flags.reason ?? null,
       });
     }
   } else if ((argv.length === 8 || argv.length === 10) && argv[0] === 'phase'
