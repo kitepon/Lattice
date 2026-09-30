@@ -11,8 +11,8 @@
     "method": "git archive (pristine tree)"
   },
   "synced_at": {
-    "commit": "49c11fc2e0c02170742be8411e66a31af611f4b7",
-    "date": "2026-08-03"
+    "commit": "7639c787e48be92ea4ca83c5c014d8dd480de470",
+    "date": "2026-09-30"
   },
   "path_map": {
     "codegraph-kernel": "lattice-sensor-kernel",
