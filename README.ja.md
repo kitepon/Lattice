@@ -309,8 +309,12 @@ required evidenceを束縛した`todo phase accept`で重監査の判断を記�
 ```bash
 lattice todo phase status --plan <key>   # phase無しplanでも暗黙Phaseを返す（implicit: true）
 lattice todo phase review --plan <key> --phase terminal-audit --reason <text>
-lattice todo phase accept --plan <key> --phase terminal-audit --input <file>
+lattice todo phase accept --plan <key> --phase terminal-audit --evidence <監査file>
 ```
+
+`--evidence`には、commit済みの監査本文をrepo相対pathで渡します。reviewのevent digest、証拠の記述子、
+必須evidence slotはLatticeが組み立てます。必須slotが複数あるPhaseや、記述子を自分で渡したい時は
+`--input <file>`（`lattice.phase_accept_input.v1`、`input_digest`は空でよい）を使います。
 
 **過去の工程は監査できません。** 監査対象のコードが既に変化しているためです。そこで
 「監査なしで閉じた」という状態を別に持ちます——`accepted`（監査を通った）へは絶対に化けず、
