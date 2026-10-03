@@ -73,6 +73,25 @@ test('config欠落・malformed・disabledでは収集せずstateへ一切触れ�
   }
 });
 
+test('工場が名乗るhost profileはすべて収集を有効にし、未知の語は無効にする', async () => {
+  // dotagentsの契約（lib/factory/contract.mjs）が認める語。`linux`を落とすと、その端末は故障を1件も記録しない。
+  for (const profile of ['server', 'mac', 'linux', 'wsl', 'windows-native']) {
+    const workspace = await makeWorkspace({ ...VALID_CONFIG, host: { id: 'test-host', profile } });
+    try {
+      assert.equal(runtimeCollectionEnabled(process.env, workspace.configPath), true, profile);
+      assert.equal(runtimeErrorsDiagnostics(workspace.options).collection, 'enabled', profile);
+    } finally {
+      await rm(workspace.root, { recursive: true, force: true });
+    }
+  }
+  const unknown = await makeWorkspace({ ...VALID_CONFIG, host: { id: 'test-host', profile: 'linux-native' } });
+  try {
+    assert.equal(runtimeCollectionEnabled(process.env, unknown.configPath), false);
+  } finally {
+    await rm(unknown.root, { recursive: true, force: true });
+  }
+});
+
 test('同一原因はfingerprint集約でcount/last_seen/sequenceと発生版が進む', async () => {
   const workspace = await makeWorkspace();
   try {

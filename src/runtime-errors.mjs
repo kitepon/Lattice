@@ -45,6 +45,9 @@ const COMMAND_KIND = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)?$/;
 const COMMAND_KIND_MAX = 48;
 // Nodeが付けるerror code（ENOENT・ERR_MODULE_NOT_FOUND等）だけを通す。Lattice自身のcodeや任意文字列は`none`。
 const CAUSE_CODE = /^(?:E[A-Z0-9]{2,15}|ERR_[A-Z0-9_]{1,60})$/;
+// 工場の`factory-reporter.json`が名乗る端末の種類。dotagentsの契約（lib/factory/contract.mjs）と同じ語を
+// 受ける——ここに無い語の端末は設定全体が無効とみなされ、故障を1件も記録しない。
+const HOST_PROFILES = Object.freeze(['server', 'mac', 'linux', 'wsl', 'windows-native']);
 
 const plain = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -83,7 +86,7 @@ function collectionEnabled(options = {}) {
     return plain(config) && exact(config, ['schema_version', 'host', 'collection', 'reporting'])
       && config.schema_version === '1.0' && plain(config.host) && exact(config.host, ['id', 'profile'])
       && typeof config.host.id === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(config.host.id)
-      && ['server', 'mac', 'wsl', 'windows-native'].includes(config.host.profile)
+      && HOST_PROFILES.includes(config.host.profile)
       && plain(config.collection) && exact(config.collection, ['enabled']) && config.collection.enabled === true
       && canonicalReporting(config.reporting);
   } catch {
