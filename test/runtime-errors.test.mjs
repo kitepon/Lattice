@@ -92,6 +92,29 @@ test('工場が名乗るhost profileはすべて収集を有効にし、未知�
   }
 });
 
+test('収集に対応しないOSでは、設定が有効でもunsupportedと答えstateへ触れない', async () => {
+  const workspace = await makeWorkspace();
+  const options = { ...workspace.options, platform: 'win32' };
+  try {
+    assert.deepEqual(recordRuntimeError('LATTICE.CLI_INTERNAL_FAILED', options), { status: 'unsupported' });
+    const snapshot = runtimeErrorsSnapshot(0, 256, options);
+    // 工場（dotagents）が`unsupported`に課す形: status・cursor・配列・diagnosticsのキーは`disabled`の時と同じ。
+    assert.deepEqual(snapshot.diagnostics,
+      { collection: 'unsupported', status: 'not_applicable', total_count: 0, pending_count: 0, truncated: false });
+    assert.deepEqual(snapshot.cursor, { high_watermark: 0, acknowledged_through: 0, next: 0 });
+    assert.deepEqual(snapshot.runtime_errors, []);
+    assert.deepEqual(snapshot.resolutions, []);
+    const diagnostics = runtimeErrorsDiagnostics(options);
+    assert.equal(diagnostics.collection, 'unsupported');
+    assert.equal(diagnostics.status, 'not_applicable');
+    assert.equal(existsSync(path.dirname(workspace.storePath)), false);
+    // 同じ設定でも、対応するOSでは有効と答える。
+    assert.equal(runtimeErrorsDiagnostics({ ...workspace.options, platform: 'linux' }).collection, 'enabled');
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
+  }
+});
+
 test('同一原因はfingerprint集約でcount/last_seen/sequenceと発生版が進む', async () => {
   const workspace = await makeWorkspace();
   try {
