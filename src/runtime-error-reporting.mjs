@@ -31,6 +31,8 @@ import {
  * - 受領済みにするのは、200・`accepted: true`・`report_id`一致・応答の署名一致がそろった時だけ。
  *   そろわなければ「届いたか不明」として記録を未受領のまま残し、後から今の累計を送り直す。
  * - 送るのは`runtime-errors snapshot`が出す項目だけ。message本文・path・引数・stackは記録に無い。
+ * - `reporting verify`は、記録を載せない空の報告を1通送って、合鍵・署名・受け口までの経路を確かめる。
+ *   受け口は受領を記録するだけで、issueも通知も動かない。storeの記録と受領の印には触れない。
  */
 
 const REPORT_SCHEMA_VERSION = '1.0';
@@ -276,6 +278,41 @@ function parseJson(text) {
 }
 
 /**
+ * 報告を1通、署名して送り、受領を確かめる。`accepted`を返すのは、200・`accepted: true`・`report_id`一致・
+ * 応答の署名一致がそろった時だけ。戻り値に秘密・key_id・宛先は入れない。
+ */
+async function sendReport({ url, keyId, secret }, snapshot, options) {
+  const now = nowMs(options);
+  const ts = Math.floor(now / 1000);
+  // `observed_at`は、載せる記録のどの時刻よりも前にしない（BugHubは観測より後の記録を断る）。秒へ切り捨てると、
+  // 記録と同じ1秒の中で送った時に記録より前へずれる。`ts`とは同じ時刻から作り、差はBugHubの許す幅（10分）に収まる。
+  const observed = Math.max(now, ...snapshot.runtime_errors.map((record) => Date.parse(record.last_seen)),
+    ...snapshot.resolutions.map((resolution) => Date.parse(resolution.resolved_at)));
+  const report = buildRuntimeErrorReport({ snapshot, version: options.version ?? 'unknown',
+    reportId: options.reportId ?? randomUUID(), observedAt: new Date(observed).toISOString() });
+  const bodyBytes = Buffer.from(JSON.stringify(report), 'utf8');
+  if (bodyBytes.length > REPORT_MAX_BYTES) return { outcome: 'too_large', reason: 'report_too_large', http_status: null };
+
+  const response = await post(url, {
+    'Content-Type': 'application/json',
+    'Content-Length': String(bodyBytes.length),
+    Authorization: `BugHub-HMAC-SHA256 key_id=${keyId}, ts=${ts}, sig=${signReport(secret, String(ts), bodyBytes)}`,
+  }, bodyBytes, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+
+  if (response.status === null) return { outcome: 'unconfirmed', reason: response.reason, http_status: null };
+  const body = parseJson(response.body);
+  if (response.status === 200) {
+    if (body === null || body.accepted !== true || body.report_id !== report.report_id
+      || !receiptSignatureMatches(secret, report.report_id, body.received_at, body.sig)) {
+      return { outcome: 'unconfirmed', reason: 'receipt_not_verified', http_status: 200 };
+    }
+    return { outcome: 'accepted', reason: null, http_status: 200 };
+  }
+  const code = typeof body?.error === 'string' && REJECTION_CODE.test(body.error) ? body.error : 'unrecognized_response';
+  return { outcome: response.status >= 500 ? 'unconfirmed' : 'rejected', reason: code, http_status: response.status };
+}
+
+/**
  * 未受領の記録を1回送る。`options.auto`の時だけ送る時機の制限を見る（手で打った`report`は見ない
  * ——多すぎればBugHubが429で断る）。戻り値に秘密・key_id・宛先は入れない。
  */
@@ -305,13 +342,6 @@ export async function reportRuntimeErrors(options = {}) {
     if (reason !== null) return result('throttled', { reason });
   }
 
-  // `ts`と`observed_at`は同じ時刻から作る（BugHubは10分より離れた組を断る）。
-  const ts = Math.floor(nowMs(options) / 1000);
-  const report = buildRuntimeErrorReport({ snapshot: pending, version: options.version ?? 'unknown',
-    reportId: options.reportId ?? randomUUID(), observedAt: new Date(ts * 1000).toISOString() });
-  const bodyBytes = Buffer.from(JSON.stringify(report), 'utf8');
-  if (bodyBytes.length > REPORT_MAX_BYTES) return result('rejected', { reason: 'report_too_large', sent });
-
   const finish = (outcome, extra = {}) => {
     try {
       writeDelivery(options, { schema: DELIVERY_SCHEMA, last_attempt_at: new Date(nowMs(options)).toISOString(),
@@ -320,31 +350,33 @@ export async function reportRuntimeErrors(options = {}) {
     return result(outcome, { sent, acknowledged_through: pending.cursor.acknowledged_through, ...extra });
   };
 
-  const { credential: { url, keyId, secret } } = credential;
-  const response = await post(url, {
-    'Content-Type': 'application/json',
-    'Content-Length': String(bodyBytes.length),
-    Authorization: `BugHub-HMAC-SHA256 key_id=${keyId}, ts=${ts}, sig=${signReport(secret, String(ts), bodyBytes)}`,
-  }, bodyBytes, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
-
-  if (response.status === null) return finish('unconfirmed', { reason: response.reason });
-  const body = parseJson(response.body);
-  if (response.status === 200) {
-    if (body === null || body.accepted !== true || body.report_id !== report.report_id
-      || !receiptSignatureMatches(secret, report.report_id, body.received_at, body.sig)) {
-      return finish('unconfirmed', { reason: 'receipt_not_verified', http_status: 200 });
-    }
-    try {
-      const acknowledged = acknowledgeRuntimeErrors(pending.cursor.next, options);
-      return finish('delivered', { http_status: 200, acknowledged_through: acknowledged.cursor.acknowledged_through });
-    } catch {
-      // 届いているが受領済みを残せなかった。次の送信が同じ累計を送り直す（BugHubは二重に数えない）。
-      return finish('unconfirmed', { reason: 'ack_not_recorded', http_status: 200 });
-    }
+  const answer = await sendReport(credential.credential, pending, options);
+  if (answer.outcome === 'too_large') return result('rejected', { reason: 'report_too_large', sent });
+  if (answer.outcome !== 'accepted') return finish(answer.outcome, { reason: answer.reason, http_status: answer.http_status });
+  try {
+    const acknowledged = acknowledgeRuntimeErrors(pending.cursor.next, options);
+    return finish('delivered', { http_status: 200, acknowledged_through: acknowledged.cursor.acknowledged_through });
+  } catch {
+    // 届いているが受領済みを残せなかった。次の送信が同じ累計を送り直す（BugHubは二重に数えない）。
+    return finish('unconfirmed', { reason: 'ack_not_recorded', http_status: 200 });
   }
-  const code = typeof body?.error === 'string' && REJECTION_CODE.test(body.error) ? body.error : 'unrecognized_response';
-  if (response.status >= 500) return finish('unconfirmed', { reason: code, http_status: response.status });
-  return finish('rejected', { reason: code, http_status: response.status });
+}
+
+/**
+ * 記録を載せない空の報告を1通送り、合鍵・署名・受け口までの経路を確かめる（`reporting verify`）。
+ * 送る条件は`report`と同じで、送信を有効にしていない端末と合鍵の無い端末はnetworkへ触れない。
+ * storeの記録・受領の印・送る時機の記録には触れない。受け口は端末×製品ごとに1分に1回まで受けるので、
+ * 直前に送っていれば429で断られる。
+ */
+export async function verifyRuntimeErrorReporting(options = {}) {
+  if (!runtimeErrorCollectionSupported(options)) return result('unsupported');
+  if (!runtimeErrorReportingEnabled(options)) return result('disabled');
+  const credential = readProductCredential(options);
+  if (credential.status === 'missing') return result('credential_missing');
+  if (credential.status !== 'ok') return result('credential_unsafe', { reason: credential.reason });
+  const answer = await sendReport(credential.credential, { runtime_errors: [], resolutions: [] }, options);
+  if (answer.outcome === 'accepted') return result('verified', { http_status: 200 });
+  return result(answer.outcome, { reason: answer.reason, http_status: answer.http_status });
 }
 
 /**

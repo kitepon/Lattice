@@ -198,6 +198,7 @@ Commands:
   compact
   report                        未受領の記録をBugHubの受け口へ送る（送信を有効にした端末だけ）
   reporting <status|enable|disable>
+  reporting verify              空の報告を1通送り、合鍵と受け口までの経路を確かめる（記録には触れない）
 `,
   bridge: `Usage: lattice bridge <command> [options] --json
 
@@ -315,7 +316,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'runtime-errors reopen': 'runtime-errors reopen <fingerprint> --json',
   'runtime-errors compact': 'runtime-errors compact --json',
   'runtime-errors report': 'runtime-errors report --json',
-  'runtime-errors reporting': 'runtime-errors reporting <status|enable|disable> --json',
+  'runtime-errors reporting': 'runtime-errors reporting <status|enable|disable|verify> --json',
   'bridge setup': 'bridge setup --listen <IP> [--port <49152..65535|auto>] [--dashboard|--upstream <URL>] [--hub <URL>|none] [--allow-host <host>...] --json',
   'bridge reconfigure': 'bridge reconfigure [--listen <IP>] [--port <49152..65535|auto>] [--dashboard|--upstream <URL>] [--hub <URL>|none] [--allow-host <host>...] --json',
   'bridge status': 'bridge status --json',

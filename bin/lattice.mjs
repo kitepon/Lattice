@@ -185,8 +185,9 @@ await scheduleRuntimeErrorReport();
  * 送信を有効にしていない端末では、設定fileの有無を1回見るだけで終わる。hookは打鍵ごとに走るので見ない。
  */
 async function scheduleRuntimeErrorReport() {
+  // `reporting verify`の直後は送らない。受け口は1分に1回まで受けるので、続けて送ると断られる。
   if (help !== null || args[0] === '--version' || args[0] === 'hooks'
-    || (args[0] === 'runtime-errors' && args[1] === 'report')) return;
+    || (args[0] === 'runtime-errors' && (args[1] === 'report' || (args[1] === 'reporting' && args[2] === 'verify')))) return;
   try {
     const { runtimeErrorReportingEnabled } = await import('../src/runtime-errors.mjs');
     if (!runtimeErrorReportingEnabled()) return;
@@ -222,7 +223,7 @@ function workingDirectory() {
 async function runRuntimeErrorsCli(rest) {
   const runtimeErrors = await import('../src/runtime-errors.mjs');
   const usage = () => {
-    process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: 'USAGE', message: 'usage: lattice runtime-errors <snapshot [--after-cursor N] [--limit N]|ack <cursor>|diagnostics|resolve <fingerprint>|reopen <fingerprint>|compact|report|reporting <status|enable|disable>> --json' })}\n`);
+    process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: 'USAGE', message: 'usage: lattice runtime-errors <snapshot [--after-cursor N] [--limit N]|ack <cursor>|diagnostics|resolve <fingerprint>|reopen <fingerprint>|compact|report|reporting <status|enable|disable|verify>> --json' })}\n`);
     return 2;
   };
   const options = { version: packageJson.version };
@@ -251,6 +252,12 @@ async function runRuntimeErrorsCli(rest) {
       result = runtimeErrors.setRuntimeErrorStatus(words[1], words[0] === 'resolve' ? 'resolved' : 'open', options);
     } else if (words[0] === 'compact' && words.length === 1) {
       result = runtimeErrors.compactRuntimeErrors(options);
+    } else if (words[0] === 'reporting' && words.length === 2 && words[1] === 'verify') {
+      // 空の報告を1通送って経路を確かめる。受領まで確かめられた時だけexit 0。
+      const reporting = await import('../src/runtime-error-reporting.mjs');
+      result = await reporting.verifyRuntimeErrorReporting(options);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return result.outcome === 'verified' ? 0 : 1;
     } else if (words[0] === 'reporting' && words.length === 2 && ['status', 'enable', 'disable'].includes(words[1])) {
       const reporting = await import('../src/runtime-error-reporting.mjs');
       result = words[1] === 'status' ? reporting.runtimeErrorReportingStatus(options)
