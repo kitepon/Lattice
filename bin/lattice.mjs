@@ -10,6 +10,8 @@ installPipeCloseGuard();
 const args = process.argv.slice(2);
 // 作業ディレクトリを読まないsurface。cwdが消えた席（閉じたworktree）からでも動かす。
 const CWD_FREE_COMMANDS = new Set(['runtime-errors', 'bridge', 'hooks', 'setup', 'factory-diagnostics']);
+// 内部故障の観測（下のobserveInternalFailure）が終わるのを、exit前に待つための置き場。
+let pendingObservation = Promise.resolve();
 installSqliteExperimentalWarningFilter();
 const help = renderCliHelp(args);
 
@@ -129,7 +131,9 @@ if (help !== null) {
     cwd: process.cwd(),
     stdout: process.stdout,
     stderr: process.stderr,
+    onInternalFailure: (error, commandKind) => observeInternalFailure(error, commandKind),
   });
+  await pendingObservation;
 } else if (args[0] === 'bridge') {
   const { runBridgeCli } = await import('../src/bridge-cli.mjs');
   process.exitCode = await runBridgeCli({
@@ -154,8 +158,9 @@ if (help !== null) {
     });
   } catch (error) {
     // typed契約（cli_error.v2＋exit 1/2）の外へ漏れた例外＝内部故障。opt-in時のみ観測を残す。
-    const { observeRuntimeError } = await import('../src/runtime-errors.mjs');
-    observeRuntimeError('LATTICE.CLI_INTERNAL_FAILED', { version: packageJson.version });
+    const { cliCommandKind } = await import('../src/cli-command-kind.mjs');
+    observeInternalFailure(error, cliCommandKind(args));
+    await pendingObservation;
     // **理由を捨てない。** 型名だけでは、何が起きたかを追う手段が無い——実際、seam解決の
     // `witness_set_invalid`はAPIを直接叩くまで見えなかった。typed契約の外へ漏れたこと自体は
     // 内部故障だが、漏れた中身は残す。
@@ -170,6 +175,16 @@ if (help !== null) {
     })}\n`);
     process.exitCode = 1;
   }
+}
+
+// typed契約の外へ漏れた例外を、opt-inのruntime error記録へ残す。どの面で・どの種類の例外で
+// 落ちたかを固定語彙の分類（safe_context）で添える——error_codeだけでは原因を追えなかった。
+function observeInternalFailure(error, commandKind) {
+  pendingObservation = import('../src/runtime-errors.mjs').then(({ observeRuntimeError, runtimeErrorSafeContext }) => {
+    observeRuntimeError('LATTICE.CLI_INTERNAL_FAILED', {
+      version: packageJson.version, safeContext: runtimeErrorSafeContext({ commandKind, error }),
+    });
+  }).catch(() => {});
 }
 
 function workingDirectory() {

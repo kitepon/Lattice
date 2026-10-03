@@ -68,16 +68,12 @@ function validateRegistry(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || value.schema !== REGISTRY_SCHEMA || !Array.isArray(value.projects)
     || !value.projects.every(validEntry)) {
-    const error = new Error('dashboard registry schema invalid');
-    error.code = 'DASHBOARD_REGISTRY_INVALID';
-    throw error;
+    throw dashboardError('DASHBOARD_REGISTRY_INVALID', 'dashboard registry schema invalid', { retry: false });
   }
   const ids = new Set();
   for (const entry of value.projects) {
     if (ids.has(entry.project_id)) {
-      const error = new Error(`dashboard project duplicate: ${entry.project_id}`);
-      error.code = 'DASHBOARD_REGISTRY_INVALID';
-      throw error;
+      throw dashboardError('DASHBOARD_REGISTRY_INVALID', `dashboard project duplicate: ${entry.project_id}`, { retry: false });
     }
     ids.add(entry.project_id);
   }
@@ -91,10 +87,23 @@ async function readJson(ref, missing) {
     throw error;
   }
   try { return JSON.parse(bytes); } catch {
-    const error = new Error(`invalid JSON: ${ref}`);
-    error.code = 'DASHBOARD_REGISTRY_INVALID';
-    throw error;
+    // local absolute pathをCLI errorへ運ばない。どのfileかは登録簿の置き場から決まる。
+    throw dashboardError('DASHBOARD_REGISTRY_INVALID', 'dashboard registry file is not valid JSON', { retry: false });
   }
+}
+
+/**
+ * 登録簿とdaemonの故障は、外部状態（別process・file・負荷）の不整合であって内部故障ではない。
+ * codeだけのErrorはCLIのtyped契約（code＋detail）に乗らず`INTERNAL_FAILURE`へ落ちていた
+ * ——launchdの`todo dashboard ensure`が、負荷時のlock待ち切れやdaemonの無応答をそう返していた。
+ * detailを必ず持たせ、再実行で解ける種類かどうかを`next_action`で伝える。
+ */
+function dashboardError(code, message, { retry = true } = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.detail = { reason: code.toLowerCase(),
+    next_action: retry ? 'lattice todo dashboard ensure --json' : null };
+  return error;
 }
 
 async function atomicJson(ref, value) {
@@ -131,9 +140,7 @@ async function withLock(lockRef, action) {
       await new Promise((resolve) => setTimeout(resolve, LOCK_WAIT_MS));
     }
   }
-  const error = new Error('dashboard registry lock timeout');
-  error.code = 'DASHBOARD_REGISTRY_BUSY';
-  throw error;
+  throw dashboardError('DASHBOARD_REGISTRY_BUSY', 'dashboard registry lock timeout');
 }
 
 export async function readActiveTodoDashboardProjects({ env = process.env, now = Date.now() } = {}) {
@@ -414,15 +421,11 @@ async function stopAttestedLegacyDaemon(descriptor, {
   const attestation = await daemonAttestation(descriptor);
   if (attestation !== 'legacy') {
     if (!await isProcessAlive(descriptor.pid) && attestation === null) return;
-    const error = new Error('legacy dashboard daemon attestation was lost before signal');
-    error.code = 'DASHBOARD_LEGACY_ATTESTATION_LOST';
-    throw error;
+    throw dashboardError('DASHBOARD_LEGACY_ATTESTATION_LOST', 'legacy dashboard daemon attestation was lost before signal');
   }
   if (!await requestDaemonShutdown(descriptor)) signalProcess(descriptor.pid, 'SIGTERM');
   if (await awaitDaemonStopped(descriptor, { isProcessAlive, deadline: Date.now() + timeoutMs })) return;
-  const error = new Error('legacy dashboard daemon did not stop');
-  error.code = 'DASHBOARD_LEGACY_STOP_FAILED';
-  throw error;
+  throw dashboardError('DASHBOARD_LEGACY_STOP_FAILED', 'legacy dashboard daemon did not stop');
 }
 
 /**
@@ -444,9 +447,7 @@ async function stopStrayDaemon(descriptor, {
   if (await awaitDaemonStopped(descriptor, {
     isProcessAlive, deadline: Date.now() + (timeoutMs - half),
   })) return true;
-  const error = new Error('stray dashboard daemon did not stop');
-  error.code = 'DASHBOARD_ORPHAN_STOP_FAILED';
-  throw error;
+  throw dashboardError('DASHBOARD_ORPHAN_STOP_FAILED', 'stray dashboard daemon did not stop');
 }
 
 /**
@@ -493,9 +494,7 @@ async function stopSpawnedReplacement(child, descriptor, {
     if (await stopped()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const error = new Error('replacement dashboard daemon rollback did not stop');
-  error.code = 'DASHBOARD_REPLACEMENT_ROLLBACK_FAILED';
-  throw error;
+  throw dashboardError('DASHBOARD_REPLACEMENT_ROLLBACK_FAILED', 'replacement dashboard daemon rollback did not stop');
 }
 
 function currentDaemonRecord(port) {
@@ -545,9 +544,7 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
     if (validDaemonDescriptor(existing) && existingAttestation === null
       && await isProcessAlive(existing.pid)
       && !await descriptorPidWasReused(existing, { observeProcessStartEpochMs })) {
-      const error = new Error('dashboard daemon is alive but temporarily unresponsive');
-      error.code = 'DASHBOARD_DAEMON_UNRESPONSIVE';
-      throw error;
+      throw dashboardError('DASHBOARD_DAEMON_UNRESPONSIVE', 'dashboard daemon is alive but temporarily unresponsive');
     }
     let legacy = existingAttestation === 'legacy' ? existing : null;
     if (legacy === null) {
@@ -610,9 +607,7 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
     }
     child.kill?.('SIGTERM');
     if (legacy === null) await rm(refs.descriptor, { force: true });
-    const error = new Error('dashboard daemon did not become ready');
-    error.code = 'DASHBOARD_DAEMON_UNAVAILABLE';
-    throw error;
+    throw dashboardError('DASHBOARD_DAEMON_UNAVAILABLE', 'dashboard daemon did not become ready');
   });
 }
 
@@ -634,9 +629,7 @@ export async function ensureTodoDashboardActivity(options) {
     if (!visible) await new Promise((resolve) => setTimeout(resolve, 50));
   }
   if (!visible) {
-    const error = new Error('registered project did not become visible');
-    error.code = 'DASHBOARD_PROJECT_UNAVAILABLE';
-    throw error;
+    throw dashboardError('DASHBOARD_PROJECT_UNAVAILABLE', 'registered project did not become visible');
   }
   return { ...registered, host: '127.0.0.1', port: daemon.port,
     url: `http://127.0.0.1:${daemon.port}/projects/${encodeURIComponent(registered.projectId)}/` };
