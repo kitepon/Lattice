@@ -8,6 +8,8 @@ import packageJson from '../package.json' with { type: 'json' };
 installPipeCloseGuard();
 
 const args = process.argv.slice(2);
+// 作業ディレクトリを読まないsurface。cwdが消えた席（閉じたworktree）からでも動かす。
+const CWD_FREE_COMMANDS = new Set(['runtime-errors', 'bridge', 'hooks', 'setup', 'factory-diagnostics']);
 installSqliteExperimentalWarningFilter();
 const help = renderCliHelp(args);
 
@@ -15,6 +17,16 @@ if (help !== null) {
   process.stdout.write(help);
 } else if (args.length === 1 && args[0] === '--version') {
   process.stdout.write(`${packageJson.version}\n`);
+} else if (!CWD_FREE_COMMANDS.has(args[0]) && workingDirectory() === null) {
+  // 呼び出し元のcwdが削除済み（閉じたworktreeに残ったshell等）。`process.cwd()`のENOENTが
+  // 各分岐で生のstackや内部故障（LATTICE.CLI_INTERNAL_FAILED）として漏れていた。製品の故障ではなく
+  // 呼び出し環境の不備なので、観測せずtyped契約で原因と直し方を返す。
+  process.stderr.write(`${JSON.stringify({
+    schema: 'lattice.cli_error.v2', code: 'CWD_UNAVAILABLE',
+    message: 'current working directory no longer exists',
+    detail: { next_action: 'cd_to_existing_project_directory_then_retry' },
+  })}\n`);
+  process.exitCode = 1;
 } else if (args.length === 2 && args[0] === 'session-context' && args[1] === '--json') {
   const { runSessionContext } = await import('../src/project-cli.mjs');
   process.exitCode = await runSessionContext({
@@ -157,6 +169,15 @@ if (help !== null) {
       },
     })}\n`);
     process.exitCode = 1;
+  }
+}
+
+function workingDirectory() {
+  try {
+    return process.cwd();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
