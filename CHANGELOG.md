@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.71.1 — 2026-10-03
+
+### 修正
+
+- 作業ディレクトリが消えた場所（閉じたworktreeに残ったshell等）から実行すると、run系などのcommandが
+  `INTERNAL_FAILURE` を返し、内部故障（`LATTICE.CLI_INTERNAL_FAILED`）として記録されていた。
+  todo・status などは Node の生のstackで落ちていた。どれも `lattice.cli_error.v2` の
+  `CWD_UNAVAILABLE`（exit 1）で返し、内部故障としては記録しないようにした。
+  cwdを読まない `runtime-errors`・`bridge`・`hooks`・`setup`・`factory-diagnostics` はそのまま動く。
+
 ## 0.71.0 — 2026-09-30
 
 ### sensor: 上流 CodeGraph の追従（49c11fc..7639c78、368コミット）
