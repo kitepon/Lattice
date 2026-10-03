@@ -76,7 +76,14 @@ function canonicalReporting(value) {
   return !value.enabled || (value.endpoint !== undefined && value.credential_file !== undefined);
 }
 
+// このOSで収集に対応するか。Windowsはstoreの所有者と権限をPOSIXの形で確かめられない（`ensureSafeDir`）ので
+// 対応しない。設定が有効でも記録は作らず、工場へは`disabled`でなく`unsupported`と答える——設定は有効なのに
+// 製品が黙って無効と答えると、受け側は故障と区別できない。
+const collectionSupported = (options = {}) => (options.platform ?? hostPlatform()) !== 'win32';
+const inactiveCollection = (options = {}) => (collectionSupported(options) ? 'disabled' : 'unsupported');
+
 function collectionEnabled(options = {}) {
+  if (!collectionSupported(options)) return false;
   const env = options.env ?? process.env;
   try {
     const path = options.configPath ?? defaultFactoryReporterConfigPath(env);
@@ -264,7 +271,7 @@ function snapshot(options = {}) {
     runtime_errors: rows.filter((record) => record.status === 'open').map(({ product_version, error_code, component, status, severity, fingerprint, message_template, count, first_seen, last_seen, state_schema_version, safe_context }) => ({ product_version, error_code, component, status, severity, fingerprint, message_template, occurrence_count: count, first_seen, last_seen, state_schema_version, ...(safe_context === undefined ? {} : { safe_context }) })),
     resolutions: rows.filter((record) => record.status === 'resolved').map(({ fingerprint, resolved_at, reason_code }) => ({ fingerprint, resolved_at, reason_code })),
     diagnostics: {
-      collection: enabled ? 'enabled' : 'disabled',
+      collection: enabled ? 'enabled' : inactiveCollection(options),
       status: enabled ? 'ready' : 'not_applicable',
       total_count: store.records.length,
       pending_count: store.records.filter((record) => record.sequence > store.acknowledged_through).length,
@@ -279,7 +286,7 @@ export function runtimeErrorsSnapshot(afterCursor = 0, limit = MAX_RECORDS, opti
 
 export function runtimeErrorsDiagnostics(options = {}) {
   if (!collectionEnabled(options)) {
-    return { schema: DIAGNOSTICS_SCHEMA, collection: 'disabled', status: 'not_applicable', total_count: 0, open_count: 0, pending_count: 0, high_watermark: 0, acknowledged_through: 0 };
+    return { schema: DIAGNOSTICS_SCHEMA, collection: inactiveCollection(options), status: 'not_applicable', total_count: 0, open_count: 0, pending_count: 0, high_watermark: 0, acknowledged_through: 0 };
   }
   try {
     const { path } = optionsFor(options);
@@ -300,7 +307,7 @@ export function runtimeErrorsDiagnostics(options = {}) {
 }
 
 export function recordRuntimeError(code, options = {}) {
-  if (!collectionEnabled(options)) return { status: 'disabled' };
+  if (!collectionEnabled(options)) return { status: inactiveCollection(options) };
   const definition = definitions[code];
   if (!definition) throw Error('unknown_runtime_code');
   const { path } = optionsFor(options);

@@ -67,8 +67,11 @@ test('競合群の後継を先に起動し、無関係workerの旧epoch成果を
     await writeFile(path.join(repoRoot, 'test', `${symbol}.test.mjs`), unitTest(symbol));
   }
   // T2が宣言外のsrc/alpha.mjs——T1のscope——へも書く。T3は無関係なのでcontinue_setへ落ちる。
+  // `hold_ms`はworkerが書いた後に走り続ける時間で、holdはこの窓の中で届かなければならない。10秒では、
+  // 混んだ機械で窓が先に閉じ、holdが`worker processを止められない`（ESRCH）で断られる。30秒は、2コアに
+  // CPU負荷16本を重ねた状態で通ることを確かめた値。
   await writeFile(path.join(repoRoot, 'adapter-config.json'),
-    `${JSON.stringify({ mode: 'deterministic', hold_ms: 10_000,
+    `${JSON.stringify({ mode: 'deterministic', hold_ms: 30_000,
       extra_writes_by_todo: { T2: ['src/alpha.mjs'] } })}\n`);
 
   const git = (...args) => ok(invoke('git', ['-c', 'user.email=a@example.invalid',

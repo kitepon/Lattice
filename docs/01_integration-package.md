@@ -225,6 +225,10 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
   reporting（BugHub送信）はdotagents adapter所有で本storeは外部送信しない（collection/reporting分離）。
   固定catalog 5 code・fingerprint集約・cursor/ack・resolved+ack済み30日compact・POSIX owner-only検査で
   fail closed。正典は`src/runtime-errors.mjs`
+  - `diagnostics.collection`は`enabled`・`disabled`・`unsupported`の3値。`unsupported`は「このOSでは収集に
+    対応しない」という製品の答えで、Windowsが返す（storeの所有者と権限をPOSIXの形で確かめられない）。
+    設定が有効でも記録は作らない。`status`・`cursor`・配列・`diagnostics`のキーは`disabled`の時と同じ形
+    （`not_applicable`・すべて0・空）。受け側の前提はdotagents `49709de`以降。
   - 各記録は任意の`safe_context`を持つ: `command_kind`（落ちたCLIの面。`run.list`・`todo.start`等、
     Latticeが持つ一覧の語だけ。無ければ`other`）、`error_kind`（例外の種類。一覧に無ければ`other`）、
     `cause_code`（Nodeが付けるerror code。無ければ`none`）。付ける時は3つを必ずそろえる。

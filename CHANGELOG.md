@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.73.0 — 2026-10-03
+
+### runtime errorの収集: 対応しないOSは `unsupported` と答える
+
+- Windowsでは、`lattice runtime-errors snapshot`／`diagnostics` が `collection: "disabled"` を返していた。
+  設定が有効でも同じ答えで、「設定で止めている」のか「このOSでは収集できない」のかを区別できなかった。
+  Windowsでは `collection: "unsupported"` を返す。`status` は `not_applicable`、`cursor` は0、記録は空、
+  `diagnostics` のキーは今までと同じ。
+- 収集そのものは変わらない。Windowsではstoreの所有者と権限をPOSIXの形で確かめられないので、記録を作らない。
+- 受け側の前提: dotagents `49709de` 以降（`unsupported` を受け入れる）。
+
 ## 0.72.1 — 2026-10-03
 
 ### 修正
