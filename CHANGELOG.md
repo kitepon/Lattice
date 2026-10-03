@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.72.1 — 2026-10-03
+
+### 修正
+
+- `factory-reporter.json` の `host.profile` が `linux` の端末で、runtime errorの収集が無効になっていた
+  （`lattice runtime-errors diagnostics` が `collection: disabled`）。Latticeが受ける語の一覧に `linux` が無く、
+  設定全体を無効とみなしていた。工場のLinux workstation（rabbit）では、故障が1件も記録されていなかった。
+  dotagentsの契約と同じ5語（`server`・`mac`・`linux`・`wsl`・`windows-native`）を受ける。
+- 変わらないこと: Windowsでは収集しない。storeの所有者と権限をPOSIXの形で確かめられないので、
+  書き込みを `store_unsafe` で止めている。設定の置き場（`%LOCALAPPDATA%\dotagents\factory-reporter\config.json`）も
+  読まない。`windows-native` の語は受けるが、記録は作られない。
+
 ## 0.72.0 — 2026-10-03
 
 ### runtime error記録: 落ちた面と例外の分類（`safe_context`）
