@@ -1,9 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir, platform as hostPlatform, arch as hostArch } from 'node:os';
 import { dirname, join } from 'node:path';
+
+import {
+  daclIsOwnerOnly, daclIsProtected, isAclScratchName, readWindowsDacl, restrictWindowsDirToOwner, windowsSelfSid,
+} from './windows-owner-only.mjs';
 
 /**
  * opt-in runtime error store（親plan L6要件。Caveat `caveat.runtime_errors.v1` と同型の工場契約）。
@@ -15,8 +19,9 @@ import { dirname, join } from 'node:path';
  * - privacy by design: 保存するのは固定catalogの `error_code` / `message_template` のみ。
  *   生message・path・引数を保存しない。
  * - retention: fingerprint集約（同一原因はcount/last_seen更新）＋ack済みresolvedの30日compact。
- * - POSIX専用: Lattice runtimeはWindows nativeでunsupported（親plan L6）。owner-onlyを証明できない
- *   環境では `store_unsafe` でfail closedする。
+ * - owner-only: storeは本人だけが触れる形でしか使わない。POSIXはmode（0700・0600）と所有者、Windowsは
+ *   DACL（本人・SYSTEM・Administratorsだけ、ADR 0194）で確かめ、確かめられなければ `store_unsafe` で
+ *   fail closedする。
  */
 
 const RUNTIME_ERRORS_SCHEMA = 'lattice.runtime_errors.v1';
@@ -54,7 +59,9 @@ const plain = (value) => typeof value === 'object' && value !== null && !Array.i
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const validTime = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 const validVersion = (value) => typeof value === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value);
-const validOs = (value) => typeof value === 'string' && ['darwin', 'linux'].includes(value);
+// 収集に対応するOS。storeを本人だけが触れる形で置けると確かめられるものだけを載せる。
+const SUPPORTED_OS = Object.freeze(['darwin', 'linux', 'win32']);
+const validOs = (value) => typeof value === 'string' && SUPPORTED_OS.includes(value);
 const validArch = (value) => typeof value === 'string' && ['x64', 'arm64', 'arm'].includes(value);
 
 export function defaultFactoryReporterConfigPath(env = process.env) {
@@ -62,9 +69,19 @@ export function defaultFactoryReporterConfigPath(env = process.env) {
   return join(env.XDG_CONFIG_HOME || join(home, '.config'), 'dotagents', 'factory-reporter.json');
 }
 
-export function runtimeErrorsStatePath(env = process.env) {
-  const home = env.HOME || homedir();
-  return join(env.XDG_STATE_HOME || join(home, '.local', 'state'), 'lattice', 'runtime-errors.json');
+/** Windowsで利用者ごとのdataを置く場所（`%LOCALAPPDATA%`）。 */
+export function windowsLocalAppData(env = process.env) {
+  return env.LOCALAPPDATA || join(env.USERPROFILE || homedir(), 'AppData', 'Local');
+}
+
+/**
+ * storeの置き場。Windowsは`%LOCALAPPDATA%\Lattice\runtime-errors\`という専用のフォルダへ置く
+ * ——`%LOCALAPPDATA%\Lattice`には他の機能のfileがあり、フォルダごと本人だけに絞れない。
+ */
+export function runtimeErrorsStatePath(env = process.env, platform = hostPlatform()) {
+  if (env.XDG_STATE_HOME) return join(env.XDG_STATE_HOME, 'lattice', 'runtime-errors.json');
+  if (platform === 'win32') return join(windowsLocalAppData(env), 'Lattice', 'runtime-errors', 'runtime-errors.json');
+  return join(env.HOME || homedir(), '.local', 'state', 'lattice', 'runtime-errors.json');
 }
 
 function canonicalReporting(value) {
@@ -77,19 +94,19 @@ function canonicalReporting(value) {
   return !value.enabled || (value.endpoint !== undefined && value.credential_file !== undefined);
 }
 
-// このOSで収集に対応するか。Windowsはstoreの所有者と権限をPOSIXの形で確かめられない（`ensureSafeDir`）ので
-// 対応しない。設定が有効でも記録は作らず、工場へは`disabled`でなく`unsupported`と答える——設定は有効なのに
-// 製品が黙って無効と答えると、受け側は故障と区別できない。
-const collectionSupported = (options = {}) => (options.platform ?? hostPlatform()) !== 'win32';
+// このOSで収集に対応するか。対応しないOSでは、設定が有効でも記録は作らず、`disabled`でなく`unsupported`と
+// 答える——設定は有効なのに製品が黙って無効と答えると、受け側は故障と区別できない。
+const collectionSupported = (options = {}) => SUPPORTED_OS.includes(options.platform ?? hostPlatform());
 const inactiveCollection = (options = {}) => (collectionSupported(options) ? 'disabled' : 'unsupported');
 
 export function runtimeErrorCollectionSupported(options = {}) {
   return collectionSupported(options);
 }
 
-export function runtimeErrorReportingConfigPath(env = process.env) {
-  const home = env.HOME || homedir();
-  return join(env.XDG_CONFIG_HOME || join(home, '.config'), 'lattice', 'runtime-error-reporting.json');
+export function runtimeErrorReportingConfigPath(env = process.env, platform = hostPlatform()) {
+  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, 'lattice', 'runtime-error-reporting.json');
+  if (platform === 'win32') return join(windowsLocalAppData(env), 'Lattice', 'runtime-error-reporting.json');
+  return join(env.HOME || homedir(), '.config', 'lattice', 'runtime-error-reporting.json');
 }
 
 /**
@@ -175,18 +192,63 @@ function assertPosix(info, mode) {
   if ((info.mode & 0o777) !== mode || (typeof process.getuid === 'function' && info.uid !== process.getuid())) throw Error('store_unsafe');
 }
 
-export function ensureSafeDir(dir) {
-  if (hostPlatform() === 'win32') throw Error('store_unsafe');
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stats = lstatSync(dir);
-  if (!stats.isDirectory() || stats.isSymbolicLink()) throw Error('store_unsafe');
-  assertPosix(stats, 0o700);
+const windows = () => hostPlatform() === 'win32';
+
+/**
+ * Windowsのフォルダが本人・SYSTEM・Administratorsだけのもので、親からの継承を切ってあるか確かめる。
+ * 作ったばかりのフォルダは親の権限を継いでいるので、絞る。ただし、他のaccountが触れる形なのに中身がある
+ * フォルダは、その中身を信用できないので、絞らずに止める。
+ */
+function ensureWindowsDirOwnerOnly(dir) {
+  const sid = windowsSelfSid();
+  const settled = (sddl) => daclIsOwnerOnly(sddl, sid) && daclIsProtected(sddl);
+  const current = readWindowsDacl(dir, dir);
+  if (settled(current)) return;
+  if (!daclIsOwnerOnly(current, sid) && readdirSync(dir).some((name) => !isAclScratchName(name))) throw Error('store_unsafe');
+  restrictWindowsDirToOwner(dir, sid);
+  if (!settled(readWindowsDacl(dir, dir))) throw Error('store_unsafe');
 }
 
-export function ensureSafeFile(path) {
+export function ensureSafeDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stats = lstatSync(dir);
+  // Windowsのjunctionも`isSymbolicLink`で落ちる。
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw Error('store_unsafe');
+  if (windows()) ensureWindowsDirOwnerOnly(dir);
+  else assertPosix(stats, 0o700);
+}
+
+/**
+ * `scratchDir`はWindowsだけが使う: DACLの読み取りが出力fileを置くフォルダ。既定はそのfileのフォルダ。
+ * storeの外のfile（合鍵）を確かめる時は、絞ってあるstoreのフォルダを渡す。
+ */
+export function ensureSafeFile(path, scratchDir = dirname(path)) {
   const stats = lstatSync(path);
   if (!stats.isFile() || stats.isSymbolicLink()) throw Error('store_unsafe');
-  assertPosix(statSync(path), 0o600);
+  if (!windows()) {
+    assertPosix(statSync(path), 0o600);
+    return;
+  }
+  const sid = windowsSelfSid();
+  // 出力fileを置くフォルダを他のaccountが書けるなら、読んだDACLを信用できない。先にそれを確かめる。
+  if (!daclIsOwnerOnly(readWindowsDacl(scratchDir, scratchDir), sid)
+    || !daclIsOwnerOnly(readWindowsDacl(path, scratchDir), sid)) throw Error('store_unsafe');
+}
+
+/**
+ * 一時fileを本番の名前へ置き換える。Windowsは、読み手が開いている宛先へのrenameを一時的に断るので、
+ * 少し待って繰り返す（`fs-publish.mjs`と同じ事情）。
+ */
+export function replaceStoreFile(source, destination) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(source, destination);
+      return;
+    } catch (error) {
+      if (!windows() || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= 7) throw error;
+      sleepSync(Math.min(64, 2 ** attempt));
+    }
+  }
 }
 
 const RECORD_KEYS = Object.freeze(['product', 'product_version', 'component', 'error_code', 'message_template', 'severity', 'fingerprint', 'count', 'first_seen', 'last_seen', 'state_schema_version', 'os', 'arch', 'status', 'resolved_at', 'reason_code', 'sequence']);
@@ -235,8 +297,9 @@ function writeStore(path, store) {
   const temporary = join(dirname(path), `.runtime-errors-${process.pid}-${randomBytes(6).toString('hex')}`);
   try {
     writeFileSync(temporary, `${JSON.stringify(store)}\n`, { mode: 0o600, flag: 'wx' });
-    assertPosix(statSync(temporary), 0o600);
-    renameSync(temporary, path);
+    // Windowsの一時fileはフォルダの権限を引き継ぐ。置き換えた後の`ensureSafeFile`が確かめる。
+    if (!windows()) assertPosix(statSync(temporary), 0o600);
+    replaceStoreFile(temporary, path);
     ensureSafeFile(path);
   } finally {
     rmSync(temporary, { force: true });
@@ -256,9 +319,15 @@ function lock(path, fn) {
       writeFileSync(lockPath, `${process.pid}\n`, { mode: 0o600, flag: 'wx' });
       break;
     } catch (error) {
-      if (!plain(error) || error.code !== 'EEXIST') throw error;
+      // Windowsは、消している最中のlockと同じ名前の作成を`EEXIST`でなく`EPERM`で断る。
+      if (!plain(error) || !(error.code === 'EEXIST' || (windows() && ['EPERM', 'EACCES'].includes(error.code)))) throw error;
       let age = 0;
-      try { age = Date.now() - lstatSync(lockPath).mtimeMs; } catch { continue; }
+      try {
+        age = Date.now() - lstatSync(lockPath).mtimeMs;
+      } catch {
+        if (Date.now() >= deadline) throw Error('store_locked');
+        continue;
+      }
       // crash残置lockの恒久ロックを避ける唯一の明示救済。閾値未満は正当な並行writerとして待つ。
       if (age > LOCK_STALE_MS) { try { unlinkSync(lockPath); } catch {} continue; }
       if (Date.now() >= deadline) throw Error('store_locked');

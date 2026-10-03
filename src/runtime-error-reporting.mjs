@@ -1,10 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import { homedir } from 'node:os';
+import { homedir, platform as hostPlatform } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
@@ -12,12 +12,14 @@ import {
   acknowledgeRuntimeErrors,
   ensureSafeDir,
   ensureSafeFile,
+  replaceStoreFile,
   runtimeErrorCollectionSupported,
   runtimeErrorReportingConfigPath,
   runtimeErrorReportingEnabled,
   runtimeErrorsDiagnostics,
   runtimeErrorsSnapshot,
   runtimeErrorsStatePath,
+  windowsLocalAppData,
 } from './runtime-errors.mjs';
 
 /**
@@ -51,13 +53,34 @@ const OUTCOMES = Object.freeze(['delivered', 'nothing_pending', 'disabled', 'uns
 const plain = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
-export function productCredentialPath(env = process.env) {
-  return join(env.HOME || homedir(), '.config', 'bughub', 'product-credentials', `${PRODUCT_ID}.json`);
+/** 合鍵の置き場（BugHubの契約）。Windowsは`%LOCALAPPDATA%\bughub\product-credentials\`。 */
+export function productCredentialPath(env = process.env, platform = hostPlatform()) {
+  const base = platform === 'win32' ? join(windowsLocalAppData(env), 'bughub') : join(env.HOME || homedir(), '.config', 'bughub');
+  return join(base, 'product-credentials', `${PRODUCT_ID}.json`);
 }
 
 /**
- * 合鍵のfileを読む。BugHubの持ち主が置く形（本人所有・0600・symlinkでない）以外は使わない。
- * 秘密は戻り値の中だけに留め、結果や記録へ写さない。
+ * Windowsの合鍵が本人・SYSTEM・Administratorsだけのものか。DACLの読み取りは出力fileを置く場所が要るので、
+ * 絞ったstoreのフォルダを使う（無ければ作る）。合鍵のフォルダへは何も書かない。
+ */
+function windowsCredentialUnsafeReason(path, options) {
+  const storeDir = dirname(options.storePath ?? runtimeErrorsStatePath(options.env ?? process.env));
+  try {
+    ensureSafeDir(storeDir);
+  } catch {
+    return 'acl_unverifiable';
+  }
+  try {
+    ensureSafeFile(path, storeDir);
+    return null;
+  } catch {
+    return 'acl_not_owner_only';
+  }
+}
+
+/**
+ * 合鍵のfileを読む。BugHubの持ち主が置く形（symlinkでなく、POSIXは本人所有・0600、Windowsは
+ * 本人・SYSTEM・Administratorsだけに権限）以外は使わない。秘密は戻り値の中だけに留め、結果や記録へ写さない。
  */
 export function readProductCredential(options = {}) {
   const path = options.credentialPath ?? productCredentialPath(options.env ?? process.env);
@@ -68,8 +91,13 @@ export function readProductCredential(options = {}) {
     return error?.code === 'ENOENT' ? { status: 'missing' } : { status: 'unsafe', reason: 'unreadable' };
   }
   if (!stats.isFile() || stats.isSymbolicLink()) return { status: 'unsafe', reason: 'not_regular_file' };
-  if ((stats.mode & 0o777) !== 0o600) return { status: 'unsafe', reason: 'mode_not_0600' };
-  if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) return { status: 'unsafe', reason: 'owner_mismatch' };
+  if (hostPlatform() === 'win32') {
+    const reason = windowsCredentialUnsafeReason(path, options);
+    if (reason !== null) return { status: 'unsafe', reason };
+  } else {
+    if ((stats.mode & 0o777) !== 0o600) return { status: 'unsafe', reason: 'mode_not_0600' };
+    if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) return { status: 'unsafe', reason: 'owner_mismatch' };
+  }
   let value;
   try {
     value = JSON.parse(readFileSync(path, 'utf8'));
@@ -151,7 +179,7 @@ function writeDelivery(options, state) {
   const temporary = join(dirname(path), `.runtime-errors-delivery-${process.pid}-${randomBytes(6).toString('hex')}`);
   try {
     writeFileSync(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600, flag: 'wx' });
-    renameSync(temporary, path);
+    replaceStoreFile(temporary, path);
   } finally {
     rmSync(temporary, { force: true });
   }
@@ -206,7 +234,7 @@ export function setRuntimeErrorReporting(enabled, options = {}) {
   const temporary = join(dirname(path), `.runtime-error-reporting-${process.pid}-${randomBytes(6).toString('hex')}`);
   try {
     writeFileSync(temporary, `${JSON.stringify({ schema: REPORTING_CONFIG_SCHEMA, enabled })}\n`, { mode: 0o600, flag: 'wx' });
-    renameSync(temporary, path);
+    replaceStoreFile(temporary, path);
   } finally {
     rmSync(temporary, { force: true });
   }
@@ -321,15 +349,16 @@ export async function reportRuntimeErrors(options = {}) {
 
 /**
  * 自動送信の入口が、子processを起こす前に見る軽い判定。設定が無い端末（外の利用者）では、
- * 設定fileの有無を1回見るだけで終わる。
+ * 設定fileの有無を1回見るだけで終わる。合鍵は、送るものがある時だけ確かめる——Windowsでは
+ * 合鍵の確認が外のprogramを起こすので、毎回のCLI実行には載せない。
  */
 export function runtimeErrorAutoReportDue(options = {}) {
   if (!runtimeErrorReportingEnabled(options)) return false;
-  if (readProductCredential(options).status !== 'ok') return false;
   try {
     const diagnostics = runtimeErrorsDiagnostics(options);
     if (diagnostics.status !== 'ready' || diagnostics.pending_count === 0) return false;
-    return throttleReason(options, readDelivery(options), diagnostics.high_watermark) === null;
+    if (throttleReason(options, readDelivery(options), diagnostics.high_watermark) !== null) return false;
+    return readProductCredential(options).status === 'ok';
   } catch {
     return false;
   }

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import nodeTest from 'node:test';
 
-const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
+const test = nodeTest;
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -98,7 +98,7 @@ test('工場が名乗るhost profileはすべて収集を有効にし、未知�
 
 test('収集に対応しないOSでは、設定が有効でもunsupportedと答えstateへ触れない', async () => {
   const workspace = await makeWorkspace();
-  const options = { ...workspace.options, platform: 'win32' };
+  const options = { ...workspace.options, platform: 'freebsd' };
   try {
     assert.deepEqual(recordRuntimeError('LATTICE.CLI_INTERNAL_FAILED', options), { status: 'unsupported' });
     const snapshot = runtimeErrorsSnapshot(0, 256, options);
@@ -185,8 +185,10 @@ test('store改ざん・symlinkはfail closedし、未知codeを拒否する', as
 
     await rm(workspace.storePath);
     await writeFile(`${workspace.storePath}.real`, '', { mode: 0o600 });
-    await symlink(`${workspace.storePath}.real`, workspace.storePath);
-    assert.throws(() => recordRuntimeError('LATTICE.CLI_INTERNAL_FAILED', workspace.options), /store_unsafe/);
+    // Windowsは、権限の無いaccountにsymlinkを作らせない。作れた時だけ確かめる。
+    const linked = await symlink(`${workspace.storePath}.real`, workspace.storePath).then(() => true,
+      (error) => { if (process.platform !== 'win32' || error.code !== 'EPERM') throw error; return false; });
+    if (linked) assert.throws(() => recordRuntimeError('LATTICE.CLI_INTERNAL_FAILED', workspace.options), /store_unsafe/);
 
     assert.throws(() => recordRuntimeError('LATTICE.UNKNOWN', workspace.options), /unknown_runtime_code/);
   } finally {

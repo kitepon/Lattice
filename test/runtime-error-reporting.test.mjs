@@ -16,6 +16,7 @@ import {
   setRuntimeErrorStatus,
 } from '../src/runtime-errors.mjs';
 import {
+  productCredentialPath,
   receiptSignatureMatches,
   reportRuntimeErrors,
   runtimeErrorAutoReportDue,
@@ -23,9 +24,9 @@ import {
   setRuntimeErrorReporting,
   signReport,
 } from '../src/runtime-error-reporting.mjs';
+import { restrictWindowsDirToOwner, windowsSelfSid } from '../src/windows-owner-only.mjs';
 
-// storeはPOSIX専用（Windowsは`unsupported`）。送信の試験はPOSIXだけで走らせ、署名と対象外の答えはどのOSでも確かめる。
-const posixTest = process.platform === 'win32' ? nodeTest.skip : nodeTest;
+const windows = process.platform === 'win32';
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'lattice.mjs');
 const CLI_FAILED = 'LATTICE.CLI_INTERNAL_FAILED';
 const SECRET = 'bughub-test-secret-do-not-use-0123456789abcdef';
@@ -49,7 +50,7 @@ nodeTest('署名と応答の署名は、BugHubの契約の試験値と一致す�
 nodeTest('収集に対応しないOSでは、送信も対象外と答え、設定を書かない', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'lattice-rterr-report-win-'));
   try {
-    const options = { platform: 'win32', reportingConfigPath: path.join(root, 'reporting.json'),
+    const options = { platform: 'freebsd', reportingConfigPath: path.join(root, 'reporting.json'),
       credentialPath: path.join(root, 'lattice.json'), storePath: path.join(root, 'state', 'runtime-errors.json') };
     assert.equal((await reportRuntimeErrors(options)).outcome, 'unsupported');
     assert.equal(runtimeErrorReportingStatus(options).reporting, 'unsupported');
@@ -88,6 +89,13 @@ const signedReceipt = (entry, extra = {}) => {
     received_at: receivedAt, sig: hmac(`${entry.body.report_id}\n${receivedAt}`), ...extra } };
 };
 
+/** BugHubの持ち主が合鍵を置く形で置く: POSIXは0600、Windowsは本人・SYSTEM・Administratorsだけのフォルダの中。 */
+async function placeCredential(credentialPath, content) {
+  await mkdir(path.dirname(credentialPath), { recursive: true });
+  if (windows) restrictWindowsDirToOwner(path.dirname(credentialPath), windowsSelfSid());
+  await writeFile(credentialPath, JSON.stringify(content), { mode: 0o600 });
+}
+
 async function makeWorkspace(intakeUrl, { enabled = true, credential = true } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'lattice-rterr-report-'));
   const reportingConfigPath = path.join(root, 'config', 'runtime-error-reporting.json');
@@ -96,17 +104,14 @@ async function makeWorkspace(intakeUrl, { enabled = true, credential = true } = 
     configPath: path.join(root, 'config', 'factory-reporter.json'),
     storePath: path.join(root, 'state', 'runtime-errors.json') };
   if (enabled) setRuntimeErrorReporting(true, options);
-  if (credential) {
-    await mkdir(path.dirname(credentialPath), { recursive: true });
-    await writeFile(credentialPath, JSON.stringify({ url: intakeUrl, key_id: KEY_ID, secret: SECRET }), { mode: 0o600 });
-  }
+  if (credential) await placeCredential(credentialPath, { url: intakeUrl, key_id: KEY_ID, secret: SECRET });
   return { root, options, credentialPath };
 }
 
 const fail = (options, commandKind, code) => recordRuntimeError(CLI_FAILED, { ...options,
   safeContext: runtimeErrorSafeContext({ commandKind, error: Object.assign(new Error('x'), { code }) }) });
 
-posixTest('既定では通信しない: 送信を有効にしていない端末と、合鍵の無い端末は送らない', async () => {
+nodeTest('既定では通信しない: 送信を有効にしていない端末と、合鍵の無い端末は送らない', async () => {
   const intake = await startIntake(signedReceipt);
   const disabled = await makeWorkspace(intake.url, { enabled: false });
   const noCredential = await makeWorkspace(intake.url, { credential: false });
@@ -130,19 +135,28 @@ posixTest('既定では通信しない: 送信を有効にしていない端末�
   }
 });
 
-posixTest('合鍵のfileは、本人所有・0600・symlinkでない形だけを使う', async () => {
+nodeTest('合鍵のfileは、本人だけが読める形（POSIXは本人所有・0600）でsymlinkでないものだけを使う', async () => {
   const intake = await startIntake(signedReceipt);
   const workspace = await makeWorkspace(intake.url);
   try {
     fail(workspace.options, 'run.list', 'ENOENT');
-    await chmod(workspace.credentialPath, 0o644);
+    // 他のaccountが読める形にする: POSIXはmodeを広げ、WindowsはUsers（S-1-5-32-545）へ読み取りを足す。
+    const icacls = (...args) => assert.equal(spawnSync('icacls', [workspace.credentialPath, ...args]).status, 0);
+    if (windows) icacls('/grant', '*S-1-5-32-545:R');
+    else await chmod(workspace.credentialPath, 0o644);
     assert.deepEqual([(await reportRuntimeErrors(workspace.options)).outcome,
-      runtimeErrorReportingStatus(workspace.options).credential_reason], ['credential_unsafe', 'mode_not_0600']);
+      runtimeErrorReportingStatus(workspace.options).credential_reason],
+    ['credential_unsafe', windows ? 'acl_not_owner_only' : 'mode_not_0600']);
+    assert.equal(runtimeErrorAutoReportDue(workspace.options), false);
 
-    await chmod(workspace.credentialPath, 0o600);
+    if (windows) icacls('/remove', '*S-1-5-32-545');
+    else await chmod(workspace.credentialPath, 0o600);
+    assert.equal(runtimeErrorReportingStatus(workspace.options).credential, 'present');
     const linked = path.join(workspace.root, 'credentials', 'linked.json');
-    await symlink(workspace.credentialPath, linked);
-    assert.equal((await reportRuntimeErrors({ ...workspace.options, credentialPath: linked })).reason, 'not_regular_file');
+    // Windowsは、権限の無いaccountにsymlinkを作らせない。作れた時だけ確かめる。
+    const made = await symlink(workspace.credentialPath, linked).then(() => true,
+      (error) => { if (!windows || error.code !== 'EPERM') throw error; return false; });
+    if (made) assert.equal((await reportRuntimeErrors({ ...workspace.options, credentialPath: linked })).reason, 'not_regular_file');
 
     for (const broken of [
       { url: intake.url, key_id: KEY_ID, secret: 'short' },
@@ -160,7 +174,7 @@ posixTest('合鍵のfileは、本人所有・0600・symlinkでない形だけを
   }
 });
 
-posixTest('未受領の記録を署名つきで送り、署名つきの受領でだけ受領済みにする', async () => {
+nodeTest('未受領の記録を署名つきで送り、署名つきの受領でだけ受領済みにする', async () => {
   const intake = await startIntake(signedReceipt);
   const workspace = await makeWorkspace(intake.url);
   try {
@@ -218,7 +232,7 @@ posixTest('未受領の記録を署名つきで送り、署名つきの受領で
   }
 });
 
-posixTest('受領を確かめられない応答では受領済みにせず、後から今の累計を送り直す', async () => {
+nodeTest('受領を確かめられない応答では受領済みにせず、後から今の累計を送り直す', async () => {
   const answers = [
     (entry) => ({ status: 200, body: { accepted: true, report_id: entry.body.report_id, received_at: '2026-10-03T09:00:01.000Z', sig: 'f'.repeat(64) } }),
     (entry) => signedReceipt({ body: { report_id: '00000000-0000-4000-8000-000000000009' } }),
@@ -262,7 +276,7 @@ posixTest('受領を確かめられない応答では受領済みにせず、後
   }
 });
 
-posixTest('自動送信は1分に1回まで、同じ中身の送り直しは1時間に1回まで', async () => {
+nodeTest('自動送信は1分に1回まで、同じ中身の送り直しは1時間に1回まで', async () => {
   let accept = false;
   const intake = await startIntake((entry) => (accept ? signedReceipt(entry) : { status: 503, body: { error: 'unavailable' } }));
   const workspace = await makeWorkspace(intake.url);
@@ -297,11 +311,12 @@ posixTest('自動送信は1分に1回まで、同じ中身の送り直しは1時
   }
 });
 
-posixTest('CLI: 送信を有効にした端末では、故障を記録した直後に切り離した子processが送る', async () => {
+nodeTest('CLI: 送信を有効にした端末では、故障を記録した直後に切り離した子processが送る', async () => {
   const intake = await startIntake(signedReceipt);
   const root = await mkdtemp(path.join(os.tmpdir(), 'lattice-rterr-report-cli-'));
   try {
     const env = { ...process.env, NO_COLOR: '1', HOME: root, LATTICE_DASHBOARD_AUTOSTART: '0',
+      USERPROFILE: root, LOCALAPPDATA: path.join(root, 'AppData', 'Local'),
       XDG_CONFIG_HOME: path.join(root, '.config'), XDG_STATE_HOME: path.join(root, 'xdg-state') };
     delete env.LATTICE_RUNTIME_ERROR_REPORTING;
     const cli = (args, cwd = root) => spawnSync(process.execPath, [cliPath, ...args], { cwd, encoding: 'utf8', env });
@@ -316,10 +331,8 @@ posixTest('CLI: 送信を有効にした端末では、故障を記録した直�
     assert.equal(cli(['todo', 'status', '--json'], repo).status, 1);
     assert.equal(json(cli(['runtime-errors', 'diagnostics', '--json'])).collection, 'disabled');
 
-    const credentialDir = path.join(root, '.config', 'bughub', 'product-credentials');
-    await mkdir(credentialDir, { recursive: true });
-    await writeFile(path.join(credentialDir, 'lattice.json'),
-      JSON.stringify({ url: intake.url, key_id: KEY_ID, secret: SECRET }), { mode: 0o600 });
+    // 合鍵はBugHubの契約の置き場へ置く（Windowsは`%LOCALAPPDATA%\bughub\product-credentials\`）。
+    await placeCredential(productCredentialPath(env), { url: intake.url, key_id: KEY_ID, secret: SECRET });
     const enabled = json(cli(['runtime-errors', 'reporting', 'enable', '--json']));
     assert.deepEqual([enabled.reporting, enabled.credential, enabled.collection], ['enabled', 'present', 'enabled']);
     assert.equal((await readFile(path.join(root, '.config', 'lattice', 'runtime-error-reporting.json'), 'utf8')).trim(),
@@ -327,8 +340,15 @@ posixTest('CLI: 送信を有効にした端末では、故障を記録した直�
     assert.equal(intake.requests.length, 0);
 
     // 故障を1件起こす。CLIは送信を待たずに返り、子processが届ける。
-    const failed = cli(['todo', 'status', '--json'], repo);
-    assert.equal(failed.status, 1, failed.stderr);
+    // Windowsでは、この入力は契約内のerrorで返り記録にならない（`lstat`がENOTDIRでなくENOENTを返す）。
+    // 記録だけ同じ分類で直に作り、次のCLI実行が子processを起こすことを確かめる。
+    if (windows) {
+      fail({ env }, 'todo.status', 'ENOTDIR');
+      assert.equal(cli(['runtime-errors', 'diagnostics', '--json']).status, 0);
+    } else {
+      const failed = cli(['todo', 'status', '--json'], repo);
+      assert.equal(failed.status, 1, failed.stderr);
+    }
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline
       && json(cli(['runtime-errors', 'reporting', 'status', '--json'])).last_outcome !== 'delivered') {
