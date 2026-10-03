@@ -87,6 +87,10 @@ async function collectTests(directory, prefix = '') {
   return files;
 }
 
+// 端末の本物のhost設定の置き場を指す変数（`src/setup-hosts.mjs`が読む）。試験は一時のHOMEを渡すが、
+// これらが残っていると、CLIはHOMEでなくそちらを使い、利用者の本物の設定を書き換える。
+export const HOST_CONFIG_ENV = Object.freeze(['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GROK_HOME']);
+
 export function productTestEnvironment(parentEnv = process.env) {
   // product gateはsuite単位ですでに全CPU並列である。各integration fixtureが
   // sensor init用WASM poolまで最大8本prewarmするとnested oversubscriptionになり、
@@ -96,6 +100,7 @@ export function productTestEnvironment(parentEnv = process.env) {
   const env = { ...parentEnv, LATTICE_DASHBOARD_AUTOSTART: '0',
     LATTICE_SENSOR_PARSE_WORKERS: '1', LATTICE_RUNTIME_ERROR_REPORTING: '0' };
   delete env.FORCE_COLOR;
+  for (const name of HOST_CONFIG_ENV) delete env[name];
   return env;
 }
 
