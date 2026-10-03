@@ -232,7 +232,7 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
     `%LOCALAPPDATA%\Lattice\runtime-errors\runtime-errors.json`で、このフォルダは継承を切って本人・SYSTEM・
     Administratorsだけに絞る。他のaccountが触れる形で中身があるフォルダは、絞らずに止める。
 - runtime errorの送信（ADR 0193）: `lattice runtime-errors report --json`と
-  `lattice runtime-errors reporting <status|enable|disable> --json`。Lattice自身が、未受領の記録を
+  `lattice runtime-errors reporting <status|enable|disable|verify> --json`。Lattice自身が、未受領の記録を
   BugHubの製品報告の受け口へ送る。正典は`src/runtime-error-reporting.mjs`
   - **既定では通信しない。** `reporting enable`を打った端末（設定は
     `${XDG_CONFIG_HOME:-~/.config}/lattice/runtime-error-reporting.json`）で、BugHubの持ち主が置いた合鍵のfile
@@ -246,6 +246,11 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
     （`sig = HMAC-SHA256(secret, ts + "\n" + SHA-256(送るバイト列))`）。
   - 本文は`schema_version`・`report_id`・`product_id`・`installed_version`・`observed_at`・`runtime_errors`・
     `resolutions`の7項目で、各記録は`snapshot`が出す項目のまま。端末名は入れない。
+  - `observed_at`は、送る時刻と、載せる記録の`last_seen`・`resolved_at`のうち最も後の時刻（ADR 0195）。
+    BugHubは、記録の時刻が`observed_at`より後の報告を断る。秒へ切り捨てない。
+  - `reporting verify`は、記録を載せない空の報告を1通送って、合鍵・署名・受け口までの経路を確かめる。
+    storeの記録と受領の印には触れない。受け口は受領を記録するだけで、issueも通知も動かさない。
+    受領まで確かめられた時だけ`verified`・exit 0。受け口は端末×製品ごとに1分に1回まで受ける。
   - 受領済み（storeのack）にするのは、200・`accepted: true`・`report_id`一致・応答の署名一致がそろった時だけ。
     そろわなければ未受領のまま残し、後から新しい`report_id`でその時点の累計を送り直す。
   - 送る時機: 故障を記録した直後と、以後のCLI実行（`hooks`を除く）の終わりに、切り離した子processで送る。

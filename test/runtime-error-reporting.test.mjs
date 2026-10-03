@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -23,6 +23,7 @@ import {
   runtimeErrorReportingStatus,
   setRuntimeErrorReporting,
   signReport,
+  verifyRuntimeErrorReporting,
 } from '../src/runtime-error-reporting.mjs';
 import { restrictWindowsDirToOwner, windowsSelfSid } from '../src/windows-owner-only.mjs';
 
@@ -178,8 +179,10 @@ nodeTest('未受領の記録を署名つきで送り、署名つきの受領で�
   const intake = await startIntake(signedReceipt);
   const workspace = await makeWorkspace(intake.url);
   try {
-    fail(workspace.options, 'todo.status', 'ENOTDIR');
-    fail(workspace.options, 'run.list', 'ENOENT');
+    // 記録は送る時刻より前に起きている（BugHubは、観測より後の時刻の記録を断る）。
+    const earlier = { ...workspace.options, now: '2026-10-03T08:59:58.000Z' };
+    fail(earlier, 'todo.status', 'ENOTDIR');
+    fail(earlier, 'run.list', 'ENOENT');
     assert.equal(runtimeErrorAutoReportDue(workspace.options), true);
 
     const now = '2026-10-03T09:00:00.000Z';
@@ -229,6 +232,89 @@ nodeTest('未受領の記録を署名つきで送り、署名つきの受領で�
   } finally {
     await intake.close();
     await rm(workspace.root, { recursive: true, force: true });
+  }
+});
+
+/** BugHubの検査と同じ規則: 記録の時刻が`observed_at`より後なら422で断る。 */
+const strictIntake = (entry) => {
+  const observed = Date.parse(entry.body.observed_at);
+  const late = [...entry.body.runtime_errors.map((record) => record.last_seen),
+    ...entry.body.resolutions.map((resolution) => resolution.resolved_at)].some((time) => Date.parse(time) > observed);
+  return late ? { status: 422, body: { error: 'invalid_report' } } : signedReceipt(entry);
+};
+
+nodeTest('observed_atは載せる記録の時刻より前にならない: 記録と同じ1秒の中で送っても受領される', async () => {
+  const intake = await startIntake(strictIntake);
+  const workspace = await makeWorkspace(intake.url);
+  const at = (now) => ({ ...workspace.options, now });
+  try {
+    // 故障の直後（同じ秒の50ms後）に送る。秒へ切り捨てた`observed_at`は記録より前になり、断られていた。
+    fail(at('2026-10-03T12:22:47.900Z'), 'todo.status', 'ENOTDIR');
+    const first = await reportRuntimeErrors(at('2026-10-03T12:22:47.950Z'));
+    assert.deepEqual([first.outcome, first.http_status], ['delivered', 200]);
+    assert.equal(intake.requests[0].body.observed_at, '2026-10-03T12:22:47.950Z');
+    // 署名の時刻は秒のまま。`observed_at`との差は1秒に満たない。
+    assert.match(intake.requests[0].headers.authorization, / ts=1791030167, /);
+
+    // 解決を打った直後も同じ。
+    const fingerprint = intake.requests[0].body.runtime_errors[0].fingerprint;
+    setRuntimeErrorStatus(fingerprint, 'resolved', at('2026-10-03T12:22:48.921Z'));
+    const second = await reportRuntimeErrors(at('2026-10-03T12:22:48.990Z'));
+    assert.deepEqual([second.outcome, second.sent], ['delivered', { runtime_errors: 0, resolutions: 1 }]);
+    assert.equal(intake.requests[1].body.observed_at, '2026-10-03T12:22:48.990Z');
+
+    // 端末の時計が少し戻った時: 記録の時刻のほうが後なら、`observed_at`をその時刻まで進める。
+    fail(at('2026-10-03T12:23:10.500Z'), 'run.list', 'ENOENT');
+    const third = await reportRuntimeErrors(at('2026-10-03T12:23:09.000Z'));
+    assert.equal(third.outcome, 'delivered');
+    assert.equal(intake.requests[2].body.observed_at, '2026-10-03T12:23:10.500Z');
+    assert.equal(runtimeErrorsDiagnostics(workspace.options).pending_count, 0);
+  } finally {
+    await intake.close();
+    await rm(workspace.root, { recursive: true, force: true });
+  }
+});
+
+nodeTest('reporting verify: 空の報告を1通送って経路を確かめ、記録と受領の印には触れない', async () => {
+  const answers = [signedReceipt, () => ({ status: 429, body: { error: 'rate_limited' } }),
+    (entry) => ({ ...signedReceipt(entry), body: { ...signedReceipt(entry).body, sig: 'f'.repeat(64) } })];
+  const intake = await startIntake((entry, count) => answers[count - 1](entry));
+  const workspace = await makeWorkspace(intake.url);
+  const disabled = await makeWorkspace(intake.url, { enabled: false });
+  const noCredential = await makeWorkspace(intake.url, { credential: false });
+  try {
+    // 送信を有効にしていない端末と、合鍵の無い端末は、確かめる時もnetworkへ触れない。
+    assert.equal((await verifyRuntimeErrorReporting(disabled.options)).outcome, 'disabled');
+    assert.equal((await verifyRuntimeErrorReporting(noCredential.options)).outcome, 'credential_missing');
+    assert.equal((await verifyRuntimeErrorReporting({ ...workspace.options, platform: 'freebsd' })).outcome, 'unsupported');
+    assert.equal(intake.requests.length, 0);
+
+    // 未受領の記録があっても、載せるのは空の配列だけ。
+    fail(workspace.options, 'run.list', 'ENOENT');
+    const before = [runtimeErrorsDiagnostics(workspace.options), runtimeErrorReportingStatus(workspace.options)];
+    const now = '2026-10-03T12:30:00.250Z';
+    const verified = await verifyRuntimeErrorReporting({ ...workspace.options, now });
+    assert.deepEqual([verified.outcome, verified.http_status, verified.sent], ['verified', 200, { runtime_errors: 0, resolutions: 0 }]);
+    const [request] = intake.requests;
+    assert.deepEqual([request.body.runtime_errors, request.body.resolutions, request.body.observed_at], [[], [], now]);
+    assert.deepEqual(Object.keys(request.body), ['schema_version', 'report_id', 'product_id', 'installed_version',
+      'observed_at', 'runtime_errors', 'resolutions']);
+    const ts = String(Math.floor(Date.parse(now) / 1000));
+    assert.equal(request.headers.authorization,
+      `BugHub-HMAC-SHA256 key_id=${KEY_ID}, ts=${ts}, sig=${signReport(SECRET, ts, request.bytes)}`);
+    assert.equal(JSON.stringify(verified).includes(KEY_ID), false);
+    // 記録・受領の印・送る時機の記録は、確かめる前と同じ。
+    assert.deepEqual([runtimeErrorsDiagnostics(workspace.options), runtimeErrorReportingStatus(workspace.options)], before);
+    assert.equal(before[0].pending_count, 1);
+
+    // 受け口が断った時と、受領の署名が合わない時は、確かめられたとは答えない。
+    const limited = await verifyRuntimeErrorReporting(workspace.options);
+    assert.deepEqual([limited.outcome, limited.reason, limited.http_status], ['rejected', 'rate_limited', 429]);
+    const forged = await verifyRuntimeErrorReporting(workspace.options);
+    assert.deepEqual([forged.outcome, forged.reason], ['unconfirmed', 'receipt_not_verified']);
+  } finally {
+    await intake.close();
+    for (const item of [workspace, disabled, noCredential]) await rm(item.root, { recursive: true, force: true });
   }
 });
 
@@ -360,13 +446,30 @@ nodeTest('CLI: 送信を有効にした端末では、故障を記録した直�
     assert.deepEqual(intake.requests[0].body.runtime_errors[0].safe_context,
       { command_kind: 'todo.status', error_kind: 'Error', cause_code: 'ENOTDIR' });
 
-    // 手で打つ送信: 送るものが無ければ通信せずexit 0。無効に戻せば送らない。
+    // 手で打つ送信: 送るものが無ければ通信せずexit 0。
     const manual = cli(['runtime-errors', 'report', '--json']);
     assert.deepEqual([manual.status, json(manual).outcome], [0, 'nothing_pending']);
+    assert.equal(intake.requests.length, 1);
+
+    // 経路の確認: 空の報告を1通送り、受領まで確かめられればexit 0。
+    // このprocessが受け口を兼ねるので、応答を返せるよう、待ち合わせる形でCLIを起こす。
+    const verify = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [cliPath, 'runtime-errors', 'reporting', 'verify', '--json'], { cwd: root, env });
+      let stdout = '';
+      child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+      child.once('error', reject).once('close', (status) => resolve({ status, stdout }));
+    });
+    assert.deepEqual([verify.status, json(verify).outcome], [0, 'verified']);
+    assert.equal(intake.requests.length, 2);
+    assert.deepEqual([intake.requests[1].body.runtime_errors, intake.requests[1].body.resolutions], [[], []]);
+
+    // 無効に戻せば、送信も確認もnetworkへ触れない。
     assert.equal(json(cli(['runtime-errors', 'reporting', 'disable', '--json'])).reporting, 'disabled');
     const off = cli(['runtime-errors', 'report', '--json']);
     assert.deepEqual([off.status, json(off).outcome], [1, 'disabled']);
-    assert.equal(intake.requests.length, 1);
+    const verifyOff = cli(['runtime-errors', 'reporting', 'verify', '--json']);
+    assert.deepEqual([verifyOff.status, json(verifyOff).outcome], [1, 'disabled']);
+    assert.equal(intake.requests.length, 2);
   } finally {
     await intake.close();
     await rm(root, { recursive: true, force: true });
