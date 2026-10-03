@@ -1,3 +1,4 @@
+import { cliCommandKind } from './cli-command-kind.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
 import {
@@ -3755,12 +3756,22 @@ async function repairStoreEol({ repoRoot }) {
  * `lattice todo` namespace. Exact position, order, and argument count are part of
  * the public contract; usage failures never use a JSON envelope.
  */
-export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env }) {
+export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
+  onInternalFailure = null }) {
   if (!Array.isArray(argv) || typeof cwd !== 'string'
     || typeof stdout?.write !== 'function' || typeof stderr?.write !== 'function'
-    || env === null || typeof env !== 'object' || Array.isArray(env)) {
+    || env === null || typeof env !== 'object' || Array.isArray(env)
+    || (onInternalFailure !== null && typeof onInternalFailure !== 'function')) {
     throw new TypeError('runTodoCli optionsが不正');
   }
+  // typed契約の外へ漏れた例外は、binが渡す観測口へも知らせる（opt-inのruntime error記録）。
+  // 観測口を持つのはprocess境界のbinだけ——このmoduleを直接呼ぶ試験や埋め込みは記録しない。
+  const failInternally = (error) => {
+    try {
+      onInternalFailure?.(error, cliCommandKind(['todo', ...argv], { todo: TODO_COMMAND_NAMES }));
+    } catch { /* 観測の失敗でCLIの応答を変えない */ }
+    return internalFailure(stderr, error);
+  };
 
   const atomicCommit = argv.at(-1) === '--commit-store';
   if (atomicCommit) argv = argv.slice(0, -1);
@@ -3777,7 +3788,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env 
       await runTodoSchemaCommand(argv[0], stdout);
       return 0;
     } catch (error) {
-      return internalFailure(stderr, error);
+      return failInternally(error);
     }
   }
 
@@ -3799,7 +3810,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env 
     } catch (error) {
       if (typeof error?.code === 'string' && error.detail !== null
         && typeof error.detail === 'object') return typedFailure(stderr, error);
-      return internalFailure(stderr, error);
+      return failInternally(error);
     }
   }
 
@@ -4248,6 +4259,6 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env 
         message: error.message,
       });
     }
-    return internalFailure(stderr, error);
+    return failInternally(error);
   }
 }

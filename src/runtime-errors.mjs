@@ -37,6 +37,15 @@ const definitions = Object.freeze({
   'LATTICE.MCP_SERVER_FAILED': { component: 'mcp', severity: 'high', template: 'Lattice MCP server failed' },
 });
 
+// safe_context（工場wireの任意欄）。固定語彙だけを載せ、message本文・path・引数の値・stackは載せない。
+// 3つのキーは必ずそろえる——fingerprintがこの3つを含むので、欠けると記録を一意に決められない。
+const SAFE_CONTEXT_KEYS = Object.freeze(['command_kind', 'error_kind', 'cause_code']);
+const ERROR_KINDS = new Set(['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'AggregateError', 'SystemError']);
+const COMMAND_KIND = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)?$/;
+const COMMAND_KIND_MAX = 48;
+// Nodeが付けるerror code（ENOENT・ERR_MODULE_NOT_FOUND等）だけを通す。Lattice自身のcodeや任意文字列は`none`。
+const CAUSE_CODE = /^(?:E[A-Z0-9]{2,15}|ERR_[A-Z0-9_]{1,60})$/;
+
 const plain = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const validTime = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
@@ -86,9 +95,35 @@ export function runtimeCollectionEnabled(env = process.env, configPath) {
   return collectionEnabled({ env, configPath });
 }
 
-function fingerprintOf(code) {
+const validCommandKind = (value) => typeof value === 'string' && value.length <= COMMAND_KIND_MAX && COMMAND_KIND.test(value);
+const validErrorKind = (value) => value === 'other' || ERROR_KINDS.has(value);
+const validCauseCode = (value) => value === 'none' || (typeof value === 'string' && CAUSE_CODE.test(value));
+const validSafeContext = (value) => plain(value) && exact(value, SAFE_CONTEXT_KEYS)
+  && validCommandKind(value.command_kind) && validErrorKind(value.error_kind) && validCauseCode(value.cause_code);
+
+/**
+ * 落ちた面と例外から、記録へ載せる固定語彙の分類を作る。語彙に無い値は`other`／`none`へ落とす
+ * ——呼び出し側が何を渡しても、利用者の入力やpathが記録へ入らない。
+ */
+export function runtimeErrorSafeContext({ commandKind, error } = {}) {
+  const errorKind = error?.constructor?.name;
+  return {
+    command_kind: validCommandKind(commandKind) ? commandKind : 'other',
+    error_kind: ERROR_KINDS.has(errorKind) ? errorKind : 'other',
+    cause_code: typeof error?.code === 'string' && CAUSE_CODE.test(error.code) ? error.code : 'none',
+  };
+}
+
+/**
+ * 旧記録（safe_context無し）はerror_codeだけで決まる式のまま。新しい記録は3つの分類も含める
+ * ——原因が違えば別の記録になる。式はdotagentsのadapterが再計算して照合する契約で、
+ * 連結順・NUL区切り・末尾区切り無しを変えない。
+ */
+function fingerprintOf(code, safeContext = null) {
   const definition = definitions[code];
-  return createHash('sha256').update(`${PRODUCT}\0${definition.component}\0${code}\0${definition.template}`).digest('hex');
+  const parts = [PRODUCT, definition.component, code, definition.template];
+  if (safeContext !== null) parts.push(...SAFE_CONTEXT_KEYS.map((key) => safeContext[key]));
+  return createHash('sha256').update(parts.join('\0')).digest('hex');
 }
 
 function assertPosix(info, mode) {
@@ -109,6 +144,8 @@ function ensureSafeFile(path) {
   assertPosix(statSync(path), 0o600);
 }
 
+const RECORD_KEYS = Object.freeze(['product', 'product_version', 'component', 'error_code', 'message_template', 'severity', 'fingerprint', 'count', 'first_seen', 'last_seen', 'state_schema_version', 'os', 'arch', 'status', 'resolved_at', 'reason_code', 'sequence']);
+
 const empty = () => ({ schema: RUNTIME_ERRORS_SCHEMA, next_sequence: 1, acknowledged_through: 0, records: [] });
 
 function validate(store) {
@@ -119,11 +156,13 @@ function validate(store) {
   const seen = new Set();
   let previous = 0;
   for (const record of store.records) {
-    if (!plain(record) || !exact(record, ['product', 'product_version', 'component', 'error_code', 'message_template', 'severity', 'fingerprint', 'count', 'first_seen', 'last_seen', 'state_schema_version', 'os', 'arch', 'status', 'resolved_at', 'reason_code', 'sequence'])) throw Error('state_invalid');
+    if (!plain(record) || (!exact(record, RECORD_KEYS) && !exact(record, [...RECORD_KEYS, 'safe_context']))) throw Error('state_invalid');
+    const safeContext = Object.hasOwn(record, 'safe_context') ? record.safe_context : null;
+    if (safeContext !== null && !validSafeContext(safeContext)) throw Error('state_invalid');
     const definition = definitions[record.error_code];
     if (!definition || record.product !== PRODUCT || !validVersion(record.product_version)
       || record.component !== definition.component || record.message_template !== definition.template
-      || record.severity !== definition.severity || record.fingerprint !== fingerprintOf(record.error_code)
+      || record.severity !== definition.severity || record.fingerprint !== fingerprintOf(record.error_code, safeContext)
       || seen.has(record.fingerprint) || !Number.isSafeInteger(record.count) || record.count < 1
       || !validTime(record.first_seen) || !validTime(record.last_seen)
       || Date.parse(record.first_seen) > Date.parse(record.last_seen)
@@ -219,7 +258,7 @@ function snapshot(options = {}) {
     version: options.version ?? 'unknown',
     state_schema_version: STATE_VERSION,
     cursor: { high_watermark: store.next_sequence - 1, acknowledged_through: store.acknowledged_through, next: rows.at(-1)?.sequence ?? afterCursor },
-    runtime_errors: rows.filter((record) => record.status === 'open').map(({ product_version, error_code, component, status, severity, fingerprint, message_template, count, first_seen, last_seen, state_schema_version }) => ({ product_version, error_code, component, status, severity, fingerprint, message_template, occurrence_count: count, first_seen, last_seen, state_schema_version })),
+    runtime_errors: rows.filter((record) => record.status === 'open').map(({ product_version, error_code, component, status, severity, fingerprint, message_template, count, first_seen, last_seen, state_schema_version, safe_context }) => ({ product_version, error_code, component, status, severity, fingerprint, message_template, occurrence_count: count, first_seen, last_seen, state_schema_version, ...(safe_context === undefined ? {} : { safe_context }) })),
     resolutions: rows.filter((record) => record.status === 'resolved').map(({ fingerprint, resolved_at, reason_code }) => ({ fingerprint, resolved_at, reason_code })),
     diagnostics: {
       collection: enabled ? 'enabled' : 'disabled',
@@ -264,7 +303,10 @@ export function recordRuntimeError(code, options = {}) {
   const { path } = optionsFor(options);
   return lock(path, () => {
     const store = readStore(path);
-    const key = fingerprintOf(code);
+    // 新しい発生は必ず分類つきの記録へ入る。分類を渡さない呼び出しは`other`／`none`で埋める。
+    const safeContext = options.safeContext === undefined ? runtimeErrorSafeContext() : options.safeContext;
+    if (!validSafeContext(safeContext)) throw Error('invalid_safe_context');
+    const key = fingerprintOf(code, safeContext);
     const sequence = store.next_sequence++;
     const time = now(options);
     const version = options.version ?? '0.0.0';
@@ -289,6 +331,7 @@ export function recordRuntimeError(code, options = {}) {
         message_template: definition.template, severity: definition.severity, fingerprint: key,
         count: 1, first_seen: time, last_seen: time, state_schema_version: STATE_VERSION,
         os, arch, status: 'open', resolved_at: null, reason_code: null, sequence,
+        safe_context: { ...safeContext },
       });
     }
     store.records.sort((a, b) => a.sequence - b.sequence);

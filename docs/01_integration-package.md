@@ -225,6 +225,14 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
   reporting（BugHub送信）はdotagents adapter所有で本storeは外部送信しない（collection/reporting分離）。
   固定catalog 5 code・fingerprint集約・cursor/ack・resolved+ack済み30日compact・POSIX owner-only検査で
   fail closed。正典は`src/runtime-errors.mjs`
+  - 各記録は任意の`safe_context`を持つ: `command_kind`（落ちたCLIの面。`run.list`・`todo.start`等、
+    Latticeが持つ一覧の語だけ。無ければ`other`）、`error_kind`（例外の種類。一覧に無ければ`other`）、
+    `cause_code`（Nodeが付けるerror code。無ければ`none`）。付ける時は3つを必ずそろえる。
+    message本文・path・引数の値・stackは載せない。
+  - fingerprintは、`safe_context`を持つ記録では
+    `sha256(product \0 component \0 error_code \0 message_template \0 command_kind \0 error_kind \0 cause_code)`、
+    持たない旧記録では前の4要素だけ。dotagentsのadapterが同じ式で再計算して照合する。
+  - typed契約の外へ漏れた例外（`INTERNAL_FAILURE`）は、run系と`todo`の両方で`LATTICE.CLI_INTERNAL_FAILED`として記録する。
 
 ## 6. 編入の前提条件（残余リスク恒久化・回帰条件）
 
