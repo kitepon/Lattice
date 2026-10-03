@@ -92,8 +92,9 @@ export function productTestEnvironment(parentEnv = process.env) {
   // sensor init用WASM poolまで最大8本prewarmするとnested oversubscriptionになり、
   // Windowsで複数の子processが0xC0000005になった。sensor自身の並列契約は
   // 独立したtest:sensor gateが検証するため、このharness内だけsingle-workerにする。
+  // runnerは利用者の本物のHOMEで走る。送信を有効にした端末でも、試験がその設定を拾ってBugHubへ送らない。
   const env = { ...parentEnv, LATTICE_DASHBOARD_AUTOSTART: '0',
-    LATTICE_SENSOR_PARSE_WORKERS: '1' };
+    LATTICE_SENSOR_PARSE_WORKERS: '1', LATTICE_RUNTIME_ERROR_REPORTING: '0' };
   delete env.FORCE_COLOR;
   return env;
 }

@@ -196,6 +196,8 @@ Commands:
   resolve <fingerprint>
   reopen <fingerprint>
   compact
+  report                        未受領の記録をBugHubの受け口へ送る（送信を有効にした端末だけ）
+  reporting <status|enable|disable>
 `,
   bridge: `Usage: lattice bridge <command> [options] --json
 
@@ -312,6 +314,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'runtime-errors resolve': 'runtime-errors resolve <fingerprint> --json',
   'runtime-errors reopen': 'runtime-errors reopen <fingerprint> --json',
   'runtime-errors compact': 'runtime-errors compact --json',
+  'runtime-errors report': 'runtime-errors report --json',
+  'runtime-errors reporting': 'runtime-errors reporting <status|enable|disable> --json',
   'bridge setup': 'bridge setup --listen <IP> [--port <49152..65535|auto>] [--dashboard|--upstream <URL>] [--hub <URL>|none] [--allow-host <host>...] --json',
   'bridge reconfigure': 'bridge reconfigure [--listen <IP>] [--port <49152..65535|auto>] [--dashboard|--upstream <URL>] [--hub <URL>|none] [--allow-host <host>...] --json',
   'bridge status': 'bridge status --json',

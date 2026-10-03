@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.74.0 — 2026-10-03
+
+### runtime errorの送信をLattice自身が持つ（ADR 0193）
+
+- Latticeが、未受領のruntime error記録をBugHubの製品報告の受け口へ自分で送る。これまでは工場
+  （dotagents）のreportが運んでいた。
+- **既定では通信しない。** 送るのは、端末で `lattice runtime-errors reporting enable --json` を打ち、
+  BugHubの持ち主が合鍵のfile（`~/.config/bughub/product-credentials/lattice.json`）を置いた端末だけ。
+  どちらかが欠ければnetworkへ触れない。設定を変えていない端末の動きは今までと同じ。
+- 新しいcommand:
+  - `lattice runtime-errors reporting <status|enable|disable> --json`
+  - `lattice runtime-errors report --json`（未受領の分を今送る。受領まで済むか、送るものが無ければexit 0）
+- 秘密は通信に載せず、送るバイト列と時刻へのHMAC-SHA256署名だけを付ける。受領済みにするのは、
+  署名つきの200が返った時だけ。届いたか分からない時は未受領のまま残し、後から送り直す。
+- 送る時機: 故障を記録した直後と、以後のCLI実行（`hooks` を除く）の終わりに、切り離した子processで送る。
+  CLIの応答は待たせない。1分に1回まで、同じ中身の送り直しは1時間に1回まで。
+- 送信を有効にした端末では、工場の設定が無くても収集が有効になる。
+- `LATTICE_RUNTIME_ERROR_REPORTING=0` は、既定の置き場の送信設定を読まない（試験と自動化の口）。
+- Windowsは収集に対応しないので、送信も `unsupported` と答える。
+
 ## 0.73.0 — 2026-10-03
 
 ### runtime errorの収集: 対応しないOSは `unsupported` と答える

@@ -221,10 +221,27 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
   check 5本・overall failed→exit 1・read-only・秘密なし）。正典は`src/factory-diagnostics.mjs`
 - runtime error store: `lattice runtime-errors <snapshot|ack|diagnostics|resolve|reopen|compact> --json`
   （schema `lattice.runtime_errors.v1`。Caveat同型の工場契約）。**opt-in**＝工場共有config
-  `~/.config/dotagents/factory-reporter.json`の`collection.enabled`のみが収集を有効化し、
-  reporting（BugHub送信）はdotagents adapter所有で本storeは外部送信しない（collection/reporting分離）。
+  `~/.config/dotagents/factory-reporter.json`の`collection.enabled`か、Lattice自身の送信設定（下）の
+  どちらかが有効な時だけ収集する。storeそのものは外部送信しない。
   固定catalog 5 code・fingerprint集約・cursor/ack・resolved+ack済み30日compact・POSIX owner-only検査で
   fail closed。正典は`src/runtime-errors.mjs`
+- runtime errorの送信（ADR 0193）: `lattice runtime-errors report --json`と
+  `lattice runtime-errors reporting <status|enable|disable> --json`。Lattice自身が、未受領の記録を
+  BugHubの製品報告の受け口へ送る。正典は`src/runtime-error-reporting.mjs`
+  - **既定では通信しない。** `reporting enable`を打った端末（設定は
+    `${XDG_CONFIG_HOME:-~/.config}/lattice/runtime-error-reporting.json`）で、BugHubの持ち主が置いた合鍵のfile
+    （`~/.config/bughub/product-credentials/lattice.json`、本人所有・0600・symlinkでない）がある時だけ送る。
+    dotagentsの設定は読まない。宛先は合鍵のfileの`url`。
+  - 秘密は通信に載せない。`Authorization: BugHub-HMAC-SHA256 key_id=…, ts=…, sig=…`
+    （`sig = HMAC-SHA256(secret, ts + "\n" + SHA-256(送るバイト列))`）。
+  - 本文は`schema_version`・`report_id`・`product_id`・`installed_version`・`observed_at`・`runtime_errors`・
+    `resolutions`の7項目で、各記録は`snapshot`が出す項目のまま。端末名は入れない。
+  - 受領済み（storeのack）にするのは、200・`accepted: true`・`report_id`一致・応答の署名一致がそろった時だけ。
+    そろわなければ未受領のまま残し、後から新しい`report_id`でその時点の累計を送り直す。
+  - 送る時機: 故障を記録した直後と、以後のCLI実行（`hooks`を除く）の終わりに、切り離した子processで送る。
+    1分に1回まで、同じ中身の送り直しは1時間に1回まで。手で打つ`report`はこの制限を見ない。
+  - `LATTICE_RUNTIME_ERROR_REPORTING=0`は、既定の置き場の送信設定を読まない（試験と自動化の口）。
+  - Windowsは収集に対応しないので、送信も`unsupported`と答える。
   - `diagnostics.collection`は`enabled`・`disabled`・`unsupported`の3値。`unsupported`は「このOSでは収集に
     対応しない」という製品の答えで、Windowsが返す（storeの所有者と権限をPOSIXの形で確かめられない）。
     設定が有効でも記録は作らない。`status`・`cursor`・配列・`diagnostics`のキーは`disabled`の時と同じ形
