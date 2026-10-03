@@ -32,6 +32,16 @@ test('product test child envはFORCE_COLORを除去しdashboard autostartを無�
   });
 });
 
+test('product test child envは、端末の本物のhost設定を指す変数を渡さない', () => {
+  // これらが残ると、一時のHOMEを渡した試験のCLIが、利用者の本物のCodex・Claude・Grokの設定を書き換える。
+  const parentEnv = { PATH: '/fixture/bin', CODEX_HOME: '/real/.codex', CLAUDE_CONFIG_DIR: '/real/.claude',
+    GROK_HOME: '/real/.grok' };
+  const childEnv = productTestEnvironment(parentEnv);
+  for (const name of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GROK_HOME']) assert.equal(Object.hasOwn(childEnv, name), false, name);
+  assert.equal(childEnv.PATH, '/fixture/bin');
+  assert.equal(parentEnv.CODEX_HOME, '/real/.codex');
+});
+
 test('環境別profileはfocused再現用のsuiteだけを選びcoreの総当たりを複製しない', () => {
   const retired = 'control-compiler.test.mjs';
   const all = [

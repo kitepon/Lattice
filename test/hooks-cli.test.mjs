@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import nodeTest, { after, before } from 'node:test';
+import { HOST_CONFIG_ENV } from '../scripts/run-product-tests.mjs';
 import { resolveStableNodePath, runHooksCli } from '../src/hooks-cli.mjs';
 
 const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
@@ -79,8 +80,12 @@ after(async () => {
 
 function isolatedEnv({ home = suiteHome, stateHome = suiteState, configHome = suiteConfig,
   extraEnv = {} } = {}) {
+  // 端末の本物のhost設定の置き場を指す変数は渡さない。残っていると、CLIは下のHOMEでなくそちらを使い、
+  // 利用者の本物の設定を書き換える。
+  const inherited = { ...process.env };
+  for (const name of HOST_CONFIG_ENV) delete inherited[name];
   const env = {
-    ...process.env,
+    ...inherited,
     ...extraEnv,
     HOME: home,
     XDG_STATE_HOME: stateHome,
@@ -598,6 +603,38 @@ test('P4 F6: pending receipt回復はlock取得後にconfigを再読してcommit
 });
 
 // C3-1: host home dir不在はHOST_NOT_PRESENT exit 1で、dirを作らない。
+// 試験を起こした端末が`CODEX_HOME`等を持っていても、CLIへ渡すのは試験のHOMEだけである。
+// 2026-10-03: `CODEX_HOME`を持つ端末でこの試験を走らせ、共有の本物のCodex hooks.jsonを書き換えた。
+test('試験のCLIは、端末のCODEX_HOME・CLAUDE_CONFIG_DIR・GROK_HOMEが指す本物の設定へ触れない', async (t) => {
+  const decoy = await mkdtemp(path.join(tmpdir(), 'lattice-hooks-decoy-'));
+  t.after(() => rm(decoy, { recursive: true, force: true }));
+  const saved = Object.fromEntries(HOST_CONFIG_ENV.map((name) => [name, process.env[name]]));
+  t.after(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  // 本物の代わりのフォルダを指させる。中へ設定を置き、試験の後も1 byteも変わっていないことを見る。
+  const decoyHooks = path.join(decoy, 'hooks.json');
+  const decoySettings = path.join(decoy, 'settings.json');
+  await writeFile(decoyHooks, FOREIGN_CODEX_HOOKS, { mode: 0o600 });
+  await writeFile(decoySettings, '{}\n', { mode: 0o600 });
+  for (const name of HOST_CONFIG_ENV) process.env[name] = decoy;
+  const before = [await snapshotFile(decoyHooks), await snapshotFile(decoySettings)];
+
+  for (const host of ['codex', 'claude']) {
+    const fixture = await hooksFixture(t, host, { config: host === 'codex' ? FOREIGN_CODEX_HOOKS : '{}\n' });
+    assert.equal(runCli(['hooks', 'install', '--host', host], options(fixture)).status, 0, host);
+    assert.equal(handlers(await readJson(fixture.configPath))
+      .filter((item) => commandArgv(item.command).includes('hooks')).length, 1, host);
+    assert.equal(runCli(['hooks', 'uninstall', '--host', host], options(fixture)).status, 0, host);
+  }
+
+  assert.deepEqual([await snapshotFile(decoyHooks), await snapshotFile(decoySettings)], before);
+  assert.deepEqual((await readdir(decoy)).sort(), ['hooks.json', 'settings.json']);
+});
+
 test('P3 C3-1: host home dir不在は HOST_NOT_PRESENT exit 1、設定dirを作らずに終了する', async (t) => {
   for (const host of ['claude', 'codex', 'cursor']) {
     const fixture = await hooksFixture(t, host, { createHost: false });
