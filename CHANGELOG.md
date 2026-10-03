@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.72.0 — 2026-10-03
+
+### runtime error記録: 落ちた面と例外の分類（`safe_context`）
+
+- BugHubの `LATTICE.CLI_INTERNAL_FAILED`（mac-kite、26回）は、どのcommandで落ちたかが記録に無く、
+  原因を確定できないまま閉じた。新しい記録は固定語彙の分類 `safe_context` を持つ。
+  - `command_kind`: 落ちたCLIの面（`run.list`・`todo.start` 等、Latticeが持つ一覧の語だけ。無ければ `other`）。
+  - `error_kind`: 例外の種類（`Error`・`TypeError`・`RangeError`・`SyntaxError`・`ReferenceError`・
+    `AggregateError`・`SystemError`、それ以外は `other`）。
+  - `cause_code`: Nodeが付けるerror code（`ENOENT`・`ERR_MODULE_NOT_FOUND` 等。無ければ `none`）。
+  - 3つは必ずそろえる。message本文・path・引数の値・stackは載せない。
+- fingerprintは、分類つきの記録では
+  `sha256(product \0 component \0 error_code \0 message_template \0 command_kind \0 error_kind \0 cause_code)`。
+  原因が違えば別の記録（BugHubでは別のissue）になる。分類を持たない旧記録は前の式のまま残り、
+  新しい発生は旧記録へ加算されない。
+- `todo` のcommandがtyped契約の外で落ちた時（`INTERNAL_FAILURE`）も、run系と同じ
+  `LATTICE.CLI_INTERNAL_FAILED` として記録する。これまでは記録されなかった。
+- 受け側の前提: dotagents `898c6e1` 以降（`safe_context` を受け入れ、同じ式でfingerprintを照合する）と、
+  BugHubの lattice 許可キー（`command_kind`・`error_kind`・`cause_code`）。
+
 ## 0.71.2 — 2026-10-03
 
 ### 修正
