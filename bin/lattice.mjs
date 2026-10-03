@@ -177,6 +177,29 @@ if (help !== null) {
   }
 }
 
+await pendingObservation;
+await scheduleRuntimeErrorReport();
+
+/**
+ * 未受領のruntime error記録を、切り離した子processで送らせる（ADR 0193）。このCLIの応答は待たせない。
+ * 送信を有効にしていない端末では、設定fileの有無を1回見るだけで終わる。hookは打鍵ごとに走るので見ない。
+ */
+async function scheduleRuntimeErrorReport() {
+  if (help !== null || args[0] === '--version' || args[0] === 'hooks'
+    || (args[0] === 'runtime-errors' && args[1] === 'report')) return;
+  try {
+    const { runtimeErrorReportingEnabled } = await import('../src/runtime-errors.mjs');
+    if (!runtimeErrorReportingEnabled()) return;
+    const { runtimeErrorAutoReportDue } = await import('../src/runtime-error-reporting.mjs');
+    if (!runtimeErrorAutoReportDue()) return;
+    const { spawn } = await import('node:child_process');
+    const { tmpdir } = await import('node:os');
+    const { fileURLToPath } = await import('node:url');
+    spawn(process.execPath, [fileURLToPath(import.meta.url), 'runtime-errors', 'report', '--auto', '--json'],
+      { cwd: tmpdir(), detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch { /* 送信の予約に失敗しても、打たれたcommandの結果は変えない。 */ }
+}
+
 // typed契約の外へ漏れた例外を、opt-inのruntime error記録へ残す。どの面で・どの種類の例外で
 // 落ちたかを固定語彙の分類（safe_context）で添える——error_codeだけでは原因を追えなかった。
 function observeInternalFailure(error, commandKind) {
@@ -199,7 +222,7 @@ function workingDirectory() {
 async function runRuntimeErrorsCli(rest) {
   const runtimeErrors = await import('../src/runtime-errors.mjs');
   const usage = () => {
-    process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: 'USAGE', message: 'usage: lattice runtime-errors <snapshot [--after-cursor N] [--limit N]|ack <cursor>|diagnostics|resolve <fingerprint>|reopen <fingerprint>|compact> --json' })}\n`);
+    process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: 'USAGE', message: 'usage: lattice runtime-errors <snapshot [--after-cursor N] [--limit N]|ack <cursor>|diagnostics|resolve <fingerprint>|reopen <fingerprint>|compact|report|reporting <status|enable|disable>> --json' })}\n`);
     return 2;
   };
   const options = { version: packageJson.version };
@@ -228,6 +251,16 @@ async function runRuntimeErrorsCli(rest) {
       result = runtimeErrors.setRuntimeErrorStatus(words[1], words[0] === 'resolve' ? 'resolved' : 'open', options);
     } else if (words[0] === 'compact' && words.length === 1) {
       result = runtimeErrors.compactRuntimeErrors(options);
+    } else if (words[0] === 'reporting' && words.length === 2 && ['status', 'enable', 'disable'].includes(words[1])) {
+      const reporting = await import('../src/runtime-error-reporting.mjs');
+      result = words[1] === 'status' ? reporting.runtimeErrorReportingStatus(options)
+        : reporting.setRuntimeErrorReporting(words[1] === 'enable', options);
+    } else if (words[0] === 'report' && (words.length === 1 || (words.length === 2 && words[1] === '--auto'))) {
+      // 送れなかった時も結果は1行で返す。受領まで済んだ時と、送るものが無い時だけexit 0。
+      const reporting = await import('../src/runtime-error-reporting.mjs');
+      result = await reporting.reportRuntimeErrors({ ...options, auto: words.length === 2 });
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return ['delivered', 'nothing_pending'].includes(result.outcome) ? 0 : 1;
     } else {
       return usage();
     }

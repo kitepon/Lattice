@@ -33,6 +33,8 @@ const VALID_CONFIG = {
   reporting: { enabled: false },
 };
 
+const isolatedEnv = { ...process.env, LATTICE_RUNTIME_ERROR_REPORTING: '0' };
+
 async function makeWorkspace(config = VALID_CONFIG) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'lattice-rterr-'));
   const configPath = path.join(root, 'config', 'factory-reporter.json');
@@ -41,13 +43,15 @@ async function makeWorkspace(config = VALID_CONFIG) {
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify(config));
   }
-  return { root, configPath, storePath, options: { configPath, storePath, version: '0.1.0' } };
+  // Lattice自身の送信設定は、この端末の本物のfileでなく、存在しないfileを読ませる。
+  const reportingConfigPath = path.join(root, 'config', 'runtime-error-reporting.json');
+  return { root, configPath, storePath, options: { configPath, storePath, reportingConfigPath, version: '0.1.0' } };
 }
 
 test('config欠落・malformed・disabledでは収集せずstateへ一切触れない', async () => {
   const missing = await makeWorkspace(null);
   try {
-    assert.equal(runtimeCollectionEnabled(process.env, missing.configPath), false);
+    assert.equal(runtimeCollectionEnabled(isolatedEnv, missing.configPath), false);
     assert.deepEqual(recordRuntimeError('LATTICE.CLI_INTERNAL_FAILED', missing.options), { status: 'disabled' });
     const snapshot = runtimeErrorsSnapshot(0, 256, missing.options);
     assert.equal(snapshot.diagnostics.collection, 'disabled');
@@ -78,7 +82,7 @@ test('工場が名乗るhost profileはすべて収集を有効にし、未知�
   for (const profile of ['server', 'mac', 'linux', 'wsl', 'windows-native']) {
     const workspace = await makeWorkspace({ ...VALID_CONFIG, host: { id: 'test-host', profile } });
     try {
-      assert.equal(runtimeCollectionEnabled(process.env, workspace.configPath), true, profile);
+      assert.equal(runtimeCollectionEnabled(isolatedEnv, workspace.configPath), true, profile);
       assert.equal(runtimeErrorsDiagnostics(workspace.options).collection, 'enabled', profile);
     } finally {
       await rm(workspace.root, { recursive: true, force: true });
@@ -86,7 +90,7 @@ test('工場が名乗るhost profileはすべて収集を有効にし、未知�
   }
   const unknown = await makeWorkspace({ ...VALID_CONFIG, host: { id: 'test-host', profile: 'linux-native' } });
   try {
-    assert.equal(runtimeCollectionEnabled(process.env, unknown.configPath), false);
+    assert.equal(runtimeCollectionEnabled(isolatedEnv, unknown.configPath), false);
   } finally {
     await rm(unknown.root, { recursive: true, force: true });
   }

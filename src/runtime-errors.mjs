@@ -8,10 +8,10 @@ import { dirname, join } from 'node:path';
 /**
  * opt-in runtime error store（親plan L6要件。Caveat `caveat.runtime_errors.v1` と同型の工場契約）。
  *
- * - collection/reporting分離: 収集可否は工場共有config
- *   `${XDG_CONFIG_HOME:-~/.config}/dotagents/factory-reporter.json` の `collection.enabled` だけが決める。
- *   reporting設定はconfig validationの一部だが、本storeは外部送信を一切行わない（送信はdotagents adapter所有）。
- * - 既定OFF: config欠落・malformed・disabledでは state も network も触らない。
+ * - 収集の有効化: 工場共有config `${XDG_CONFIG_HOME:-~/.config}/dotagents/factory-reporter.json` の
+ *   `collection.enabled`、またはLattice自身の送信設定（`runtime-error-reporting.json`、ADR 0193）のどちらかが
+ *   有効な時だけ収集する。本storeは外部送信を行わない——送信は`runtime-error-reporting.mjs`が持つ。
+ * - 既定OFF: どちらの設定も無い・malformed・disabledでは state も network も触らない。
  * - privacy by design: 保存するのは固定catalogの `error_code` / `message_template` のみ。
  *   生message・path・引数を保存しない。
  * - retention: fingerprint集約（同一原因はcount/last_seen更新）＋ack済みresolvedの30日compact。
@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 
 const RUNTIME_ERRORS_SCHEMA = 'lattice.runtime_errors.v1';
 const DIAGNOSTICS_SCHEMA = 'lattice.runtime_error_diagnostics.v1';
+export const REPORTING_CONFIG_SCHEMA = 'lattice.runtime_error_reporting_config.v1';
 const PRODUCT = 'lattice';
 const STATE_VERSION = '1.0';
 const MAX_RECORDS = 256;
@@ -82,7 +83,41 @@ function canonicalReporting(value) {
 const collectionSupported = (options = {}) => (options.platform ?? hostPlatform()) !== 'win32';
 const inactiveCollection = (options = {}) => (collectionSupported(options) ? 'disabled' : 'unsupported');
 
+export function runtimeErrorCollectionSupported(options = {}) {
+  return collectionSupported(options);
+}
+
+export function runtimeErrorReportingConfigPath(env = process.env) {
+  const home = env.HOME || homedir();
+  return join(env.XDG_CONFIG_HOME || join(home, '.config'), 'lattice', 'runtime-error-reporting.json');
+}
+
+/**
+ * Lattice自身の送信設定（ADR 0193）。端末で`runtime-errors reporting enable`を打った時だけ有効になる。
+ * `LATTICE_RUNTIME_ERROR_REPORTING=0`は既定の置き場を読まない——試験と自動化が、その端末の本物の設定を
+ * 拾って送信しないための口。`options.reportingConfigPath`を明示した呼び出しはそのfileを読む。
+ */
+export function runtimeErrorReportingEnabled(options = {}) {
+  if (!collectionSupported(options)) return false;
+  const env = options.env ?? process.env;
+  if (options.reportingConfigPath === undefined && env.LATTICE_RUNTIME_ERROR_REPORTING === '0') return false;
+  try {
+    const path = options.reportingConfigPath ?? runtimeErrorReportingConfigPath(env);
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) return false;
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    return plain(config) && exact(config, ['schema', 'enabled'])
+      && config.schema === REPORTING_CONFIG_SCHEMA && config.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 function collectionEnabled(options = {}) {
+  return factoryCollectionEnabled(options) || runtimeErrorReportingEnabled(options);
+}
+
+function factoryCollectionEnabled(options = {}) {
   if (!collectionSupported(options)) return false;
   const env = options.env ?? process.env;
   try {
@@ -140,7 +175,7 @@ function assertPosix(info, mode) {
   if ((info.mode & 0o777) !== mode || (typeof process.getuid === 'function' && info.uid !== process.getuid())) throw Error('store_unsafe');
 }
 
-function ensureSafeDir(dir) {
+export function ensureSafeDir(dir) {
   if (hostPlatform() === 'win32') throw Error('store_unsafe');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stats = lstatSync(dir);
@@ -148,7 +183,7 @@ function ensureSafeDir(dir) {
   assertPosix(stats, 0o700);
 }
 
-function ensureSafeFile(path) {
+export function ensureSafeFile(path) {
   const stats = lstatSync(path);
   if (!stats.isFile() || stats.isSymbolicLink()) throw Error('store_unsafe');
   assertPosix(statSync(path), 0o600);

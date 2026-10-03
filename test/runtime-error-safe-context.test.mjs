@@ -35,7 +35,8 @@ async function makeWorkspace() {
   const storePath = path.join(root, 'state', 'runtime-errors.json');
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, JSON.stringify(VALID_CONFIG));
-  return { root, storePath, options: { configPath, storePath, version: '0.72.0' } };
+  const reportingConfigPath = path.join(root, 'config', 'runtime-error-reporting.json');
+  return { root, storePath, options: { configPath, storePath, reportingConfigPath, version: '0.72.0' } };
 }
 
 test('分類は固定語彙だけを通し、語彙に無い値はother／noneへ落とす', () => {
