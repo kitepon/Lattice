@@ -89,7 +89,10 @@ describe('an unchanged file over the size limit is not reported as drifted (#191
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-oversize-drift-'));
     fs.writeFileSync(path.join(dir, 'app.ts'), 'export function alpha() { return 1; }\n');
     // 1.4 MB of ordinary text: over the index limit, under the viewer's 8 MB read cap.
-    const line = 'const x = 1;\n';
+    // Comment lines, not statements: Windows Defender parses a freshly written .js
+    // on first open, and 100k `const x = 1;` statements cost it 37-42 s on the idle
+    // factory runner (over 90 s under CI load); the same bytes as comments cost 24 ms.
+    const line = '// filler line\n';
     fs.writeFileSync(path.join(dir, 'big.js'), line.repeat(Math.ceil((1.4 * 1024 * 1024) / line.length)));
     const cg = await LatticeSensor.init(dir, { index: true });
     try {
@@ -113,8 +116,5 @@ describe('an unchanged file over the size limit is not reported as drifted (#191
     } finally {
       cg.close();
     }
-    // The Windows factory runner's first read of this freshly written 1.4 MB .js
-    // takes ~34 s (measured 2026-09-30: statSync 0 ms, first readFileSync 34,152 ms,
-    // a second read 1 ms — scan-on-first-open, not this code). Room for that.
-  }, 90_000);
+  });
 });
