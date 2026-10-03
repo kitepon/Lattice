@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.71.2 — 2026-10-03
+
+### 修正
+
+- `todo dashboard ensure` が、登録簿のlock待ち切れ（`DASHBOARD_REGISTRY_BUSY`）やdaemonの無応答
+  （`DASHBOARD_DAEMON_UNRESPONSIVE`）などを `INTERNAL_FAILURE` とstackの抜粋で返していた。
+  登録簿とdaemonの故障はcodeと `detail`（`reason`・`next_action`）を持つtyped errorとして返す。
+  再実行で解ける種類は `next_action` に `lattice todo dashboard ensure --json` を示す。
+- 登録簿のJSONが壊れている時のmessageから、localの絶対pathを外した。
+
 ## 0.71.1 — 2026-10-03
 
 ### 修正
