@@ -223,8 +223,14 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
   （schema `lattice.runtime_errors.v1`。Caveat同型の工場契約）。**opt-in**＝工場共有config
   `~/.config/dotagents/factory-reporter.json`の`collection.enabled`か、Lattice自身の送信設定（下）の
   どちらかが有効な時だけ収集する。storeそのものは外部送信しない。
-  固定catalog 5 code・fingerprint集約・cursor/ack・resolved+ack済み30日compact・POSIX owner-only検査で
+  固定catalog 5 code・fingerprint集約・cursor/ack・resolved+ack済み30日compact・owner-only検査で
   fail closed。正典は`src/runtime-errors.mjs`
+  - owner-only検査: storeは本人だけが触れる形でしか使わない。確かめられなければ`store_unsafe`で止める。
+    POSIXはフォルダ0700・file 0600・所有者が本人。Windows（ADR 0194）は、DACLが本人・SYSTEM・Administratorsへの
+    許可だけで出来ていること（`icacls /save`のSDDLで読む。正典は`src/windows-owner-only.mjs`）。
+  - 置き場: `${XDG_STATE_HOME:-~/.local/state}/lattice/runtime-errors.json`。Windowsは
+    `%LOCALAPPDATA%\Lattice\runtime-errors\runtime-errors.json`で、このフォルダは継承を切って本人・SYSTEM・
+    Administratorsだけに絞る。他のaccountが触れる形で中身があるフォルダは、絞らずに止める。
 - runtime errorの送信（ADR 0193）: `lattice runtime-errors report --json`と
   `lattice runtime-errors reporting <status|enable|disable> --json`。Lattice自身が、未受領の記録を
   BugHubの製品報告の受け口へ送る。正典は`src/runtime-error-reporting.mjs`
@@ -232,6 +238,10 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
     `${XDG_CONFIG_HOME:-~/.config}/lattice/runtime-error-reporting.json`）で、BugHubの持ち主が置いた合鍵のfile
     （`~/.config/bughub/product-credentials/lattice.json`、本人所有・0600・symlinkでない）がある時だけ送る。
     dotagentsの設定は読まない。宛先は合鍵のfileの`url`。
+  - Windowsの置き場は、設定が`%LOCALAPPDATA%\Lattice\runtime-error-reporting.json`、合鍵が
+    `%LOCALAPPDATA%\bughub\product-credentials\lattice.json`（symlinkでなく、DACLが本人・SYSTEM・
+    Administratorsだけ。他のaccountが読めれば`credential_unsafe`・理由`acl_not_owner_only`）。
+    Windowsで収集を有効にするのはこの送信設定で、dotagentsがWindowsで使う設定の置き場は読まない。
   - 秘密は通信に載せない。`Authorization: BugHub-HMAC-SHA256 key_id=…, ts=…, sig=…`
     （`sig = HMAC-SHA256(secret, ts + "\n" + SHA-256(送るバイト列))`）。
   - 本文は`schema_version`・`report_id`・`product_id`・`installed_version`・`observed_at`・`runtime_errors`・
@@ -241,11 +251,10 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
   - 送る時機: 故障を記録した直後と、以後のCLI実行（`hooks`を除く）の終わりに、切り離した子processで送る。
     1分に1回まで、同じ中身の送り直しは1時間に1回まで。手で打つ`report`はこの制限を見ない。
   - `LATTICE_RUNTIME_ERROR_REPORTING=0`は、既定の置き場の送信設定を読まない（試験と自動化の口）。
-  - Windowsは収集に対応しないので、送信も`unsupported`と答える。
   - `diagnostics.collection`は`enabled`・`disabled`・`unsupported`の3値。`unsupported`は「このOSでは収集に
-    対応しない」という製品の答えで、Windowsが返す（storeの所有者と権限をPOSIXの形で確かめられない）。
-    設定が有効でも記録は作らない。`status`・`cursor`・配列・`diagnostics`のキーは`disabled`の時と同じ形
-    （`not_applicable`・すべて0・空）。受け側の前提はdotagents `49709de`以降。
+    対応しない」という製品の答えで、storeを本人だけに絞る方法を持たないOS（macOS・Linux・Windows以外）が返す。
+    送信も`unsupported`と答える。設定が有効でも記録は作らない。`status`・`cursor`・配列・`diagnostics`の
+    キーは`disabled`の時と同じ形（`not_applicable`・すべて0・空）。受け側の前提はdotagents `49709de`以降。
   - 各記録は任意の`safe_context`を持つ: `command_kind`（落ちたCLIの面。`run.list`・`todo.start`等、
     Latticeが持つ一覧の語だけ。無ければ`other`）、`error_kind`（例外の種類。一覧に無ければ`other`）、
     `cause_code`（Nodeが付けるerror code。無ければ`none`）。付ける時は3つを必ずそろえる。

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.75.0 — 2026-10-03
+
+### runtime errorの収集と送信がWindowsで動く（ADR 0194）
+
+- Windowsでは、Latticeの故障を1件も記録できなかった（0.73.0からは `collection: "unsupported"` と答えていた）。
+  storeを本人だけが触れる形で置けると確かめる方法が無かったためである。Windowsでも記録し、送れるようにした。
+- 確かめ方: `icacls` でDACLを読み、本人・SYSTEM・Administratorsへの許可だけで出来ている時だけ使う。
+  それ以外は、POSIXと同じく `store_unsafe` で止める。
+- 置き場（Windows）:
+  - store: `%LOCALAPPDATA%\Lattice\runtime-errors\`。このフォルダは継承を切って本人・SYSTEM・Administrators
+    だけに絞る。他のaccountが触れる形で中身があるフォルダは、絞らずに止める。
+  - 送信の設定: `%LOCALAPPDATA%\Lattice\runtime-error-reporting.json`
+  - 合鍵: `%LOCALAPPDATA%\bughub\product-credentials\lattice.json`。他のaccountが読める形なら
+    `credential_unsafe`（理由 `acl_not_owner_only`）で、送らない。
+- Windowsで収集を有効にするのは `lattice runtime-errors reporting enable --json` である。有効にするまでは
+  `collection: "disabled"` を返す。`unsupported` は、macOS・Linux・Windows以外のOSの答えとして残る。
+- macOS・Linuxの動きは変わらない。
+- 所有者は確かめない（`icacls` は所有者を返さない）。理由と範囲はADR 0194に書いた。
+
 ## 0.74.0 — 2026-10-03
 
 ### runtime errorの送信をLattice自身が持つ（ADR 0193）

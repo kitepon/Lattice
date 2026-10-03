@@ -1,6 +1,7 @@
 # ADR 0193: runtime errorの送信をLattice自身が持つ
 
-- Status: accepted
+- Status: accepted（Decision 9 と、Consequences の「Windowsの端末からは送れない」は
+  [ADR 0194](0194-runtime-error-store-on-windows.md) が置き換える）
 - Date: 2026-10-03
 - Supersedes: runtime error storeの「reporting（BugHub送信）はdotagents adapter所有」
   （`docs/01_integration-package.md` 5.5、`src/runtime-errors.mjs`冒頭）

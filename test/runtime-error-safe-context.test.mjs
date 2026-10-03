@@ -9,13 +9,13 @@ import { fileURLToPath } from 'node:url';
 
 import { cliCommandKind } from '../src/cli-command-kind.mjs';
 import {
+  ensureSafeDir,
   recordRuntimeError,
   runtimeErrorSafeContext,
   runtimeErrorsSnapshot,
 } from '../src/runtime-errors.mjs';
 
-// runtime error storeはPOSIX専用（Windows nativeはstore_unsafeでfail closed）。
-const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
+const test = nodeTest;
 
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'lattice.mjs');
 const VALID_CONFIG = {
@@ -121,7 +121,8 @@ test('旧記録（分類無し）は旧い式のまま読み書きでき、新�
   const workspace = await makeWorkspace();
   try {
     const legacyFingerprint = sha256(CLI_PARTS);
-    await mkdir(path.dirname(workspace.storePath), { recursive: true, mode: 0o700 });
+    // 旧い版が作ったstoreを手で置く。フォルダは製品と同じ形（本人だけ）で作る。
+    ensureSafeDir(path.dirname(workspace.storePath));
     await writeFile(workspace.storePath, `${JSON.stringify({
       schema: 'lattice.runtime_errors.v1', next_sequence: 2, acknowledged_through: 0,
       records: [{
@@ -154,7 +155,12 @@ test('旧記録（分類無し）は旧い式のまま読み書きでき、新�
   }
 });
 
-test('CLIがtyped契約の外で落ちると、面と例外の分類つきで記録する', async () => {
+// Windowsでは、下の入力は契約内のerror（STORE_INCONSISTENT）で返る——`.lattice`がfileの時、`lstat`が
+// ENOTDIRでなくENOENTを返す。Windowsで契約の外へ落とせる入力は今は無いので、この1件はPOSIXで確かめる。
+// 記録と置き場のWindowsの実機での確認は`runtime-errors-platform.test.mjs`が持つ。
+const posixTest = process.platform === 'win32' ? nodeTest.skip : nodeTest;
+
+posixTest('CLIがtyped契約の外で落ちると、面と例外の分類つきで記録する', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'lattice-rterr-context-cli-'));
   try {
     const configDir = path.join(root, 'xdg-config', 'dotagents');
