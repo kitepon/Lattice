@@ -268,6 +268,13 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
     `sha256(product \0 component \0 error_code \0 message_template \0 command_kind \0 error_kind \0 cause_code)`、
     持たない旧記録では前の4要素だけ。dotagentsのadapterが同じ式で再計算して照合する。
   - typed契約の外へ漏れた例外（`INTERNAL_FAILURE`）は、run系と`todo`の両方で`LATTICE.CLI_INTERNAL_FAILED`として記録する。
+  - 通信の失敗の扱い（[ADR 0196](adr/0196-communication-failure-classification.md)）:
+    - 処理している通信の失敗（hubへの配達、BugHubへの送信、heartbeat、health確認）と取消は、記録しない。
+      結果はそれぞれのreceipt・`unconfirmed`・状態の値として返す。
+    - typed契約の外へ漏れた通信の失敗は、内部故障と分けて`LATTICE.CLI_TRANSPORT_UNHANDLED`として記録する。
+      製品が通信の失敗を型つきで返せなかった、という対処不良の記録で、回線の修理を求めるものではない。
+    - その`severity`は落ちた面で決まる。何も書き換えないと確かめた面（`run.list`・`todo.status`・`todo.verify`）は
+      `warn`、ほかは`high`。ほかのerror codeは`high`。
 
 ## 6. 編入の前提条件（残余リスク恒久化・回帰条件）
 

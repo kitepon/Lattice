@@ -1,4 +1,5 @@
 import { cliCommandKind } from './cli-command-kind.mjs';
+import { cliFailureClass } from './cli-failure-class.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
 import {
@@ -4253,7 +4254,8 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'
       && error.detail !== null && typeof error.detail === 'object')) return typedFailure(stderr, error);
-    if (error instanceof TypeError) {
+    // 漏れた`fetch failed`もTypeErrorで届く。呼び出し側の契約違反と答えず、内部故障として観測口へ渡す。
+    if (error instanceof TypeError && cliFailureClass(error) !== 'transport') {
       return typedFailure(stderr, {
         code: 'CONTRACT_VIOLATION',
         message: error.message,
