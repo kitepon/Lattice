@@ -5,6 +5,8 @@ import {
 import { homedir, platform as hostPlatform, arch as hostArch } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { READ_ONLY_COMMAND_KINDS } from './cli-command-kind.mjs';
+import { cliFailureClass, failureCauseChain } from './cli-failure-class.mjs';
 import {
   daclIsOwnerOnly, daclIsProtected, isAclScratchName, readWindowsDacl, restrictWindowsDirToOwner, windowsSelfSid,
 } from './windows-owner-only.mjs';
@@ -40,6 +42,9 @@ const definitions = Object.freeze({
   'LATTICE.RUN_STORE_IO_FAILED': { component: 'run_store', severity: 'high', template: 'Lattice run store IO failed' },
   'LATTICE.EVENT_CHAIN_INTEGRITY_FAILED': { component: 'event_store', severity: 'high', template: 'Lattice run event chain integrity check failed' },
   'LATTICE.CLI_INTERNAL_FAILED': { component: 'cli', severity: 'high', template: 'Lattice CLI crashed outside the typed error contract' },
+  // 通信の失敗が型つき契約の外へ漏れた記録（ADR 0196）。直すのは回線ではなく、その面の通信失敗の受け方。
+  // 重大度は下の`severityOf`が、落ちた面で失うものがあるかで決める。
+  'LATTICE.CLI_TRANSPORT_UNHANDLED': { component: 'cli', severity: 'high', template: 'Lattice CLI let a communication failure escape the typed error contract' },
   'LATTICE.MCP_SERVER_FAILED': { component: 'mcp', severity: 'high', template: 'Lattice MCP server failed' },
 });
 
@@ -169,11 +174,26 @@ const validSafeContext = (value) => plain(value) && exact(value, SAFE_CONTEXT_KE
  */
 export function runtimeErrorSafeContext({ commandKind, error } = {}) {
   const errorKind = error?.constructor?.name;
+  // `fetch failed`のように、codeを`cause`の側に持つ例外がある。連なりの中で最初に語彙へ合うcodeを載せる。
+  const causeCode = failureCauseChain(error).map((entry) => entry.code)
+    .find((code) => typeof code === 'string' && CAUSE_CODE.test(code));
   return {
     command_kind: validCommandKind(commandKind) ? commandKind : 'other',
     error_kind: ERROR_KINDS.has(errorKind) ? errorKind : 'other',
-    cause_code: typeof error?.code === 'string' && CAUSE_CODE.test(error.code) ? error.code : 'none',
+    cause_code: causeCode ?? 'none',
   };
+}
+
+/**
+ * 記録の重大度。error_codeだけでは決めない記録がある（ADR 0196）: 通信の失敗が漏れた記録は、落ちた面が
+ * 何も書き換えないと確かめてある時だけ`warn`——その1回が止まっただけで、失うものが無く、打ち直せば戻る。
+ * 書き換える面と、確かめていない面は`high`のまま（結果が分からず、不整合や重複を否定できない）。
+ * 分類と面から決まる値なので、同じfingerprintの記録は必ず同じ重大度になる。
+ */
+function severityOf(code, safeContext = null) {
+  if (code === 'LATTICE.CLI_TRANSPORT_UNHANDLED' && safeContext !== null
+    && READ_ONLY_COMMAND_KINDS.has(safeContext.command_kind)) return 'warn';
+  return definitions[code].severity;
 }
 
 /**
@@ -269,7 +289,7 @@ function validate(store) {
     const definition = definitions[record.error_code];
     if (!definition || record.product !== PRODUCT || !validVersion(record.product_version)
       || record.component !== definition.component || record.message_template !== definition.template
-      || record.severity !== definition.severity || record.fingerprint !== fingerprintOf(record.error_code, safeContext)
+      || record.severity !== severityOf(record.error_code, safeContext) || record.fingerprint !== fingerprintOf(record.error_code, safeContext)
       || seen.has(record.fingerprint) || !Number.isSafeInteger(record.count) || record.count < 1
       || !validTime(record.first_seen) || !validTime(record.last_seen)
       || Date.parse(record.first_seen) > Date.parse(record.last_seen)
@@ -442,7 +462,7 @@ export function recordRuntimeError(code, options = {}) {
       if (store.records.length >= MAX_RECORDS) throw Error('store_overflow');
       store.records.push({
         product: PRODUCT, product_version: version, component: definition.component, error_code: code,
-        message_template: definition.template, severity: definition.severity, fingerprint: key,
+        message_template: definition.template, severity: severityOf(code, safeContext), fingerprint: key,
         count: 1, first_seen: time, last_seen: time, state_schema_version: STATE_VERSION,
         os, arch, status: 'open', resolved_at: null, reason_code: null, sequence,
         safe_context: { ...safeContext },
@@ -460,6 +480,17 @@ export function observeRuntimeError(code, options = {}) {
   } catch {
     try { process.stderr.write('[lattice:runtime-errors] store_unavailable\n'); } catch { /* best-effort */ }
   }
+}
+
+/**
+ * CLIのtyped契約の外へ漏れた例外を記録する（process境界のbinが呼ぶ）。取消は故障ではないので記録しない。
+ * 通信の失敗が漏れたものは内部故障と別の記録にし、重大度を面で決める（ADR 0196）。
+ */
+export function observeEscapedCliFailure({ error, commandKind, ...options }) {
+  const failureClass = cliFailureClass(error);
+  if (failureClass === 'cancelled') return;
+  observeRuntimeError(failureClass === 'transport' ? 'LATTICE.CLI_TRANSPORT_UNHANDLED' : 'LATTICE.CLI_INTERNAL_FAILED',
+    { ...options, safeContext: runtimeErrorSafeContext({ commandKind, error }) });
 }
 
 export function acknowledgeRuntimeErrors(cursor, options = {}) {

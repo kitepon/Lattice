@@ -12,6 +12,12 @@ const RUNTIME_SURFACES = Object.freeze({
   event: Object.freeze(['verify']),
 });
 
+/**
+ * storeも端末の状態も書き換えないと確かめた面（ADR 0196）。通信の失敗が漏れた記録の重大度を決める時に使う
+ * ——ここに在る面は、落ちても失うものが無く、打ち直せば戻る。確かめていない面は載せない。
+ */
+export const READ_ONLY_COMMAND_KINDS = new Set(['run.list', 'todo.status', 'todo.verify']);
+
 export function cliCommandKind(argv, surfaces = RUNTIME_SURFACES) {
   if (!Array.isArray(argv)) return 'other';
   const [surface, subcommand] = argv;

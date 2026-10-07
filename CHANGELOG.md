@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.77.0 — 2026-10-07
+
+### 漏れた通信の失敗を内部故障と分け、重大度を落ちた面で決める（ADR 0196）
+
+- CLIのtyped契約の外へ漏れた例外は、原因を見ずに `LATTICE.CLI_INTERNAL_FAILED`・`high` で記録していた。
+  通信の失敗（接続の切断、時間切れ）が漏れた時も、内部故障の `high` になっていた。
+- 漏れた通信の失敗は、`LATTICE.CLI_TRANSPORT_UNHANDLED` として別に記録する。製品が通信の失敗を型つきで
+  返せなかった、という対処不良の記録である。観測したcodeは `safe_context.cause_code` に載る
+  （`fetch failed` のように、codeを `cause` の側に持つ例外からも拾う）。
+- その重大度は落ちた面で決める。何も書き換えないと確かめた面（`run.list`・`todo.status`・`todo.verify`）は
+  `warn`、書き換える面と確かめていない面は `high`。
+- 取消（`AbortError`）は記録しない。
+- `todo` は、漏れた `fetch failed` を `CONTRACT_VIOLATION`（呼び出し側の契約違反）と答えていた。
+  `INTERNAL_FAILURE` と答え、記録に乗せる。
+- 処理している通信の失敗（hubへの配達、BugHubへの送信、heartbeat）と取消を記録しない動きは、変わらない。
+- 通信でない内部故障とMCPの起動失敗は `high` のまま。送る項目は増えない。
+
 ## 0.76.0 — 2026-10-03
 
 ### 修正: 故障や解決の直後の送信が、受け口に断られていた（ADR 0195）

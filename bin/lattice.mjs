@@ -203,11 +203,10 @@ async function scheduleRuntimeErrorReport() {
 
 // typed契約の外へ漏れた例外を、opt-inのruntime error記録へ残す。どの面で・どの種類の例外で
 // 落ちたかを固定語彙の分類（safe_context）で添える——error_codeだけでは原因を追えなかった。
+// 取消は記録せず、通信の失敗が漏れたものは内部故障と別の記録になる（ADR 0196）。
 function observeInternalFailure(error, commandKind) {
-  pendingObservation = import('../src/runtime-errors.mjs').then(({ observeRuntimeError, runtimeErrorSafeContext }) => {
-    observeRuntimeError('LATTICE.CLI_INTERNAL_FAILED', {
-      version: packageJson.version, safeContext: runtimeErrorSafeContext({ commandKind, error }),
-    });
+  pendingObservation = import('../src/runtime-errors.mjs').then(({ observeEscapedCliFailure }) => {
+    observeEscapedCliFailure({ error, commandKind, version: packageJson.version });
   }).catch(() => {});
 }
 
