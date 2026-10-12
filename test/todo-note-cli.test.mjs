@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'bin/lattice.mjs');
 const ACTOR = { host: 'host-1', session: 'session-1', agent: 'agent-1' };
 const NOW = '2026-08-01T00:00:00.000Z';
+// 名乗りなしの操作が端末の識別子を作る置き場。本物の`~/.lattice`を使わせない。
+const TERMINAL_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), 'lattice-todo-note-terminal-'));
+process.on('exit', () => rmSync(TERMINAL_CONFIG_DIR, { recursive: true, force: true }));
 
 async function workspace(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-note-cli-'));
@@ -48,6 +52,8 @@ function run(root, args, actor = true) {
     delete env.LATTICE_TODO_ACTOR_HOST;
     delete env.LATTICE_TODO_ACTOR_SESSION;
     delete env.LATTICE_TODO_ACTOR_AGENT;
+    // 既定のhostは端末の識別子から導く（ADR 0197）。識別子を本物の`~/.lattice`へ作らせない。
+    env.LATTICE_CONFIG_DIR = TERMINAL_CONFIG_DIR;
   }
   return spawnSync(process.execPath, [CLI, ...args], { cwd: root, env, encoding: 'utf8' });
 }

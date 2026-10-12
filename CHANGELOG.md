@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.78.0 — 2026-10-12
+
+### OSのhost名をjournalと公開landingへ出さない（ADR 0197）
+
+- `LATTICE_TODO_ACTOR_HOST` の無いTodo操作は、OSのhost名を `actor.host` へ書いていた。journalは
+  repositoryへcommitされるので、公開repositoryでは持ち主の名前を含むhost名が誰でも読めた。
+- 端末がhubへ送る `display_name` もOSのhost名で、hubは公開landing（HTMLとJSON）へそのまま出していた。
+- どちらも、端末ごとの乱数の識別子から一方向に導いたlabel（`terminal-` と16進12桁）に替える。同じ端末は
+  journalでも公開landingでも同じlabelになり、端末の区別は残る。識別子は
+  `~/.lattice/bridge-hub-terminal.json`（bridge-hubの識別子と同じfile）で、無ければ最初の操作が作る。
+  読めず作れない端末のhostは `host` になる。
+- hubは、端末の自己申告の名前を公開一覧へ出さない。公開の名前は、`public-visibility.json` の新しい任意の
+  キー `terminal_display_names`（labelをキーにした対応表）に書いた名前、無ければlabelになる。古い版の
+  端末がhost名を送ってきても、公開landingには出ない。
+- 明示の `LATTICE_TODO_ACTOR_HOST` は今までどおり優先する。過去のjournalは変わらない。
+- 注意: 旧い既定のhostで行った `todo start` を、新しい既定のhostでは `todo retract` できない
+  （`start_actor_mismatch`）。retractする時だけ `LATTICE_TODO_ACTOR_HOST` に旧い値を渡す。
+- 名乗りの無い操作の `agent` は、今もOSの利用者名から作る（今回の対象外）。
+
 ## 0.77.0 — 2026-10-07
 
 ### 漏れた通信の失敗を内部故障と分け、重大度を落ちた面で決める（ADR 0196）

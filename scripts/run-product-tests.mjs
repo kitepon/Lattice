@@ -1,5 +1,5 @@
-import { readdir } from 'node:fs/promises';
-import { availableParallelism } from 'node:os';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { availableParallelism, tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -91,7 +91,7 @@ async function collectTests(directory, prefix = '') {
 // これらが残っていると、CLIはHOMEでなくそちらを使い、利用者の本物の設定を書き換える。
 export const HOST_CONFIG_ENV = Object.freeze(['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GROK_HOME']);
 
-export function productTestEnvironment(parentEnv = process.env) {
+export function productTestEnvironment(parentEnv = process.env, { configDir = null } = {}) {
   // product gateはsuite単位ですでに全CPU並列である。各integration fixtureが
   // sensor init用WASM poolまで最大8本prewarmするとnested oversubscriptionになり、
   // Windowsで複数の子processが0xC0000005になった。sensor自身の並列契約は
@@ -101,6 +101,10 @@ export function productTestEnvironment(parentEnv = process.env) {
     LATTICE_SENSOR_PARSE_WORKERS: '1', LATTICE_RUNTIME_ERROR_REPORTING: '0' };
   delete env.FORCE_COLOR;
   for (const name of HOST_CONFIG_ENV) delete env[name];
+  // 名乗りの無いTodo操作は、端末の識別子を設定の置き場へ作る（ADR 0197）。試験がそれを利用者の本物の
+  // `~/.lattice`へ作らないよう、runごとの一時の置き場を渡す。親の値は本物を指すので引き継がない。
+  if (configDir === null) delete env.LATTICE_CONFIG_DIR;
+  else env.LATTICE_CONFIG_DIR = configDir;
   return env;
 }
 
@@ -145,13 +149,19 @@ async function runProductTests() {
     '',
   ].join('\n'));
 
-  const result = spawnSync(
-    process.execPath,
-    ['--test', `--test-concurrency=${productTestConcurrency()}`,
-      ...productTests.map((relative) => path.join('test', relative))],
-    { cwd: repoRoot, encoding: 'utf8', stdio: 'inherit',
-      env: productTestEnvironment() },
-  );
+  const configDir = await mkdtemp(path.join(tmpdir(), 'lattice-product-tests-config-'));
+  let result;
+  try {
+    result = spawnSync(
+      process.execPath,
+      ['--test', `--test-concurrency=${productTestConcurrency()}`,
+        ...productTests.map((relative) => path.join('test', relative))],
+      { cwd: repoRoot, encoding: 'utf8', stdio: 'inherit',
+        env: productTestEnvironment(process.env, { configDir }) },
+    );
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 }

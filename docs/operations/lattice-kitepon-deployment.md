@@ -172,6 +172,14 @@ Mac側の工程が出続けている事実から発覚し、`docker restart cadd
   "display_names": { "lattice": "Lattice", "root-site-promotion": "kitepon.dev" } }
 ```
 
+0.78.0から、公開一覧の「配信元」は端末の自己申告の名前ではなく、hubが端末の識別子から導いたlabel
+（`terminal-`と16進12桁）になる（ADR 0197）。人が読める名前にするなら、同じfileへ任意のキー
+`terminal_display_names`を足す。キーは公開一覧に出ているlabel、値は公開してよい名前である。
+
+```
+  "terminal_display_names": { "terminal-0a1b2c3d4e5f": "build-mac" }
+```
+
 ### 既知の残り
 
 - Windows端末（FOX）が配る`/projects/ChromeBlocker/`だけ、まだ`name="robots"`が残る。

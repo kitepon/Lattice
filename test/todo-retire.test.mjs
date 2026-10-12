@@ -102,7 +102,7 @@ test('CLI retireコマンドが正規経路で遷移を書く', async (context) 
   const stderr = { chunks: [], write(chunk) { this.chunks.push(chunk); } };
   const code = await runTodoCli({
     argv: ['retire', '--plan', 'main', '--task', 'B', '--reason', 'NO-GO裁定により恒久除去'],
-    cwd: root, env: { LATTICE_ACTOR_HOST: 'host-1', LATTICE_ACTOR_SESSION: 'session-1', LATTICE_ACTOR_AGENT: 'agent-1' },
+    cwd: root, env: { LATTICE_TODO_ACTOR_HOST: 'host-1', LATTICE_TODO_ACTOR_SESSION: 'session-1', LATTICE_TODO_ACTOR_AGENT: 'agent-1' },
     stdout, stderr,
   });
   assert.equal(code, 0, stderr.chunks.join(''));

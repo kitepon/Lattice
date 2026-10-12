@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import {
   mkdtemp, readFile, readdir, rm, unlink, writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { terminalPublicLabel } from '../src/terminal-identity.mjs';
 import {
   canonicalizeTodoArtifact,
   todoSelfDigest,
@@ -32,6 +34,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const CLI = path.join(REPO_ROOT, 'bin', 'lattice.mjs');
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });
 const NOW = '2026-07-18T00:00:00.000Z';
+// 名乗りなしの操作が端末の識別子を作る置き場。本物の`~/.lattice`を使わせない。
+const TERMINAL_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), 'lattice-todo-cli-terminal-'));
+process.on('exit', () => rmSync(TERMINAL_CONFIG_DIR, { recursive: true, force: true }));
 const manifestRef = '.lattice/todo/manifest.json';
 const journalRef = '.lattice/todo/plans/main/v1/journal/active.jsonl';
 const snapshotRef = '.lattice/todo/plans/main/v1/snapshot.json';
@@ -97,7 +102,7 @@ async function parallelWorkspace(context) {
   return root;
 }
 
-function runCli(root, args, { actor = true } = {}) {
+function runCli(root, args, { actor = true, extraEnv = {} } = {}) {
   const env = { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0' };
   delete env.FORCE_COLOR;
   if (actor) {
@@ -108,7 +113,10 @@ function runCli(root, args, { actor = true } = {}) {
     delete env.LATTICE_TODO_ACTOR_HOST;
     delete env.LATTICE_TODO_ACTOR_SESSION;
     delete env.LATTICE_TODO_ACTOR_AGENT;
+    // 既定のhostは端末の識別子から導く（ADR 0197）。識別子を本物の`~/.lattice`へ作らせない。
+    env.LATTICE_CONFIG_DIR = TERMINAL_CONFIG_DIR;
   }
+  Object.assign(env, extraEnv);
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: root,
     encoding: 'utf8',
@@ -499,6 +507,41 @@ test('authoring CLIはtask IDのcase差をlock内でcanonical IDへ解決する'
   assert.equal(error.detail.reason, 'task_not_found');
   assert.equal(error.detail.requested_task_id, 'missing');
   assert.equal(await storeDigest(root), before);
+});
+
+test('名乗りの無い操作のhostは端末の識別子から導いたlabelで、OSのhost名をjournalへ書かない（ADR 0197）', async (context) => {
+  const root = await workspace(context);
+  const lastActor = async () => (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+
+  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'], { actor: false }));
+  const started = await lastActor();
+  const identity = JSON.parse(await readFile(path.join(TERMINAL_CONFIG_DIR, 'bridge-hub-terminal.json'), 'utf8'));
+  assert.equal(started.host, terminalPublicLabel(identity.terminal_id));
+  assert.match(started.host, /^terminal-[0-9a-f]{12}$/u);
+  // 識別子そのもの（hubが登録の照合に使う鍵）もjournalへ出さない。
+  assert.ok(!started.host.includes(identity.terminal_id));
+  // 旧実装はここへ、OSのhost名を識別子の字種へ丸めた値を書いていた。
+  assert.notEqual(started.host, hostname().replace(/[^0-9A-Za-z._-]/gu, '-').replace(/^-+/u, '').slice(0, 128));
+
+  // 同じ端末は次の操作でも同じlabelになる（startした席だけがretractできる照合が保たれる）。
+  successJson(runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'],
+    { actor: false }));
+  assert.equal((await lastActor()).host, started.host);
+
+  // 明示の名乗りは今までどおり優先する。
+  successJson(runCli(root, ['todo', 'unblock', '--plan', 'main', '--task', 'T1']));
+  assert.equal((await lastActor()).host, ACTOR.host);
+});
+
+test('端末の識別子を読めず作れない時、名乗りの無い操作のhostは`host`になり操作は通る（ADR 0197）', async (context) => {
+  const root = await workspace(context);
+  // 設定の置き場がfileで塞がっている: 識別子は読めも作れもしない。
+  const blocked = path.join(TERMINAL_CONFIG_DIR, 'not-a-directory');
+  await writeFile(blocked, 'x');
+  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'],
+    { actor: false, extraEnv: { LATTICE_CONFIG_DIR: blocked } }));
+  const actor = (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+  assert.equal(actor.host, 'host');
 });
 
 test('authoring CLIはactor欠落をdefaultで通し、順序違反・blocked中doneを無変更拒否する', async (context) => {
