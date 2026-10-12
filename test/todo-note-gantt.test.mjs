@@ -8,7 +8,7 @@ import test from 'node:test';
 import { ganttLiveHeadDigest, renderTodoGanttForProject } from '../src/todo-cli.mjs';
 import { appendTodoNote } from '../src/todo-note-store.mjs';
 import {
-  createTodoStoreWriter, initializeTodoStore, readTodoStore,
+  appendTodoEvent, createTodoStoreWriter, initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
 import { registerManagedDaemonFixture } from './helpers/managed-daemon-fixture.mjs';
 
@@ -38,10 +38,10 @@ async function workspace(t) {
   return repoRoot;
 }
 
-async function append(repoRoot, body, recordedAt = NOW) {
+async function append(repoRoot, body, recordedAt = NOW, actor = ACTOR) {
   return appendTodoNote({
     repoRoot, projectId: 'project-1', planKey: 'main', planVersion: 'v1', taskId: 'T1',
-    actor: ACTOR, recordedAt, body, supersedes: null, eligibleSupersedes: [],
+    actor, recordedAt, body, supersedes: null, eligibleSupersedes: [],
   });
 }
 
@@ -65,6 +65,39 @@ test('Ganttは設計メモとappend-only作業記録をどちらも表示し危�
   assert.match(rendered.rendered.html, /安全上表示できない要素を除外/u);
   assert.doesNotMatch(rendered.rendered.html, /<script>alert\(1\)<\/script>/u);
   assert.doesNotMatch(rendered.rendered.html, /javascript:/u);
+});
+
+test('作業記録の記録者は、公開labelだけをそのまま出し、ほかの端末名は番号へ置き換える（ADR 0198）', async (t) => {
+  const repoRoot = await workspace(t);
+  const actor = (host, agent = 'agent-1') => ({ host, session: 'session-1', agent });
+  // 記録の時刻の順: OSのhost名の形 → 席が付けた名前 → 公開label → もう一度OSのhost名の形。
+  await append(repoRoot, 'first', '2026-08-01T00:00:01.000Z', actor('Owners-MacBook-Air.local', 'owner'));
+  await append(repoRoot, 'second', '2026-08-01T00:00:02.000Z', actor('mac'));
+  await append(repoRoot, 'third', '2026-08-01T00:00:03.000Z', actor('terminal-0a1b2c3d4e5f'));
+  await append(repoRoot, 'fourth', '2026-08-01T00:00:04.000Z', actor('Owners-MacBook-Air.local', 'owner'));
+  // 工程の状態遷移（journal）にも同じ端末名を残す。ページは記録の欄の外でもこの名前を出さない。
+  await appendTodoEvent({
+    repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: 'main',
+    now: '2026-08-01T00:00:05.000Z',
+    event: { kind: 'start', task_id: 'T1', actor: actor('Owners-MacBook-Air.local', 'owner'),
+      recorded_at: '2026-08-01T00:00:05.000Z', payload: { override_reason: null } },
+  });
+  const before = await readFile(path.join(repoRoot, '.lattice/todo/notes/main/active.jsonl'), 'utf8');
+  const store = await readTodoStore({ repoRoot });
+  assert.equal(store.members[0].journal.events.at(-1).actor.host, 'Owners-MacBook-Air.local');
+
+  const { html } = (await renderTodoGanttForProject({ repoRoot, readModel: store, displayName: 'Fixture' })).rendered;
+  const recorders = [...html.matchAll(/記録者 ([^<]*)<\/p>/gu)].map((match) => match[1]).sort();
+  // 同じ名前は同じ番号。番号は最初に記録された順。labelはそのまま。agentはそのまま出す。
+  assert.deepEqual(recorders, ['terminal-0a1b2c3d4e5f/agent-1', '端末1/owner', '端末1/owner', '端末2/agent-1'].sort());
+  // ページのどこにも、記録された端末名が残らない。
+  assert.ok(!html.includes('Owners-MacBook-Air'));
+  assert.doesNotMatch(html, /記録者 mac\//u);
+  assert.doesNotMatch(html, /\.local/u);
+  // 変えるのは表示だけで、記録の本体は読む前と同じbytesのまま、元の名前を保っている。
+  const after = await readFile(path.join(repoRoot, '.lattice/todo/notes/main/active.jsonl'), 'utf8');
+  assert.equal(after, before);
+  assert.ok(after.includes('Owners-MacBook-Air.local') && after.includes('"host":"mac"'));
 });
 
 /** 1行のJSON resultを吐くまで待つ。CLIの契約はstdout 1行目のJSONである。 */

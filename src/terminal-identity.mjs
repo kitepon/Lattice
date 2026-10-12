@@ -42,6 +42,11 @@ export function terminalPublicLabel(terminalId) {
   return `terminal-${digest.slice(0, LABEL_HEX_LENGTH)}`;
 }
 
+/** Whether a recorded host name is a public label — the only shape a published page may show as-is (ADR 0198). */
+export function isTerminalPublicLabel(value) {
+  return typeof value === 'string' && /^terminal-[0-9a-f]{12}$/u.test(value);
+}
+
 /**
  * Synchronous twin of `readOrCreateBridgeHubTerminalId`: same file, same
  * schema, same no-overwrite publish. The todo CLI resolves its actor
