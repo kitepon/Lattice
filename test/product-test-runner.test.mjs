@@ -42,6 +42,15 @@ test('product test child envは、端末の本物のhost設定を指す変数を
   assert.equal(parentEnv.CODEX_HOME, '/real/.codex');
 });
 
+test('product test child envは、設定の置き場をrunごとの一時の置き場へ向け、親の本物の値を渡さない', () => {
+  // 名乗りの無いTodo操作は端末の識別子を設定の置き場へ作る（ADR 0197）。本物の`~/.lattice`へ作らせない。
+  const parentEnv = { PATH: '/fixture/bin', LATTICE_CONFIG_DIR: '/real/.lattice' };
+  assert.equal(productTestEnvironment(parentEnv, { configDir: '/tmp/run-config' }).LATTICE_CONFIG_DIR,
+    '/tmp/run-config');
+  assert.equal(Object.hasOwn(productTestEnvironment(parentEnv), 'LATTICE_CONFIG_DIR'), false);
+  assert.equal(parentEnv.LATTICE_CONFIG_DIR, '/real/.lattice');
+});
+
 test('環境別profileはfocused再現用のsuiteだけを選びcoreの総当たりを複製しない', () => {
   const retired = 'control-compiler.test.mjs';
   const all = [

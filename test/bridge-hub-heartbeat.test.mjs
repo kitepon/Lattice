@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -9,6 +9,7 @@ import {
   buildBridgeHubRegistrationRequest, createBridgeHubHeartbeatController,
   readOrCreateBridgeHubTerminalId, sendBridgeHubHeartbeat,
 } from '../src/bridge-hub-heartbeat.mjs';
+import { terminalPublicLabel } from '../src/terminal-identity.mjs';
 
 async function fixture(context) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-hub-heartbeat-'));
@@ -70,8 +71,11 @@ test('buildBridgeHubRegistrationRequestはproject_idsを重複排除・整列し
   assert.equal(request.port, 53_939);
   assert.deepEqual(request.project_ids, ['alpha', 'zeta']);
   assert.deepEqual(request.adopt, []);
-  assert.equal(typeof request.display_name, 'string');
-  assert.ok(request.display_name.length > 0);
+  // ADR 0197: 登録名は端末idから導いたlabelで、OSのhost名を送らない。
+  assert.equal(request.display_name, terminalPublicLabel('terminal-1'));
+  assert.match(request.display_name, /^terminal-[0-9a-f]{12}$/u);
+  assert.ok(!request.display_name.includes(hostname()));
+  assert.ok(!request.display_name.includes('terminal-1'));
 });
 
 test('project_idsが空ならtypedに拒否する（wireは1件以上を要求）', () => {

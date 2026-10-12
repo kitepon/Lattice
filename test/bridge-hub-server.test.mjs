@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { applyBridgeHubRegistration } from '../src/bridge-hub-protocol.mjs';
+import { terminalPublicLabel } from '../src/terminal-identity.mjs';
 import {
   readBridgeHubRegistry, startBridgeHubServer, writeBridgeHubRegistry,
 } from '../src/bridge-hub-server.mjs';
@@ -80,7 +81,11 @@ test('2台の疑似端末を登録すると/projects/が合成一覧をJSON/HTML
   assert.match(htmlResponse.headers.get('content-type'), /text\/html/u);
   const html = await htmlResponse.text();
   assert.match(html, /kikoeru/u);
-  assert.match(html, /yuzu-pc/u);
+  // ADR 0197: 公開名は端末idから導いたlabel。端末が自己申告した名前は一覧へ出さない。
+  assert.ok(html.includes(terminalPublicLabel('yuzu-win')));
+  assert.doesNotMatch(html, /yuzu-pc/u);
+  assert.deepEqual(json.map((entry) => entry.display_name).sort(),
+    [terminalPublicLabel('kikoeru-mac'), terminalPublicLabel('yuzu-win')].sort());
 });
 
 test('/projects/一覧はブランド正典のlanding（製品ヒーロー・カード主見出し=project・GitHub誘導・矢印なし）を配信する', async (context) => {
@@ -95,12 +100,13 @@ test('/projects/一覧はブランド正典のlanding（製品ヒーロー・カ
 
   const html = await (await fetch(`http://127.0.0.1:${hub.port}/projects/`)).text();
   // ADR 0164: 公開landingはルートブランド正典に従う。製品コピー・カードの主従
-  // （主=project_id・従=ホスト名）・GitHub誘導・矢印グリフ不在・noindex不在を固定する。
+  // （主=project_id・従=端末の公開名）・GitHub誘導・矢印グリフ不在・noindex不在を固定する。
   assert.match(html, /公開 \/ 特許出願済み/u);
   assert.match(html, /schedulability compiler/u);
   assert.match(html, /github\.com\/kitepon\/Lattice/u);
   assert.match(html, /<strong>kikoeru<\/strong>/u);
-  assert.match(html, /class="host">[^<]*kikoeru-host</u);
+  assert.ok(html.includes(`class="host">配信元: ${terminalPublicLabel('kikoeru-mac')}<`));
+  assert.doesNotMatch(html, /kikoeru-host/u);
   assert.doesNotMatch(html, /[→↗↘⇒➔➜]/u);
   assert.doesNotMatch(html, /noindex/u);
 });
@@ -291,6 +297,71 @@ test('public-visibility.jsonの隠しIDはHTML/JSON両方から消え、proxyは
   const proxied = await fetch(`http://127.0.0.1:${hub.port}/projects/internal-probe/`);
   assert.equal(proxied.status, 200);
   assert.equal(await proxied.text(), 'hidden-but-alive');
+});
+
+test('端末の公開名はhub運用者のterminal_display_namesが決め、自己申告のhost名はHTML/JSONへ出ない（ADR 0197）', async (context) => {
+  const { mkdtemp: makeTmp, writeFile: writeTmp } = await import('node:fs/promises');
+  const runtimeDir = await makeTmp(path.join(tmpdir(), 'hub-terminal-names-'));
+  context.after(() => rm(runtimeDir, { recursive: true, force: true }));
+  const named = terminalPublicLabel('term-named');
+  const unnamed = terminalPublicLabel('term-unnamed');
+  await writeTmp(path.join(runtimeDir, 'public-visibility.json'), JSON.stringify({
+    schema: 'lattice.bridge_hub_public_visibility.v1',
+    hidden_project_ids: [], hidden_terminal_ids: [], display_names: {},
+    terminal_display_names: { [named]: 'build-mac' },
+  }));
+  const terminal = await terminalServer((_request, response) => response.end('ok'));
+  context.after(() => close(terminal));
+  const hub = await startBridgeHubServer({
+    registryStore: memoryRegistryStore(), allowedHosts: new Set(['127.0.0.1']),
+    env: { LATTICE_HUB_RUNTIME_DIR: runtimeDir },
+  });
+  context.after(() => hub.close());
+  // 旧版の端末はOSのhost名を自己申告してくる。hubはそれを受理して経路には使うが、公開しない。
+  await registerTerminal(hub, { terminal_id: 'term-named', display_name: 'Owners-MacBook.local',
+    port: portOf(terminal), project_ids: ['proj-a'] });
+  await registerTerminal(hub, { terminal_id: 'term-unnamed', display_name: 'OWNER-PC',
+    port: portOf(terminal), project_ids: ['proj-b'] });
+
+  for (const route of ['/', '/projects/', '/en/', '/en/projects/']) {
+    const json = await (await fetch(`http://127.0.0.1:${hub.port}${route}`,
+      { headers: { accept: 'application/json' } })).json();
+    assert.deepEqual(json.map((entry) => [entry.project_id, entry.display_name]),
+      [['proj-a', 'build-mac'], ['proj-b', unnamed]], route);
+    const html = await (await fetch(`http://127.0.0.1:${hub.port}${route}`)).text();
+    assert.ok(html.includes('build-mac') && html.includes(unnamed), route);
+    for (const leaked of ['Owners-MacBook', 'OWNER-PC', 'term-named', 'term-unnamed']) {
+      assert.ok(!html.includes(leaked) && !JSON.stringify(json).includes(leaked), `${route} ${leaked}`);
+    }
+    // 名付け済みの端末は、導出labelでも出さない（運用者の名前だけが出る）。
+    assert.ok(!html.includes(named), route);
+  }
+});
+
+test('terminal_display_namesの無い旧public-visibility.jsonはそのまま読め、空文字の名前はtyped 500になる', async (context) => {
+  const { mkdtemp: makeTmp, writeFile: writeTmp } = await import('node:fs/promises');
+  const runtimeDir = await makeTmp(path.join(tmpdir(), 'hub-terminal-names-compat-'));
+  context.after(() => rm(runtimeDir, { recursive: true, force: true }));
+  const ref = path.join(runtimeDir, 'public-visibility.json');
+  const base = { schema: 'lattice.bridge_hub_public_visibility.v1',
+    hidden_project_ids: [], hidden_terminal_ids: [], display_names: {} };
+  await writeTmp(ref, JSON.stringify(base));
+  const terminal = await terminalServer((_request, response) => response.end('ok'));
+  context.after(() => close(terminal));
+  const hub = await startBridgeHubServer({
+    registryStore: memoryRegistryStore(), allowedHosts: new Set(['127.0.0.1']),
+    env: { LATTICE_HUB_RUNTIME_DIR: runtimeDir },
+  });
+  context.after(() => hub.close());
+  await registerTerminal(hub, { terminal_id: 'term-old', display_name: 'OWNER-PC',
+    port: portOf(terminal), project_ids: ['proj-a'] });
+  const json = await (await fetch(`http://127.0.0.1:${hub.port}/projects/`,
+    { headers: { accept: 'application/json' } })).json();
+  assert.deepEqual(json.map((entry) => entry.display_name), [terminalPublicLabel('term-old')]);
+
+  await writeTmp(ref, JSON.stringify({ ...base, terminal_display_names: { [terminalPublicLabel('term-old')]: '' } }));
+  const broken = await fetch(`http://127.0.0.1:${hub.port}/projects/`, { headers: { accept: 'application/json' } });
+  assert.equal(broken.status, 500);
 });
 
 test('壊れたpublic-visibility.jsonは黙って非フィルタにせずtyped 500を返す', async (context) => {

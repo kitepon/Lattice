@@ -36,6 +36,7 @@ import {
   projectBridgeHubRegistry, validateBridgeHubRegistryEntry,
 } from './bridge-hub-protocol.mjs';
 import { escapeHtml, renderBridgeHubLanding } from './bridge-hub-landing.mjs';
+import { terminalPublicLabel } from './terminal-identity.mjs';
 
 const LOOPBACK = '127.0.0.1';
 const HUB_HTTP_ERROR_SCHEMA = 'lattice.bridge_hub_http_error.v1';
@@ -310,27 +311,43 @@ function validRegistryDocument(value) {
     && value.entries.every(validateBridgeHubRegistryEntry);
 }
 
+/** What a terminal is called on the public listing (ADR 0197). Never its self-reported name. */
+function publicTerminalName(terminalId, terminalDisplayNames) {
+  const label = terminalPublicLabel(terminalId);
+  return Object.hasOwn(terminalDisplayNames, label) ? terminalDisplayNames[label] : label;
+}
+
 const EMPTY_VISIBILITY = Object.freeze({
   hidden_project_ids: Object.freeze([]), hidden_terminal_ids: Object.freeze([]), display_names: Object.freeze({}),
+  terminal_display_names: Object.freeze({}),
 });
 
 function validVisibilityDocument(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     && value.schema === HUB_PUBLIC_VISIBILITY_SCHEMA
     && Object.keys(value).every((key) =>
-      ['schema', 'hidden_project_ids', 'hidden_terminal_ids', 'display_names'].includes(key))
+      ['schema', 'hidden_project_ids', 'hidden_terminal_ids', 'display_names', 'terminal_display_names']
+        .includes(key))
     && Array.isArray(value.hidden_project_ids)
     && value.hidden_project_ids.every((entry) => typeof entry === 'string')
     && Array.isArray(value.hidden_terminal_ids)
     && value.hidden_terminal_ids.every((entry) => typeof entry === 'string')
     && value.display_names !== null && typeof value.display_names === 'object'
     && !Array.isArray(value.display_names)
-    && Object.values(value.display_names).every((entry) => typeof entry === 'string');
+    && Object.values(value.display_names).every((entry) => typeof entry === 'string')
+    // 任意（ADR 0197）。無い旧fileはそのまま読め、端末は導出labelで出る。
+    && (value.terminal_display_names === undefined
+      || (value.terminal_display_names !== null && typeof value.terminal_display_names === 'object'
+        && !Array.isArray(value.terminal_display_names)
+        && Object.values(value.terminal_display_names)
+          .every((entry) => typeof entry === 'string' && entry.length > 0 && entry === entry.trim())));
 }
 
 /**
  * Read the operator's public-visibility file (ADR 0164 Decision 3): which
- * projects/terminals stay off the public listing, and how project ids render.
+ * projects/terminals stay off the public listing, how project ids render, and
+ * what each terminal is called in public (`terminal_display_names`, keyed by
+ * the terminal's public label — ADR 0197).
  * Hot-read per request so edits apply without a hub restart. A missing file
  * hides nothing; a malformed file is a typed error, never a silent republish
  * of an internal terminal.
@@ -352,6 +369,7 @@ export async function readBridgeHubPublicVisibility({ env = process.env } = {}) 
     hidden_project_ids: document.hidden_project_ids,
     hidden_terminal_ids: document.hidden_terminal_ids,
     display_names: document.display_names,
+    terminal_display_names: document.terminal_display_names ?? EMPTY_VISIBILITY.terminal_display_names,
   };
 }
 
@@ -478,10 +496,18 @@ export async function startBridgeHubServer({
     // the codebase's existing posture of not leaking topology to public
     // responses (bridge-server.mjs's public bridge-health strips pid/address
     // the same way).
+    //
+    // `display_name` is the exception that proved the rule: it used to be the
+    // terminal's self-reported name, which was its OS hostname, published to
+    // anyone (ADR 0197). The public name is now the hub's to give — the
+    // operator's entry in `terminal_display_names`, else the label derived
+    // from the terminal id. What a terminal reports about itself stays in the
+    // registry, so a terminal still running an older Lattice cannot put its
+    // hostname back on the page, and neither can a stale offline entry.
     const view = projected.map((entry) => ({
       schema: HUB_PUBLIC_PROJECT_SCHEMA,
       project_id: entry.project_id,
-      display_name: entry.display_name,
+      display_name: publicTerminalName(entry.terminal_id, visibility.terminal_display_names),
       status: entry.status,
       last_seen_at: entry.last_seen_at,
     }));

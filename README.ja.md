@@ -386,8 +386,11 @@ pidへは送りません（pid再利用で無関係のprocessを止めうるた�
 [ADR 0157](https://github.com/kitepon/Lattice/blob/main/docs/adr/0157-dashboard-daemons-are-discoverable-by-record.md)が正です。
 状態を書き込む`start / block / unblock / done / evidence promote / reopen / note / independence mode /
 revise / revise-phase / revise-set / phase review|accept|reject|reopen|close-unaudited|baseline /
-dashboard adopt`では、監査actorとして次の3環境変数を渡せます。未設定ならhost／`session`／USERから
-defaultします。渡した値がidentifierとして不正なら`ACTOR_UNRESOLVED`です。
+dashboard adopt`では、監査actorとして次の3環境変数を渡せます。未設定なら、hostは端末ごとのlabel
+（`terminal-`と16進12桁）、sessionは`session`、agentはUSERになります。hostのlabelは端末の乱数の識別子
+（`~/.lattice/bridge-hub-terminal.json`）から導き、OSのhost名はjournalへ書きません
+（[ADR 0197](https://github.com/kitepon/Lattice/blob/main/docs/adr/0197-terminal-label-instead-of-os-hostname.md)）。
+渡した値がidentifierとして不正なら`ACTOR_UNRESOLVED`です。
 
 ```bash
 export LATTICE_TODO_ACTOR_HOST=<host-id>

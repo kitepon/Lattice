@@ -6,8 +6,8 @@ import {
 } from '../src/bridge-hub-landing.mjs';
 
 const PROJECTS = [
-  { project_id: 'lattice', display_name: 'FOX', status: 'online', last_seen_at: '2026-08-10T00:00:00.000Z' },
-  { project_id: 'root-site-promotion', display_name: 'KaitonoMacBook-Air.local', status: 'offline', last_seen_at: '2026-08-10T00:00:00.000Z' },
+  { project_id: 'lattice', display_name: 'build-win', status: 'online', last_seen_at: '2026-08-10T00:00:00.000Z' },
+  { project_id: 'root-site-promotion', display_name: 'terminal-0a1b2c3d4e5f', status: 'offline', last_seen_at: '2026-08-10T00:00:00.000Z' },
 ];
 
 test('JA renderは正典コピー・言語属性・eyebrowを含む', () => {
@@ -30,8 +30,8 @@ test('カードは主見出し=プロジェクト・従=ホスト名の入替後
   for (const lang of BRIDGE_HUB_LANDING_LANGUAGES) {
     const html = renderBridgeHubLanding({ projects: PROJECTS, lang });
     assert.ok(html.includes('<strong>lattice</strong>'));
-    assert.ok(/class="host">[^<]*FOX</u.test(html));
-    assert.ok(!html.includes('<strong>FOX</strong>'));
+    assert.ok(/class="host">[^<]*build-win</u.test(html));
+    assert.ok(!html.includes('<strong>build-win</strong>'));
   }
 });
 

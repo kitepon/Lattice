@@ -16,22 +16,21 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { hostname } from 'node:os';
 import { link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { bridgeConfigPaths } from './bridge-config.mjs';
 import { BRIDGE_HUB_HEARTBEAT_INTERVAL_MS, validateBridgeHubRegistrationRequest } from './bridge-hub-protocol.mjs';
+import { TERMINAL_IDENTIFIER, TERMINAL_IDENTITY_SCHEMA, terminalIdentityPath, terminalPublicLabel } from './terminal-identity.mjs';
 import { readServedTodoDashboardProjectIds } from './todo-dashboard-registry.mjs';
 
 export { BRIDGE_HUB_HEARTBEAT_INTERVAL_MS };
 
-const TERMINAL_IDENTITY_SCHEMA = 'lattice.bridge_hub_terminal_identity.v1';
 const HEARTBEAT_RESULT_SCHEMA = 'lattice.bridge_hub_heartbeat_result.v1';
 const REGISTRATION_REQUEST_SCHEMA = 'lattice.bridge_hub_registration_request.v1';
 const REGISTER_PATH = '__lattice/hub/register';
 const DEFAULT_TIMEOUT_MS = 5_000;
-const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const IDENTIFIER = TERMINAL_IDENTIFIER;
 
 export class BridgeHubHeartbeatError extends Error {
   constructor(code, message, detail = undefined, cause = undefined) {
@@ -40,10 +39,6 @@ export class BridgeHubHeartbeatError extends Error {
     this.code = code;
     if (detail !== undefined) this.detail = detail;
   }
-}
-
-function terminalIdentityPath(env) {
-  return path.join(bridgeConfigPaths(env).root, 'bridge-hub-terminal.json');
 }
 
 /**
@@ -85,13 +80,15 @@ export async function readOrCreateBridgeHubTerminalId({ env = process.env } = {}
 }
 
 /**
- * The terminal's own display name, shown for every project it registers
- * (registry entries are per-project but `display_name` is terminal-wide —
- * ADR 0162 Decision 2). Hostname, not a project name: the active project set
- * changes heartbeat to heartbeat but the terminal's identity does not.
+ * The name this terminal registers under (ADR 0197). It is the public label
+ * derived from the terminal id, never the OS hostname: the hub landing is
+ * served to anyone, and a hostname routinely holds its owner's name. Still
+ * terminal-wide (ADR 0162 Decision 2) — the active project set changes
+ * heartbeat to heartbeat but the terminal's identity does not.
  */
-function terminalDisplayName() {
-  return hostname().slice(0, 128) || 'terminal';
+function terminalDisplayName(terminalId) {
+  // 不正なidはここで名付けず、下のrequest検証に型付きで落とさせる。
+  return typeof terminalId === 'string' && IDENTIFIER.test(terminalId) ? terminalPublicLabel(terminalId) : 'terminal';
 }
 
 /** Build and validate one registration/heartbeat request. Throws rather than
@@ -100,7 +97,7 @@ export function buildBridgeHubRegistrationRequest({ terminalId, port, projectIds
   const request = {
     schema: REGISTRATION_REQUEST_SCHEMA,
     terminal_id: terminalId,
-    display_name: terminalDisplayName(),
+    display_name: terminalDisplayName(terminalId),
     port,
     project_ids: [...new Set(projectIds)].sort((left, right) => left.localeCompare(right, 'en')),
     adopt: [...adopt],

@@ -3,9 +3,6 @@ import { cliFailureClass } from './cli-failure-class.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
 import {
-  hostname,
-} from 'node:os';
-import {
   lstat, mkdir, readFile, realpath, writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -39,6 +36,7 @@ import {
   ensureTodoDashboardActivity,
   removeTodoDashboardProject,
 } from './todo-dashboard-registry.mjs';
+import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
 import { readProjectExternalPane, resolveProjectIdentity } from './project-identity.mjs';
 import { layoutTodoGantt } from './todo-gantt-layout.mjs';
 import { TODO_GANTT_SCOPES } from './todo-gantt-scope.mjs';
@@ -563,6 +561,16 @@ function sanitizeActorIdentifier(raw, fallback) {
   return isTodoIdentifier(compact) ? compact : fallback;
 }
 
+/**
+ * 名乗りの無い操作のhost（ADR 0197）。journalは公開repositoryへcommitされるので、OSのhost名は
+ * 書かない——host名はOSが決めた自由文で、持ち主の名前を含むことがある。端末ごとの識別子から
+ * 一方向に導いたlabelを使い、端末の区別は保つ。識別子を読めず作れない端末は`host`になる。
+ */
+function defaultActorHost(env) {
+  const terminalId = readOrCreateTerminalIdSync({ env });
+  return terminalId === null ? 'host' : terminalPublicLabel(terminalId);
+}
+
 function mutationActor(env) {
   const provided = ACTOR_ENV_KEYS.map((key) => ({ key, value: env[key] }));
   const invalidEnvironment = provided
@@ -579,7 +587,7 @@ function mutationActor(env) {
   return {
     host: isTodoIdentifier(env.LATTICE_TODO_ACTOR_HOST)
       ? env.LATTICE_TODO_ACTOR_HOST
-      : sanitizeActorIdentifier(hostname(), 'host'),
+      : defaultActorHost(env),
     session: isTodoIdentifier(env.LATTICE_TODO_ACTOR_SESSION)
       ? env.LATTICE_TODO_ACTOR_SESSION
       : 'session',

@@ -389,8 +389,10 @@ plan本体（phase定義と状態・task一覧と状態・依存本数・topolog
 
 通常の状態遷移は`todo start / block / unblock / done / evidence promote / reopen`のclosed面で行う。
 mutation callerは`LATTICE_TODO_ACTOR_HOST`, `LATTICE_TODO_ACTOR_SESSION`,
-`LATTICE_TODO_ACTOR_AGENT`をtodo identifierとして受理する。欠落はhost／`session`／USERから
-sanitizeしたdefaultを使う。渡した値がidentifierとして不正なら`ACTOR_UNRESOLVED`で書き込まない。
+`LATTICE_TODO_ACTOR_AGENT`をtodo identifierとして受理する。欠落時のdefaultは、hostが端末の識別子から
+導いたlabel（`terminal-`と16進12桁。識別子を読めず作れない端末は`host`）、sessionが`session`、agentが
+USERをsanitizeした値である。OSのhost名はjournalへ書かない（ADR 0197）。渡した値がidentifierとして
+不正なら`ACTOR_UNRESOLVED`で書き込まない。
 `done`はtaskを閉じる。evidenceはrepo内のdescriptor JSONでも証拠本文でもよく、`--message`は
 本文からblob descriptorを書く。dashboard故障とstructure realizationはdoneの門ではない。
 `evidence promote`は現在doneのtaskへ最新done digestで束縛した追記eventを積み、authored／importedを
