@@ -5,8 +5,39 @@ import {
   renderTodoStructurePanel,
 } from './todo-gantt-structure.mjs';
 import { renderTodoMarkdown } from './todo-markdown-renderer.mjs';
+import { isTerminalPublicLabel } from './terminal-identity.mjs';
 
-function renderNoteContext(context) {
+/**
+ * 記録に残る端末名を、ページへ出す名前へ写す（ADR 0198）。
+ *
+ * journalと作業記録の`actor.host`は、書いた時の自由文である——OSのhost名のことも、席が自分で付けた名前の
+ * こともあり、持ち主の名前を含みうる。ページは公開面へ配信されるので、そのまま出さない。出してよいのは
+ * 端末の公開label（`terminal-`と16進12桁）だけで、それ以外は同じ名前に同じ番号を振った「端末N」にする。
+ * 番号はその名前が最初に記録された時刻の順で、同時刻は名前の順。記録は追記だけなので、後から現れた名前は
+ * 後ろの番号になり、既に振った番号は動かない。記録の本体は変えない——変えるのは表示だけである。
+ */
+export function recordedHostDisplayNames(sections) {
+  const firstSeen = new Map();
+  for (const section of sections) {
+    for (const note of section.noteContext?.notes ?? []) {
+      const host = note.actor.host;
+      if (isTerminalPublicLabel(host)) continue;
+      const known = firstSeen.get(host);
+      if (known === undefined || note.recorded_at < known) firstSeen.set(host, note.recorded_at);
+    }
+  }
+  const ordered = [...firstSeen].sort(([leftHost, leftAt], [rightHost, rightAt]) => (
+    leftAt < rightAt ? -1 : leftAt > rightAt ? 1 : leftHost < rightHost ? -1 : leftHost > rightHost ? 1 : 0));
+  return new Map(ordered.map(([host], index) => [host, `端末${index + 1}`]));
+}
+
+function recordedHostDisplayName(host, displayNames) {
+  if (isTerminalPublicLabel(host)) return host;
+  // 対応表に無い名前を素通しにしない。表を作る側の漏れは、名前でなく固定の語として現れる。
+  return displayNames.get(host) ?? '端末';
+}
+
+function renderNoteContext(context, hostDisplayNames) {
   if (context === null) {
     return '<section class="work-log"><h2>作業記録</h2><p class="note-warning">作業記録を読み取れません。概要の読取警告を確認してください。</p></section>';
   }
@@ -21,7 +52,7 @@ function renderNoteContext(context) {
       ? `訂正済み（後継 ${note.superseded_by.slice(0, 12)}…）` : '現行';
     // UTCのまま埋め、閲覧者の現地時刻への変換はブラウザ側へ委ねる（title属性に原文を残す）。
     const stamp = `<time datetime="${escapeHtmlAttribute(note.recorded_at)}" title="${escapeHtmlAttribute(note.recorded_at)}" data-utc-stamp>${escapeHtmlText(note.recorded_at)}</time>`;
-    return `<article class="work-log-entry"><header>${stamp}<span>${escapeHtmlText(correction)}</span></header><div class="work-log-body">${rendered.html}</div>${filtering}<p class="work-log-origin">来歴: ${escapeHtmlText(note.origin_plan_version)}/${escapeHtmlText(note.origin_task_id)}・記録者 ${escapeHtmlText(`${note.actor.host}/${note.actor.agent}`)}</p></article>`;
+    return `<article class="work-log-entry"><header>${stamp}<span>${escapeHtmlText(correction)}</span></header><div class="work-log-body">${rendered.html}</div>${filtering}<p class="work-log-origin">来歴: ${escapeHtmlText(note.origin_plan_version)}/${escapeHtmlText(note.origin_task_id)}・記録者 ${escapeHtmlText(`${recordedHostDisplayName(note.actor.host, hostDisplayNames)}/${note.actor.agent}`)}</p></article>`;
   }).join('');
   const overflow = context.overflow_count === 0 ? ''
     : `<p class="note-warning">ほか ${context.overflow_count}件は上限のため省略。全履歴: <code>${escapeHtmlText(context.full_history_command)}</code></p>`;
@@ -144,6 +175,8 @@ export function renderRightPane(
   structurePresentation = null,
 ) {
   const lookup = presentationLookup(presentation);
+  // 番号はproject全体で1つの対応表から振る。工程ごとに振ると、同じ端末が工程によって別の番号になる。
+  const hostDisplayNames = recordedHostDisplayNames(sections);
   const sectionByKey = new Map(sections.map((section) => [refKey(section.ref), section]));
   const semanticNodes = [...layout.nodes, ...(layout.hierarchy_nodes ?? [])];
   const nodeByKey = new Map(semanticNodes.map((node) => [refKey(node.ref), node]));
@@ -212,7 +245,7 @@ export function renderRightPane(
       : expandable
         ? '<p class="fold-note">完走済みのため既定の図には描いていません。左上の「完走済み」バッジを押すと、このページ内で表示できます。</p>'
         : '<p class="fold-note">完走済みのため図には描いていません。図に出すには動的dashboardを <code>lattice todo gantt serve --port &lt;port&gt; --scope all</code> で起動してください。</p>';
-    const workLog = notesEnabled ? renderNoteContext(section.noteContext) : '';
+    const workLog = notesEnabled ? renderNoteContext(section.noteContext, hostDisplayNames) : '';
     const designMemo = renderDesignMemo(section.task);
     return `<article class="task-detail" data-detail-key="${escapeHtmlAttribute(key)}" hidden><header><span class="detail-status status-${escapeHtmlAttribute(section.state.status)}">${escapeHtmlText(status.mark)} ${escapeHtmlText(status.label)}</span><span class="detail-reference">${escapeHtmlText(taskReference(section, lookup))}</span></header><h1>${escapeHtmlText(section.task.title)}</h1><p class="detail-category"><strong>カテゴリ:</strong> ${escapeHtmlText(category)}</p>${categoryDescription}<p><strong>正規ID:</strong> <code>${escapeHtmlText(`${section.ref.plan_key}/${section.task.task_id}`)}</code></p>${blockedReason}${readiness}${independenceNote}${foldedNote}${designMemo}<section><h2>前提工程</h2>${renderRelationList(incoming.get(key), sectionByKey, lookup, '登録済みの前提工程はありません。', folds)}</section><section><h2>後続工程</h2>${renderRelationList(outgoing.get(key), sectionByKey, lookup, '登録済みの後続工程はありません。', folds)}</section>${workLog}<p class="anchor-status">${escapeHtmlText(anchorText)}</p><details class="task-diagnostics"><summary>開発者向け診断</summary><dl><dt>canonical ref</dt><dd><code>${escapeHtmlText(`${section.ref.project_id}/${section.ref.plan_key}/${section.task.task_id}`)}</code></dd><dt>anchor</dt><dd>${escapeHtmlText(section.anchorOutcome.anchored ? 'verified' : section.anchorOutcome.reason)}</dd></dl></details></article>`;
   }).join('');
