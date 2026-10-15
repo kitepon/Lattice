@@ -14,7 +14,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -24,6 +25,52 @@ import { DatabaseConnection } from '../src/db';
 import { encodeLockInfo, getDaemonPidPath } from '../src/mcp/daemon-paths';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
+
+// SEC002 metadata-only diagnostic: selected calls only, no product timeout changes.
+const CAPTURE_SHA = '6bd0ac325ba631b1fdbc213708fdab08f6877efdb48d6fa7784787b2493ee7a5';
+function captureSelection(caseId: TraceCase, order: number): boolean {
+  return (caseId === 'cli-idempotent' && order === 2) || (caseId === 'cli-recovery' && order === 3);
+}
+function captureReceipt(directory: string, caseId: TraceCase, order: number, phase: 'enter' | 'leave', detail: Record<string, unknown> = {}): void {
+  try {
+    fs.writeFileSync(path.join(directory, `${caseId}-${order}.${phase}.json`), JSON.stringify({
+      schema: 'sec002-av-call-v1', caseId, callOrder: order, phase, pid: process.pid, parentPid: process.ppid, ...detail,
+    }) + '\n', { flag: 'wx' });
+  } catch { try { process.stderr.write('[sec002-av-capture-write-failed]\n'); } catch { /* preserve the call */ } }
+}
+function diagnosticExecFileSync(caseId: TraceCase, order: number, command: string, args: string[], options: ExecFileSyncOptionsWithStringEncoding): string {
+  const trace = process.env.LATTICE_SENSOR_STAGE_TRACE_DIR;
+  if (!captureSelection(caseId, order) || !trace || !path.isAbsolute(trace)) return execFileSync(command, args, options);
+  const root = path.dirname(trace);
+  const configPath = path.join(root, 'av-capture-config.json');
+  let text: string;
+  try {
+    if (fs.statSync(configPath).size > 4096) throw Error('config_capacity');
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return execFileSync(command, args, options);
+    throw Error('sec002_capture_unavailable');
+  }
+  const directory = path.join(root, 'capture-private');
+  captureReceipt(directory, caseId, order, 'enter');
+  try {
+    const config = JSON.parse(text) as Record<string, unknown>;
+    if (Object.keys(config).sort().join(',') !== 'nodePath,nodeSha256,schema' || config.schema !== 'sec002-av-config-v1' ||
+        config.nodePath !== process.execPath || command !== process.execPath ||
+        typeof config.nodeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(config.nodeSha256) ||
+        args[0] !== BIN || args.length !== 2 || args[1] !== (caseId === 'cli-idempotent' ? 'index' : 'init')) throw Error('config');
+    const capture = path.join(root, 'incoming', 'verified', 'capture.exe');
+    const digest = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    if (fs.statSync(capture).size !== 283136 || fs.statSync(command).size > 209715200 || digest(capture) !== CAPTURE_SHA || digest(command) !== config.nodeSha256) throw Error('identity');
+    const output = execFileSync(capture, [caseId, String(order), path.join(directory, `${caseId}-${order}.capture.json`), command, ...args], options);
+    captureReceipt(directory, caseId, order, 'leave', { status: 0, signaled: false, spawnErrorCode: null });
+    return output;
+  } catch (error) {
+    const detail = childFailureDetail(error);
+    captureReceipt(directory, caseId, order, 'leave', { status: typeof detail.status === 'number' && detail.status >= -2147483648 && detail.status <= 4294967295 ? detail.status >>> 0 : null, signaled: detail.signaled ?? false, spawnErrorCode: detail.spawnErrorCode ?? null });
+    throw error;
+  }
+}
 
 /** Normalize a PRAGMA read across return shapes (array | object | scalar). */
 function pragmaValue(raw: unknown, key: string): unknown {
@@ -48,7 +95,7 @@ function runLatticeSensor(args: string[], cwd: string): string {
   setStageContext(caseId, order);
   recordStage('cli_spawn', 'enter');
   try {
-    const output = execFileSync(process.execPath, [BIN, ...args], {
+    const output = diagnosticExecFileSync(caseId, order, process.execPath, [BIN, ...args], {
     cwd,
     encoding: 'utf-8',
     env: { ...process.env, LATTICE_SENSOR_NO_DAEMON: '1',
