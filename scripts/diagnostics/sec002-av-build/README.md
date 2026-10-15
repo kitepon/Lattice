@@ -19,13 +19,25 @@ local snapshot commit. Checkout does not persist credentials. Permissions are
 contents-read only. GitHub-hosted windows-2025 only, finite 20-minute timeout,
 no self-hosted selector, no cancellation, no SDK/tool installation.
 
-[Official image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
-lists VS2022 17.14 and SDK10.0.26100.0. That is an availability lead, not proof of
-the current job's files. The build records the actual image version, known toolchain
-paths, versions, hashes, and SDK/include/lib/bin-DLL manifests. These are observed
-build inputs and same-job consistency checks, not externally pinned vendor provenance. Only an existing,
-unique 14.44 toolset and SDK10.0.26100.0 qualify. Missing or different tools fail
-without installation, fallback, or a second run.
+The initial build-only run `38799242999` reached a Windows2025 VS2026 image
+(`ImageOS=win25-vs2026`, version20261007.264.1), then stopped at the old win25
+entry guard before toolchain discovery/compilation. The source exit check passed.
+That dispatch is consumed. The change below is a repair candidate; it authorizes
+no retry or new dispatch.
+
+[Official label mapping](https://github.com/actions/runner-images/blob/main/README.md)
+now maps windows-2025 to VS2026. The actual job's
+[versioned image inventory](https://github.com/actions/runner-images/blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md)
+lists VS18 Enterprise at `C:\Program Files\Microsoft Visual Studio\18\Enterprise`,
+the legacy14.44 C++ component and SDK10.0.26100.0. The candidate updates only the
+ImageOS guard and fixed VS directory; it retains the unique14.44/SDK26100 rule,
+the unchanged13-file snapshot and the original recipe. No other toolset fallback.
+The inventory is a lead, not proof of the next job's files.
+
+The build records actual image version, known toolchain paths, versions, hashes,
+and SDK/include/lib/bin-DLL manifests. They are observed build inputs and same-job
+consistency checks, not externally pinned vendor provenance. Missing or different
+tools fail without installation, fallback, or another run.
 
 The original recipe compiles and links separately with /W4 /WX. It invokes only
 compiler/linker/dumpbin, never either generated EXE or any Lattice program/test.

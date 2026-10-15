@@ -78,11 +78,11 @@ function Inspect-PE([string]$Path) {
 Save-State
 try {
   if($env:GITHUB_SHA -cne $ExpectedWorkflowHead -or $env:GITHUB_REF -cne 'refs/heads/snowwhite/sec002-hosted-av-build' -or $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch'){throw 'workflow_entry_mismatch'}
-  if($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64' -or $env:ImageOS -cne 'win25' -or !$env:ImageVersion){throw 'hosted_windows2025_required'}
+  if($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64' -or $env:ImageOS -cne 'win25-vs2026' -or !$env:ImageVersion){throw 'hosted_windows2025_required'}
   Assert-Source;$state.sourceValidAtEntry=$true
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source-manifest.json') -Destination (Join-Path $Output 'source-manifest.json')
   $state.phase='toolchain';Save-State
-  $vs='C:\Program Files\Microsoft Visual Studio\2022\Enterprise'
+  $vs='C:\Program Files\Microsoft Visual Studio\18\Enterprise'
   $toolsets=@(Get-ChildItem -LiteralPath (Join-Path $vs 'VC\Tools\MSVC') -Directory | Where-Object { $_.Name -cmatch '^14\.44\.[0-9]+$' })
   if($toolsets.Count -ne 1){throw 'required_14_44_toolset_not_unique_or_missing'}
   $toolset=$toolsets[0].FullName;$bin=Join-Path $toolset 'bin\Hostx64\x64'
