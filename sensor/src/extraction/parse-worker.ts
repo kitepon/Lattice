@@ -13,6 +13,7 @@ try {
   (require('node:module') as { enableCompileCache?: () => void }).enableCompileCache?.();
 } catch { /* cache is best-effort */ }
 
+import { recordStage } from '../diagnostics/stage-observer';
 import { parentPort } from 'worker_threads';
 import { extractFromSource } from './tree-sitter';
 import { detectLanguage, loadGrammarsForLanguages, resetParser } from './grammars';
@@ -62,6 +63,8 @@ import type { Language, ExtractionResult } from '../types';
   }) as typeof process.stderr.write;
 }
 
+recordStage('runtime', 'point');
+let firstParseObserved = false;
 const PARSER_RESET_INTERVAL = 5000;
 const parseCounts = new Map<Language, number>();
 
@@ -73,6 +76,8 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
     const { id, filePath, content, frameworkNames } = msg;
+    const first = !firstParseObserved; firstParseObserved = true;
+    if (first) recordStage('first_parse', 'enter');
     // Worker-side parse clock: reported back with the result so the pool can
     // tell a genuinely slow parse from a result whose delivery was delayed by
     // a stalled main thread (issue #1231 false timeouts).
@@ -120,6 +125,7 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
         resetParser(language);
       }
 
+      if (first) recordStage('first_parse', 'leave');
       parentPort!.postMessage({ type: 'parse-result', id, result, parseMs: performance.now() - t0 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

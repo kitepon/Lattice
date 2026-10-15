@@ -3,13 +3,19 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { recordStage, observeSync, setStageContext } from '../src/diagnostics/stage-observer';
 import { LatticeSensor } from '../src';
 
 // Wrap only I/O entry points for deterministic failure injection; all other
 // calls, files, parser work and SQLite remain real.
 vi.mock('child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('child_process')>();
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+  const { observeSync, gitKind } = await import('../src/diagnostics/stage-observer');
+  const observed = (function(this: unknown, ...args: Parameters<typeof actual.execFileSync>) {
+    return observeSync('git', () => Reflect.apply(actual.execFileSync, this, args),
+      { git: args[0] === 'git' ? gitKind(Array.isArray(args[1]) ? args[1] : []) : 'other' });
+  }) as typeof actual.execFileSync;
+  return { ...actual, execFileSync: vi.fn(observed) };
 });
 vi.mock('fs', async importOriginal => {
   const actual = await importOriginal<typeof import('fs')>();
@@ -27,14 +33,26 @@ describe('git index currency across commits and restores (#1829)', () => {
   const clean = () => expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
 
   beforeEach(async () => {
+    setStageContext((expect.getState().currentTestName ?? '').endsWith('keeps a committed path pending when sync cannot read it') ? 'currency-read-error' : 'currency-other');
+    recordStage('runtime', 'point');
+    recordStage('currency_before_each', 'enter');
+    try {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-git-currency-'));
     git('init'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
     fs.writeFileSync(path.join(root, '.gitignore'), '.lattice/sensor/\n');
     write('source.ts', 'original'); commit();
     cg = LatticeSensor.initSync(root);
     expect((await cg.indexAll()).success).toBe(true);
+    } finally { recordStage('currency_before_each', 'leave'); }
   });
-  afterEach(() => { vi.restoreAllMocks(); cg?.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => {
+    recordStage('currency_after_each', 'enter');
+    try {
+      vi.restoreAllMocks();
+      observeSync('currency_db_close', () => cg?.close());
+      observeSync('currency_fixture_rm', () => fs.rmSync(root, { recursive: true, force: true }));
+    } finally { recordStage('currency_after_each', 'leave'); }
+  });
 
   it.each(['index', 'sync', 'scoped'] as const)('sees a restored indexed dirty edit after %s', async mode => {
     write('source.ts', 'dirtyVersion');
@@ -131,7 +149,9 @@ describe('git index currency across commits and restores (#1829)', () => {
   });
 
   it('keeps a committed path pending when sync cannot read it', async () => {
-    write('new.ts', 'newSymbol'); commit();
+    recordStage('currency_body', 'enter');
+    try {
+    write('new.ts', 'newSymbol'); observeSync('currency_commit', commit);
     // Sync reads a source file through a bounded reader that opens a
     // descriptor (#1910), so the failure is injected at openSync as well as
     // readFileSync: it must reach whichever one the read goes through.
@@ -139,16 +159,20 @@ describe('git index currency across commits and restores (#1829)', () => {
     const realOpen = fs.openSync;
     let injected = 0;
     const failNewTs = (real: (...args: any[]) => unknown) => (file: any, ...args: any[]) => {
-      if (String(file) === path.join(root, 'new.ts')) { injected++; throw new Error('Injected transient read error'); }
+      if (String(file) === path.join(root, 'new.ts')) { injected++; recordStage('currency_read_fault', 'point', { op: injected }); throw new Error('Injected transient read error'); }
       return real(file, ...args);
     };
     vi.spyOn(fs, 'readFileSync').mockImplementation(failNewTs(realRead as any) as typeof fs.readFileSync);
     vi.spyOn(fs, 'openSync').mockImplementation(failNewTs(realOpen as any) as typeof fs.openSync);
-    await cg.sync();
+    recordStage('currency_sync_fault', 'enter');
+    try { await cg.sync(); } finally { recordStage('currency_sync_fault', 'leave'); }
     expect(injected).toBeGreaterThan(0);
     expect(symbols('newSymbol')).not.toContain('newSymbol');
     vi.restoreAllMocks();
-    expect(cg.getChangedFiles().added).toEqual(['new.ts']);
-    await cg.sync(); clean();
+    expect(observeSync('currency_get_changed', () => cg.getChangedFiles()).added).toEqual(['new.ts']);
+    recordStage('currency_sync_recovery', 'enter');
+    try { await cg.sync(); } finally { recordStage('currency_sync_recovery', 'leave'); }
+    clean();
+    } finally { recordStage('currency_body', 'leave'); }
   });
 });

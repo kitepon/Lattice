@@ -22,6 +22,7 @@
  * from src/extraction/kernel/ and from dist/extraction/kernel/.
  */
 
+import { recordStage } from '../../diagnostics/stage-observer';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'module';
@@ -168,8 +169,13 @@ export function getKernel(): KernelModule | null {
 
 /** True when the kill switch is off, a verified binary is loaded, and it supports `language`. */
 export function kernelSupports(language: string): boolean {
-  if (process.env.LATTICE_SENSOR_KERNEL === '0') return false;
-  return getKernel() !== null && kernelLanguages.has(language);
+  if (process.env.LATTICE_SENSOR_KERNEL === '0') {
+    if (language === 'typescript') recordStage('kernel', 'point', { kernel: 'wasm' });
+    return false;
+  }
+  const supported = getKernel() !== null && kernelLanguages.has(language);
+  if (language === 'typescript') recordStage('kernel', 'point', { kernel: supported ? 'native' : 'wasm' });
+  return supported;
 }
 
 /** Test hook: forget the loaded module so a changed env is re-evaluated. */

@@ -27,6 +27,7 @@
  * the default is capped and the env var lets constrained machines dial it down.
  */
 
+import { recordStage } from '../diagnostics/stage-observer';
 import { Worker } from 'worker_threads';
 import type { Language, ExtractionResult } from '../types';
 
@@ -224,7 +225,9 @@ export class ParseWorkerPool {
     } else {
       throw new Error('ParseWorkerPool requires workerScriptPath or createWorker');
     }
+    recordStage('pool_start', 'enter', { poolSize: this.maxSize });
     this.spawnOne(); // one eager warm worker, ready for the first parse
+    recordStage('pool_start', 'leave', { poolSize: this.maxSize });
   }
 
   /**
@@ -290,6 +293,7 @@ export class ParseWorkerPool {
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {
     if (m.type === 'grammars-loaded') {
       if (!this.workers.has(w)) return; // recycled/destroyed before ready
+      recordStage('pool_ready', 'point', { poolSize: this.maxSize });
       this.pending.delete(w);
       this.idle.push(w);
       this.drain();
@@ -460,6 +464,7 @@ export class ParseWorkerPool {
   /** Terminate all workers and reject any outstanding parses. */
   async destroy(): Promise<void> {
     if (this.destroyed) return;
+    recordStage('pool_shutdown', 'enter', { poolSize: this.maxSize });
     this.destroyed = true;
     const ws = [...this.workers];
     this.workers.clear();
@@ -472,5 +477,6 @@ export class ParseWorkerPool {
     this.inflight.clear();
     this.queue = [];
     await Promise.all(ws.map((w) => Promise.resolve(w.terminate()).catch(() => { /* already gone */ })));
+    recordStage('pool_shutdown', 'leave', { poolSize: this.maxSize });
   }
 }

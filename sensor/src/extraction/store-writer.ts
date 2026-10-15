@@ -7,6 +7,7 @@
  * main-thread store. Kill switch: LATTICE_SENSOR_NO_STORE_WORKER=1.
  */
 
+import { recordStage } from '../diagnostics/stage-observer';
 import { Worker } from 'worker_threads';
 import { ExtractionResult, Language, Node, Edge, UnresolvedReference, FileRecord } from '../types';
 
@@ -91,6 +92,7 @@ export class StoreWriter {
         const waiter = this.drainWaiters.get(msg.id);
         this.drainWaiters.delete(msg.id);
         if (!waiter) return;
+        recordStage('store_drain', 'leave', { op: msg.id });
         if (this.firstError) waiter.reject(this.firstError);
         else waiter.resolve();
       } else if (msg.type === 'error') {
@@ -169,6 +171,7 @@ export class StoreWriter {
     const p = new Promise<void>((resolve, reject) => {
       this.drainWaiters.set(id, { resolve, reject });
     });
+    recordStage('store_drain', 'enter', { op: id });
     this.worker.postMessage({ type: 'drain', id });
     return p;
   }

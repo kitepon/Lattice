@@ -18,6 +18,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { recordStage, setStageContext, type TraceCase } from '../src/diagnostics/stage-observer';
 import { LatticeSensor } from '../src';
 import { DatabaseConnection } from '../src/db';
 import { encodeLockInfo, getDaemonPidPath } from '../src/mcp/daemon-paths';
@@ -31,13 +32,36 @@ function pragmaValue(raw: unknown, key: string): unknown {
   return row;
 }
 
+let cliCallOrder = 0;
 function runLatticeSensor(args: string[], cwd: string): string {
-  return execFileSync(process.execPath, [BIN, ...args], {
+  const name = expect.getState().currentTestName ?? '';
+  const cases: Array<[string, TraceCase]> = [
+    ["reproduces init's node/edge counts instead of emptying the index", 'cli-counts'],
+    ['is idempotent: a second index does not grow the graph', 'cli-idempotent'],
+    ['--quiet path also rebuilds a populated graph', 'cli-quiet'],
+    ['refuses to recreate while a live daemon cannot be verified (#1325)', 'cli-live-daemon'],
+    ['rebuilds to the current disk state, discarding content for files that no longer exist', 'cli-recovery'],
+    ['rebuilds a fresh database rather than clearing the old one in place', 'cli-recreate'],
+  ];
+  const caseId = cases.find(([suffix]) => name.endsWith(suffix))?.[1] ?? 'unknown';
+  const order = ++cliCallOrder;
+  setStageContext(caseId, order);
+  recordStage('cli_spawn', 'enter');
+  try {
+    const output = execFileSync(process.execPath, [BIN, ...args], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, LATTICE_SENSOR_NO_DAEMON: '1' },
+    env: { ...process.env, LATTICE_SENSOR_NO_DAEMON: '1',
+      ...(process.env.LATTICE_SENSOR_STAGE_TRACE_DIR ? { LATTICE_SENSOR_TRACE_CASE: caseId, LATTICE_SENSOR_TRACE_CALL: String(order) } : {}) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+    recordStage('cli_spawn', 'leave', { status: 0 });
+    return output;
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    recordStage('cli_spawn', 'leave', { status });
+    throw error;
+  }
 }
 
 function graphCounts(dir: string): { nodes: number; edges: number } {
@@ -75,6 +99,7 @@ describe('lattice sensor index — full re-index keeps the graph populated (#874
   let tempDir: string;
 
   beforeEach(() => {
+    cliCallOrder = 0;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-index-cmd-'));
     // A couple of files with a call edge so there is a non-trivial graph to
     // (fail to) reproduce.
@@ -176,6 +201,7 @@ describe('latticeSensor index — recovers a stale/oversized prior index (#1067)
   const dbPath = (dir: string) => path.join(dir, '.lattice/sensor', 'sensor.db');
 
   beforeEach(() => {
+    cliCallOrder = 0;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-index-recover-'));
     fs.writeFileSync(
       path.join(tempDir, 'a.ts'),

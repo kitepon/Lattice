@@ -6,6 +6,7 @@
  * are compiled, keeping V8 WASM memory pressure low on large codebases.
  */
 
+import { recordStage } from '../diagnostics/stage-observer';
 import * as path from 'path';
 import * as fsp from 'fs/promises';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
@@ -439,6 +440,7 @@ function expandGrammarLanguages(languages: Language[]): Language[] {
  * disk load (which surfaces the real error/warning path).
  */
 export async function readGrammarWasmBytes(languages: Language[]): Promise<Record<string, Uint8Array>> {
+  recordStage('grammar_bytes', 'enter');
   const out: Record<string, Uint8Array> = {};
   const toRead = [...new Set(expandGrammarLanguages(languages))].filter(
     (lang): lang is GrammarLanguage => lang in WASM_GRAMMAR_FILES
@@ -450,6 +452,7 @@ export async function readGrammarWasmBytes(languages: Language[]): Promise<Recor
       // fall through — the worker's own load reports the failure
     }
   }
+  recordStage('grammar_bytes', 'leave');
   return out;
 }
 

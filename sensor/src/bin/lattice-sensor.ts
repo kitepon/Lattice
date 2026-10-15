@@ -27,6 +27,7 @@
 // launcher is (almost certainly) still alive. A launcher killed mid-startup
 // otherwise blinds the PPID watchdog forever (#1185) — see early-ppid.ts.
 import '../mcp/early-ppid';
+import { recordStage } from '../diagnostics/stage-observer';
 
 // The browser viewer is not part of a release yet (see viewer-gate). Refuse
 // `ui` / `web` — also as `help ui` or `ui --help` — before any startup work,
@@ -132,6 +133,7 @@ if (nodeMajor < MIN_NODE_MAJOR) {
 // memory: Zone`) on Node >= 22. No-op under the bundled launcher, which already
 // passes the flag. Must run before any grammar (in the parse worker, which
 // inherits this process's flags) is compiled. See ../extraction/wasm-runtime-flags.
+recordStage('runtime', 'point');
 relaunchWithWasmRuntimeFlagsIfNeeded(__filename);
 
 // Last-resort fatal handlers: log a bounded line and exit non-zero. A fault

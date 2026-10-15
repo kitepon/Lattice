@@ -27,12 +27,14 @@ try {
   (require('node:module') as { enableCompileCache?: () => void }).enableCompileCache?.();
 } catch { /* cache is best-effort */ }
 
+import { recordStage } from '../diagnostics/stage-observer';
 import { parentPort } from 'worker_threads';
 import { QueryBuilder } from '../db/queries';
 import { createDatabase, SqliteDatabase } from '../db/sqlite-adapter';
 import { finalizeStoreBundle, type KernelStoreBundle, type StoreBundle } from './store-writer';
 import { decodeExtractBuffers } from './kernel/decode';
 
+recordStage('runtime', 'point');
 if (!parentPort) {
   throw new Error('store-worker must be run as a worker thread');
 }
@@ -77,6 +79,7 @@ port.on('message', (msg: InMessage) => {
   try {
     switch (msg.type) {
       case 'open': {
+        recordStage('store_open', 'enter');
         const created = createDatabase(msg.dbPath);
         db = created.db;
         // Mirrors db/index.ts configureConnection, with the same fast-init
@@ -92,6 +95,7 @@ port.on('message', (msg: InMessage) => {
         db.pragma('cache_size = -64000');
         db.pragma('temp_store = MEMORY');
         queries = new QueryBuilder(db);
+        recordStage('store_open', 'leave');
         port.postMessage({ type: 'ready' });
         break;
       }
