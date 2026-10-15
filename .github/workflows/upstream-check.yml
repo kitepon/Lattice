@@ -1,36 +1,68 @@
-name: upstream check
-
-# sensor/ の由来である CodeGraph が進んだことに気づくための面。
-#
-# 一度これを持たずに運用した結果、54 commit・201 file 溜まってから偶然気づいた。
-# 「差分を見るコマンドを人が覚えて実行する」形では、覚えていない期間そのものが
-# 溜める期間になる。週次で回し、溜まっていれば job を落として可視化する。
-#
-# 何も書き換えない。取り込みは `node scripts/upstream-sync.mjs --apply` を人が
-# 走らせる。
-
-on:
-  schedule:
-    # 毎週月曜 09:00 JST (00:00 UTC)
-    - cron: '0 0 * * 1'
-  workflow_dispatch:
-
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '22.13'
-      - name: report distance from upstream
-        run: node scripts/upstream-check.mjs
-      - name: fail when upstream has moved
-        run: |
-          behind=$(node scripts/upstream-check.mjs --json | node -e \
-            'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).behind_commits))')
-          echo "behind_commits=$behind"
-          if [ "$behind" -gt 0 ]; then
-            echo "::warning::upstream is $behind commit(s) ahead — run scripts/upstream-sync.mjs"
-            exit 1
-          fi
+{
+  "name": "SEC002 hosted AV metadata build only",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "workflow_head": {
+          "description": "Exact reviewed workflow commit SHA",
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "sec002-hosted-av-build-only",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "build-only": {
+      "name": "SEC002 compile and inspect only; no generated EXE execution",
+      "if": "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/snowwhite/sec002-hosted-av-build'",
+      "runs-on": "windows-2025",
+      "timeout-minutes": 20,
+      "steps": [
+        {
+          "name": "exact reviewed workflow and hosted runner entry",
+          "shell": "pwsh",
+          "env": {
+            "EXPECTED_WORKFLOW_HEAD": "${{ inputs.workflow_head }}"
+          },
+          "run": "$ErrorActionPreference='Stop'\nif($env:EXPECTED_WORKFLOW_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $env:EXPECTED_WORKFLOW_HEAD -or $env:GITHUB_WORKFLOW_SHA -cne $env:EXPECTED_WORKFLOW_HEAD){throw 'workflow_sha_mismatch'}\nif($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64'){throw 'github_hosted_windows_x64_required'}\n'exact workflow guard passed; GitHub-hosted Windows X64 only'"
+        },
+        {
+          "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "with": {
+            "ref": "f9b78a96853adbb7da1b0810aff9b70d3b5969c3",
+            "path": "source",
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "compile link inspect; never run generated executables",
+          "shell": "pwsh",
+          "env": {
+            "EXPECTED_SOURCE_HEAD": "f9b78a96853adbb7da1b0810aff9b70d3b5969c3",
+            "EXPECTED_WORKFLOW_HEAD": "${{ inputs.workflow_head }}"
+          },
+          "run": "& ./source/scripts/diagnostics/sec002-av-build/hosted-build.ps1 -ExpectedSourceHead $env:EXPECTED_SOURCE_HEAD -ExpectedWorkflowHead $env:EXPECTED_WORKFLOW_HEAD -Output \"$env:RUNNER_TEMP/sec002-hosted-av-build-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+        },
+        {
+          "name": "source-build records and binaries only; seven days",
+          "if": "always()",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "sec002-hosted-av-metadata-build-only",
+            "path": "${{ runner.temp }}/sec002-hosted-av-build-${{ github.run_id }}",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        }
+      ]
+    }
+  }
+}
