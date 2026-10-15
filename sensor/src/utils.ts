@@ -29,6 +29,7 @@
  * ```
  */
 
+import { recordStage } from './diagnostics/stage-observer';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -395,9 +396,11 @@ export class Mutex {
    */
   async acquire(): Promise<() => void> {
     while (this.locked) {
+      recordStage('mutex_wait', 'enter');
       await new Promise<void>((resolve) => {
         this.waitQueue.push(resolve);
       });
+      recordStage('mutex_wait', 'leave');
     }
 
     this.locked = true;

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
+import { Mutex } from '../src/utils';
 import * as os from 'os';
 import * as path from 'path';
-import { gitKind, observeSync, recordStage, setStageContext, stageWriteFailures } from '../src/diagnostics/stage-observer';
+import { childFailureDetail, gitKind, observeSync, recordStage, setStageContext, stageWriteFailures } from '../src/diagnostics/stage-observer';
 let directory: string;
 let priorDirectory: string | undefined;
 let priorArgv: string[];
@@ -75,4 +76,20 @@ it('uses only fixed git kinds and records nothing when disabled', () => {
   delete process.env.LATTICE_SENSOR_STAGE_TRACE_DIR;
   expect(observeSync('currency_commit', () => 42)).toBe(42);
   expect(fs.readdirSync(directory)).toEqual([]);
+});
+
+it('sanitizes child failure fields without replacing null or getter-thrown exceptions', () => {
+  expect(childFailureDetail(null)).toEqual({ status: undefined, signaled: false, spawnErrorCode: undefined });
+  expect(childFailureDetail({ status: 3221225477, signal: null })).toMatchObject({ status: 3221225477, signaled: false });
+  expect(childFailureDetail({ signal: 'PRIVATE', code: 'PRIVATE' })).toMatchObject({ signaled: true, spawnErrorCode: 'other' });
+  const error = Object.defineProperty({}, 'status', { get() { throw new Error('private'); } });
+  expect(childFailureDetail(error)).toEqual({ spawnErrorCode: 'other' });
+});
+it('records only real mutex contention and preserves release ordering', async () => {
+  const mutex = new Mutex(); const release = await mutex.acquire();
+  expect(rows()).toEqual([]);
+  const waiting = mutex.acquire();
+  expect(rows().map(row => [row.stage, row.edge])).toEqual([['mutex_wait', 'enter']]);
+  release(); const nextRelease = await waiting; nextRelease();
+  expect(rows().map(row => [row.stage, row.edge])).toEqual([['mutex_wait', 'enter'], ['mutex_wait', 'leave']]);
 });

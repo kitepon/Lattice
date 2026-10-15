@@ -72,7 +72,9 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
   if (msg.type === 'load-grammars') {
     // Grammar WASM bytes pre-read by the main thread (when provided) make this
     // a memory load instead of a per-spawn disk read — see issue #1231.
+    recordStage('grammar_load', 'enter');
     await loadGrammarsForLanguages(msg.languages!, msg.grammarBuffers);
+    recordStage('grammar_load', 'leave');
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
     const { id, filePath, content, frameworkNames } = msg;

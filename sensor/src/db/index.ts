@@ -4,6 +4,7 @@
  * Handles SQLite database initialization and connection management.
  */
 
+import { recordStage } from '../diagnostics/stage-observer';
 import { SqliteDatabase, SqliteBackend, createDatabase } from './sqlite-adapter';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -12,6 +13,7 @@ import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from './migr
 import { getLatticeSensorDir, statInode } from '../directory';
 
 export { SqliteDatabase, SqliteBackend } from './sqlite-adapter';
+let observedDbOperation = 0;
 
 /**
  * Apply connection-level PRAGMAs. Shared by `initialize` and `open` so the two
@@ -705,14 +707,17 @@ export class DatabaseConnection {
         } catch (e) { err = err || String(e && e.message || e); }
         parentPort.postMessage({ row, err });
       `;
+      const traceOp = ++observedDbOperation;
       return await new Promise((resolve) => {
         let settled = false;
         const finish = (row?: Record<string, number> | null): void => {
           if (settled) return;
           settled = true;
+          recordStage('wal_worker', 'leave', { op: traceOp });
           resolve(row ? { busy: Number(row.busy), log: Number(row.log), checkpointed: Number(row.checkpointed) } : null);
         };
         try {
+          recordStage('wal_worker', 'enter', { op: traceOp });
           const worker = new Worker(workerSource, { eval: true, workerData: { dbPath: this.dbPath, mode } });
           worker.once('message', (m: { row?: Record<string, number> | null; err?: string | null }) => {
             if (m?.err && process.env.LATTICE_SENSOR_WAL_VALVE_DEBUG) {
@@ -804,12 +809,14 @@ export class DatabaseConnection {
         } catch {}
         parentPort.postMessage('done');
       `;
+      const traceOp = ++observedDbOperation;
       await new Promise<void>((resolve) => {
         let settled = false;
         const finish = (): void => {
-          if (!settled) { settled = true; resolve(); }
+          if (!settled) { settled = true; recordStage('maintenance_worker', 'leave', { op: traceOp }); resolve(); }
         };
         try {
+          recordStage('maintenance_worker', 'enter', { op: traceOp });
           const worker = new Worker(workerSource, { eval: true, workerData: { dbPath: this.dbPath, pragmas } });
           worker.once('message', () => { void worker.terminate(); finish(); });
           worker.once('error', () => { void worker.terminate(); finish(); });

@@ -144,6 +144,7 @@ function verifyContract(mod: KernelModule, from: string): boolean {
  */
 export function getKernel(): KernelModule | null {
   if (cached !== undefined) return cached;
+  recordStage('kernel_load', 'enter');
   cached = null;
   for (const candidate of candidatePaths()) {
     try {
@@ -164,6 +165,7 @@ export function getKernel(): KernelModule | null {
       debug(`${candidate}: failed to load — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  recordStage('kernel_load', 'leave');
   return cached;
 }
 

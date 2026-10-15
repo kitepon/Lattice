@@ -18,7 +18,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { recordStage, setStageContext, type TraceCase } from '../src/diagnostics/stage-observer';
+import { childFailureDetail, recordStage, setStageContext, type TraceCase } from '../src/diagnostics/stage-observer';
 import { LatticeSensor } from '../src';
 import { DatabaseConnection } from '../src/db';
 import { encodeLockInfo, getDaemonPidPath } from '../src/mcp/daemon-paths';
@@ -58,8 +58,7 @@ function runLatticeSensor(args: string[], cwd: string): string {
     recordStage('cli_spawn', 'leave', { status: 0 });
     return output;
   } catch (error) {
-    const status = (error as { status?: number }).status;
-    recordStage('cli_spawn', 'leave', { status });
+    recordStage('cli_spawn', 'leave', childFailureDetail(error));
     throw error;
   }
 }

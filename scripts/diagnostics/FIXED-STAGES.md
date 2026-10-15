@@ -23,9 +23,13 @@ CLI helper order starts at 1 for each case. In cli-idempotent, init=1, first ind
 second index=3. The helper emits cli_spawn enter/leave and preserves the original stdout
 return and thrown child error. The actual CLI emits runtime before the existing re-exec,
 and its real child and parse/store threads emit their own PID/parent/flags metadata.
-No extra CLI or thread is launched by observation.
+No extra CLI or thread is launched by observation. The case/call context remains active
+for subsequent in-process graph reads in that case. Child failures add only signaled
+(boolean) and an allowlisted spawn error code (unknown codes become other); no signal name
+or original error text is emitted.
 
-AV markers: grammar_bytes enter/leave; pool_start enter/leave around the existing eager
+AV markers: grammar_bytes enter/leave; grammar_load around the existing worker grammar
+load/compile await; kernel_load around the first uncached native load/contract attempt; pool_start enter/leave around the existing eager
 spawn; pool_ready points for each existing grammar acknowledgement; first_parse enter/leave
 for the first parse in each existing worker; store_open enter/leave in the existing writer;
 store_drain request/reply keyed by numeric op; pool_shutdown enter/leave around existing join.
@@ -35,7 +39,9 @@ by itself identify a native fault. Existing return/throw behavior remains author
 Source timeout markers are independent: currency_before_each, currency_body,
 currency_after_each, currency_commit, currency_sync_fault, currency_sync_recovery,
 currency_get_changed, currency_db_close and currency_fixture_rm boundaries, plus the
-injected-read point/count and fixed git category. The existing read failure, both syncs,
+injected-read point/count and fixed git category. mutex_wait brackets only existing queued
+waits. wal_worker and maintenance_worker bracket existing Worker construction through the
+first original completion callback, paired by numeric op (not worker termination). The existing read failure, both syncs,
 assertions and cleanup order are unchanged. observeSync returns exactly the delegated value
 (including the same Promise), forwards the same exception and adds no Promise reaction.
 Async boundaries are statements inside original functions, without wrapping their returns.
@@ -48,7 +54,8 @@ Next dedicated execution proposal (NOT executed in this task):
   and Node24.20.0/x64/win32. Keep standard parser pool, original product test/parser
   timeouts, skip policy and four sensor forks. No pool comparison or retry.
 - Checkout the exact new diagnostic commit with fetch-depth 0; verify its parent/base and
-  the reviewed observation diff to 3300d770. This intentionally changes source only by
+  the full sorted diff-path allowlist to 3300d770, including inherited diagnostic files;
+  verify the literal complete candidate SHA, not just its parent. This intentionally changes source only by
   observational statements; do not assert HEAD==3300d770 for this variant.
 - Restore the original npm ci && npm --prefix sensor ci dependency step and the original
   npm --prefix sensor run build && npm run ci command. Thus root/docs run before sensor,
@@ -60,7 +67,8 @@ Next dedicated execution proposal (NOT executed in this task):
   incomplete result, not grounds for repeating the run.
 - Preserve AV case streams and source currency target stream separately in the artifact.
   Check CLI call order/actual child flag and pool/kernel records, both normal and missing
-  stage pairs, and before/body/after times. Preserve child status and each assertion result.
+  stage pairs, and before/body/after times. Without AV recurrence this yields only a
+  normal timing baseline; AV classification does not advance and no automatic retry follows. Preserve child status and each assertion result.
 - Remaining differences: observation source patch and synchronous trace I/O, compile/file
   cache and execution timing, dedicated user's environment. Even with full clone/root warm-up
   restored, this is diagnostic evidence, not acceptance or proof of root cause.
