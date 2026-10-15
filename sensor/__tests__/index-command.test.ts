@@ -43,31 +43,36 @@ function diagnosticExecFileSync(caseId: TraceCase, order: number, command: strin
   if (!captureSelection(caseId, order) || !trace || !path.isAbsolute(trace)) return execFileSync(command, args, options);
   const root = path.dirname(trace);
   const configPath = path.join(root, 'av-capture-config.json');
+  const directory = path.join(root, 'capture-private');
   let text: string;
   try {
     if (fs.statSync(configPath).size > 4096) throw Error('config_capacity');
     text = fs.readFileSync(configPath, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return execFileSync(command, args, options);
+    captureReceipt(directory, caseId, order, 'enter');
+    captureReceipt(directory, caseId, order, 'leave', { status: null, signaled: false, spawnErrorCode: null, failureKind: 'config_unreadable' });
     throw Error('sec002_capture_unavailable');
   }
-  const directory = path.join(root, 'capture-private');
   captureReceipt(directory, caseId, order, 'enter');
+  let failureKind: 'config' | 'identity' | 'helper' = 'config';
   try {
     const config = JSON.parse(text) as Record<string, unknown>;
     if (Object.keys(config).sort().join(',') !== 'nodePath,nodeSha256,schema' || config.schema !== 'sec002-av-config-v1' ||
         config.nodePath !== process.execPath || command !== process.execPath ||
         typeof config.nodeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(config.nodeSha256) ||
         args[0] !== BIN || args.length !== 2 || args[1] !== (caseId === 'cli-idempotent' ? 'index' : 'init')) throw Error('config');
+    failureKind = 'identity';
     const capture = path.join(root, 'incoming', 'verified', 'capture.exe');
     const digest = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
     if (fs.statSync(capture).size !== 283136 || fs.statSync(command).size > 209715200 || digest(capture) !== CAPTURE_SHA || digest(command) !== config.nodeSha256) throw Error('identity');
+    failureKind = 'helper';
     const output = execFileSync(capture, [caseId, String(order), path.join(directory, `${caseId}-${order}.capture.json`), command, ...args], options);
-    captureReceipt(directory, caseId, order, 'leave', { status: 0, signaled: false, spawnErrorCode: null });
+    captureReceipt(directory, caseId, order, 'leave', { status: 0, signaled: false, spawnErrorCode: null, failureKind: null });
     return output;
   } catch (error) {
     const detail = childFailureDetail(error);
-    captureReceipt(directory, caseId, order, 'leave', { status: typeof detail.status === 'number' && detail.status >= -2147483648 && detail.status <= 4294967295 ? detail.status >>> 0 : null, signaled: detail.signaled ?? false, spawnErrorCode: detail.spawnErrorCode ?? null });
+    captureReceipt(directory, caseId, order, 'leave', { status: typeof detail.status === 'number' && detail.status >= -2147483648 && detail.status <= 4294967295 ? detail.status >>> 0 : null, signaled: detail.signaled ?? false, spawnErrorCode: detail.spawnErrorCode ?? null, failureKind });
     throw error;
   }
 }
