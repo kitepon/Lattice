@@ -36,7 +36,7 @@
         {
           "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
           "with": {
-            "ref": "f9b78a96853adbb7da1b0810aff9b70d3b5969c3",
+            "ref": "f9f1ed40839d330f4e2e34876a340225a5e71061",
             "path": "source",
             "fetch-depth": 0,
             "persist-credentials": false
@@ -46,7 +46,7 @@
           "name": "compile link inspect; never run generated executables",
           "shell": "pwsh",
           "env": {
-            "EXPECTED_SOURCE_HEAD": "f9b78a96853adbb7da1b0810aff9b70d3b5969c3",
+            "EXPECTED_SOURCE_HEAD": "f9f1ed40839d330f4e2e34876a340225a5e71061",
             "EXPECTED_WORKFLOW_HEAD": "${{ inputs.workflow_head }}"
           },
           "run": "& ./source/scripts/diagnostics/sec002-av-build/hosted-build.ps1 -ExpectedSourceHead $env:EXPECTED_SOURCE_HEAD -ExpectedWorkflowHead $env:EXPECTED_WORKFLOW_HEAD -Output \"$env:RUNNER_TEMP/sec002-hosted-av-build-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
