@@ -1,89 +1,49 @@
-{
-  "name": "SEC002 Lattice sensor suite diagnostic only",
-  "on": {
-    "workflow_dispatch": {
-      "inputs": {
-        "environment": {
-          "type": "choice",
-          "options": [
-            "windows-native"
-          ],
-          "default": "windows-native"
-        }
-      }
-    }
-  },
-  "permissions": {
-    "contents": "read",
-    "actions": "read"
-  },
-  "concurrency": {
-    "group": "sec002-windows-pinned-products",
-    "cancel-in-progress": false
-  },
-  "jobs": {
-    "parser-diagnostic": {
-      "name": "SEC002 Lattice sensor suite parser diagnostic",
-      "runs-on": [
-        "self-hosted",
-        "factory",
-        "${{ inputs.environment }}"
-      ],
-      "timeout-minutes": 25,
-      "steps": [
-        {
-          "name": "verify dedicated identity and actual id13",
-          "shell": "pwsh",
-          "env": {
-            "GH_JOB_TOKEN": "${{ github.token }}"
-          },
-          "run": "$ErrorActionPreference='Stop'\n$identity=[Security.Principal.WindowsIdentity]::GetCurrent()\n$principal=[Security.Principal.WindowsPrincipal]::new($identity)\n$sid=([Security.Principal.NTAccount]::new($env:COMPUTERNAME,'factory-runner')).Translate([Security.Principal.SecurityIdentifier]).Value\nif ($identity.User.Value -ne $sid -or $env:RUNNER_NAME -ne 'factory-windows-fox-u') {throw 'Dedicated identity differs'}\nif (!$env:RUNNER_WORKSPACE.StartsWith('C:\\actions-runner-dotagents-u\\',[StringComparison]::OrdinalIgnoreCase)) {throw 'Dedicated root differs'}\nif ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {throw 'Runner is administrator'}\n$headers=@{Authorization=\"Bearer $env:GH_JOB_TOKEN\";Accept='application/vnd.github+json'}\n$jobs=Invoke-RestMethod -Headers $headers -Uri \"https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs\"\n$matching=@($jobs.jobs | Where-Object {$_.runner_id -eq 13 -and $_.runner_name -eq 'factory-windows-fox-u' -and $_.status -eq 'in_progress'})\nif ($matching.Count -ne 1) {throw 'Runner id13 assignment unverified'}\n'runner_id=13 nonAdministrator=true diagnosticOnly=true'\n"
-        },
-        {
-          "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
-          "with": {
-            "ref": "3300d770b31e06a1b701e547c10d4899429e4024",
-            "path": "product",
-            "persist-credentials": false
-          }
-        },
-        {
-          "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
-          "with": {
-            "ref": "${{ github.sha }}",
-            "path": "diagnostic",
-            "persist-credentials": false
-          }
-        },
-        {
-          "name": "verify exact pinned product source before install",
-          "shell": "pwsh",
-          "working-directory": "product",
-          "run": "$head=git rev-parse HEAD\nif ($LASTEXITCODE -ne 0 -or $head -ne '3300d770b31e06a1b701e547c10d4899429e4024') {throw 'Product source differs'}\n'productSource=3300d770b31e06a1b701e547c10d4899429e4024 acceptanceFull=false'"
-        },
-        {
-          "name": "pinned dependencies",
-          "shell": "pwsh",
-          "working-directory": "product",
-          "run": "npm ci && npm --prefix sensor ci"
-        },
-        {
-          "name": "one complete sensor suite per parser condition",
-          "shell": "pwsh",
-          "run": "node diagnostic/scripts/diagnostics/sec002-sensor-suite.mjs product \"$env:RUNNER_TEMP/sec002-lattice-suite-$env:GITHUB_RUN_ID\""
-        },
-        {
-          "name": "diagnostic evidence, never acceptance full",
-          "if": "always()",
-          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-          "with": {
-            "name": "sec002-lattice-sensor-suite-diagnostic",
-            "path": "${{ runner.temp }}/sec002-lattice-suite-${{ github.run_id }}",
-            "if-no-files-found": "error",
-            "retention-days": 7
-          }
-        }
-      ]
-    }
-  }
-}
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 実行する工場環境
+        type: choice
+        default: all
+        options: [all, macos-native, linux-workstation, windows-native]
+
+permissions:
+  contents: read
+
+jobs:
+  ownership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: product owns its CI contract
+        shell: bash
+        run: |
+          test -f .github/workflows/product-full-ci.yml
+          git grep -q 'uses: \.\/\.github\/workflows\/product-full-ci\.yml' -- .github/workflows
+          owner_repo='kitepon/dotagents'
+          if git grep -n "uses: $owner_repo/.github/workflows" -- .github/workflows; then
+            echo '製品CIをdotagentsのworkflowへ委譲できません。' >&2
+            exit 1
+          fi
+          if git grep -n -E 'uses:[[:space:]]+[^./][^[:space:]@]+@[^[:space:]#]+' -- .github/workflows |
+            grep -Ev '@[0-9a-f]{40}([[:space:]]|#|$)'; then
+            echo '外部actionは40桁のcommit SHAへ固定してください。' >&2
+            exit 1
+          fi
+
+  full:
+    # 製品側の検証契約を dotagents の将来変更から独立させる。
+    uses: ./.github/workflows/product-full-ci.yml
+    with:
+      environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'all' }}
+      dependency-command: npm ci && npm --prefix sensor ci
+      documentation-command: npm ci --ignore-scripts --no-audit --no-fund && npm run check:docs
+      full-command: >-
+        npm --prefix sensor run build &&
+        npm run ci
