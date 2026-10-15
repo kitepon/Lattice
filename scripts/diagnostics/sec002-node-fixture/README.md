@@ -23,6 +23,12 @@ unchanged. Read-only implementation review must not compile/run/probe anything.
    All three processes together write exactly 1MiB of byte0x53 to stdout and 1MiB
    of byte0x45 to stderr. Parents leave before the grandchild's250ms timer finishes;
    EOF and job accounting must keep the controller waiting for the descendant.
+   Handoff children alone use detached:true so Node24 libuv's kill-child-on-parent-exit
+   job does not defeat that test. Libuv does not add CREATE_BREAKAWAY_FROM_JOB; the
+   dedicated outer job (no breakaway flags) must still contain the descendants.
+   If this topology is unavailable the case fails; no host/job policy is relaxed.
+   Timeout/collector-kill keep non-detached children. Child-ready polling is capped
+   at5s. Writes loop over partial writeSync returns until the exact size is sent.
 2. timeout: capture+Node root/child/grandchild hold. Three ready receipts and four
    own active processes are required before the intentional5s timeout terminates
    only the controller's dedicated job. Status125/expectedTimeout/forced/EOF/active0
@@ -88,3 +94,5 @@ observation of a Lattice command. Heap request effectiveness is not independentl
 observed. This smoke does not establish original AV/Node/V8/Lattice behavior,
 stack/CodeView, old root/source timeout causes or full acceptance. Stack remains
 unimplemented; no symbols, dump or memory search is added.
+
+Primary source: [Node24.20.0 libuv process.c](https://github.com/nodejs/node/blob/v24.20.0/deps/uv/src/win/process.c) (global job, detached flags and no CREATE_BREAKAWAY_FROM_JOB).

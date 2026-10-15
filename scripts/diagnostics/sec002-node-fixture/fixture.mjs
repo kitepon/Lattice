@@ -26,14 +26,14 @@ function main(){
  fs.writeFileSync(path.join(cwd,role+'.'+config.phase+'.receipt.json'),JSON.stringify(receipt)+'\n',{flag:'wx'});
  if(mode==='handoff'){
   const amount=role==='grand'?524288:262144;
-  fs.writeSync(1,Buffer.alloc(amount,0x53));fs.writeSync(2,Buffer.alloc(amount,0x45));
+  for(const [fd,value]of [[1,0x53],[2,0x45]]){const bytes=Buffer.alloc(amount,value);let at=0;while(at<bytes.length){const n=fs.writeSync(fd,bytes,at,bytes.length-at);if(n<1)throw Error('stdio_write');at+=n;}}
  }
  if(role!=='grand'){
-  const child=spawn(process.execPath,[self,mode,roles[roles.indexOf(role)+1],...TAIL],{cwd,stdio:['ignore','inherit','inherit'],windowsHide:true});
+  const child=spawn(process.execPath,[self,mode,roles[roles.indexOf(role)+1],...TAIL],{cwd,stdio:['ignore','inherit','inherit'],windowsHide:true,detached:mode==='handoff'});
   child.on('error',()=>{process.exitCode=93;});
   // No exit wait: inherited pipes and own job must keep descendant coverage observable.
   child.unref();
-  if(mode==='handoff'){const waiting=setInterval(()=>{if(fs.existsSync(path.join(cwd,roles[roles.indexOf(role)+1]+'.'+config.phase+'.receipt.json')))clearInterval(waiting);},5);}
+  if(mode==='handoff'){const until=Date.now()+5000;const waiting=setInterval(()=>{if(fs.existsSync(path.join(cwd,roles[roles.indexOf(role)+1]+'.'+config.phase+'.receipt.json')))clearInterval(waiting);else if(Date.now()>=until){clearInterval(waiting);process.exitCode=94;}},5);}
  }
  if(mode==='handoff'){
   if(role==='grand')setTimeout(()=>{},250);

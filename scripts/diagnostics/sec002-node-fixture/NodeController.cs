@@ -12,7 +12,7 @@ namespace Sec002Fixture {
  }
  public static class NodeController {
   const string CaptureHash="6bd0ac325ba631b1fdbc213708fdab08f6877efdb48d6fa7784787b2493ee7a5";
-  const string ScriptHash="c51e75137b944f16536858bdf872a57a4ccf62c1ac64806aa02408cfcb656423";
+  const string ScriptHash="8cef9067dddaf4b8a1961d274c551a7195b3413393589a58d5c5766f02e763c3";
   static FileStream Lock(string path,string hash){var f=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);try{using(var s=SHA256.Create()){if(BitConverter.ToString(s.ComputeHash(f)).Replace("-","").ToLowerInvariant()!=hash)throw new NativeFailure("identity");}return f;}catch{f.Dispose();throw;}}
   static bool Drain(Owned pipe,ref bool eof,ref long count,ref bool pattern,byte value){
    if(eof)return true;uint available;if(!N.PeekNamedPipe(pipe.H,IntPtr.Zero,0,IntPtr.Zero,out available,IntPtr.Zero)){if(System.Runtime.InteropServices.Marshal.GetLastWin32Error()==109){eof=true;return true;}return false;}
