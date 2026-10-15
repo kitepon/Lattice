@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -63,7 +64,7 @@ nodeTest('収集に対応しないOSでは、送信も対象外と答え、設�
 });
 
 /** 受け口の代わり。届いた要求を溜め、`respond`が返す応答をそのまま返す。 */
-async function startIntake(respond) {
+async function startIntake(respond, timeline = null) {
   const requests = [];
   const server = http.createServer((request, response) => {
     const chunks = [];
@@ -73,10 +74,12 @@ async function startIntake(respond) {
       const entry = { method: request.method, url: request.url, headers: request.headers, bytes,
         body: JSON.parse(bytes.toString('utf8')) };
       requests.push(entry);
+      timeline?.mockPoint('mock_body', request, requests.length);
       const answer = respond(entry, requests.length);
       if (answer === null) return; // 応答しない（時間切れの試験）
       response.writeHead(answer.status, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify(answer.body));
+      timeline?.mockPoint('mock_response_queued', request, requests.length);
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -187,18 +190,95 @@ function resolutionReportFailureSummary(report, receivedCount) {
     receivedCount: Number.isSafeInteger(receivedCount) && receivedCount >= 0 ? receivedCount : null });
 }
 
+// SEC002 root timeline: test-only, bounded and silent when observation is off.
+function createRootReportTimeline() {
+  const directory = process.env.LATTICE_SENSOR_STAGE_TRACE_DIR;
+  if (!directory || !path.isAbsolute(directory)) return null;
+  try {
+    const events = [];
+    const sockets = new WeakMap();
+    let nextSocket = 0; let dropped = 0; let observerErrors = 0; let flushed = false;
+    const stages = ['case', 'intake_fixture', 'workspace_fixture', 'record_errors', 'first_report',
+      'nothing_pending', 'resolve_store', 'resolution_report', 'cleanup_close', 'cleanup_rm',
+      'mock_body', 'mock_response_queued'];
+    const reasons = ['network_error', 'response_error', 'response_too_large', 'timeout',
+      'receipt_not_verified', 'ack_not_recorded', 'unavailable', 'unrecognized_response'];
+    function record(stage, edge, detail) {
+      try {
+        if (flushed || !stages.includes(stage) || !['enter', 'leave', 'point'].includes(edge)) {
+          observerErrors++; return;
+        }
+        if (events.length === 64) { dropped++; return; }
+        const row = { schema: 'sec002.root_timeline.v1', caseId: 'root-resolution-report',
+          sequence: events.length + 1, pid: process.pid, stage, edge,
+          utc: new Date().toISOString(), monotonicMs: performance.now() };
+        if (detail) {
+          if (Number.isSafeInteger(detail.receivedCount) && detail.receivedCount >= 0) row.receivedCount = detail.receivedCount;
+          if (Number.isSafeInteger(detail.socketId) && detail.socketId > 0) row.socketId = detail.socketId;
+          if (detail.report) {
+            row.outcome = ['delivered', 'unconfirmed', 'nothing_pending'].includes(detail.report.outcome)
+              ? detail.report.outcome : 'other';
+            row.reason = detail.report.reason === null ? null : reasons.includes(detail.report.reason) ? detail.report.reason : 'other';
+            row.httpStatus = Number.isInteger(detail.report.http_status) && detail.report.http_status >= 100 && detail.report.http_status <= 599
+              ? detail.report.http_status : null;
+            row.acknowledgedThrough = Number.isSafeInteger(detail.report.acknowledged_through) && detail.report.acknowledged_through >= 0
+              ? detail.report.acknowledged_through : null;
+          }
+        }
+        events.push(row);
+      } catch { observerErrors++; }
+    }
+    return {
+      record,
+      reportLeave(stage, report, receivedCount) { record(stage, 'leave', { report, receivedCount }); },
+      mockPoint(stage, request, receivedCount) {
+        try {
+          const socket = request.socket;
+          if (!sockets.has(socket)) sockets.set(socket, ++nextSocket);
+          record(stage, 'point', { socketId: sockets.get(socket), receivedCount });
+        } catch { observerErrors++; }
+      },
+      flush() {
+        if (flushed) return;
+        flushed = true;
+        try {
+          const partial = dropped > 0 || observerErrors > 0 || !events.some(row => row.stage === 'case' && row.edge === 'leave');
+          const footer = { schema: 'sec002.root_timeline_summary.v1', caseId: 'root-resolution-report',
+            eventCount: events.length, dropped, observerErrors, partial };
+          writeFileSync(path.join(path.dirname(directory), 'root-report-timeline.jsonl'),
+            [...events, footer].map(row => JSON.stringify(row)).join('\n') + '\n', { flag: 'wx' });
+        } catch {
+          try { console.error('[sec002-root-timeline-write-failed]'); } catch { /* never replace the original error */ }
+        }
+      },
+    };
+  } catch { return null; }
+}
+// End SEC002 root timeline helper.
+
 nodeTest('未受領の記録を署名つきで送り、署名つきの受領でだけ受領済みにする', async () => {
-  const intake = await startIntake(signedReceipt);
+  const timeline = createRootReportTimeline();
+  try {
+  timeline?.record('case', 'enter');
+  timeline?.record('intake_fixture', 'enter');
+  const intake = await startIntake(signedReceipt, timeline);
+  timeline?.record('intake_fixture', 'leave');
+  timeline?.record('workspace_fixture', 'enter');
   const workspace = await makeWorkspace(intake.url);
+  timeline?.record('workspace_fixture', 'leave');
   try {
     // 記録は送る時刻より前に起きている（BugHubは、観測より後の時刻の記録を断る）。
     const earlier = { ...workspace.options, now: '2026-10-03T08:59:58.000Z' };
+    timeline?.record('record_errors', 'enter');
     fail(earlier, 'todo.status', 'ENOTDIR');
     fail(earlier, 'run.list', 'ENOENT');
+    timeline?.record('record_errors', 'leave');
     assert.equal(runtimeErrorAutoReportDue(workspace.options), true);
 
     const now = '2026-10-03T09:00:00.000Z';
+    timeline?.record('first_report', 'enter');
     const delivered = await reportRuntimeErrors({ ...workspace.options, now });
+    timeline?.reportLeave('first_report', delivered, intake.requests.length);
     assert.equal(delivered.outcome, 'delivered');
     assert.deepEqual(delivered.sent, { runtime_errors: 2, resolutions: 0 });
     assert.equal(delivered.acknowledged_through, 2);
@@ -230,22 +310,34 @@ nodeTest('未受領の記録を署名つきで送り、署名つきの受領で�
     assert.equal(JSON.stringify(delivered).includes(KEY_ID), false);
 
     // 送るものが無ければ通信しない。
+    timeline?.record('nothing_pending', 'enter');
     assert.equal((await reportRuntimeErrors(workspace.options)).outcome, 'nothing_pending');
+    timeline?.record('nothing_pending', 'leave');
     assert.equal(intake.requests.length, 1);
 
     // 解決は、解決の記録として届く。
     const fingerprint = request.body.runtime_errors[0].fingerprint;
+    timeline?.record('resolve_store', 'enter');
     setRuntimeErrorStatus(fingerprint, 'resolved', workspace.options);
+    timeline?.record('resolve_store', 'leave');
+    timeline?.record('resolution_report', 'enter');
     const resolved = await reportRuntimeErrors(workspace.options);
+    timeline?.reportLeave('resolution_report', resolved, intake.requests.length);
     assert.deepEqual([resolved.outcome, resolved.sent], ['delivered', { runtime_errors: 0, resolutions: 1 }],
       resolutionReportFailureSummary(resolved, intake.requests.length));
     assert.deepEqual(Object.keys(intake.requests[1].body.resolutions[0]), ['fingerprint', 'resolved_at', 'reason_code']);
     assert.equal(intake.requests[1].body.resolutions[0].fingerprint, fingerprint);
     assert.notEqual(intake.requests[1].body.report_id, request.body.report_id);
   } finally {
+    timeline?.record('cleanup_close', 'enter');
     await intake.close();
+    timeline?.record('cleanup_close', 'leave');
+    timeline?.record('cleanup_rm', 'enter');
     await rm(workspace.root, { recursive: true, force: true });
+    timeline?.record('cleanup_rm', 'leave');
   }
+  timeline?.record('case', 'leave');
+  } finally { timeline?.flush(); }
 });
 
 /** BugHubの検査と同じ規則: 記録の時刻が`observed_at`より後なら422で断る。 */
