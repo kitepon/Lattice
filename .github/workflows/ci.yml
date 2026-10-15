@@ -1,5 +1,5 @@
 {
-  "name": "SEC002 Lattice parser diagnostic only",
+  "name": "SEC002 Lattice sensor suite diagnostic only",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -23,7 +23,7 @@
   },
   "jobs": {
     "parser-diagnostic": {
-      "name": "SEC002 Lattice six-case parser diagnostic",
+      "name": "SEC002 Lattice sensor suite parser diagnostic",
       "runs-on": [
         "self-hosted",
         "factory",
@@ -62,23 +62,23 @@
           "run": "$head=git rev-parse HEAD\nif ($LASTEXITCODE -ne 0 -or $head -ne '3300d770b31e06a1b701e547c10d4899429e4024') {throw 'Product source differs'}\n'productSource=3300d770b31e06a1b701e547c10d4899429e4024 acceptanceFull=false'"
         },
         {
-          "name": "pinned dependencies and build",
+          "name": "pinned dependencies",
           "shell": "pwsh",
           "working-directory": "product",
-          "run": "npm ci && npm --prefix sensor ci && npm --prefix sensor run build"
+          "run": "npm ci && npm --prefix sensor ci"
         },
         {
-          "name": "three alternating repetitions of six unchanged cases",
+          "name": "one complete sensor suite per parser condition",
           "shell": "pwsh",
-          "run": "node diagnostic/scripts/diagnostics/sec002-parser-pool.mjs product \"$env:RUNNER_TEMP/sec002-lattice-$env:GITHUB_RUN_ID\""
+          "run": "node diagnostic/scripts/diagnostics/sec002-sensor-suite.mjs product \"$env:RUNNER_TEMP/sec002-lattice-suite-$env:GITHUB_RUN_ID\""
         },
         {
           "name": "diagnostic evidence, never acceptance full",
           "if": "always()",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
-            "name": "sec002-lattice-parser-diagnostic",
-            "path": "${{ runner.temp }}/sec002-lattice-${{ github.run_id }}",
+            "name": "sec002-lattice-sensor-suite-diagnostic",
+            "path": "${{ runner.temp }}/sec002-lattice-suite-${{ github.run_id }}",
             "if-no-files-found": "error",
             "retention-days": 7
           }
