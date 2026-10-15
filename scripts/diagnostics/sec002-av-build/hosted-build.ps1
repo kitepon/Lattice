@@ -9,7 +9,7 @@ $localSourceHead='4ab846c70883170f94b6af05b99cb049e2cff0f4'
 if($ExpectedSourceHead -cnotmatch '^[0-9a-f]{40}$' -or $ExpectedWorkflowHead -cnotmatch '^[0-9a-f]{40}$'){throw 'invalid_pinned_sha'}
 if(![IO.Path]::IsPathFullyQualified($Output) -or (Test-Path -LiteralPath $Output)){throw 'output_must_be_new_absolute_path'}
 New-Item -ItemType Directory -Path $Output | Out-Null
-$state=[ordered]@{schema='sec002-hosted-av-build-v1';phase='entry';sourceHead=$ExpectedSourceHead;workflowHead=$ExpectedWorkflowHead;localSourceHead=$localSourceHead;manifestSha256=$manifestHash;imageOS=$env:ImageOS;imageVersion=$env:ImageVersion;runId=$env:GITHUB_RUN_ID;attempt=$env:GITHUB_RUN_ATTEMPT;runnerName=$env:RUNNER_NAME;runnerOS=$env:RUNNER_OS;runnerArch=$env:RUNNER_ARCH;sourceValidAtEntry=$false;sourceValidAtEnd=$false;executedTargetBinaries=0;windowsFixtureExecuted=$false;productExecuted=$false;stackImplemented=$false;status='incomplete';failureStage=$null;failureCode=$null;phaseTimesUtc=[ordered]@{};updatedUtc=$null}
+$state=[ordered]@{schema='sec002-hosted-av-build-v1';phase='entry';sourceHead=$ExpectedSourceHead;workflowHead=$ExpectedWorkflowHead;localSourceHead=$localSourceHead;manifestSha256=$manifestHash;imageOS=$env:ImageOS;imageVersion=$env:ImageVersion;runId=$env:GITHUB_RUN_ID;attempt=$env:GITHUB_RUN_ATTEMPT;runnerName=$env:RUNNER_NAME;runnerOS=$env:RUNNER_OS;runnerArch=$env:RUNNER_ARCH;sourceValidAtEntry=$false;sourceValidAtEnd=$false;executedTargetBinaries=0;windowsFixtureExecuted=$false;productExecuted=$false;stackImplemented=$false;selectedVsRoot=$null;status='incomplete';failureStage=$null;failureCode=$null;phaseTimesUtc=[ordered]@{};updatedUtc=$null}
 function Save-State { $state.updatedUtc=[DateTime]::UtcNow.ToString('o');if(!$state.phaseTimesUtc.Contains($state.phase)){$state.phaseTimesUtc[$state.phase]=$state.updatedUtc};$state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'summary.json') -Encoding utf8 }
 function Assert-Source {
   $head=& git -C $root rev-parse HEAD
@@ -78,12 +78,17 @@ function Inspect-PE([string]$Path) {
 Save-State
 try {
   if($env:GITHUB_SHA -cne $ExpectedWorkflowHead -or $env:GITHUB_REF -cne 'refs/heads/snowwhite/sec002-hosted-av-build' -or $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch'){throw 'workflow_entry_mismatch'}
-  if($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64' -or $env:ImageOS -cne 'win25-vs2026' -or !$env:ImageVersion){throw 'hosted_windows2025_required'}
+  if($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64'){throw 'hosted_runner_required'}
+  $imageVsRoots=@{win25='C:\Program Files\Microsoft Visual Studio\2022\Enterprise';'win25-vs2026'='C:\Program Files\Microsoft Visual Studio\18\Enterprise'}
+  if(!$imageVsRoots.ContainsKey($env:ImageOS) -or !$env:ImageVersion){throw 'hosted_image_unexpected'}
+  $state.selectedVsRoot=$imageVsRoots[$env:ImageOS]
   Assert-Source;$state.sourceValidAtEntry=$true
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source-manifest.json') -Destination (Join-Path $Output 'source-manifest.json')
   $state.phase='toolchain';Save-State
-  $vs='C:\Program Files\Microsoft Visual Studio\18\Enterprise'
-  $toolsets=@(Get-ChildItem -LiteralPath (Join-Path $vs 'VC\Tools\MSVC') -Directory | Where-Object { $_.Name -cmatch '^14\.44\.[0-9]+$' })
+  $vs=$state.selectedVsRoot
+  $allToolsets=@(Get-ChildItem -LiteralPath (Join-Path $vs 'VC\Tools\MSVC') -Directory)
+  [ordered]@{vsRoot=$vs;versions=@($allToolsets.Name | Where-Object { $_ -cmatch '^[0-9]+\.[0-9]+\.[0-9]+$' } | Sort-Object);unrecognizedDirectoryCount=@($allToolsets.Name | Where-Object { $_ -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' }).Count} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Output 'toolchain-selection.json') -Encoding utf8
+  $toolsets=@($allToolsets | Where-Object { $_.Name -cmatch '^14\.44\.[0-9]+$' })
   if($toolsets.Count -ne 1){throw 'required_14_44_toolset_not_unique_or_missing'}
   $toolset=$toolsets[0].FullName;$bin=Join-Path $toolset 'bin\Hostx64\x64'
   $sdk='C:\Program Files (x86)\Windows Kits\10'
@@ -122,7 +127,7 @@ try {
 } catch {
   $state.status='failed';$state.failureStage=$state.phase
   # ErrorRecord is not printed; only a fixed code plus compiler's own build log is retained.
-  $allowed=@('invalid_pinned_sha','source_sha_mismatch','tracked_source_dirty','snapshot_manifest_mismatch','snapshot_manifest_identity','snapshot_path_inventory','snapshot_invalid_path','snapshot_file_mismatch','workflow_entry_mismatch','hosted_windows2025_required','required_14_44_toolset_not_unique_or_missing','required_toolchain_directory_missing','toolchain_reparse_point','ambient_build_switch_override','unavailable_tool_identity','unavailable_toolset_version','dependency_manifest_identity','empty_dependency_manifest','dependency_content_mismatch','unavailable_sdk_version','output_exists','capture_compile_failed','capture_link_failed','fixture_compile_failed','fixture_link_failed','pe_inspection_failed','pe_size_invalid','pe_bounds','pe_dos_signature','pe_not_amd64','pe_header_or_subsystem','pe_rva_unmapped','pe_import_directory','pe_import_name_too_long','pe_import_name_invalid','pe_imports_incomplete','unexpected_pe_import')
+  $allowed=@('invalid_pinned_sha','source_sha_mismatch','tracked_source_dirty','snapshot_manifest_mismatch','snapshot_manifest_identity','snapshot_path_inventory','snapshot_invalid_path','snapshot_file_mismatch','workflow_entry_mismatch','hosted_windows2025_required','hosted_runner_required','hosted_image_unexpected','required_14_44_toolset_not_unique_or_missing','required_toolchain_directory_missing','toolchain_reparse_point','ambient_build_switch_override','unavailable_tool_identity','unavailable_toolset_version','dependency_manifest_identity','empty_dependency_manifest','dependency_content_mismatch','unavailable_sdk_version','output_exists','capture_compile_failed','capture_link_failed','fixture_compile_failed','fixture_link_failed','pe_inspection_failed','pe_size_invalid','pe_bounds','pe_dos_signature','pe_not_amd64','pe_header_or_subsystem','pe_rva_unmapped','pe_import_directory','pe_import_name_too_long','pe_import_name_invalid','pe_imports_incomplete','unexpected_pe_import')
   $code=$_.Exception.Message;$state.failureCode=if($code -cin $allowed){$code}else{'build_observer_error'}
 } finally {
   try { Assert-Source;$state.sourceValidAtEnd=$true } catch { $state.sourceValidAtEnd=$false;$state.status='failed';if(!$state.failureCode){$state.failureCode='source_exit_invalid'} }

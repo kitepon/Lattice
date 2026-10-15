@@ -29,8 +29,9 @@ no retry or new dispatch.
 now maps windows-2025 to VS2026. The actual job's
 [versioned image inventory](https://github.com/actions/runner-images/blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md)
 lists VS18 Enterprise at `C:\Program Files\Microsoft Visual Studio\18\Enterprise`,
-the legacy14.44 C++ component and SDK10.0.26100.0. The candidate updates only the
-ImageOS guard and fixed VS directory; it retains the unique14.44/SDK26100 rule,
+the legacy14.44 C++ component and SDK10.0.26100.0. The candidate selects a fixed two-entry map: win25 -> VS2022 Enterprise,
+win25-vs2026 -> VS18 Enterprise; other image identities fail. This handles a
+mixed old/new image pool without host discovery or arbitrary fallback. It retains the unique14.44/SDK26100 rule,
 the unchanged13-file snapshot and the original recipe. No other toolset fallback.
 The inventory is a lead, not proof of the next job's files.
 
