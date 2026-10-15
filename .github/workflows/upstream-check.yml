@@ -1,14 +1,12 @@
 {
-  "name": "SEC002 root timeline Windows diagnostic only",
+  "name": "SEC002 two original AV calls metadata-only diagnostic",
   "on": {
     "workflow_dispatch": {
       "inputs": {
-        "environment": {
-          "type": "choice",
-          "options": [
-            "windows-native"
-          ],
-          "default": "windows-native"
+        "workflow_head": {
+          "type": "string",
+          "required": true,
+          "description": "Reviewed complete caller SHA; separate dispatch permission required"
         }
       }
     }
@@ -23,26 +21,27 @@
   },
   "jobs": {
     "fixed-stage-diagnostic": {
-      "name": "SEC002 root timeline standard pool diagnostic",
+      "name": "SEC002 two selected CLI calls with fixed metadata collector",
       "runs-on": [
         "self-hosted",
         "factory",
-        "${{ inputs.environment }}"
+        "windows-native"
       ],
       "timeout-minutes": 25,
       "steps": [
         {
-          "name": "verify dedicated identity and actual id13",
+          "name": "verify dedicated id13 runtime and acquire only fixed artifact",
           "shell": "pwsh",
           "env": {
-            "GH_JOB_TOKEN": "${{ github.token }}"
+            "GH_JOB_TOKEN": "${{ github.token }}",
+            "EXPECTED_WORKFLOW_HEAD": "${{ inputs.workflow_head }}"
           },
-          "run": "$ErrorActionPreference='Stop'\n$identity=[Security.Principal.WindowsIdentity]::GetCurrent()\n$principal=[Security.Principal.WindowsPrincipal]::new($identity)\n$sid=([Security.Principal.NTAccount]::new($env:COMPUTERNAME,'factory-runner')).Translate([Security.Principal.SecurityIdentifier]).Value\nif ($identity.User.Value -ne $sid -or $env:RUNNER_NAME -ne 'factory-windows-fox-u') {throw 'Dedicated identity differs'}\nif (!$env:RUNNER_WORKSPACE.StartsWith('C:\\actions-runner-dotagents-u\\',[StringComparison]::OrdinalIgnoreCase)) {throw 'Dedicated root differs'}\nif ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {throw 'Runner is administrator'}\n$headers=@{Authorization=\"Bearer $env:GH_JOB_TOKEN\";Accept='application/vnd.github+json'}\n$jobs=Invoke-RestMethod -Headers $headers -Uri \"https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs\"\n$matching=@($jobs.jobs | Where-Object {$_.runner_id -eq 13 -and $_.runner_name -eq 'factory-windows-fox-u' -and $_.status -eq 'in_progress'})\nif ($matching.Count -ne 1) {throw 'Runner id13 assignment unverified'}\n'runner_id=13 nonAdministrator=true diagnosticOnly=true'\n"
+          "run": "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\nif($env:GITHUB_SHA -cne $env:EXPECTED_WORKFLOW_HEAD -or $env:GITHUB_WORKFLOW_SHA -cne $env:EXPECTED_WORKFLOW_HEAD -or $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or $env:GITHUB_REF -cne 'refs/heads/snowwhite/sec002-av-two-call-caller' -or $env:GITHUB_REPOSITORY -cne 'kitepon/Lattice' -or $env:GITHUB_RUN_ATTEMPT -cne '1'){throw 'workflow_entry'}\nif($env:NODE_OPTIONS -or $env:LATTICE_SENSOR_PARSE_WORKERS -or (Test-Path -LiteralPath 'Env:_NO_DEBUG_HEAP')){throw 'ambient_override'}\n$runtime=node -p 'JSON.stringify({version:process.version,arch:process.arch,platform:process.platform,execPath:process.execPath})'\nif($LASTEXITCODE -ne 0){throw 'runtime_unavailable'}\n$r=$runtime | ConvertFrom-Json\nif($r.version -cne 'v24.20.0' -or $r.arch -cne 'x64' -or $r.platform -cne 'win32'){throw 'runtime_mismatch'}\n$ErrorActionPreference='Stop'\n$identity=[Security.Principal.WindowsIdentity]::GetCurrent()\n$principal=[Security.Principal.WindowsPrincipal]::new($identity)\n$sid=([Security.Principal.NTAccount]::new($env:COMPUTERNAME,'factory-runner')).Translate([Security.Principal.SecurityIdentifier]).Value\nif ($identity.User.Value -ne $sid -or $env:RUNNER_NAME -ne 'factory-windows-fox-u') {throw 'Dedicated identity differs'}\nif (!$env:RUNNER_WORKSPACE.StartsWith('C:\\actions-runner-dotagents-u\\',[StringComparison]::OrdinalIgnoreCase)) {throw 'Dedicated root differs'}\nif ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {throw 'Runner is administrator'}\n$headers=@{Authorization=\"Bearer $env:GH_JOB_TOKEN\";Accept='application/vnd.github+json'}\n$jobs=Invoke-RestMethod -Headers $headers -Uri \"https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs\"\n$matching=@($jobs.jobs | Where-Object {$_.runner_id -eq 13 -and $_.runner_name -eq 'factory-windows-fox-u' -and $_.status -eq 'in_progress'})\nif ($matching.Count -ne 1) {throw 'Runner id13 assignment unverified'}\n\n\n$root=Join-Path $env:RUNNER_TEMP \"sec002-lattice-av-two-call-$env:GITHUB_RUN_ID\"\nif(Test-Path -LiteralPath $root){throw 'fresh_directory_required'}\nNew-Item -ItemType Directory -Path (Join-Path $root 'incoming'),(Join-Path $root 'publish') | Out-Null\nif(![IO.Path]::IsPathFullyQualified($r.execPath) -or [IO.Path]::GetExtension($r.execPath) -ine '.exe'){throw 'node_identity'}\n$nodeHash=(Get-FileHash -LiteralPath $r.execPath -Algorithm SHA256).Hash.ToLowerInvariant()\n@{execPath=$r.execPath;sha256=$nodeHash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'incoming/runtime-private.json') -Encoding utf8\n$state=[ordered]@{schema='sec002-av-acquisition-v1';targetNodeSha256=$nodeHash;runId=38801258793;artifactId=12004154981;runnerId=13;nonAdministrator=$true;nodeVersion='24.20.0';arch='x64';platform='win32';status='unavailable';archiveVerified=$false}\ntry {\n  $artifact=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/kitepon/Lattice/actions/artifacts/12004154981' -TimeoutSec 60\n  if($artifact.id -ne 12004154981 -or $artifact.workflow_run.id -ne 38801258793 -or $artifact.name -cne 'sec002-hosted-av-metadata-build-only' -or $artifact.expired -or $artifact.size_in_bytes -ne 526617 -or $artifact.digest -cne 'sha256:f9f73e84517e980a1a7cc436592f857bb765cb3b4344578bcba07875eccff205' -or [DateTimeOffset]::Parse($artifact.expires_at) -le [DateTimeOffset]::UtcNow){throw 'fixed_artifact_unavailable'}\n  $archive=Join-Path $root 'incoming/archive.zip'\n  Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/kitepon/Lattice/actions/artifacts/12004154981/zip' -OutFile $archive -TimeoutSec 120 | Out-Null\n  if((Get-Item -LiteralPath $archive).Length -ne 526617 -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'f9f73e84517e980a1a7cc436592f857bb765cb3b4344578bcba07875eccff205'){throw 'archive_identity'}\n  $state.status='downloaded_pending_full_validation';$state.archiveVerified=$true\n} catch { $state.status='unavailable' }\n$state | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'publish/acquisition.json') -Encoding utf8\nif(!$state.archiveVerified){throw 'fixed_artifact_unavailable'}\n'runner_id=13 runtime=24.20.0-x64-win32 artifact_id=12004154981 downloaded=true executed=false'\n"
         },
         {
           "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
           "with": {
-            "ref": "${{ github.sha }}",
+            "ref": "${{ inputs.workflow_head }}",
             "path": "caller",
             "fetch-depth": 0,
             "persist-credentials": false
@@ -51,7 +50,7 @@
         {
           "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
           "with": {
-            "ref": "478947af3470982bfc8c810e99b2f8d35a5c81f9",
+            "ref": "10dbb3dfabd617715a44f97d8f8c9eca92fddfc2",
             "path": "product",
             "fetch-depth": 0,
             "persist-credentials": false
@@ -60,7 +59,7 @@
         {
           "name": "exact source and tracked clean before install",
           "shell": "pwsh",
-          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs initialize product \"$env:RUNNER_TEMP/sec002-lattice-root-timeline-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs initialize product \"$env:RUNNER_TEMP/sec002-lattice-av-two-call-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
         },
         {
           "name": "logical CPU parallelism",
@@ -76,26 +75,27 @@
         {
           "name": "one standard pool full command with fixed stages",
           "shell": "pwsh",
-          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs run product \"$env:RUNNER_TEMP/sec002-lattice-root-timeline-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs run product \"$env:RUNNER_TEMP/sec002-lattice-av-two-call-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
         },
         {
           "name": "final source and evidence summary",
           "if": "always()",
           "shell": "pwsh",
-          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs finalize product \"$env:RUNNER_TEMP/sec002-lattice-root-timeline-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs finalize product \"$env:RUNNER_TEMP/sec002-lattice-av-two-call-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
         },
         {
-          "name": "raw evidence separate from stage summary and missing data",
+          "name": "safe receipts metadata and fixed summary only",
           "if": "always()",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
-            "name": "sec002-lattice-root-timeline-diagnostic",
-            "path": "${{ runner.temp }}/sec002-lattice-root-timeline-${{ github.run_id }}",
+            "name": "sec002-two-cli-metadata",
+            "path": "${{ runner.temp }}/sec002-lattice-av-two-call-${{ github.run_id }}/publish",
             "if-no-files-found": "error",
             "retention-days": 7
           }
         }
-      ]
+      ],
+      "if": "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/snowwhite/sec002-av-two-call-caller'"
     }
   }
 }

@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-export const SOURCE = '478947af3470982bfc8c810e99b2f8d35a5c81f9';
+export const SOURCE = '10dbb3dfabd617715a44f97d8f8c9eca92fddfc2';
+import { prepareArtifact, hash } from './sec002-av-artifact.mjs';
+import { summarizeCaptures, TARGETS } from './sec002-av-capture-results.mjs';
 const BASE = '3300d770b31e06a1b701e547c10d4899429e4024';
 const allowlist = JSON.parse(fs.readFileSync(new URL('./sec002-stage-paths.json', import.meta.url), 'utf8'));
 export function assertSource(root) {
@@ -14,11 +16,41 @@ export function assertSource(root) {
 }
 export function assertRuntime() {
   if (process.version !== 'v24.20.0' || process.arch !== 'x64' || process.platform !== 'win32') throw Error('runtime mismatch');
-  if (process.env.LATTICE_SENSOR_PARSE_WORKERS !== undefined || (process.env.NODE_OPTIONS ?? '').includes('sec002-preload')) throw Error('ambient diagnostic pool/preload override');
+  if (process.env.LATTICE_SENSOR_PARSE_WORKERS !== undefined || process.env.NODE_OPTIONS || Object.keys(process.env).some(k=>k.toUpperCase()==='_NO_DEBUG_HEAP')) throw Error('ambient diagnostic pool/preload override');
+}
+export function assertCaller(expected = process.env.GITHUB_SHA) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const git = args => execFileSync('git',args,{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+  if (!/^[0-9a-f]{40}$/.test(expected ?? '') || git(['rev-parse','HEAD'])!==expected || git(['status','--porcelain','--untracked-files=no'])) throw Error('caller identity');
+}
+export function safeSummary(summary) {
+  const count=v=>Number.isSafeInteger(v)&&v>=0&&v<=0xffffffff?v:null;
+  const checked=v=>typeof v==='boolean'?v:null;
+  const cap=summary.capture;
+  const capture=cap?{schema:'sec002-av-capture-summary-v1',writeFailed:cap.writeFailed===true,complete:cap.complete===true,unobserved:count(cap.unobserved),stackImplemented:false,targets:TARGETS.map(([caseId,callOrder])=>{
+    const r=Array.isArray(cap.targets)?cap.targets.find(v=>v.caseId===caseId&&v.callOrder===callOrder):null;
+    const classes=['unobserved','observer_unavailable','node_second_chance_av','other_descendant_second_chance_av','c000_exit_without_captured_second_chance','observed_cli_exit','partial_or_unavailable'];
+    const b={caseId,callOrder};for(const k of ['reached','returned','childObserved','consistent','cleanup','coverage','complete','sourceGuardFailure','faultMetadataComplete'])b[k]=r?.[k]===true;
+    return {...b,classification:classes.includes(r?.classification)?r.classification:'unobserved',stackImplemented:false,rootPid:count(r?.rootPid),exitStatus:count(r?.exitStatus),missing:Array.isArray(r?.missing)?r.missing.filter(v=>['enter','leave','capture'].includes(v)):['enter','leave','capture'],invalid:Array.isArray(r?.invalid)?r.invalid.filter(v=>['enter','leave','capture'].includes(v)):[]};})}:null;
+  const stage=/^(root|sensor):(build|check:docs|test:sensor|test|check|ci)$/.test(summary.lastCommandStage??'')?summary.lastCommandStage:null;
+  return {schema:'sec002-av-run-v1',source:SOURCE,caller:/^[0-9a-f]{40}$/.test(process.env.GITHUB_SHA??'')?process.env.GITHUB_SHA:null,diagnosticOnly:true,acceptanceFull:false,
+    progress:['not-started','entry-validated','running','finished'].includes(summary.progress)?summary.progress:'unknown',
+    status:Number.isInteger(summary.status)&&summary.status>=0&&summary.status<=0xffffffff?summary.status:null,
+    signaled:!!summary.signaled,spawnFailed:!!summary.spawnFailed,lastCommandStage:stage,
+    sourceValidAtEntry:checked(summary.sourceValidAtEntry),sourceValidAtEnd:checked(summary.sourceValidAtEnd),callerValidAtEntry:checked(summary.callerValidAtEntry),callerValidAtEnd:checked(summary.callerValidAtEnd),
+    artifactVerified:checked(summary.artifactVerified),nodeIdentityVerified:checked(summary.nodeIdentityVerified),
+    observationComplete:summary.observationComplete===true,
+    priorObservations:summary.observations?{rootTimelineComplete:summary.observations.rootTimeline?.complete===true,
+      eventCount:count(summary.observations.eventCount),parseErrors:count(summary.observations.parseErrors),unreadableFiles:count(summary.observations.unreadableFiles),
+      writeFailureRows:count(summary.observations.writeFailureRows),missingCaseCount:Array.isArray(summary.observations.missingCases)?summary.observations.missingCases.length:null,
+      missingSourceEdgeCount:Array.isArray(summary.observations.missingSourceEdges)?summary.observations.missingSourceEdges.length:null}:null,
+    capture,stackImplemented:false,limitation:'Unreached/partial is not AV nonrecurrence; successful observations are not full acceptance.'};
 }
 function save(output, summary) {
   fs.mkdirSync(output, { recursive: true });
   fs.writeFileSync(path.join(output, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
+  fs.mkdirSync(path.join(output,'publish'),{recursive:true});
+  fs.writeFileSync(path.join(output,'publish','summary.json'),JSON.stringify(safeSummary(summary),null,2)+'\n');
 }
 export function summarizeRootTimeline(output) {
   const file = path.join(output, 'root-report-timeline.jsonl');
@@ -153,16 +185,26 @@ async function main() {
   const output = path.resolve(outputArg);
   let summary = { source: SOURCE, diagnosticOnly: true, acceptanceFull: false, progress: 'not-started' };
   try { summary = JSON.parse(fs.readFileSync(path.join(output, 'summary.json'), 'utf8')); } catch { /* absent remains explicit */ }
+  delete summary.capture;
   if (mode === 'initialize') {
-    assertSource(root); assertRuntime();
+    assertSource(root); assertCaller(); assertRuntime();
+    summary.sourceValidAtEntry=true;summary.callerValidAtEntry=true;summary.progress='entry-validated';save(output,summary);
+    prepareArtifact(output); summary.artifactVerified=true;
+    const runtime=JSON.parse(fs.readFileSync(path.join(output,'incoming/runtime-private.json'),'utf8'));
+    if(runtime.execPath!==process.execPath || !/^[0-9a-f]{64}$/.test(runtime.sha256)||hash(fs.readFileSync(process.execPath))!==runtime.sha256)throw Error('node identity');
+    summary.nodeIdentityVerified=true;
+    fs.mkdirSync(path.join(output,'capture-private'),{recursive:false});
+    fs.writeFileSync(path.join(output,'av-capture-config.json'),JSON.stringify({schema:'sec002-av-config-v1',nodePath:process.execPath,nodeSha256:runtime.sha256})+'\n',{flag:'wx'});
     summary.progress = 'entry-validated'; summary.sourceValidAtEntry = true; save(output, summary); return;
   }
   save(output, summary);
   if (mode === 'finalize') {
     let sourceValid = true;
     try { assertSource(root); } catch { sourceValid = false; }
-    summary.sourceValidAtEnd = sourceValid; summary.observations = summarize(output);
-    summary.observationComplete = sourceValid && summary.progress === 'finished' &&
+    summary.sourceValidAtEnd = sourceValid;
+    try { assertCaller(); summary.callerValidAtEnd=true; } catch { summary.callerValidAtEnd=false; }
+    summary.observations = summarize(output); summary.capture = summarizeCaptures(output);
+    summary.observationComplete = sourceValid && summary.callerValidAtEnd && summary.capture.complete && summary.progress === 'finished' &&
       summary.observations.eventCount > 0 && summary.observations.parseErrors === 0 &&
       summary.observations.unreadableFiles === 0 && summary.observations.writeFailureRows === 0 &&
       summary.observations.rootTimeline.complete &&
@@ -171,7 +213,7 @@ async function main() {
     if (!summary.observationComplete || summary.status !== 0) process.exitCode = 1;
     return;
   }
-  assertSource(root);
+  assertSource(root); assertCaller();
   assertRuntime();
   const raw = path.join(output, 'raw-events'); fs.mkdirSync(raw, { recursive: true });
   summary.runtime = { node: process.versions.node, arch: process.arch, platform: process.platform };
@@ -203,8 +245,9 @@ async function main() {
     summary.progress = 'finished'; log.end(resolve);
   }));
   try { assertSource(root); summary.sourceValidAtEnd = true; } catch { summary.sourceValidAtEnd = false; }
+  try { assertCaller(); summary.callerValidAtEnd=true; } catch { summary.callerValidAtEnd=false; }
   save(output, summary);
-  if (summary.status !== 0 || summary.signaled || summary.spawnFailed || !summary.sourceValidAtEnd) process.exitCode = 1;
+  if (summary.status !== 0 || summary.signaled || summary.spawnFailed || !summary.sourceValidAtEnd || !summary.callerValidAtEnd) process.exitCode = 1;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(() => { console.error('fixed-stage diagnostic driver failed; preserved summary/raw evidence may be incomplete'); process.exitCode = 1; });

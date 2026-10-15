@@ -1,0 +1,82 @@
+[
+  {
+    "path": "capture-build.log",
+    "bytes": 13,
+    "sha256": "08b3a918410fc3f1c44c2a8b9b8754588ccc532da07bdccdaf3c094bb0d2c9e3"
+  },
+  {
+    "path": "capture.exe",
+    "bytes": 283136,
+    "sha256": "6bd0ac325ba631b1fdbc213708fdab08f6877efdb48d6fa7784787b2493ee7a5"
+  },
+  {
+    "path": "capture.exe.inspection.json",
+    "bytes": 250,
+    "sha256": "f544bce1ba9dbbdbfef8dd9c42483d1fa76d4e2faafcc8fb6478b09935f965b1"
+  },
+  {
+    "path": "capture.exe.pe.txt",
+    "bytes": 10970,
+    "sha256": "b751a736d26850893dff59448fd9f1175a6709bcfa9b53e23c4d071a7488cc7b"
+  },
+  {
+    "path": "capture.exe.sha256.json",
+    "bytes": 230,
+    "sha256": "60ee41fd58c153648494c590d840048490cbae462fbff3423964f91d14dfdc11"
+  },
+  {
+    "path": "dependency-manifest.json",
+    "bytes": 1041148,
+    "sha256": "fdb4b7b07a6c0aea1e57f1d7710dd67904b24aab78c0dde261d09c24079a4f3a"
+  },
+  {
+    "path": "fault-fixture.exe",
+    "bytes": 137216,
+    "sha256": "358ac983d9e96ccf66c56be68d322bc5733a51bcff0b985e58512840929a3a42"
+  },
+  {
+    "path": "fault-fixture.exe.inspection.json",
+    "bytes": 250,
+    "sha256": "711886b2f417d50b958cd1919c96023061ae231ee99d1fcf6061f298404a40a9"
+  },
+  {
+    "path": "fault-fixture.exe.pe.txt",
+    "bytes": 9819,
+    "sha256": "9356fc40d6da903eadeee3c852e6be3075c9214baacf791fb1522b1f85c09ffd"
+  },
+  {
+    "path": "fault-fixture.exe.sha256.json",
+    "bytes": 236,
+    "sha256": "28c878422a632b940cf9fe421a90b075b4a1005412653d4b17ef302078bfb84b"
+  },
+  {
+    "path": "fixture-build.log",
+    "bytes": 19,
+    "sha256": "e961ee465f4232bf57045a6fcd1b1df1c00fa172638c580619128f2dcc83d6ff"
+  },
+  {
+    "path": "provenance.json",
+    "bytes": 498,
+    "sha256": "b2b49c35a9fd0c7c6a13bd8f92a58be248c6c41425c0922c28f290661ed1919e"
+  },
+  {
+    "path": "source-manifest.json",
+    "bytes": 2178,
+    "sha256": "28b7766841e3c8ddae60008432508a2780aee0e4b22042de9bf062e5b80ef813"
+  },
+  {
+    "path": "summary.json",
+    "bytes": 1241,
+    "sha256": "0da85677745c7efe4dbdb7efb10dd79c1f720fd2744aa1840190770113dd9db5"
+  },
+  {
+    "path": "toolchain-selection.json",
+    "bytes": 198,
+    "sha256": "142090a2bdbea97e3d2a0c8f55165bd4e3f7ce7ec63999d2748496fbbb03412e"
+  },
+  {
+    "path": "toolchain.json",
+    "bytes": 1798,
+    "sha256": "f9e6184b8c7646ceb7b1aa0a344b42f18b58a9a7aeb5b4898e8933d204baffca"
+  }
+]
