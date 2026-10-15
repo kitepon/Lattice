@@ -1,58 +1,63 @@
-# SEC002 root reason caller candidate
+# SEC002 root timeline caller candidate
 
-This temporary caller is separate from the observed product source. The registered
-upstream-check.yml entry is replaced only on this feature branch by a manual-only Windows
-caller; it performs no upstream check or schedule. The default branch is unchanged.
-The product ci.yml is kept verbatim at 3300d770. Do not dispatch ci.yml or the old pool driver.
+Preparation only: DO NOT DISPATCH. This manual-only feature-branch caller uses the
+registered upstream-check.yml entry. The default/weekly workflow is unchanged. Do not
+run ci.yml or any old pool driver. Product ci.yml is byte-identical to original 3300d770.
 
-The caller pins product checkout to 83bc4124e95e8537f0f1f244205c9ae20e364b25 with a full clone,
-checks its complete HEAD, tracked clean state and all 20 paths against the original 3300d770,
-and checks the same source after execution. Identity/id13 and Node24.20.0/x64/win32 guards
-precede npm installs. Only the API identity step receives GH_JOB_TOKEN; both checkouts
-use persist-credentials:false. The regular Windows selector and 25-minute budget remain.
+Product source is pinned to 478947af3470982bfc8c810e99b2f8d35a5c81f9, with fetch-depth:0,
+persist-credentials:false, exact HEAD, complete 20-path allowlist against 3300d770 and
+tracked clean checks at entry/run end/finalize. ci.yml is excluded from that allowlist.
+The only source change from 83bc4124 is test/runtime-error-reporting.test.mjs. Product
+src and existing sensor observation are unchanged. Identity/actual id13/non-administrator
+and Node24.20.0/x64/win32 must pass before installation. Only the API guard step receives
+GH_JOB_TOKEN. A caller Node wrapper is an additional ancestor of pwsh/npm/product children.
 
-Dependencies remain npm ci && npm --prefix sensor ci. Exactly one standard-pool command is
-npm --prefix sensor run build && npm run ci. The original logical CPU calculation and
-root/docs-before-sensor order are retained. No Vitest reporter/config/test filter/retry,
-timeout, skip, worker count, parser override or old preload is added. Observer unit7 stays
-outside the product inventory. Trace directory is the only observation env addition.
+The original logical CPU calculation, npm ci && npm --prefix sensor ci, and one standard
+pool npm --prefix sensor run build && npm run ci command remain, using pwsh and explicit
+LASTEXITCODE forwarding. Root/docs run before sensor; the original && stops on root failure.
+No reporter/filter/retry/timeout/skip/fork/parser override/preload is added. Sensor remains
+four forks, original product timeouts and skips. Job budget is 25 minutes, no rerun.
+Observer unit7 and new diagnostic local units remain outside normal test inventory.
 
-Raw stdout/stderr is preserved as test.log and raw per-PID/thread JSONL as raw-events/.
-Derived av-events.jsonl, source-events.jsonl and summary.json are separate. Summary records
-progress and last known command stage before completion, then status/signaled/spawn failure,
-missing cases/source edges, malformed rows, write failures and last stage per stream.
-An incomplete artifact or hard job timeout is not successful observation and is not rerun.
-Always-upload is best effort; Actions raw log remains evidence if the job is forcibly ended.
-No AV recurrence yields only a normal timing baseline, not an AV classification or acceptance.
+LATTICE_SENSOR_STAGE_TRACE_DIR is the only observation environment addition. The target
+root case accumulates at most 64 fixed events in memory, uses numeric WeakMap identities
+for existing accepted sockets, and writes once after the existing close then rm cleanup.
+No additional POST/store read/process/thread/listener/timer/Promise reaction is installed.
+When observation is off there is no timeline clock, buffer, WeakMap or sink. Preparation
+failure and original cleanup exceptions keep their original behavior; the outer finally
+only attempts diagnostic persistence. Clock/allocations/final write still perturb timing.
 
-The initial source32 candidate inherited an old diagnostic ci.yml. Its unmodified docs gate
-failed two documentation-ci-contract assertions and would stop the full command before
-sensor. The pinned source381 restores only ci.yml verbatim from 3300d770 and passes the
-same docs gate; all observer code and tests remain identical to source32. No assertion is
-weakened or skipped. The 20-path allowlist excludes ci.yml, because it is now identical to
-3300d770. Driver command execution uses PowerShell 7 with the original command and explicit
-LASTEXITCODE forwarding. The diagnostic Node driver is an additional ancestor process;
-product child creation and CLI re-exec logic are unchanged. Summary command stages include
-a fixed root/sensor component so their npm test stages remain distinguishable.
+Root root-report-timeline.jsonl sits directly in the artifact output directory, outside
+sensor raw-events/. test.log and both raw event sets are preserved separately from derived
+av-events.jsonl, source-events.jsonl and summary.json. rootTimeline summary validates fixed
+schema/fields/stages, sequence/PID/monotonic stream, one footer, mandatory boundaries and two
+mock body/response points. Missing/malformed/unreadable/partial/overflow/observer-error or
+the fixed write-failure marker prevents observationComplete. A sink that writes then throws
+also fails via the marker. Partial rows and last stage remain available, never counted as
+complete. Product nonzero exit remains failure even if observations are valid. Hard kill
+can prevent persistence/upload; absence is missing evidence, not a successful observation.
 
-Dispatch still requires the requester's acceptance of the exact replacement source SHA
-and final caller review with mandatory fixes zero. No run is consumed during preparation.
+Intervals include existing fixture/store/report/cleanup boundaries. mock_body follows
+requests.push; mock_response_queued follows response.end returning. Queueing is not client
+receipt. A report interval includes credential/store preflight, network, receipt and ack,
+not network-only or ack-only timing. nothing_pending records interval only, no outcome.
+receivedCount is complete bodies recorded by the mock, not bytes arriving/client acceptance.
+sameAcceptedSocket compares server-side object identity only for two completed bodies;
+a missing second body gives no evidence of the failed client's socket reuse. No errno,
+internal ack lock/rename/DACL stage or new post-failure store snapshot is collected. Paths,
+URL/port/argv/env/body/key/report ID/signature/error text are absent from root event fields.
 
+This new source/caller is a proposed observation step, not a retry of either prior run.
+Output is sec002-lattice-root-timeline-${run_id}; artifact is
+sec002-lattice-root-timeline-diagnostic. Preserve old full/6case/sensor/stage/reason originals.
+A root failure still means sensor unobserved; event0 is not AV non-recurrence. Healthy stages
+are a baseline only; a healthy root does not explain the old unconfirmed report. Standard
+native build absence is distinct from an unobserved original external kernel override.
+No result substitutes for original full acceptance, root/source/AV classification or repair.
 
-This is a separate head for root-failure reason observation, not a retry of run38775137903.
-The source differs from 38113055 only by one test's assertion message. Its comparison and
-expected value are unchanged. If the resolution report fails again, test.log gains only
-fixed outcome/reason/httpStatus and mock-intake receivedCount. receivedCount=1 means no
-second complete request body was recorded; it does not prove no network bytes arrived.
-receivedCount=2 means the mock recorded that complete body, not that the client accepted
-the response or persisted acknowledgement. The reason separates transport, receipt and ack
-categories; it does not provide errno, socket reuse, exact ack substage or stage durations.
-If the case passes, no failure message is emitted and no root failure reason is learned.
-If root fails, the original && command still stops before sensor; event0 is unobserved,
-not a claim of AV non-recurrence. Nothing bypasses root/docs or turns missing data green.
-
-A later authorized run would use its own sec002-lattice-root-reason-${run_id} directory and
-sec002-lattice-root-reason-diagnostic artifact. Old full/6case/sensor/stage raw evidence stays
-separate. Current authorization covers preparation/local checks/review only: DO NOT DISPATCH.
-Identity/runtime, standard pool, original four sensor forks/timeouts/skips and 25 minutes
-are unchanged. No Windows run or host probe is performed during this preparation.
+Execution requires a separate Dorothy decision after exact source/caller SHA, local checks
+and both implementation reviews have mandatory fixes zero. The 03:17 design review does
+not replace those reviews. Current authorization is implementation/local checks/read-only
+review/caller preparation only. No Windows run, new host probe/auth/permission change or
+other job interruption occurs here. Reviewer must read saved evidence and code only; the
+implementation owner performs necessary Linux checks, which do not prove Windows behavior.
