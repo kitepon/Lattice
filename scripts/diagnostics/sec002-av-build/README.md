@@ -5,6 +5,8 @@ Source of the 13-file snapshot: Snow White's local repository commit
 `source-manifest.json` SHA256:
 `28b7766841e3c8ddae60008432508a2780aee0e4b22042de9bf062e5b80ef813`.
 The snapshot is byte-for-byte unchanged: 13 files, 51764 bytes.
+A diagnostic-local .gitattributes marks the snapshot and manifest -text, preserving
+bytes across Windows checkout without changing system/global git settings.
 
 This feature branch uses registered `upstream-check.yml` as a manual-only caller.
 Main's weekly workflow and all other existing workflows stay unchanged.
@@ -20,7 +22,8 @@ no self-hosted selector, no cancellation, no SDK/tool installation.
 [Official image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
 lists VS2022 17.14 and SDK10.0.26100.0. That is an availability lead, not proof of
 the current job's files. The build records the actual image version, known toolchain
-paths, versions, hashes, and SDK/include/lib/bin-DLL manifests. Only an existing,
+paths, versions, hashes, and SDK/include/lib/bin-DLL manifests. These are observed
+build inputs and same-job consistency checks, not externally pinned vendor provenance. Only an existing,
 unique 14.44 toolset and SDK10.0.26100.0 qualify. Missing or different tools fail
 without installation, fallback, or a second run.
 

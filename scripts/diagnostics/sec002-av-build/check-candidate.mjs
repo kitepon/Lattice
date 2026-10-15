@@ -10,6 +10,7 @@ const manifest=JSON.parse(manifestBytes);
 const checks=[];
 const check=(name,ok)=>{checks.push({name,ok:!!ok});if(!ok)throw new Error(name);};
 check('manifest-hash',digest(manifestBytes)==='28b7766841e3c8ddae60008432508a2780aee0e4b22042de9bf062e5b80ef813');
+check('eol-boundary',fs.readFileSync(path.join(here,'.gitattributes'),'utf8').includes('snapshot/** -text')&&fs.readFileSync(path.join(here,'.gitattributes'),'utf8').includes('source-manifest.json -text'));
 check('local-source-head',manifest.sourceHead==='4ab846c70883170f94b6af05b99cb049e2cff0f4');
 check('snapshot-inventory-count',manifest.files.length===13&&manifest.files.reduce((n,r)=>n+r.bytes,0)===51764);
 for(const row of manifest.files){const bytes=fs.readFileSync(path.join(here,'snapshot',row.path));check(`snapshot:${row.path}`,bytes.length===row.bytes&&digest(bytes)===row.sha256);}

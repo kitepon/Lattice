@@ -1,0 +1,4 @@
+# Preserve the reviewed byte snapshot on Windows without changing host git settings.
+snapshot/** -text
+source-manifest.json -text
+*.ps1 text eol=lf

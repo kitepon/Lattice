@@ -9,8 +9,8 @@ $localSourceHead='4ab846c70883170f94b6af05b99cb049e2cff0f4'
 if($ExpectedSourceHead -cnotmatch '^[0-9a-f]{40}$' -or $ExpectedWorkflowHead -cnotmatch '^[0-9a-f]{40}$'){throw 'invalid_pinned_sha'}
 if(![IO.Path]::IsPathFullyQualified($Output) -or (Test-Path -LiteralPath $Output)){throw 'output_must_be_new_absolute_path'}
 New-Item -ItemType Directory -Path $Output | Out-Null
-$state=[ordered]@{schema='sec002-hosted-av-build-v1';phase='entry';sourceHead=$ExpectedSourceHead;workflowHead=$ExpectedWorkflowHead;localSourceHead=$localSourceHead;manifestSha256=$manifestHash;imageOS=$env:ImageOS;imageVersion=$env:ImageVersion;runId=$env:GITHUB_RUN_ID;attempt=$env:GITHUB_RUN_ATTEMPT;runnerName=$env:RUNNER_NAME;runnerOS=$env:RUNNER_OS;runnerArch=$env:RUNNER_ARCH;sourceValidAtEntry=$false;sourceValidAtEnd=$false;executedTargetBinaries=0;windowsFixtureExecuted=$false;productExecuted=$false;stackImplemented=$false;status='incomplete';failureStage=$null;failureCode=$null}
-function Save-State { $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'summary.json') -Encoding utf8 }
+$state=[ordered]@{schema='sec002-hosted-av-build-v1';phase='entry';sourceHead=$ExpectedSourceHead;workflowHead=$ExpectedWorkflowHead;localSourceHead=$localSourceHead;manifestSha256=$manifestHash;imageOS=$env:ImageOS;imageVersion=$env:ImageVersion;runId=$env:GITHUB_RUN_ID;attempt=$env:GITHUB_RUN_ATTEMPT;runnerName=$env:RUNNER_NAME;runnerOS=$env:RUNNER_OS;runnerArch=$env:RUNNER_ARCH;sourceValidAtEntry=$false;sourceValidAtEnd=$false;executedTargetBinaries=0;windowsFixtureExecuted=$false;productExecuted=$false;stackImplemented=$false;status='incomplete';failureStage=$null;failureCode=$null;phaseTimesUtc=[ordered]@{};updatedUtc=$null}
+function Save-State { $state.updatedUtc=[DateTime]::UtcNow.ToString('o');if(!$state.phaseTimesUtc.Contains($state.phase)){$state.phaseTimesUtc[$state.phase]=$state.updatedUtc};$state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'summary.json') -Encoding utf8 }
 function Assert-Source {
   $head=& git -C $root rev-parse HEAD
   if($LASTEXITCODE -ne 0 -or $head -cne $ExpectedSourceHead){throw 'source_sha_mismatch'}
@@ -113,7 +113,11 @@ try {
     }
   }
   $state.phase='pe-inspection';Save-State
-  foreach($name in @('capture.exe','fault-fixture.exe')){Inspect-PE (Join-Path $Output $name) | Out-Null}
+  $inspectionFailure=$null
+  foreach($name in @('capture.exe','fault-fixture.exe')){
+    try { Inspect-PE (Join-Path $Output $name) | Out-Null } catch { if(!$inspectionFailure){$inspectionFailure=$_.Exception.Message} }
+  }
+  if($inspectionFailure){throw $inspectionFailure}
   $state.status='build_only_success';$state.phase='finished'
 } catch {
   $state.status='failed';$state.failureStage=$state.phase
