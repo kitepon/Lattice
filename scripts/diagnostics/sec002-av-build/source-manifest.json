@@ -1,0 +1,72 @@
+{
+  "sourceRoot": "/srv/bellteam/bots/bot-fc291ae4/tools/sec002-av-capture",
+  "sourceHead": "4ab846c70883170f94b6af05b99cb049e2cff0f4",
+  "trackedClean": true,
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 48,
+      "sha256": "2ccadf8c41196f9c3d503a897a2e0d8a05f446b5ce6c9d963351526e16c315ac"
+    },
+    {
+      "path": "README.md",
+      "bytes": 942,
+      "sha256": "1cd3a3fffc8217a7f1387d4eb673369f11183faaa07a36bb6d37336aabe8589f"
+    },
+    {
+      "path": "build/build-msvc.ps1",
+      "bytes": 5297,
+      "sha256": "7e32269a40cbbc788d477733324c400e7b1249bbf3e9cf4bb3ffc9990ae4b9f3"
+    },
+    {
+      "path": "checks/policy-results.json",
+      "bytes": 81,
+      "sha256": "5613ad6263e00bbdcdfe5b4f0a59043d2ee7972ed38aa647551e0be4a250ff6c"
+    },
+    {
+      "path": "checks/policy-test.cpp",
+      "bytes": 1595,
+      "sha256": "585907c0b4d196c664b190272af91a002dbaeb859226585b5455708f166bfe87"
+    },
+    {
+      "path": "checks/static-check.py",
+      "bytes": 2982,
+      "sha256": "570e4cc2a1b1f30fcf132c3612bbaa4d2b1c6517a1052dec836fd2d2a90801e4"
+    },
+    {
+      "path": "checks/static-results.json",
+      "bytes": 1261,
+      "sha256": "478395f821fd03f4e08c3e1d4d660ae29c79334f62976178eea037973206f342"
+    },
+    {
+      "path": "docs/IMPLEMENTATION.md",
+      "bytes": 9430,
+      "sha256": "b39ef29025dd8ecd2727d61d44c43a958efe1c82b60c0b316185d9c1e5b408ae"
+    },
+    {
+      "path": "docs/OWNERSHIP.md",
+      "bytes": 911,
+      "sha256": "b6a10bc8cc09e03f4f9a7d44dccdb2275ea21f3713caca51810f71d97be3d9ea"
+    },
+    {
+      "path": "fixtures/EXPECTED.md",
+      "bytes": 2679,
+      "sha256": "2b3304e8ebf5124ee6ee2ff03c7098b3446dba52525810edff3daf4bc8c0c604"
+    },
+    {
+      "path": "fixtures/fault-fixture.cpp",
+      "bytes": 2433,
+      "sha256": "db11f5c0001ddf732e06ed036ea854a19d686a15452f87b994c29d2369f8f4c5"
+    },
+    {
+      "path": "src/capture.cpp",
+      "bytes": 22122,
+      "sha256": "46f7568c69994c202f31aca1a4bcf0989df7038104ace29d859c79ecf1011169"
+    },
+    {
+      "path": "src/policy.hpp",
+      "bytes": 1983,
+      "sha256": "ef7f8db05ba8bd82770d79439b95031319364c2fd423bb9330ec835d7388b4f7"
+    }
+  ]
+}

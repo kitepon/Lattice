@@ -1,0 +1,44 @@
+{
+  "kind": "static-source-contract-only",
+  "windowsValidated": false,
+  "binaryPresent": false,
+  "checks": {
+    "two_fixed_calls": true,
+    "debug_chain_not_only_this": true,
+    "no_other_process_attach": true,
+    "no_dump_or_symbol_apis": true,
+    "metadata_only_schema": true,
+    "heap_request_fixed": true,
+    "no_debug_string_read": true,
+    "private_dup_context": true,
+    "restricted_stdio": true,
+    "suspended_assign_first": true,
+    "kill_on_close_only": true,
+    "no_infinite_api_wait": true,
+    "failed_launch_skips_main_loop": true,
+    "independent_exit_status": true,
+    "dword_exit_forwarded": true,
+    "bounded_output": true,
+    "bounded_owned_handles": true,
+    "new_capture_file": true,
+    "rsds_without_path": true,
+    "cleanup_reported": true,
+    "no_fixture_run_recipe": true,
+    "manifest_required": true,
+    "strict_warnings": true
+  },
+  "passed": 23,
+  "failed": 0,
+  "localToolchain": {
+    "g++": "/usr/bin/g++",
+    "clang++": null,
+    "clang-cl": null,
+    "x86_64-w64-mingw32-g++": null,
+    "objdump": "/usr/bin/objdump"
+  },
+  "knownWindowsHeaders": {
+    "/usr/x86_64-w64-mingw32/include/windows.h": false,
+    "/usr/share/mingw-w64/include/windows.h": false,
+    "/usr/include/windows.h": false
+  }
+}
