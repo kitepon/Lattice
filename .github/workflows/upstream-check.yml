@@ -1,63 +1,66 @@
 {
-  "name": "SEC002 hosted AV metadata build only",
+  "name": "SEC002 fixed-binary isolated fixture preparation",
   "on": {
     "workflow_dispatch": {
       "inputs": {
         "workflow_head": {
-          "description": "Exact reviewed workflow commit SHA",
-          "type": "string",
-          "required": true
+          "description": "Reviewed full caller SHA; separate execution approval required",
+          "required": true,
+          "type": "string"
         }
       }
     }
   },
   "permissions": {
-    "contents": "read"
+    "contents": "read",
+    "actions": "read"
   },
   "concurrency": {
-    "group": "sec002-hosted-av-build-only",
+    "group": "sec002-windows-pinned-products",
     "cancel-in-progress": false
   },
   "jobs": {
-    "build-only": {
-      "name": "SEC002 compile and inspect only; no generated EXE execution",
-      "if": "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/snowwhite/sec002-hosted-av-build'",
-      "runs-on": "windows-2025",
-      "timeout-minutes": 20,
+    "fixture-only": {
+      "if": "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/snowwhite/sec002-fixture-controller'",
+      "runs-on": [
+        "self-hosted",
+        "factory",
+        "windows-native"
+      ],
+      "timeout-minutes": 25,
       "steps": [
         {
-          "name": "exact reviewed workflow and hosted runner entry",
+          "name": "verify dedicated id13 runtime and acquire only fixed artifact",
           "shell": "pwsh",
           "env": {
+            "GH_JOB_TOKEN": "${{ github.token }}",
             "EXPECTED_WORKFLOW_HEAD": "${{ inputs.workflow_head }}"
           },
-          "run": "$ErrorActionPreference='Stop'\nif($env:EXPECTED_WORKFLOW_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $env:EXPECTED_WORKFLOW_HEAD -or $env:GITHUB_WORKFLOW_SHA -cne $env:EXPECTED_WORKFLOW_HEAD){throw 'workflow_sha_mismatch'}\nif($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64'){throw 'github_hosted_windows_x64_required'}\n'exact workflow guard passed; GitHub-hosted Windows X64 only'"
+          "run": "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\nif($env:GITHUB_SHA -cne $env:EXPECTED_WORKFLOW_HEAD -or $env:GITHUB_WORKFLOW_SHA -cne $env:EXPECTED_WORKFLOW_HEAD -or $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or $env:GITHUB_REF -cne 'refs/heads/snowwhite/sec002-fixture-controller' -or $env:GITHUB_REPOSITORY -cne 'kitepon/Lattice'){throw 'workflow_entry'}\nif($env:NODE_OPTIONS -or $env:LATTICE_SENSOR_PARSE_WORKERS){throw 'ambient_override'}\n$runtime=node -p 'JSON.stringify({version:process.version,arch:process.arch,platform:process.platform})'\nif($LASTEXITCODE -ne 0){throw 'runtime_unavailable'}\n$r=$runtime | ConvertFrom-Json\nif($r.version -cne 'v24.20.0' -or $r.arch -cne 'x64' -or $r.platform -cne 'win32'){throw 'runtime_mismatch'}\n$ErrorActionPreference='Stop'\n$identity=[Security.Principal.WindowsIdentity]::GetCurrent()\n$principal=[Security.Principal.WindowsPrincipal]::new($identity)\n$sid=([Security.Principal.NTAccount]::new($env:COMPUTERNAME,'factory-runner')).Translate([Security.Principal.SecurityIdentifier]).Value\nif ($identity.User.Value -ne $sid -or $env:RUNNER_NAME -ne 'factory-windows-fox-u') {throw 'Dedicated identity differs'}\nif (!$env:RUNNER_WORKSPACE.StartsWith('C:\\actions-runner-dotagents-u\\',[StringComparison]::OrdinalIgnoreCase)) {throw 'Dedicated root differs'}\nif ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {throw 'Runner is administrator'}\n$headers=@{Authorization=\"Bearer $env:GH_JOB_TOKEN\";Accept='application/vnd.github+json'}\n$jobs=Invoke-RestMethod -Headers $headers -Uri \"https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs\"\n$matching=@($jobs.jobs | Where-Object {$_.runner_id -eq 13 -and $_.runner_name -eq 'factory-windows-fox-u' -and $_.status -eq 'in_progress'})\nif ($matching.Count -ne 1) {throw 'Runner id13 assignment unverified'}\n\n\n$root=Join-Path $env:RUNNER_TEMP \"sec002-fixture-$env:GITHUB_RUN_ID\"\nif(Test-Path -LiteralPath $root){throw 'fresh_directory_required'}\nNew-Item -ItemType Directory -Path (Join-Path $root 'incoming'),(Join-Path $root 'publish') | Out-Null\n$state=[ordered]@{schema='sec002-fixture-acquisition-v1';runId=38801258793;artifactId=12004154981;runnerId=13;nonAdministrator=$true;nodeVersion='24.20.0';arch='x64';platform='win32';status='unavailable';archiveVerified=$false}\ntry {\n  $artifact=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/kitepon/Lattice/actions/artifacts/12004154981' -TimeoutSec 60\n  if($artifact.id -ne 12004154981 -or $artifact.workflow_run.id -ne 38801258793 -or $artifact.name -cne 'sec002-hosted-av-metadata-build-only' -or $artifact.expired -or $artifact.size_in_bytes -ne 526617 -or $artifact.digest -cne 'sha256:f9f73e84517e980a1a7cc436592f857bb765cb3b4344578bcba07875eccff205' -or [DateTimeOffset]::Parse($artifact.expires_at) -le [DateTimeOffset]::UtcNow){throw 'fixed_artifact_unavailable'}\n  $archive=Join-Path $root 'incoming/archive.zip'\n  Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/kitepon/Lattice/actions/artifacts/12004154981/zip' -OutFile $archive -TimeoutSec 120 | Out-Null\n  if((Get-Item -LiteralPath $archive).Length -ne 526617 -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'f9f73e84517e980a1a7cc436592f857bb765cb3b4344578bcba07875eccff205'){throw 'archive_identity'}\n  $state.status='downloaded_pending_full_validation';$state.archiveVerified=$true\n} catch { $state.status='unavailable' }\n$state | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'publish/acquisition.json') -Encoding utf8\nif(!$state.archiveVerified){throw 'fixed_artifact_unavailable'}\n'runner_id=13 runtime=24.20.0-x64-win32 artifact_id=12004154981 downloaded=true executed=false'\n"
         },
         {
           "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
           "with": {
-            "ref": "b70ad1da8b48c0a995aa4dade71b730b27b7b491",
-            "path": "source",
+            "ref": "0436e7cda20c501e33417bd72d7d7cdb2a6dc68e",
             "fetch-depth": 0,
             "persist-credentials": false
           }
         },
         {
-          "name": "compile link inspect; never run generated executables",
+          "name": "normal admission then at most ten remaining fixture modes",
           "shell": "pwsh",
           "env": {
-            "EXPECTED_SOURCE_HEAD": "b70ad1da8b48c0a995aa4dade71b730b27b7b491",
             "EXPECTED_WORKFLOW_HEAD": "${{ inputs.workflow_head }}"
           },
-          "run": "& ./source/scripts/diagnostics/sec002-av-build/hosted-build.ps1 -ExpectedSourceHead $env:EXPECTED_SOURCE_HEAD -ExpectedWorkflowHead $env:EXPECTED_WORKFLOW_HEAD -Output \"$env:RUNNER_TEMP/sec002-hosted-av-build-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "& ./scripts/diagnostics/sec002-av-fixture/controller.ps1 -SourceHead '0436e7cda20c501e33417bd72d7d7cdb2a6dc68e' -WorkflowHead $env:EXPECTED_WORKFLOW_HEAD -Root (Join-Path $env:RUNNER_TEMP \"sec002-fixture-$env:GITHUB_RUN_ID\")\nexit $LASTEXITCODE"
         },
         {
-          "name": "source-build records and binaries only; seven days",
+          "name": "allowlisted observations only",
           "if": "always()",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
-            "name": "sec002-hosted-av-metadata-build-only",
-            "path": "${{ runner.temp }}/sec002-hosted-av-build-${{ github.run_id }}",
+            "name": "sec002-isolated-fixed-fixture",
+            "path": "${{ runner.temp }}/sec002-fixture-${{ github.run_id }}/publish",
             "if-no-files-found": "error",
             "retention-days": 7
           }
