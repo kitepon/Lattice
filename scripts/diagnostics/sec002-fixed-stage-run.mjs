@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-export const SOURCE = '32f2113bd874a93338a70aff04931474b4585a30';
+export const SOURCE = '381130553d3c256abd88835a7b54069ac782ee3f';
 const BASE = '3300d770b31e06a1b701e547c10d4899429e4024';
 const allowlist = JSON.parse(fs.readFileSync(new URL('./sec002-stage-paths.json', import.meta.url), 'utf8'));
 export function assertSource(root) {
@@ -70,7 +70,7 @@ async function main() {
   const [mode, rootArg, outputArg] = process.argv.slice(2);
   if (!['check-source', 'initialize', 'run', 'finalize'].includes(mode) || !rootArg) throw Error('fixed mode and root required');
   const root = path.resolve(rootArg);
-  if (mode === 'check-source') { assertSource(root); console.log('sourcePinned=true trackedClean=true paths=20'); return; }
+  if (mode === 'check-source') { assertSource(root); console.log('sourcePinned=true trackedClean=true paths=19'); return; }
   if (!outputArg) throw Error('output directory required');
   const output = path.resolve(outputArg);
   let summary = { source: SOURCE, diagnosticOnly: true, acceptanceFull: false, progress: 'not-started' };
@@ -96,20 +96,24 @@ async function main() {
   assertRuntime();
   const raw = path.join(output, 'raw-events'); fs.mkdirSync(raw, { recursive: true });
   summary.runtime = { node: process.versions.node, arch: process.arch, platform: process.platform };
-  summary.progress = 'running'; summary.lastCommandStage = 'sensor-build'; save(output, summary);
+  summary.progress = 'running'; summary.lastCommandStage = 'sensor:build'; save(output, summary);
   const log = fs.createWriteStream(path.join(output, 'test.log'), { flags: 'wx' });
   await new Promise((resolve, reject) => {
     log.once('open', resolve); log.once('error', reject);
   });
-  const child = spawn('npm --prefix sensor run build && npm run ci', { cwd: root, shell: true,
+  const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    'npm --prefix sensor run build && npm run ci; exit $LASTEXITCODE'], { cwd: root, shell: false,
     env: { ...process.env, LATTICE_SENSOR_STAGE_TRACE_DIR: raw }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let tail = '';
   function consume(chunk, channel) {
     log.write(chunk); channel.write(chunk);
     tail = (tail + chunk.toString()).slice(-4096);
-    const stages = [...tail.matchAll(/^> (?:@[^\s]+ )?(?:check:docs|test:sensor|test|check|ci|build)(?:\s|$)/gm)];
-    const last = stages.at(-1)?.[0].trim().split(' ').at(-1);
-    if (last && last !== summary.lastCommandStage) { summary.lastCommandStage = last; save(output, summary); }
+    const stages = [...tail.matchAll(/^> (@[^\s]+) (check:docs|test:sensor|test|check|ci|build)(?:\s|$)/gm)];
+    const last = stages.at(-1);
+    const component = last?.[1].startsWith('@quolu/lattice-sensor@') ? 'sensor'
+      : last?.[1].startsWith('@quolu/lattice@') ? 'root' : null;
+    const stage = component && last ? component + ':' + last[2] : null;
+    if (stage && stage !== summary.lastCommandStage) { summary.lastCommandStage = stage; save(output, summary); }
   }
   child.stdout.on('data', chunk => consume(chunk, process.stdout));
   child.stderr.on('data', chunk => consume(chunk, process.stderr));

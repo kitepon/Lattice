@@ -51,7 +51,7 @@
         {
           "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
           "with": {
-            "ref": "32f2113bd874a93338a70aff04931474b4585a30",
+            "ref": "381130553d3c256abd88835a7b54069ac782ee3f",
             "path": "product",
             "fetch-depth": 0,
             "persist-credentials": false

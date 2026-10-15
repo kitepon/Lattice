@@ -1,5 +1,4 @@
 [
-  ".github/workflows/ci.yml",
   "scripts/diagnostics/FIXED-STAGES.md",
   "scripts/diagnostics/README.md",
   "scripts/diagnostics/sec002-parser-pool.mjs",
