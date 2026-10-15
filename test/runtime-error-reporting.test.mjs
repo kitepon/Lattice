@@ -175,6 +175,18 @@ nodeTest('合鍵のfileは、本人だけが読める形（POSIXは本人所有�
   }
 });
 
+/** Diagnostic assertion text only: fixed categories and counts, never credential/body/path. */
+function resolutionReportFailureSummary(report, receivedCount) {
+  const reasons = ['network_error', 'response_error', 'response_too_large', 'timeout',
+    'receipt_not_verified', 'ack_not_recorded', 'unavailable', 'unrecognized_response'];
+  return JSON.stringify({ phase: 'resolution_report',
+    outcome: ['delivered', 'unconfirmed'].includes(report.outcome) ? report.outcome : 'other',
+    reason: report.reason === null ? null : reasons.includes(report.reason) ? report.reason : 'other',
+    httpStatus: Number.isInteger(report.http_status) && report.http_status >= 100 && report.http_status <= 599
+      ? report.http_status : null,
+    receivedCount: Number.isSafeInteger(receivedCount) && receivedCount >= 0 ? receivedCount : null });
+}
+
 nodeTest('未受領の記録を署名つきで送り、署名つきの受領でだけ受領済みにする', async () => {
   const intake = await startIntake(signedReceipt);
   const workspace = await makeWorkspace(intake.url);
@@ -225,7 +237,8 @@ nodeTest('未受領の記録を署名つきで送り、署名つきの受領で�
     const fingerprint = request.body.runtime_errors[0].fingerprint;
     setRuntimeErrorStatus(fingerprint, 'resolved', workspace.options);
     const resolved = await reportRuntimeErrors(workspace.options);
-    assert.deepEqual([resolved.outcome, resolved.sent], ['delivered', { runtime_errors: 0, resolutions: 1 }]);
+    assert.deepEqual([resolved.outcome, resolved.sent], ['delivered', { runtime_errors: 0, resolutions: 1 }],
+      resolutionReportFailureSummary(resolved, intake.requests.length));
     assert.deepEqual(Object.keys(intake.requests[1].body.resolutions[0]), ['fingerprint', 'resolved_at', 'reason_code']);
     assert.equal(intake.requests[1].body.resolutions[0].fingerprint, fingerprint);
     assert.notEqual(intake.requests[1].body.report_id, request.body.report_id);
