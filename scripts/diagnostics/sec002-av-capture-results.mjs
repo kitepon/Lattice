@@ -22,7 +22,7 @@ export const TARGETS=[['cli-idempotent',2],['cli-recovery',3]];
 export function callReceipt(v,caseId,order,phase){
  let fields=['schema','caseId','callOrder','phase','pid','parentPid'];if(phase==='leave')fields.push('status','signaled','spawnErrorCode','failureKind');
  if(!keys(v,fields)||v.schema!=='sec002-av-call-v1'||v.caseId!==caseId||v.callOrder!==order||v.phase!==phase||!pid(v.pid)||!pid(v.parentPid))fail('receipt_schema');
- if(phase==='leave'&&(!(v.status===null||uint(v.status))||typeof v.signaled!=='boolean'||!(v.spawnErrorCode===null||['ENOENT','EACCES','EPERM','ETIMEDOUT','other'].includes(v.spawnErrorCode))||!(v.failureKind===null||['config','identity','helper','config_unreadable'].includes(v.failureKind))))fail('receipt_detail');return v;
+ if(phase==='leave'&&(!(v.status===null||uint(v.status))||typeof v.signaled!=='boolean'||!(v.spawnErrorCode===null||['ENOENT','EACCES','EPERM','ETIMEDOUT','ENOMEM','EAGAIN','other'].includes(v.spawnErrorCode))||!(v.failureKind===null||['config','identity','helper','config_unreadable'].includes(v.failureKind))))fail('receipt_detail');return v;
 }
 export function classifyCapture(enter,leave,capture){
  const reached=!!enter,returned=!!leave,childObserved=!!capture?.outerExited;

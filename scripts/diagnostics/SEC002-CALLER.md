@@ -60,3 +60,8 @@ EOF is inherited execFileSync's return contract, not a new independent Native
 EOF/accounting observation. Caller preserves root-first failures and job hardkill
 as incomplete rather than bypassing them. Stack/Sym/CodeView proof is not added.
 Windows execution and product-hook adoption still require separate judgment.
+
+Initialize failure is observation unavailable, never AV nonrecurrence. Helper
+output write failure has no independent writeFailed field in the fixed binary;
+missing/invalid/truncated/non-finished capture is incomplete, but cannot identify
+that failure mechanism separately. Receipt write failure has its fixed marker.
