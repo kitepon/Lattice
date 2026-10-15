@@ -1,5 +1,5 @@
 {
-  "name": "SEC002 fixed-stage Windows diagnostic only",
+  "name": "SEC002 root reason Windows diagnostic only",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -23,7 +23,7 @@
   },
   "jobs": {
     "fixed-stage-diagnostic": {
-      "name": "SEC002 fixed-stage standard pool diagnostic",
+      "name": "SEC002 root reason standard pool diagnostic",
       "runs-on": [
         "self-hosted",
         "factory",
@@ -51,7 +51,7 @@
         {
           "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
           "with": {
-            "ref": "381130553d3c256abd88835a7b54069ac782ee3f",
+            "ref": "83bc4124e95e8537f0f1f244205c9ae20e364b25",
             "path": "product",
             "fetch-depth": 0,
             "persist-credentials": false
@@ -60,7 +60,7 @@
         {
           "name": "exact source and tracked clean before install",
           "shell": "pwsh",
-          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs initialize product \"$env:RUNNER_TEMP/sec002-lattice-stage-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs initialize product \"$env:RUNNER_TEMP/sec002-lattice-root-reason-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
         },
         {
           "name": "logical CPU parallelism",
@@ -76,21 +76,21 @@
         {
           "name": "one standard pool full command with fixed stages",
           "shell": "pwsh",
-          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs run product \"$env:RUNNER_TEMP/sec002-lattice-stage-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs run product \"$env:RUNNER_TEMP/sec002-lattice-root-reason-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
         },
         {
           "name": "final source and evidence summary",
           "if": "always()",
           "shell": "pwsh",
-          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs finalize product \"$env:RUNNER_TEMP/sec002-lattice-stage-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs finalize product \"$env:RUNNER_TEMP/sec002-lattice-root-reason-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
         },
         {
           "name": "raw evidence separate from stage summary and missing data",
           "if": "always()",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
-            "name": "sec002-lattice-fixed-stage-diagnostic",
-            "path": "${{ runner.temp }}/sec002-lattice-stage-${{ github.run_id }}",
+            "name": "sec002-lattice-root-reason-diagnostic",
+            "path": "${{ runner.temp }}/sec002-lattice-root-reason-${{ github.run_id }}",
             "if-no-files-found": "error",
             "retention-days": 7
           }

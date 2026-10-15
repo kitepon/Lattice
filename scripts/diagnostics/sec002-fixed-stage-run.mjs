@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-export const SOURCE = '381130553d3c256abd88835a7b54069ac782ee3f';
+export const SOURCE = '83bc4124e95e8537f0f1f244205c9ae20e364b25';
 const BASE = '3300d770b31e06a1b701e547c10d4899429e4024';
 const allowlist = JSON.parse(fs.readFileSync(new URL('./sec002-stage-paths.json', import.meta.url), 'utf8'));
 export function assertSource(root) {
@@ -70,7 +70,7 @@ async function main() {
   const [mode, rootArg, outputArg] = process.argv.slice(2);
   if (!['check-source', 'initialize', 'run', 'finalize'].includes(mode) || !rootArg) throw Error('fixed mode and root required');
   const root = path.resolve(rootArg);
-  if (mode === 'check-source') { assertSource(root); console.log('sourcePinned=true trackedClean=true paths=19'); return; }
+  if (mode === 'check-source') { assertSource(root); console.log('sourcePinned=true trackedClean=true paths=20'); return; }
   if (!outputArg) throw Error('output directory required');
   const output = path.resolve(outputArg);
   let summary = { source: SOURCE, diagnosticOnly: true, acceptanceFull: false, progress: 'not-started' };

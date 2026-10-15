@@ -17,5 +17,6 @@
   "sensor/src/extraction/parse-worker.ts",
   "sensor/src/extraction/store-worker.ts",
   "sensor/src/extraction/store-writer.ts",
-  "sensor/src/utils.ts"
+  "sensor/src/utils.ts",
+  "test/runtime-error-reporting.test.mjs"
 ]
