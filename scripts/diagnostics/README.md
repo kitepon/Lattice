@@ -18,6 +18,8 @@ maxWorkers=4/minWorkers=1 configuration; only one test file is selected. Both ar
 the identical observer loaded using NODE_OPTIONS. Ambient parser overrides cause refusal.
 Each repetition gets a JSON test report, raw test log and per-process/thread JSONL records.
 A missing/incomplete report, skipped case, spawn failure or test failure makes the job fail.
+Each repetition must also record runtime, main-thread sensor CLI and TS kernel-selection
+events; their counts are included in summary.json. Missing observations are incomplete.
 
 The observer records Node version/arch/platform, PID/thread/parent PID and fixed entry kind;
 only two allowlisted execArgv values and a count of other arguments; boolean presence of
