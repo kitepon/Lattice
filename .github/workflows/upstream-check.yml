@@ -1,36 +1,101 @@
-name: upstream check
-
-# sensor/ の由来である CodeGraph が進んだことに気づくための面。
-#
-# 一度これを持たずに運用した結果、54 commit・201 file 溜まってから偶然気づいた。
-# 「差分を見るコマンドを人が覚えて実行する」形では、覚えていない期間そのものが
-# 溜める期間になる。週次で回し、溜まっていれば job を落として可視化する。
-#
-# 何も書き換えない。取り込みは `node scripts/upstream-sync.mjs --apply` を人が
-# 走らせる。
-
-on:
-  schedule:
-    # 毎週月曜 09:00 JST (00:00 UTC)
-    - cron: '0 0 * * 1'
-  workflow_dispatch:
-
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '22.13'
-      - name: report distance from upstream
-        run: node scripts/upstream-check.mjs
-      - name: fail when upstream has moved
-        run: |
-          behind=$(node scripts/upstream-check.mjs --json | node -e \
-            'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).behind_commits))')
-          echo "behind_commits=$behind"
-          if [ "$behind" -gt 0 ]; then
-            echo "::warning::upstream is $behind commit(s) ahead — run scripts/upstream-sync.mjs"
-            exit 1
-          fi
+{
+  "name": "SEC002 fixed-stage Windows diagnostic only",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "environment": {
+          "type": "choice",
+          "options": [
+            "windows-native"
+          ],
+          "default": "windows-native"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read",
+    "actions": "read"
+  },
+  "concurrency": {
+    "group": "sec002-windows-pinned-products",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "fixed-stage-diagnostic": {
+      "name": "SEC002 fixed-stage standard pool diagnostic",
+      "runs-on": [
+        "self-hosted",
+        "factory",
+        "${{ inputs.environment }}"
+      ],
+      "timeout-minutes": 25,
+      "steps": [
+        {
+          "name": "verify dedicated identity and actual id13",
+          "shell": "pwsh",
+          "env": {
+            "GH_JOB_TOKEN": "${{ github.token }}"
+          },
+          "run": "$ErrorActionPreference='Stop'\n$identity=[Security.Principal.WindowsIdentity]::GetCurrent()\n$principal=[Security.Principal.WindowsPrincipal]::new($identity)\n$sid=([Security.Principal.NTAccount]::new($env:COMPUTERNAME,'factory-runner')).Translate([Security.Principal.SecurityIdentifier]).Value\nif ($identity.User.Value -ne $sid -or $env:RUNNER_NAME -ne 'factory-windows-fox-u') {throw 'Dedicated identity differs'}\nif (!$env:RUNNER_WORKSPACE.StartsWith('C:\\actions-runner-dotagents-u\\',[StringComparison]::OrdinalIgnoreCase)) {throw 'Dedicated root differs'}\nif ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {throw 'Runner is administrator'}\n$headers=@{Authorization=\"Bearer $env:GH_JOB_TOKEN\";Accept='application/vnd.github+json'}\n$jobs=Invoke-RestMethod -Headers $headers -Uri \"https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs\"\n$matching=@($jobs.jobs | Where-Object {$_.runner_id -eq 13 -and $_.runner_name -eq 'factory-windows-fox-u' -and $_.status -eq 'in_progress'})\nif ($matching.Count -ne 1) {throw 'Runner id13 assignment unverified'}\n'runner_id=13 nonAdministrator=true diagnosticOnly=true'\n"
+        },
+        {
+          "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "path": "caller",
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "with": {
+            "ref": "32f2113bd874a93338a70aff04931474b4585a30",
+            "path": "product",
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "exact source and tracked clean before install",
+          "shell": "pwsh",
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs initialize product \"$env:RUNNER_TEMP/sec002-lattice-stage-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+        },
+        {
+          "name": "logical CPU parallelism",
+          "shell": "pwsh",
+          "run": "$jobs = node -p \"require('node:os').availableParallelism()\"\nif ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}\n\"FACTORY_CI_JOBS=$jobs\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append"
+        },
+        {
+          "name": "pinned dependencies",
+          "shell": "pwsh",
+          "working-directory": "product",
+          "run": "npm ci && npm --prefix sensor ci\nexit $LASTEXITCODE"
+        },
+        {
+          "name": "one standard pool full command with fixed stages",
+          "shell": "pwsh",
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs run product \"$env:RUNNER_TEMP/sec002-lattice-stage-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+        },
+        {
+          "name": "final source and evidence summary",
+          "if": "always()",
+          "shell": "pwsh",
+          "run": "node caller/scripts/diagnostics/sec002-fixed-stage-run.mjs finalize product \"$env:RUNNER_TEMP/sec002-lattice-stage-$env:GITHUB_RUN_ID\"\nexit $LASTEXITCODE"
+        },
+        {
+          "name": "raw evidence separate from stage summary and missing data",
+          "if": "always()",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "sec002-lattice-fixed-stage-diagnostic",
+            "path": "${{ runner.temp }}/sec002-lattice-stage-${{ github.run_id }}",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        }
+      ]
+    }
+  }
+}

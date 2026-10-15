@@ -1,0 +1,22 @@
+[
+  ".github/workflows/ci.yml",
+  "scripts/diagnostics/FIXED-STAGES.md",
+  "scripts/diagnostics/README.md",
+  "scripts/diagnostics/sec002-parser-pool.mjs",
+  "scripts/diagnostics/sec002-preload.cjs",
+  "scripts/diagnostics/sec002-sensor-suite.mjs",
+  "sensor/__tests__/git-index-currency.test.ts",
+  "sensor/__tests__/index-command.test.ts",
+  "sensor/diagnostics-tests/stage-observer.test.ts",
+  "sensor/diagnostics-tests/vitest.config.mts",
+  "sensor/src/bin/lattice-sensor.ts",
+  "sensor/src/db/index.ts",
+  "sensor/src/diagnostics/stage-observer.ts",
+  "sensor/src/extraction/grammars.ts",
+  "sensor/src/extraction/kernel/loader.ts",
+  "sensor/src/extraction/parse-pool.ts",
+  "sensor/src/extraction/parse-worker.ts",
+  "sensor/src/extraction/store-worker.ts",
+  "sensor/src/extraction/store-writer.ts",
+  "sensor/src/utils.ts"
+]
