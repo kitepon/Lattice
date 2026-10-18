@@ -76,7 +76,9 @@ async function startIntake(respond) {
       requests.push(entry);
       const answer = respond(entry, requests.length);
       if (answer === null) return; // 応答しない（時間切れの試験）
-      response.writeHead(answer.status, { 'Content-Type': 'application/json' });
+      // 署名受領の試験を、同期store確認の間にidleになるsocketの再利用から切り離す。
+      // 実HTTPは通すが、fixtureの接続寿命を成功条件へ混ぜない。
+      response.writeHead(answer.status, { 'Content-Type': 'application/json', Connection: 'close' });
       response.end(JSON.stringify(answer.body));
     });
   });
@@ -90,6 +92,9 @@ const signedReceipt = (entry, extra = {}) => {
   return { status: 200, body: { accepted: true, report_id: entry.body.report_id, duplicate: false,
     received_at: receivedAt, sig: hmac(`${entry.body.report_id}\n${receivedAt}`), ...extra } };
 };
+
+const deliveryDetails = (answer, intake) =>
+  `outcome=${answer.outcome} reason=${answer.reason} http_status=${answer.http_status} requests=${intake.requests.length}`;
 
 /** BugHubの持ち主が合鍵を置く形で置く: POSIXは0600、Windowsは本人・SYSTEM・Administratorsだけのフォルダの中。 */
 async function placeCredential(credentialPath, content) {
@@ -188,7 +193,7 @@ nodeTest('未受領の記録を署名つきで送り、署名つきの受領で�
 
     const now = '2026-10-03T09:00:00.000Z';
     const delivered = await reportRuntimeErrors({ ...workspace.options, now });
-    assert.equal(delivered.outcome, 'delivered');
+    assert.equal(delivered.outcome, 'delivered', deliveryDetails(delivered, intake));
     assert.deepEqual(delivered.sent, { runtime_errors: 2, resolutions: 0 });
     assert.equal(delivered.acknowledged_through, 2);
     assert.equal(runtimeErrorsDiagnostics(workspace.options).pending_count, 0);
@@ -226,7 +231,8 @@ nodeTest('未受領の記録を署名つきで送り、署名つきの受領で�
     const fingerprint = request.body.runtime_errors[0].fingerprint;
     setRuntimeErrorStatus(fingerprint, 'resolved', workspace.options);
     const resolved = await reportRuntimeErrors(workspace.options);
-    assert.deepEqual([resolved.outcome, resolved.sent], ['delivered', { runtime_errors: 0, resolutions: 1 }]);
+    assert.deepEqual([resolved.outcome, resolved.sent], ['delivered', { runtime_errors: 0, resolutions: 1 }],
+      deliveryDetails(resolved, intake));
     assert.deepEqual(Object.keys(intake.requests[1].body.resolutions[0]), ['fingerprint', 'resolved_at', 'reason_code']);
     assert.equal(intake.requests[1].body.resolutions[0].fingerprint, fingerprint);
     assert.notEqual(intake.requests[1].body.report_id, request.body.report_id);
