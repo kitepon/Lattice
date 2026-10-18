@@ -104,7 +104,7 @@ test('concurrent setupはlockで直列化し一つの選択portを共有する',
 
 test('disableは選択値を保持しenabledだけ落とす', async (context) => {
   const { env } = await fixture(context);
-  const active = await configureBridge({ address: '127.0.0.1', port: 58_737, env });
+  const active = await configureBridge({ address: '127.0.0.1', env });
   const disabled = await disableBridge({ env });
   assert.equal(disabled.enabled, false);
   assert.deepEqual(disabled.listen, active.listen);
