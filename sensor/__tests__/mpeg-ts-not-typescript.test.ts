@@ -8,7 +8,7 @@
  * indexes it — not parsed, not stored, not reported as an unsupported
  * language, and never pending on a later sync.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -215,49 +215,57 @@ describe('MPEG-TS video named .ts is skipped, real TypeScript is indexed (#1910)
   });
 });
 
-describe('a video .ts never stays pending (#1910)', () => {
-  const dirs: string[] = [];
-  afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
-  const gitProject = (): string => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-mpegts-git-'));
-    dirs.push(dir);
-    const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
-    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
-    fs.writeFileSync(path.join(dir, 'app.ts'), 'export const a = 1;\n');
-    git('add', '.'); git('commit', '-qm', 'init');
-    return dir;
-  };
+describe.each([
+  { tracked: false, scoped: false, label: 'an untracked clip, on the git path' },
+  { tracked: true, scoped: false, label: 'a tracked TypeScript file that becomes a clip, on the git path' },
+  { tracked: true, scoped: true, label: 'a tracked TypeScript file that becomes a clip, on a scoped sync' },
+])('a video .ts never stays pending (#1910): $label', ({ tracked, scoped }) => {
+  type Fixture = { dir: string; cg?: LatticeSensor; operation?: Promise<unknown> };
+  let fixture: Fixture | undefined;
 
-  it('an untracked clip is not reported as added, before or after sync', async () => {
-    const dir = gitProject();
-    const cg = await LatticeSensor.init(dir, { index: true });
+  beforeEach(async () => {
+    const current: Fixture = { dir: fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-mpegts-git-')) };
+    fixture = current;
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: current.dir, stdio: 'pipe' });
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+    fs.writeFileSync(path.join(current.dir, 'app.ts'), 'export const a = 1;\n');
+    git('add', '.'); git('commit', '-qm', 'init');
+    if (tracked) fs.writeFileSync(path.join(current.dir, 'clip.ts'), 'export const clip = 1;\n');
+    // Retain init as well as indexing: either can outlive a hook timeout.
+    current.operation = LatticeSensor.init(current.dir).then((cg) => {
+      current.cg = cg;
+      return cg.indexAll();
+    });
+    await current.operation;
+  });
+
+  afterEach(async () => {
+    const current = fixture;
+    fixture = undefined;
+    if (!current) return;
+    // Capture ownership before waiting. A late finally must not touch a later fixture.
+    // A timeout does not cancel init/index/sync; do not remove its live database.
     try {
-      fs.writeFileSync(path.join(dir, 'clip.ts'), makeMpegTs(40));
-      expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
-      await cg.sync();
-      expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
-      expect(cg.getFiles().map((f) => f.path)).toEqual(['app.ts']);
+      await current.operation;
     } finally {
-      cg.close();
+      current.cg?.close();
+      fs.rmSync(current.dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 
-  it('a tracked TypeScript file that becomes a clip is removed, on the git path and on a scoped sync', async () => {
-    for (const scoped of [false, true]) {
-      const dir = gitProject();
-      fs.writeFileSync(path.join(dir, 'clip.ts'), 'export const clip = 1;\n');
-      const cg = await LatticeSensor.init(dir, { index: true });
-      try {
-        expect(cg.getNodesInFile('clip.ts').some((n) => n.name === 'clip')).toBe(true);
-        fs.writeFileSync(path.join(dir, 'clip.ts'), makeMpegTs(40));
-        if (!scoped) expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: ['clip.ts'] });
-        await (scoped ? cg.sync({ paths: ['clip.ts'] }) : cg.sync());
-        expect(cg.getFiles().map((f) => f.path)).toEqual(['app.ts']);
-        expect(cg.getNodesInFile('clip.ts')).toEqual([]);
-        expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
-      } finally {
-        cg.close();
-      }
+  it('removes the clip without leaving file records, nodes, or pending changes', async () => {
+    const current = fixture;
+    if (!current?.cg) throw new Error('MPEG-TS fixture was not initialized');
+    const { cg, dir } = current;
+    if (tracked) expect(cg.getNodesInFile('clip.ts').some((n) => n.name === 'clip')).toBe(true);
+    fs.writeFileSync(path.join(dir, 'clip.ts'), makeMpegTs(40));
+    if (!scoped) {
+      expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: tracked ? ['clip.ts'] : [] });
     }
+    current.operation = scoped ? cg.sync({ paths: ['clip.ts'] }) : cg.sync();
+    await current.operation;
+    expect(cg.getFiles().map((f) => f.path)).toEqual(['app.ts']);
+    expect(cg.getNodesInFile('clip.ts')).toEqual([]);
+    expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
   });
 });
