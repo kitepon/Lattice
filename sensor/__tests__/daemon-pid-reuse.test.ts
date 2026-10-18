@@ -41,6 +41,9 @@ import * as path from 'path';
 import { LatticeSensor } from '../src';
 import { getDaemonSocketPath } from '../src/mcp/daemon-paths';
 import { LatticeSensorPackageVersion } from '../src/mcp/version';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
+import { stopDaemonAt } from '../src/mcp/daemon-registry';
+import { terminateChild } from './child-process';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
@@ -51,7 +54,7 @@ interface SpawnedServer {
 }
 
 function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}): SpawnedServer {
-  const child = spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+  const child = spawn(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // #618: the daemon-attach log line is now off by default; opt the test
@@ -163,12 +166,6 @@ function countListeningLines(root: string): number {
   return readDaemonLog(root).split('\n').filter((l) => l.includes('[LatticeSensor daemon] Listening on')).length;
 }
 
-function killTree(...procs: ChildProcessWithoutNullStreams[]): void {
-  for (const p of procs) {
-    if (!p.killed) { try { p.kill('SIGKILL'); } catch { /* gone */ } }
-  }
-}
-
 async function waitProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
   return waitFor(() => !isAlive(pid), timeoutMs).then(() => true).catch(() => false);
 }
@@ -186,18 +183,14 @@ describe('Shared MCP daemon (issue #411)', () => {
   });
 
   afterEach(async () => {
-    killTree(...servers.map((s) => s.child));
-    // The daemon is detached (not a tracked child) — reap it explicitly via the
-    // pid it recorded, so a test can't leak a background daemon. Guard against
-    // our own pid: the version-mismatch test plants `pid: process.pid` in the
-    // lockfile, and we must never SIGKILL the vitest worker.
-    const daemonPid = readLockPid(realRoot);
-    if (daemonPid && daemonPid !== process.pid && isAlive(daemonPid)) {
-      try { process.kill(daemonPid, 'SIGKILL'); } catch { /* race */ }
-    }
-    await new Promise((r) => setTimeout(r, 50));
-    servers.length = 0;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    const current = { servers: servers.splice(0), tempDir, realRoot };
+    // EOF/close applies to the actual proxy: canonical flags avoid a relaunch shim.
+    await Promise.all(current.servers.map(({ child }) => terminateChild(child)));
+    // Verify the fixture daemon over its socket before signalling it. A stale
+    // record naming the vitest worker must fail cleanup, never signal that PID.
+    const stopped = await stopDaemonAt(current.realRoot, { preserveUnverified: true });
+    expect(['term', 'kill', 'not-running', 'no-daemon']).toContain(stopped.outcome);
+    await fs.promises.rm(current.tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   it('takes over after SIGKILL even when the stale PID has been reused (#1553)', async () => {
