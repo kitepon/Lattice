@@ -45,15 +45,15 @@ test('bridgeはHTMLとSSEを透過proxyしhealthはupstreamへ流さない', asy
     }
   });
   context.after(() => close(upstream));
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_738 }, allowed_hosts: ['127.0.0.1'],
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 }, allowed_hosts: ['127.0.0.1'],
     upstream: { mode: 'url', url: `http://127.0.0.1:${portOf(upstream)}/` } };
   const bridge = await startBridgeServer({ config });
   context.after(() => bridge.close());
-  assert.match(await (await fetch('http://127.0.0.1:58738/')).text(), /Lattice/u);
-  const events = await fetch('http://127.0.0.1:58738/events');
+  assert.match(await (await fetch(`http://127.0.0.1:${bridge.port}/`)).text(), /Lattice/u);
+  const events = await fetch(`http://127.0.0.1:${bridge.port}/events`);
   assert.equal(events.headers.get('content-type'), 'text/event-stream');
   assert.match(await events.text(), /event: state/u);
-  const publicHealth = await (await fetch('http://127.0.0.1:58738/__lattice/bridge-health')).json();
+  const publicHealth = await (await fetch(`http://127.0.0.1:${bridge.port}/__lattice/bridge-health`)).json();
   assert.equal(publicHealth.schema, 'lattice.bridge_health.v1');
   assert.equal(publicHealth.pid, undefined);
   assert.equal(publicHealth.updated_at, undefined);
@@ -66,14 +66,14 @@ test('attested healthだけが実走identity（版・node実体・bridge script�
   // 認証なしの可用性probeへ漏らしてはならない。
   const upstream = await upstreamServer((_request, response) => response.end('ok'));
   context.after(() => close(upstream));
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_752 },
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 },
     allowed_hosts: ['127.0.0.1'], updated_at: '2026-08-10T00:00:00.000Z',
     upstream: { mode: 'url', url: `http://127.0.0.1:${portOf(upstream)}/` } };
   const instanceToken = 'c'.repeat(64);
   const bridge = await startBridgeServer({ config, instanceToken });
   context.after(() => bridge.close());
 
-  const attested = await (await fetch('http://127.0.0.1:58752/__lattice/bridge-health',
+  const attested = await (await fetch(`http://127.0.0.1:${bridge.port}/__lattice/bridge-health`,
     { headers: { 'x-lattice-bridge-instance-token': instanceToken } })).json();
   assert.equal(attested.pid, process.pid);
   assert.equal(attested.node_path, process.execPath);
@@ -81,7 +81,7 @@ test('attested healthだけが実走identity（版・node実体・bridge script�
   assert.match(attested.version, /^\d+\.\d+\.\d+/u);
   assert.equal(attested.bridge_path, process.argv[1] ?? null);
 
-  const anonymous = await (await fetch('http://127.0.0.1:58752/__lattice/bridge-health')).json();
+  const anonymous = await (await fetch(`http://127.0.0.1:${bridge.port}/__lattice/bridge-health`)).json();
   assert.equal(anonymous.status, 'available');
   assert.equal(anonymous.node_path, undefined);
   assert.equal(anonymous.bridge_path, undefined);
@@ -93,14 +93,14 @@ test('dynamic descriptor modeはdashboard restart後のportを毎requestで再�
   const second = await upstreamServer((_request, response) => response.end('second'));
   context.after(() => Promise.all([close(first), close(second)]));
   let selected = portOf(first);
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_739 }, allowed_hosts: ['127.0.0.1'],
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 }, allowed_hosts: ['127.0.0.1'],
     upstream: { mode: 'dashboard_descriptor' } };
   const bridge = await startBridgeServer({ config,
     resolveUpstream: async () => new URL(`http://127.0.0.1:${selected}/`) });
   context.after(() => bridge.close());
-  assert.equal(await (await fetch('http://127.0.0.1:58739/')).text(), 'first');
+  assert.equal(await (await fetch(`http://127.0.0.1:${bridge.port}/`)).text(), 'first');
   selected = portOf(second);
-  assert.equal(await (await fetch('http://127.0.0.1:58739/')).text(), 'second');
+  assert.equal(await (await fetch(`http://127.0.0.1:${bridge.port}/`)).text(), 'second');
 });
 
 test('runtime controllerは設定変更を反映しdisableでbridgeだけ停止する', async (context) => {
@@ -139,13 +139,13 @@ test('absolute-form・base path逸脱request-targetを400で拒否し外部origi
   let requests = 0;
   const upstream = await upstreamServer((_request, response) => { requests += 1; response.end('unexpected'); });
   context.after(() => close(upstream));
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_744 }, allowed_hosts: ['127.0.0.1'],
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 }, allowed_hosts: ['127.0.0.1'],
     upstream: { mode: 'url', url: `http://127.0.0.1:${portOf(upstream)}/base/` } };
   const bridge = await startBridgeServer({ config });
   context.after(() => bridge.close());
   for (const target of ['http://127.0.0.1:1/evil', '/../escape']) {
     const raw = await new Promise((resolve, reject) => {
-      const socket = connect({ host: '127.0.0.1', port: 58_744 });
+      const socket = connect({ host: '127.0.0.1', port: bridge.port });
       let received = '';
       socket.setEncoding('utf8');
       socket.once('error', reject);
@@ -167,12 +167,12 @@ test('Connectionで指名されたhop-by-hop headerをrequest/response双方か�
     response.end('ok');
   });
   context.after(() => close(upstream));
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_745 }, allowed_hosts: ['127.0.0.1'],
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 }, allowed_hosts: ['127.0.0.1'],
     upstream: { mode: 'url', url: `http://127.0.0.1:${portOf(upstream)}/` } };
   const bridge = await startBridgeServer({ config });
   context.after(() => bridge.close());
   const response = await new Promise((resolve, reject) => {
-    const request = httpRequest('http://127.0.0.1:58745/', {
+    const request = httpRequest(`http://127.0.0.1:${bridge.port}/`, {
       headers: { connection: 'x-remove-me', 'x-remove-me': 'must-not-forward' },
     }, (incoming) => {
       let body = '';
@@ -191,14 +191,14 @@ test('percent-encoded route delimiter/dot/controlをfail closedにする', async
   let requests = 0;
   const upstream = await upstreamServer((_request, response) => { requests += 1; response.end('unexpected'); });
   context.after(() => close(upstream));
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_753 }, allowed_hosts: ['127.0.0.1'],
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 }, allowed_hosts: ['127.0.0.1'],
     upstream: { mode: 'url', url: `http://127.0.0.1:${portOf(upstream)}/base/` } };
   const bridge = await startBridgeServer({ config });
   context.after(() => bridge.close());
   for (const target of ['/safe%2Fescape', '/safe%5cescape', '/%2e%2E/escape', '/%252fescape', '/%00',
     '/safe/../__lattice/health']) {
     const raw = await new Promise((resolve, reject) => {
-      const socket = connect({ host: '127.0.0.1', port: 58_753 });
+      const socket = connect({ host: '127.0.0.1', port: bridge.port });
       let received = ''; socket.setEncoding('utf8'); socket.once('error', reject);
       socket.on('data', (chunk) => { received += chunk; }); socket.once('close', () => resolve(received));
       socket.once('connect', () => socket.end(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`));
@@ -216,12 +216,12 @@ test('downstream abortはupstream SSE connectionをdestroyして残留させな�
     request.socket.once('close', () => { upstreamClosed = true; });
   });
   context.after(() => close(upstream));
-  const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_754 }, allowed_hosts: ['127.0.0.1'],
+  const config = { enabled: true, listen: { address: '127.0.0.1', port: 0 }, allowed_hosts: ['127.0.0.1'],
     upstream: { mode: 'url', url: `http://127.0.0.1:${portOf(upstream)}/` } };
   const bridge = await startBridgeServer({ config });
   context.after(() => bridge.close());
   const controller = new AbortController();
-  const response = await fetch('http://127.0.0.1:58754/events', { signal: controller.signal });
+  const response = await fetch(`http://127.0.0.1:${bridge.port}/events`, { signal: controller.signal });
   await response.body.getReader().read();
   controller.abort();
   const deadline = Date.now() + 2_000;
