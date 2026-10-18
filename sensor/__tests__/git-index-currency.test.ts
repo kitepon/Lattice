@@ -36,21 +36,6 @@ describe('git index currency across commits and restores (#1829)', () => {
   });
   afterEach(() => { vi.restoreAllMocks(); cg?.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
-  it.each(['index', 'sync', 'scoped'] as const)('sees a restored indexed dirty edit after %s', async mode => {
-    write('source.ts', 'dirtyVersion');
-    if (mode === 'index') await cg.indexAll();
-    else await cg.sync(mode === 'scoped' ? { paths: ['source.ts'] } : {});
-    expect(symbols('dirtyVersion')).toContain('dirtyVersion');
-    git('restore', 'source.ts');
-    expect(git('status', '--porcelain')).toBe('');
-    // Reopen proves that dirty candidates survive beyond one engine instance.
-    cg.close(); cg = LatticeSensor.openSync(root);
-    expect(cg.getChangedFiles().modified).toEqual(['source.ts']);
-    await cg.sync();
-    expect(symbols('original')).toContain('original');
-    expect(symbols('dirtyVersion')).not.toContain('dirtyVersion'); clean();
-  });
-
   it.each(['index', 'sync'] as const)('does not claim a commit made during %s maintenance', async mode => {
     const oldHead = git('rev-parse', 'HEAD').trim();
     write('source.ts', 'firstEdit');
@@ -99,14 +84,6 @@ describe('git index currency across commits and restores (#1829)', () => {
     await cg.sync(); clean();
   });
 
-  it('retains a restored dirty path when a later scoped sync touches another file', async () => {
-    write('source.ts', 'dirtyVersion'); await cg.sync();
-    git('restore', 'source.ts'); write('other.ts', 'other');
-    await cg.sync({ paths: ['other.ts'] });
-    expect(cg.getChangedFiles()).toEqual({ added: [], modified: ['source.ts'], removed: [] });
-    await cg.sync(); expect(symbols('original')).toContain('original'); clean();
-  });
-
   it('does not call a recreated committed deletion removed when the current bytes match the DB', async () => {
     fs.unlinkSync(path.join(root, 'source.ts')); commit();
     write('source.ts', 'original');
@@ -152,3 +129,85 @@ describe('git index currency across commits and restores (#1829)', () => {
     await cg.sync(); clean();
   });
 });
+
+// These restored-state scenarios own their setup and any work that outlives a timeout.
+for (const mode of ['index', 'sync', 'scoped', 'other'] as const) {
+  describe(`git index currency — restored fixture (${mode})`, () => {
+    type Fixture = { root: string; cg?: LatticeSensor; operation?: Promise<unknown> };
+    let fixture: Fixture | undefined;
+    const access = (current: Fixture) => {
+      const { root } = current;
+      const git = (...args: string[]) => cp.execFileSync('git', args,
+        { cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const write = (name: string, symbol: string) => fs.writeFileSync(path.join(root, name),
+        `export function ${symbol}() { return 1; }\n`);
+      const symbols = (name: string) => current.cg!.searchNodes(name).map(r => r.node.name);
+      const clean = () => expect(current.cg!.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
+      return { root, git, write, symbols, clean };
+    };
+
+    beforeEach(async () => {
+      const current: Fixture = { root: fs.mkdtempSync(path.join(os.tmpdir(), 'cg-git-currency-')) };
+      fixture = current;
+      current.operation = Promise.resolve().then(async () => {
+        const { root, git, write } = access(current);
+        git('init'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+        fs.writeFileSync(path.join(root, '.gitignore'), '.lattice/sensor/\n');
+        write('source.ts', 'original'); git('add', '-A'); git('commit', '-m', 'change'); git('rev-parse', 'HEAD');
+        const cg = LatticeSensor.initSync(root);
+        current.cg = cg;
+        expect((await cg.indexAll()).success).toBe(true);
+        write('source.ts', 'dirtyVersion');
+        if (mode === 'index') await cg.indexAll();
+        else await cg.sync(mode === 'scoped' ? { paths: ['source.ts'] } : {});
+        if (mode === 'other') {
+          git('restore', 'source.ts'); write('other.ts', 'other');
+          await cg.sync({ paths: ['other.ts'] });
+        }
+      });
+      await current.operation;
+    });
+
+    afterEach(async () => {
+      const current = fixture;
+      fixture = undefined;
+      if (!current) return;
+      // An expired test does not cancel sync; only remove this owned DB after it settles.
+      try {
+        await current.operation;
+      } finally {
+        current.cg?.close();
+        fs.rmSync(current.root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    });
+
+    if (mode === 'other') {
+      it('retains a restored dirty path when a later scoped sync touches another file', async () => {
+        const current = fixture;
+        if (!current?.cg) throw new Error('Git currency fixture was not initialized');
+        const { cg } = current;
+        const { symbols, clean } = access(current);
+        expect(cg.getChangedFiles()).toEqual({ added: [], modified: ['source.ts'], removed: [] });
+        current.operation = cg.sync();
+        await current.operation;
+        expect(symbols('original')).toContain('original'); clean();
+      });
+    } else {
+      it(`sees a restored indexed dirty edit after ${mode}`, async () => {
+        const current = fixture;
+        if (!current?.cg) throw new Error('Git currency fixture was not initialized');
+        const { root, git, symbols, clean } = access(current);
+        expect(symbols('dirtyVersion')).toContain('dirtyVersion');
+        git('restore', 'source.ts');
+        expect(git('status', '--porcelain')).toBe('');
+        // Reopen proves that dirty candidates survive beyond one engine instance.
+        current.cg.close(); current.cg = LatticeSensor.openSync(root);
+        expect(current.cg.getChangedFiles().modified).toEqual(['source.ts']);
+        current.operation = current.cg.sync();
+        await current.operation;
+        expect(symbols('original')).toContain('original');
+        expect(symbols('dirtyVersion')).not.toContain('dirtyVersion'); clean();
+      });
+    }
+  });
+}

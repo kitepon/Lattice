@@ -13,16 +13,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { LatticeSensor } from '../src';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
 function run(cwd: string, args: string[]) {
-  const r = spawnSync(process.execPath, [BIN, ...args], {
+  const r = spawnSync(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, ...args], {
     cwd,
     encoding: 'utf-8',
     env: { ...process.env, LATTICE_SENSOR_NO_DAEMON: '1', LATTICE_SENSOR_WASM_RELAUNCHED: '1', NO_COLOR: '1' },
   });
-  return { status: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') };
+  return { status: r.status, signal: r.signal, errorCode: (r.error as NodeJS.ErrnoException | undefined)?.code, out: (r.stdout ?? '') + (r.stderr ?? '') };
 }
 
 describe('lattice sensor index <path> (#1524)', () => {
@@ -58,7 +59,9 @@ describe('lattice sensor index <path> (#1524)', () => {
   });
 
   it('rebuilds the explicit path when it is initialized, and a bare `index` still resolves upward from a subdirectory', () => {
-    expect(run(root, ['index', parent, '--quiet']).status).toBe(0);
-    expect(run(child, ['index', '--quiet']).status).toBe(0);
+    const explicit = run(root, ['index', parent, '--quiet']);
+    expect(explicit.status, `status=${explicit.status} signal=${explicit.signal} error=${explicit.errorCode ?? 'none'}`).toBe(0);
+    const upward = run(child, ['index', '--quiet']);
+    expect(upward.status, `status=${upward.status} signal=${upward.signal} error=${upward.errorCode ?? 'none'}`).toBe(0);
   });
 });
