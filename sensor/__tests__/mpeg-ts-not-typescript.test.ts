@@ -220,45 +220,50 @@ describe.each([
   { tracked: true, scoped: false, label: 'a tracked TypeScript file that becomes a clip, on the git path' },
   { tracked: true, scoped: true, label: 'a tracked TypeScript file that becomes a clip, on a scoped sync' },
 ])('a video .ts never stays pending (#1910): $label', ({ tracked, scoped }) => {
-  let dir: string | undefined;
-  let cg: LatticeSensor | undefined;
-  let operation: Promise<unknown> | undefined;
+  type Fixture = { dir: string; cg?: LatticeSensor; operation?: Promise<unknown> };
+  let fixture: Fixture | undefined;
 
   beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-mpegts-git-'));
-    const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
+    const current: Fixture = { dir: fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-sensor-mpegts-git-')) };
+    fixture = current;
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: current.dir, stdio: 'pipe' });
     git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
-    fs.writeFileSync(path.join(dir, 'app.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(current.dir, 'app.ts'), 'export const a = 1;\n');
     git('add', '.'); git('commit', '-qm', 'init');
-    if (tracked) fs.writeFileSync(path.join(dir, 'clip.ts'), 'export const clip = 1;\n');
-    // Own the open instance before indexing, so a setup failure still has a close path.
-    cg = await LatticeSensor.init(dir);
-    operation = cg.indexAll();
-    await operation;
+    if (tracked) fs.writeFileSync(path.join(current.dir, 'clip.ts'), 'export const clip = 1;\n');
+    // Retain init as well as indexing: either can outlive a hook timeout.
+    current.operation = LatticeSensor.init(current.dir).then((cg) => {
+      current.cg = cg;
+      return cg.indexAll();
+    });
+    await current.operation;
   });
 
   afterEach(async () => {
-    // A test timeout does not cancel index/sync. Do not remove its live database.
+    const current = fixture;
+    fixture = undefined;
+    if (!current) return;
+    // Capture ownership before waiting. A late finally must not touch a later fixture.
+    // A timeout does not cancel init/index/sync; do not remove its live database.
     try {
-      await operation;
+      await current.operation;
     } finally {
-      cg?.close();
-      cg = undefined;
-      operation = undefined;
-      if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      dir = undefined;
+      current.cg?.close();
+      fs.rmSync(current.dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 
   it('removes the clip without leaving file records, nodes, or pending changes', async () => {
-    if (!cg || !dir) throw new Error('MPEG-TS fixture was not initialized');
+    const current = fixture;
+    if (!current?.cg) throw new Error('MPEG-TS fixture was not initialized');
+    const { cg, dir } = current;
     if (tracked) expect(cg.getNodesInFile('clip.ts').some((n) => n.name === 'clip')).toBe(true);
     fs.writeFileSync(path.join(dir, 'clip.ts'), makeMpegTs(40));
     if (!scoped) {
       expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: tracked ? ['clip.ts'] : [] });
     }
-    operation = scoped ? cg.sync({ paths: ['clip.ts'] }) : cg.sync();
-    await operation;
+    current.operation = scoped ? cg.sync({ paths: ['clip.ts'] }) : cg.sync();
+    await current.operation;
     expect(cg.getFiles().map((f) => f.path)).toEqual(['app.ts']);
     expect(cg.getNodesInFile('clip.ts')).toEqual([]);
     expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
