@@ -18,15 +18,50 @@ import * as os from 'node:os';
 import { LatticeSensor } from '../src';
 
 describe('nix-option-path synthesizer', () => {
-  let dir: string;
-  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nix-option-')); });
-  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  function optionCase(name: string, prepare: (dir: string) => void, check: (edges: any[]) => void) {
+    describe(name, () => {
+      type Fixture = { dir: string; cg?: LatticeSensor; operation?: Promise<void>; edges?: any[] };
+      let fixture: Fixture | undefined;
 
-  async function synthEdges(d: string): Promise<any[]> {
-    const cg = await LatticeSensor.init(d, { silent: true });
-    await cg.indexAll();
+      beforeEach(async () => {
+        const current: Fixture = { dir: fs.mkdtempSync(path.join(os.tmpdir(), 'nix-option-')) };
+        fixture = current;
+        // Retain the whole setup chain: a hook timeout does not cancel indexing.
+        current.operation = Promise.resolve().then(() => {
+          prepare(current.dir);
+          return LatticeSensor.init(current.dir, { silent: true });
+        }).then(async (cg) => {
+          current.cg = cg;
+          await cg.indexAll();
+          current.edges = synthEdges(cg);
+        });
+        await current.operation;
+      });
+
+      afterEach(async () => {
+        const current = fixture;
+        fixture = undefined;
+        if (!current) return;
+        // Capture ownership before waiting; a late hook only cleans its own fixture.
+        try {
+          await current.operation;
+        } finally {
+          current.cg?.close();
+          fs.rmSync(current.dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        }
+      });
+
+      it('preserves the synthesized option edges', () => {
+        const edges = fixture?.edges;
+        if (!edges) throw new Error('Nix option fixture was not initialized');
+        check(edges);
+      });
+    });
+  }
+
+  function synthEdges(cg: LatticeSensor): any[] {
     const db = (cg as any).db.db;
-    const rows = db
+    return db
       .prepare(
         `SELECT s.name source, s.file_path sf, t.name target, t.file_path tf,
                 json_extract(e.metadata,'$.optionPath') optionPath
@@ -34,11 +69,9 @@ describe('nix-option-path synthesizer', () => {
          WHERE json_extract(e.metadata,'$.synthesizedBy') = 'nix-option-path'`
       )
       .all();
-    cg.destroy();
-    return rows;
   }
 
-  it('links a cross-file config write to its flat option declaration', async () => {
+  optionCase('links a cross-file config write to its flat option declaration', (dir) => {
     fs.mkdirSync(path.join(dir, 'modules'), { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'modules', 'launchd.nix'),
@@ -65,8 +98,7 @@ describe('nix-option-path synthesizer', () => {
 }
 `
     );
-
-    const edges = await synthEdges(dir);
+  }, (edges) => {
     const hit = edges.find((e) => e.source === 'launchd.user.agents.yabai');
     expect(hit).toBeDefined();
     expect(hit.target).toBe('options.launchd.user.agents');
@@ -74,7 +106,7 @@ describe('nix-option-path synthesizer', () => {
     expect(hit.optionPath).toBe('launchd.user.agents');
   });
 
-  it('composes nested declaration spellings and prefers the longest declared prefix', async () => {
+  optionCase('composes nested declaration spellings and prefers the longest declared prefix', (dir) => {
     fs.writeFileSync(
       path.join(dir, 'git-module.nix'),
       `{ lib, ... }:
@@ -103,8 +135,7 @@ describe('nix-option-path synthesizer', () => {
 }
 `
     );
-
-    const edges = await synthEdges(dir);
+  }, (edges) => {
     const enable = edges.find((e) => e.source === 'programs.git.enable');
     const key = edges.find((e) => e.source === 'programs.git.signing.key');
     expect(enable).toBeDefined();
@@ -116,7 +147,7 @@ describe('nix-option-path synthesizer', () => {
     expect(key.target).toBe('signing.key');
   });
 
-  it('matches through a quoted segment only up to the static prefix', async () => {
+  optionCase('matches through a quoted segment only up to the static prefix', (dir) => {
     fs.writeFileSync(
       path.join(dir, 'xdg.nix'),
       `{ lib, ... }:
@@ -136,15 +167,14 @@ describe('nix-option-path synthesizer', () => {
 }
 `
     );
-
-    const edges = await synthEdges(dir);
+  }, (edges) => {
     const hit = edges.find((e) => e.sf === 'writer.nix');
     expect(hit).toBeDefined();
     expect(hit.optionPath).toBe('xdg.configFile');
     expect(hit.target).toBe('options.xdg.configFile');
   });
 
-  it('anchors quoted writes to their own quoted declaration, never a sibling', async () => {
+  optionCase('anchors quoted writes to their own quoted declaration, never a sibling', (dir) => {
     // NSGlobalDomain-style enumerated quoted options: each quoted write must
     // hit ITS declaration; an undeclared quoted write must not fall back to a
     // same-prefix sibling.
@@ -174,8 +204,7 @@ describe('nix-option-path synthesizer', () => {
 }
 `
     );
-
-    const edges = await synthEdges(dir);
+  }, (edges) => {
     const tap = edges.filter((e) => e.sf === 'writer.nix' && e.source.includes('tapBehavior'));
     expect(tap).toHaveLength(1);
     expect(tap[0].target).toContain('tapBehavior');
@@ -184,7 +213,7 @@ describe('nix-option-path synthesizer', () => {
     expect(edges.filter((e) => e.source.includes('undeclared'))).toEqual([]);
   });
 
-  it('bails on ambiguous declarations and dynamic path heads; never registers 1-segment paths', async () => {
+  optionCase('bails on ambiguous declarations and dynamic path heads; never registers 1-segment paths', (dir) => {
     fs.writeFileSync(
       path.join(dir, 'dup-a.nix'),
       `{ lib, ... }: { options.services.dup = lib.mkOption { default = {}; }; }
@@ -220,8 +249,7 @@ describe('nix-option-path synthesizer', () => {
 }
 `
     );
-
-    const edges = await synthEdges(dir);
+  }, (edges) => {
     // services.dup is declared in two files → ambiguous → no edge at all.
     expect(edges.filter((e) => e.source === 'services.dup.enable')).toEqual([]);
     // The interpolated head leaves <2 static segments → no edge.
@@ -230,7 +258,7 @@ describe('nix-option-path synthesizer', () => {
     expect(edges.filter((e) => e.source?.startsWith('meta.'))).toEqual([]);
   });
 
-  it('quarantines submodule-internal options blocks', async () => {
+  optionCase('quarantines submodule-internal options blocks', (dir) => {
     fs.writeFileSync(
       path.join(dir, 'agents.nix'),
       `{ lib, ... }:
@@ -257,8 +285,7 @@ describe('nix-option-path synthesizer', () => {
 }
 `
     );
-
-    const edges = await synthEdges(dir);
+  }, (edges) => {
     // The submodule's own `command.text` namespace is not globally addressable.
     expect(edges.filter((e) => e.source === 'command.text')).toEqual([]);
     // The outer attrsOf declaration still anchors writes into the attr set.
