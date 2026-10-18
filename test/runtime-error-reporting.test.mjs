@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -362,38 +363,65 @@ nodeTest('受領を確かめられない応答では受領済みにせず、後�
   }
 });
 
-nodeTest('自動送信は1分に1回まで、同じ中身の送り直しは1時間に1回まで', async () => {
-  let accept = false;
-  const intake = await startIntake((entry) => (accept ? signedReceipt(entry) : { status: 503, body: { error: 'unavailable' } }));
-  const workspace = await makeWorkspace(intake.url);
-  const at = (minutes) => ({ ...workspace.options, auto: true, now: new Date(Date.parse('2026-10-03T09:00:00.000Z') + minutes * 60_000).toISOString() });
-  try {
-    fail(workspace.options, 'run.list', 'ENOENT');
-    assert.equal((await reportRuntimeErrors(at(0))).outcome, 'unconfirmed');
-    assert.deepEqual([(await reportRuntimeErrors(at(0.5))).outcome, (await reportRuntimeErrors(at(0.5))).reason],
-      ['throttled', 'attempted_within_a_minute']);
-    assert.equal((await reportRuntimeErrors(at(30))).reason, 'same_report_retried_within_an_hour');
-    assert.equal(runtimeErrorAutoReportDue(at(30)), false);
-    assert.equal(intake.requests.length, 1);
+nodeTest('自動送信は1分に1回まで、同じ中身の送り直しは1時間に1回まで', async (context) => {
+  // 送信制限は、受け口へ届かなかった試行にも適用する。実HTTPの到達件数は試行数を表さない。
+  // この試験では通信境界だけを置き換え、503応答と不達timeoutの両方で同じ時機の制限を確かめる。
+  for (const failure of ['unavailable', 'timeout']) {
+    let accept = false;
+    const attempts = [];
+    context.mock.method(http, 'request', (_url, _options, onResponse) => {
+      const request = new EventEmitter();
+      request.destroy = () => request;
+      request.end = (bytes) => {
+        const entry = { body: JSON.parse(bytes.toString('utf8')) };
+        attempts.push(entry);
+        queueMicrotask(() => {
+          if (!accept && failure === 'timeout') { request.emit('timeout'); return; }
+          const answer = accept ? signedReceipt(entry) : { status: 503, body: { error: 'unavailable' } };
+          const response = new EventEmitter();
+          response.statusCode = answer.status;
+          onResponse(response);
+          response.emit('data', Buffer.from(JSON.stringify(answer.body)));
+          response.emit('end');
+        });
+        return request;
+      };
+      return request;
+    });
+    const workspace = await makeWorkspace('http://127.0.0.1:9/api/products/v1/runtime-errors');
+    const at = (minutes) => ({ ...workspace.options, auto: true, now: new Date(Date.parse('2026-10-03T09:00:00.000Z') + minutes * 60_000).toISOString() });
+    try {
+      fail(workspace.options, 'run.list', 'ENOENT');
+      const first = await reportRuntimeErrors(at(0));
+      assert.deepEqual([first.outcome, first.reason], ['unconfirmed', failure]);
+      assert.deepEqual([(await reportRuntimeErrors(at(0.5))).outcome, (await reportRuntimeErrors(at(0.5))).reason],
+        ['throttled', 'attempted_within_a_minute']);
+      assert.equal((await reportRuntimeErrors(at(30))).reason, 'same_report_retried_within_an_hour');
+      assert.equal(runtimeErrorAutoReportDue(at(30)), false);
+      assert.equal(attempts.length, 1);
 
-    // 新しい記録が増えたら、1時間を待たずに送る。
-    fail(workspace.options, 'todo.status', 'ENOTDIR');
-    assert.equal(runtimeErrorAutoReportDue(at(31)), true);
-    assert.equal((await reportRuntimeErrors(at(31))).outcome, 'unconfirmed');
-    assert.equal((await reportRuntimeErrors(at(60))).outcome, 'throttled');
+      // 新しい記録が増えたら、1時間を待たずに送る。
+      fail(workspace.options, 'todo.status', 'ENOTDIR');
+      assert.equal(runtimeErrorAutoReportDue(at(31)), true);
+      const changed = await reportRuntimeErrors(at(31));
+      assert.deepEqual([changed.outcome, changed.reason], ['unconfirmed', failure]);
+      assert.equal((await reportRuntimeErrors(at(60))).outcome, 'throttled');
 
-    // 1時間たてば、同じ中身でも送り直す。受領されれば未受領は無くなる。
-    accept = true;
-    const delivered = await reportRuntimeErrors(at(92));
-    assert.deepEqual([delivered.outcome, delivered.sent.runtime_errors], ['delivered', 2]);
-    assert.equal(runtimeErrorAutoReportDue(at(200)), false);
-    assert.equal(intake.requests.length, 3);
-    // 手で打った送信は時機の制限を見ない。
-    fail(workspace.options, 'run.status', 'EACCES');
-    assert.equal((await reportRuntimeErrors({ ...workspace.options, now: at(92.1).now })).outcome, 'delivered');
-  } finally {
-    await intake.close();
-    await rm(workspace.root, { recursive: true, force: true });
+      // 1時間たてば、同じ中身でも送り直す。受領されれば未受領は無くなる。
+      accept = true;
+      const delivered = await reportRuntimeErrors(at(92));
+      assert.deepEqual([delivered.outcome, delivered.sent.runtime_errors], ['delivered', 2]);
+      assert.equal(runtimeErrorAutoReportDue(at(200)), false);
+      assert.equal(attempts.length, 3);
+      assert.equal(new Set(attempts.map((entry) => entry.body.report_id)).size, 3);
+      // 手で打った送信は時機の制限を見ない。
+      fail(workspace.options, 'run.status', 'EACCES');
+      assert.equal((await reportRuntimeErrors({ ...workspace.options, now: at(92.1).now })).outcome, 'delivered');
+      assert.equal(attempts.length, 4);
+    } finally {
+      context.mock.restoreAll();
+      await rm(workspace.root, { recursive: true, force: true });
+    }
   }
 });
 
