@@ -85,7 +85,11 @@
         "CHANGELOG.md",
         "package.json",
         "package-lock.json",
-        "test/hooks-cli.test.mjs"
+        "test/hooks-cli.test.mjs",
+        "docs/00_product-contract.md",
+        "docs/01_integration-package.md",
+        "docs/plan_backward-feature-authoring.md",
+        "docs/README.md"
       ],
       "reads": [
         "src/plan-backchain.mjs",
