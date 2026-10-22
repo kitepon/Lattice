@@ -69,7 +69,7 @@ const TODO_REVISION_SCHEMAS = Object.freeze([
 ]);
 const PHASE_TODO_REVISION_SCHEMAS = Object.freeze([
   'lattice.phase_todo_revision.v1', 'lattice.phase_todo_revision.v2',
-  'lattice.phase_todo_revision.v3',
+  'lattice.phase_todo_revision.v3', 'lattice.phase_todo_revision.v4',
 ]);
 
 export class TodoStoreError extends Error {
@@ -2207,6 +2207,26 @@ export function buildTodoPlan(input) {
   return plan;
 }
 
+function boundPlanBackchain(plan, chain) {
+  if (chain === null || chain === undefined) return null;
+  if (chain.schema !== 'lattice.plan_backchain.v1'
+    || chain.project_id !== plan.project_id || chain.plan_key !== plan.plan_key
+    || chain.plan_version !== plan.plan_version
+    || !isTodoDigest(chain.chain_digest)
+    || chain.chain_digest !== todoSelfDigest(chain, 'chain_digest')) {
+    fail('STORE_INCONSISTENT', 'backchain_plan_binding_invalid');
+  }
+  const binding = {
+    schema: 'lattice.plan_backchain_binding.v1',
+    plan_digest: plan.plan_digest, chain, binding_digest: '',
+  };
+  binding.binding_digest = todoSelfDigest(binding, 'binding_digest');
+  if (Buffer.byteLength(JSON.stringify(binding), 'utf8') > TODO_LIMITS.snapshotBytes) {
+    fail('STORE_WRITE_REFUSED', 'backchain_binding_too_large');
+  }
+  return binding;
+}
+
 export function buildPlanGenesis(plan, input) {
   const event = {
     schema: isPhaseTodoPlanSchema(plan.schema)
@@ -2347,6 +2367,7 @@ async function bootstrapImportedPlan(repoRoot, options) {
   }
   const prepared = prepareImportedArtifacts(repoRoot, options, initialization.projectId, []);
   const { plan, genesis, events, snapshot } = prepared;
+  const backchain = boundPlanBackchain(plan, options.featureChain);
   const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}/${plan.plan_version}`;
   const planRef = `${base}/plan.json`;
   const journalRef = `${base}/journal/active.jsonl`;
@@ -2370,6 +2391,7 @@ async function bootstrapImportedPlan(repoRoot, options) {
     await atomicWrite(path.join(stagedBase, 'plan.json'), canonicalLine(plan));
     await atomicWrite(path.join(stagedBase, 'journal', 'active.jsonl'), Buffer.concat(events.map(canonicalLine)));
     await atomicWrite(path.join(stagedBase, 'snapshot.json'), canonicalLine(snapshot));
+    if (backchain !== null) await atomicWrite(path.join(stagedBase, 'backchain.json'), canonicalLine(backchain));
     await atomicWrite(path.join(stage, 'manifest.json'), canonicalLine(manifest));
     await protocolStage(options, 'bootstrap_staged');
 
@@ -2753,6 +2775,7 @@ export async function appendImportedPlan(options = {}) {
       repoRoot, options, store.project_id, store.members.map(({ plan: memberPlan }) => ({ plan: memberPlan })),
     );
     const { plan, genesis, events, snapshot, tasks } = prepared;
+    const backchain = boundPlanBackchain(plan, options.featureChain);
 
     const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}/${plan.plan_version}`;
     const planRef = `${base}/plan.json`;
@@ -2780,6 +2803,7 @@ export async function appendImportedPlan(options = {}) {
     await atomicWrite(stagedPlan, canonicalLine(plan));
     await atomicWrite(stagedJournal, Buffer.concat(events.map(canonicalLine)));
     await atomicWrite(stagedSnapshot, canonicalLine(snapshot));
+    if (backchain !== null) await atomicWrite(path.join(stagedBase, 'backchain.json'), canonicalLine(backchain));
     for (const [index, artifact] of importedCrossPlan.artifacts.entries()) {
       artifact.stagedAbsolute = path.join(transactionAbsolute, 'plan-scoped', `${index}.jsonl`);
       await atomicWrite(artifact.stagedAbsolute, artifact.finalBytes);
@@ -2824,6 +2848,9 @@ export async function appendImportedPlan(options = {}) {
         await rename(stagedPlan, path.resolve(repoRoot, planRef));
         await rename(stagedJournal, path.resolve(repoRoot, journalRef));
         await rename(stagedSnapshot, path.resolve(repoRoot, snapshotRef));
+        if (backchain !== null) {
+          await rename(path.join(stagedBase, 'backchain.json'), path.join(finalBaseAbsolute, 'backchain.json'));
+        }
         await fsyncDirectory(path.dirname(path.resolve(repoRoot, planRef)));
         await fsyncDirectory(path.dirname(path.resolve(repoRoot, journalRef)));
       }
@@ -2911,14 +2938,16 @@ export async function initializeAuthoredTodoStore(options = {}) {
   const optionKeys = [
     'repoRoot', 'writer', 'projectId', 'repositories', 'plan', 'genesis',
   ];
-  if (!(exactRecord(options, optionKeys)
-    || (exactRecord(options, [...optionKeys, 'onProtocolStage'])
+  const allowedOptions = options.featureChain === undefined ? optionKeys : [...optionKeys, 'featureChain'];
+  if (!(exactRecord(options, allowedOptions)
+    || (exactRecord(options, [...allowedOptions, 'onProtocolStage'])
       && typeof options.onProtocolStage === 'function'))
     || options.projectId !== options.plan?.project_id
     || options.plan?.predecessor_plan_digest !== null) {
     throw new TypeError('authored store initialization input invalid');
   }
   const plan = buildTodoPlan(options.plan);
+  const backchain = boundPlanBackchain(plan, options.featureChain);
   verifyPlanNarrativeAnchors(repoRoot, plan);
   const genesis = buildPlanGenesis(plan, options.genesis);
   const tasks = replay(plan, [genesis]);
@@ -2962,6 +2991,7 @@ export async function initializeAuthoredTodoStore(options = {}) {
     await atomicWrite(path.join(stage, base, 'plan.json'), canonicalLine(plan));
     await atomicWrite(path.join(stage, base, 'journal', 'active.jsonl'), canonicalLine(genesis));
     await atomicWrite(path.join(stage, base, 'snapshot.json'), canonicalLine(snapshot));
+    if (backchain !== null) await atomicWrite(path.join(stage, base, 'backchain.json'), canonicalLine(backchain));
     await atomicWrite(path.join(stage, 'manifest.json'), canonicalLine(manifest));
 
     try {
@@ -3245,6 +3275,83 @@ function validatePhaseV3Carry(previous, revision, migration, idMap, state) {
   }
 }
 
+function validateBackchainCarry(previous, revision, migration, idMap) {
+  const decision = revision.backchain.continuity?.find(({ task_id: id }) =>
+    id === migration.from_task_id);
+  if (decision?.policy === 'carry') return;
+  const reconciliationMetadata = migration.state_policy === 'carry_reconciled_metadata';
+  const predecessorTask = previous.plan.tasks.find(({ task_id }) => task_id === migration.from_task_id);
+  const phaseIdMap = new Map(revision.phase_migration
+    .filter(({ from_phase_id, to_phase_id }) => from_phase_id !== null && to_phase_id !== 'removed')
+    .map(({ from_phase_id, to_phase_id }) => [from_phase_id, to_phase_id]));
+  const before = phaseV3CarrySemantics(previous.plan, migration.from_task_id, idMap, phaseIdMap, {
+    reconciliationMetadata, includeDesignMemo: !reconciliationMetadata
+      && typeof predecessorTask?.design_memo === 'string',
+    removedTaskIds: removedTaskIdsFor(revision),
+  });
+  const after = phaseV3CarrySemantics(revision.desired_plan, migration.to_task_id,
+    new Map(), new Map(), {
+      reconciliationMetadata, includeDesignMemo: !reconciliationMetadata
+        && typeof predecessorTask?.design_memo === 'string',
+    });
+  // 利用先の増減は提供済み機能の意味を変えない。入力・提供機能の同一性は
+  // backchain契約で別に照合し、工程の入力辺と本体の意味だけをここで検査する。
+  if (canonicalizeTodoArtifact(before.task) !== canonicalizeTodoArtifact(after.task)
+    || canonicalizeTodoArtifact(before.incoming) !== canonicalizeTodoArtifact(after.incoming)) {
+    fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
+  }
+}
+
+function backchainTaskSignature(chain, taskId) {
+  const task = chain?.tasks?.find(({ task_id: id }) => id === taskId);
+  if (task === undefined) return null;
+  const featureIds = [...new Set([...task.requires_feature_ids, ...task.provides_feature_ids])].sort();
+  const byId = new Map(chain.features.map((feature) => [feature.feature_id, feature]));
+  return canonicalizeTodoArtifact({
+    requires_feature_ids: task.requires_feature_ids,
+    provides_feature_ids: task.provides_feature_ids,
+    features: featureIds.map((id) => byId.get(id)),
+  });
+}
+
+async function assertBackchainCarryContracts(repoRoot, previous, revision) {
+  const decisions = new Map((revision.backchain.continuity ?? [])
+    .map((entry) => [entry.task_id, entry]));
+  for (const decision of decisions.values()) {
+    const migration = revision.task_migration.find(({ from_task_id: id }) => id === decision.task_id);
+    if (migration === undefined || (decision.policy === 'carry'
+      && !['carry', 'carry_reconciled_metadata'].includes(migration.state_policy))
+      || (decision.policy === 'reset' && migration.state_policy !== 'reset_pending')
+      || (decision.policy === 'retire' && migration.state_policy !== 'removed')) {
+      fail('REVISION_INVALID', 'backchain_continuity_mismatch', { task_id: decision.task_id });
+    }
+  }
+  const carried = revision.task_migration.filter(({ state_policy }) =>
+    ['carry', 'carry_reconciled_metadata', 'acquire_phase'].includes(state_policy));
+  if (carried.length === 0) return;
+  const oldRef = path.resolve(repoRoot, STORE_ROOT_REF, 'plans', previous.plan.plan_key,
+    previous.plan.plan_version, 'backchain.json');
+  const bytes = await exactFileOrNull(oldRef);
+  if (bytes === null) fail('REVISION_INVALID', 'backchain_predecessor_missing');
+  let binding;
+  try { binding = JSON.parse(decodeUtf8(bytes, 'REVISION_INVALID', 'backchain_predecessor_invalid')); }
+  catch { fail('REVISION_INVALID', 'backchain_predecessor_invalid'); }
+  if (binding?.schema !== 'lattice.plan_backchain_binding.v1'
+    || binding.plan_digest !== previous.plan.plan_digest
+    || binding.binding_digest !== todoSelfDigest(binding, 'binding_digest')) {
+    fail('REVISION_INVALID', 'backchain_predecessor_invalid');
+  }
+  for (const migration of carried) {
+    if (decisions.get(migration.from_task_id)?.policy === 'carry') continue;
+    if (backchainTaskSignature(binding.chain, migration.from_task_id)
+      !== backchainTaskSignature(revision.backchain, migration.to_task_id)) {
+      fail('REVISION_INVALID', 'backchain_carry_feature_changed', {
+        from_task_id: migration.from_task_id, to_task_id: migration.to_task_id,
+      });
+    }
+  }
+}
+
 /**
  * acquire_phase専用のcarry検証(ADR 0147裁定4)。既存carry/carry_reconciled_metadataの
  * 分岐(validatePhaseV3Carry)には一切手を入れず、「Phase割当ての獲得だけ」を許す別分岐として
@@ -3330,6 +3437,8 @@ function stateMigrationFor(previous, revision) {
       }
     } else if (revision.schema === 'lattice.phase_todo_revision.v3') {
       validatePhaseV3Carry(previous, revision, migration, idMap, state);
+    } else if (revision.schema === 'lattice.phase_todo_revision.v4') {
+      validateBackchainCarry(previous, revision, migration, idMap);
     } else {
       const predecessorTask = previous.plan.tasks
         .find(({ task_id }) => task_id === migration.from_task_id);
@@ -4373,6 +4482,9 @@ export async function applyPhaseTodoRevision(options = {}) {
       fail('STORE_WRITE_CONFLICT', 'stale_predecessor');
     }
     verifyPlanNarrativeAnchors(repoRoot, revision.desired_plan, previous.plan);
+    if (revision.schema === 'lattice.phase_todo_revision.v4') {
+      await assertBackchainCarryContracts(repoRoot, previous, revision);
+    }
     const stateMigration = stateMigrationFor(previous, revision);
     const phaseStateMigration = phaseStateMigrationFor(previous, revision);
     const prospective = store.members.map((member) => member === previous
@@ -4417,6 +4529,9 @@ export async function applyPhaseTodoRevision(options = {}) {
       ['phase_revision_plan_durable', planRef, canonicalLine(revision.desired_plan)],
       ['phase_revision_genesis_durable', journalRef, canonicalLine(genesis)],
       ['phase_revision_snapshot_durable', snapshotRef, canonicalLine(snapshot)],
+      ...(revision.schema === 'lattice.phase_todo_revision.v4'
+        ? [['phase_revision_backchain_durable', `${base}/backchain.json`,
+          canonicalLine(boundPlanBackchain(revision.desired_plan, revision.backchain))]] : []),
     ];
     for (const [stage, ref, bytes] of artifacts) {
       const absolute = path.resolve(repoRoot, ref);

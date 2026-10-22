@@ -498,14 +498,14 @@ test('active revisionのfuture schemaは破損と分離してstatus/verifyへtyp
     recordedAt: COMMIT_AT, now: COMMIT_AT });
   const revisionPath = path.join(root, '.lattice', 'todo', 'plans', 'main',
     revision.desired_plan.plan_version, 'revision.json');
-  const futureRevision = { ...revision, schema: 'lattice.phase_todo_revision.v4' };
+  const futureRevision = { ...revision, schema: 'lattice.phase_todo_revision.v5' };
   await writeFile(revisionPath, `${canonicalizeTodoArtifact(futureRevision)}\n`);
 
   await assert.rejects(readTodoStore({ repoRoot: root, now: COMMIT_AT }), (error) => (
     error.code === 'UNSUPPORTED_SCHEMA'
       && error.detail.reason === 'unsupported_revision_schema'
-      && error.detail.schema === 'lattice.phase_todo_revision.v4'
-      && error.detail.supported_schemas.at(-1) === 'lattice.phase_todo_revision.v3'
+      && error.detail.schema === 'lattice.phase_todo_revision.v5'
+      && error.detail.supported_schemas.at(-1) === 'lattice.phase_todo_revision.v4'
   ));
   const status = spawnSync(process.execPath, [CLI, 'status', '--json'], {
     cwd: root, encoding: 'utf8',
@@ -524,11 +524,12 @@ test('active revisionのfuture schemaは破損と分離してstatus/verifyへtyp
     message: 'unsupported_revision_schema',
     detail: {
       reason: 'unsupported_revision_schema',
-      schema: 'lattice.phase_todo_revision.v4',
+      schema: 'lattice.phase_todo_revision.v5',
       supported_schemas: [
         'lattice.phase_todo_revision.v1',
         'lattice.phase_todo_revision.v2',
         'lattice.phase_todo_revision.v3',
+        'lattice.phase_todo_revision.v4',
       ],
     },
   });

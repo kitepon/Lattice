@@ -23,6 +23,7 @@ const PHASE_REVISION_V3_KEYS = [
   'runtime_task_migration', 'task_migration', 'phase_migration', 'source_inventory',
   'reconciliation', 'source_cutover_batch', 'revision_digest',
 ];
+const PHASE_REVISION_V4_KEYS = [...PHASE_REVISION_KEYS, 'backchain'];
 
 const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 const boundedText = (value) => typeof value === 'string' && value.length > 0
@@ -64,9 +65,11 @@ export function todoRevisionPlanVersion({
 
 export function phaseTodoRevisionPlanVersion({
   projectId, planKey, predecessor, desiredPlan, taskMigration, phaseMigration,
+  featureGraphDigest = null,
 }) {
   const versionDigest = digestTodoArtifact({
-    schema: ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(desiredPlan.schema)
+    schema: featureGraphDigest !== null ? 'lattice.phase_todo_revision_version.v3'
+      : ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(desiredPlan.schema)
       ? 'lattice.phase_todo_revision_version.v2' : 'lattice.phase_todo_revision_version.v1', project_id: projectId,
     plan_key: planKey, predecessor, desired_topology: {
       schema: desiredPlan.schema, project_id: desiredPlan.project_id,
@@ -76,6 +79,7 @@ export function phaseTodoRevisionPlanVersion({
       ...(['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(desiredPlan.schema)
         ? { phase_accept_dependencies: desiredPlan.phase_accept_dependencies } : {}),
     }, task_migration: taskMigration, phase_migration: phaseMigration,
+    ...(featureGraphDigest === null ? {} : { feature_graph_digest: featureGraphDigest }),
   });
   return `rev-${versionDigest.slice(0, 24)}`;
 }
@@ -291,22 +295,51 @@ export function validatePhaseTodoRevision(value) {
     const revisionV1 = value?.schema === 'lattice.phase_todo_revision.v1';
     const revisionV2 = value?.schema === 'lattice.phase_todo_revision.v2';
     const revisionV3 = value?.schema === 'lattice.phase_todo_revision.v3';
-    const keys = revisionV3 ? PHASE_REVISION_V3_KEYS : PHASE_REVISION_KEYS;
-    if (!exactRecord(value, keys) || (!revisionV1 && !revisionV2 && !revisionV3)) return false;
+    const revisionV4 = value?.schema === 'lattice.phase_todo_revision.v4';
+    const keys = revisionV3 ? PHASE_REVISION_V3_KEYS
+      : revisionV4 ? PHASE_REVISION_V4_KEYS : PHASE_REVISION_KEYS;
+    if (!exactRecord(value, keys) || (!revisionV1 && !revisionV2 && !revisionV3 && !revisionV4)) return false;
     if (!isTodoIdentifier(value.project_id) || !isTodoIdentifier(value.plan_key)) return false;
     if (!validPredecessor(value.predecessor) || !validateTodoPlan(value.desired_plan)
       || !(revisionV3
         ? ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value.desired_plan.schema)
-        : value.desired_plan.schema === (revisionV2 ? 'lattice.todo_plan.v5' : 'lattice.todo_plan.v4'))
+        : value.desired_plan.schema === (revisionV2 ? 'lattice.todo_plan.v5'
+          : revisionV4 ? 'lattice.todo_plan.v7' : 'lattice.todo_plan.v4'))
       || value.desired_plan.project_id !== value.project_id
       || value.desired_plan.plan_key !== value.plan_key
       || value.desired_plan.predecessor_plan_digest !== value.predecessor.plan_digest
       || !validTaskMigration(value.task_migration)
       || !validPhaseMigration(value.phase_migration, value.desired_plan)) return false;
+    const backchainKeys = [
+      'schema', 'authoring_ref', 'project_id', 'plan_key', 'plan_version',
+      'goal', 'features', 'tasks', 'chain_digest',
+    ];
+    if (revisionV4 && (!(exactRecord(value.backchain, backchainKeys)
+      || exactRecord(value.backchain, [...backchainKeys, 'continuity']))
+      || value.backchain.schema !== 'lattice.plan_backchain.v1'
+      || value.backchain.project_id !== value.project_id
+      || value.backchain.plan_key !== value.plan_key
+      || value.backchain.plan_version !== value.desired_plan.plan_version
+      || (value.backchain.continuity !== undefined
+        && (!Array.isArray(value.backchain.continuity)
+          || value.backchain.continuity.length > 512
+          || !value.backchain.continuity.every((entry) => exactRecord(entry,
+            ['task_id', 'policy', 'reason']) && isTodoIdentifier(entry.task_id)
+            && ['carry', 'reset', 'retire'].includes(entry.policy)
+            && typeof entry.reason === 'string' && entry.reason.trim().length > 0)
+          || new Set(value.backchain.continuity.map(({ task_id: id }) => id)).size
+            !== value.backchain.continuity.length))
+      || value.backchain.chain_digest !== todoSelfDigest(value.backchain, 'chain_digest')
+      || canonicalizeForCompare(value.backchain.tasks.map(({ task_id: id }) => id))
+        !== canonicalizeForCompare(value.desired_plan.tasks.map(({ task_id: id }) => id)))) return false;
     if (value.desired_plan.plan_version !== phaseTodoRevisionPlanVersion({
         projectId: value.project_id, planKey: value.plan_key, predecessor: value.predecessor,
         desiredPlan: value.desired_plan, taskMigration: value.task_migration,
         phaseMigration: value.phase_migration,
+        ...(revisionV4 ? { featureGraphDigest: digestTodoArtifact({
+          goal: value.backchain.goal, features: value.backchain.features,
+          tasks: value.backchain.tasks,
+        }) } : {}),
       })) return false;
     if (revisionV3) {
       if (!validRuntimeTaskMigration(value.runtime_task_migration)
@@ -810,8 +843,10 @@ export function explainPhaseTodoRevision(value) {
     const revisionV1 = value.schema === 'lattice.phase_todo_revision.v1';
     const revisionV2 = value.schema === 'lattice.phase_todo_revision.v2';
     const revisionV3 = value.schema === 'lattice.phase_todo_revision.v3';
-    if (!revisionV1 && !revisionV2 && !revisionV3) return reject('schema_mismatch', '/schema');
-    const keyCheck = explainKeys(value, revisionV3 ? PHASE_REVISION_V3_KEYS : PHASE_REVISION_KEYS, '');
+    const revisionV4 = value.schema === 'lattice.phase_todo_revision.v4';
+    if (!revisionV1 && !revisionV2 && !revisionV3 && !revisionV4) return reject('schema_mismatch', '/schema');
+    const keyCheck = explainKeys(value, revisionV3 ? PHASE_REVISION_V3_KEYS
+      : revisionV4 ? PHASE_REVISION_V4_KEYS : PHASE_REVISION_KEYS, '');
     if (!keyCheck.valid) return keyCheck;
     if (!isTodoIdentifier(value.project_id)) return reject('invalid_identifier', '/project_id');
     if (!isTodoIdentifier(value.plan_key)) return reject('invalid_identifier', '/plan_key');
@@ -819,7 +854,8 @@ export function explainPhaseTodoRevision(value) {
     if (!predecessorCheck.valid) return predecessorCheck;
     if (!validateTodoPlan(value.desired_plan)) return reject('desired_plan_invalid', '/desired_plan');
     const expectedPlanSchemas = revisionV3 ? ['lattice.todo_plan.v5', 'lattice.todo_plan.v7']
-      : [revisionV2 ? 'lattice.todo_plan.v5' : 'lattice.todo_plan.v4'];
+      : [revisionV2 ? 'lattice.todo_plan.v5'
+        : revisionV4 ? 'lattice.todo_plan.v7' : 'lattice.todo_plan.v4'];
     if (!expectedPlanSchemas.includes(value.desired_plan.schema)) {
       return reject('desired_plan_schema_mismatch', '/desired_plan/schema');
     }
@@ -840,6 +876,10 @@ export function explainPhaseTodoRevision(value) {
       projectId: value.project_id, planKey: value.plan_key, predecessor: value.predecessor,
       desiredPlan: value.desired_plan, taskMigration: value.task_migration,
       phaseMigration: value.phase_migration,
+      ...(revisionV4 ? { featureGraphDigest: digestTodoArtifact({
+        goal: value.backchain.goal, features: value.backchain.features,
+        tasks: value.backchain.tasks,
+      }) } : {}),
     });
     if (value.desired_plan.plan_version !== expectedPlanVersion) {
       return reject('plan_version_mismatch', '/desired_plan/plan_version');

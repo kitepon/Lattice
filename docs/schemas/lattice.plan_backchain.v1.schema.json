@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_backchain.v1.schema.json",
+  "title": "lattice.plan_backchain.v1",
+  "description": "AI-authored backward feature chain. Start with the final outcome, declare each required capability and what supplies it, then bind every registered ToDo to the capabilities it needs and provides. Unknowns carry a reason and a question instead of blocking authoring.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "authoring_ref", "project_id", "plan_key", "plan_version", "goal", "features", "tasks", "chain_digest"],
+  "properties": {
+    "schema": { "const": "lattice.plan_backchain.v1" },
+    "authoring_ref": { "$ref": "#/$defs/repoRef" },
+    "project_id": { "$ref": "#/$defs/identifier" },
+    "plan_key": { "$ref": "#/$defs/identifier" },
+    "plan_version": { "$ref": "#/$defs/identifier" },
+    "goal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["purpose", "outcome", "acceptance", "required_feature_ids"],
+      "properties": {
+        "purpose": { "$ref": "#/$defs/text" },
+        "outcome": { "$ref": "#/$defs/text" },
+        "acceptance": { "$ref": "#/$defs/text" },
+        "required_feature_ids": { "$ref": "#/$defs/nonemptyIds" }
+      }
+    },
+    "features": {
+      "type": "array", "minItems": 1, "maxItems": 2048,
+      "items": { "$ref": "#/$defs/feature" }
+    },
+    "tasks": {
+      "type": "array", "minItems": 1, "maxItems": 512,
+      "items": { "$ref": "#/$defs/task" }
+    },
+    "continuity": {
+      "type": "array", "maxItems": 512, "uniqueItems": true,
+      "description": "Optional goal-change decisions for predecessor tasks. A carry decision is an explicit AI judgment that previous work still satisfies the revised goal; reset and retire remain available without proving equivalence.",
+      "items": { "$ref": "#/$defs/continuity" }
+    },
+    "chain_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[0-9A-Za-z](?:[0-9A-Za-z._-]{0,127})$" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 16384, "pattern": "\\S" },
+    "repoRef": {
+      "type": "string", "minLength": 1, "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*[\\u0000-\\u001f\\u007f])[^/]+(?:/[^/]+)*$"
+    },
+    "ids": { "type": "array", "maxItems": 2048, "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+    "nonemptyIds": { "allOf": [{ "$ref": "#/$defs/ids" }, { "minItems": 1 }] },
+    "provider": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "task_id"],
+          "properties": { "kind": { "const": "task" }, "task_id": { "$ref": "#/$defs/identifier" } }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "evidence_ref"],
+          "properties": { "kind": { "const": "existing" }, "evidence_ref": { "$ref": "#/$defs/repoRef" } }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "reason", "question"],
+          "properties": {
+            "kind": { "const": "unknown" },
+            "reason": { "$ref": "#/$defs/text" },
+            "question": { "$ref": "#/$defs/text" }
+          }
+        }
+      ]
+    },
+    "feature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["feature_id", "capability", "acceptance", "requires_feature_ids", "provider"],
+      "properties": {
+        "feature_id": { "$ref": "#/$defs/identifier" },
+        "capability": { "$ref": "#/$defs/text" },
+        "acceptance": { "$ref": "#/$defs/text" },
+        "requires_feature_ids": { "$ref": "#/$defs/ids" },
+        "provider": { "$ref": "#/$defs/provider" }
+      }
+    },
+    "task": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "requires_feature_ids", "provides_feature_ids"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/identifier" },
+        "requires_feature_ids": { "$ref": "#/$defs/ids" },
+        "provides_feature_ids": { "$ref": "#/$defs/nonemptyIds" }
+      }
+    },
+    "continuity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "policy", "reason"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/identifier" },
+        "policy": { "enum": ["carry", "reset", "retire"] },
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

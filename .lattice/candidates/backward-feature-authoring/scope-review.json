@@ -1,0 +1,63 @@
+{
+  "schema": "lattice.plan_scope_review.v1",
+  "authoring_digest": "633f222f9dcaf4808056882f8b97c1f9740d884fd521440be4584e62495d5ab1",
+  "work_specs": [
+    {
+      "work_spec_id": "W1",
+      "requirement": "最終成果から機能を逆算し、各ToDoの必要・提供機能を定義する",
+      "acceptance": "既知の提供元・工程依存を検査し、未知を理由と問い付きで残せる"
+    },
+    {
+      "work_spec_id": "W2",
+      "requirement": "担当者へ全体目的と後続用途を渡す",
+      "acceptance": "todo show/startで全体目的、受入条件、必要・提供機能、後続用途、未知が読める"
+    },
+    {
+      "work_spec_id": "W3",
+      "requirement": "ゴール変更に追従して工程を修正する",
+      "acceptance": "taskの増減と機能変更を後継版に反映し、無関係な完了を維持する"
+    },
+    {
+      "work_spec_id": "W4",
+      "requirement": "Latticeで工程作ってで逆算入口を起動する",
+      "acceptance": "対応hostで導線が働き、公開版の実repoで初回と改訂を通せる"
+    }
+  ],
+  "task_assessments": [
+    {
+      "task_id": "bfa-01-contract",
+      "work_spec_ids": [
+        "W1"
+      ],
+      "judgment": "required",
+      "reason": "逆算関係の機械契約を提供する"
+    },
+    {
+      "task_id": "bfa-02-create-context",
+      "work_spec_ids": [
+        "W1",
+        "W2"
+      ],
+      "judgment": "required",
+      "reason": "契約を保存して担当者へ届ける"
+    },
+    {
+      "task_id": "bfa-03-revise-goal",
+      "work_spec_ids": [
+        "W3"
+      ],
+      "judgment": "required",
+      "reason": "ゴール変更で計画を修正する"
+    },
+    {
+      "task_id": "bfa-04-entry-release",
+      "work_spec_ids": [
+        "W4"
+      ],
+      "judgment": "required",
+      "reason": "依頼文から製品入口を使い公開まで確認する"
+    }
+  ],
+  "verdict": "scope_preserved",
+  "review_digest": "1b052d788870e3e25ce75610ef70367c3db96335094466400e19454b02f6687a"
+}

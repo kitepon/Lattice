@@ -22,6 +22,7 @@ Latticeの文書は、現行契約、現在の計画・構想、履歴、証拠�
 
 ## 現在の計画・構想
 
+- [`plan_backward-feature-authoring.md`](plan_backward-feature-authoring.md): 最終成果から機能を逆算して工程を作り、ゴール変更後も修正する
 - [`plan_product-setup.md`](plan_product-setup.md): 製品所有のMCP登録・hook準備入口と公開実機受入
 
 次のMarkdownは目的、判断、非目標を持つ。実際に着手中か、完了したかは本文のcheckboxでなく
@@ -29,7 +30,7 @@ Lattice storeで判定する。
 
 - [`plan_backlog.md`](plan_backlog.md): 保守・裁定待ちbacklog
 - [`plan_rebuilt-from-minimal-plans-20260813.md`](plan_rebuilt-from-minimal-plans-20260813.md):
-  repo storeで唯一activeな`minimal-plan-repairs-20260813`の散文正本
+  完了済みの`minimal-plan-repairs-20260813`の散文正本
 
 ## 履歴
 

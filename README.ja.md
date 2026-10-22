@@ -162,7 +162,7 @@ release commitを既定branchへ着地・pushしてから、同じ版をregistry
 ```bash
 npm run ci
 npm run verify:release-commit
-npm publish --access public
+gh workflow run publish.yml --repo kitepon/Lattice --ref main
 npm install -g @quolu/lattice@<version>
 lattice --version
 lattice status --json
@@ -187,6 +187,9 @@ npm test
 npm run check
 npm run ci
 ```
+
+最初にrootの依存を`npm ci`で導入します。`npm test`は内蔵sensorの依存とbuildを準備してから
+製品testを実行するため、隔離checkoutでも別のbuild手順は要りません。
 
 製品localの保守で必要な時だけ次を使います。
 
@@ -222,8 +225,23 @@ lattice status --json
 
 `state`は`uninitialized | ready | active_run | invalid`のいずれかです。`uninitialized`は
 正常な未初期化状態で、`next_action`が正規の初期authoring入口を返します。新規planはPhase監査と
-ToDo schedulingを分離し、全ToDoに設計メモを持つ`lattice.plan_create_input.v4`のcanonical
-JSON+LFを用意し、次で作成します。既存のv1〜v3は互換契約として維持され、`--schema-version`で取得できます。
+ToDo schedulingを分離し、全ToDoに設計メモを持つ`lattice.plan_create_input.v4`の
+repo内JSONを用意し、次で作成します。既存のv1〜v3は互換契約として維持され、`--schema-version`で取得できます。
+
+AIへ「Latticeで工程作って」と頼むと、製品hookが機能逆算の入口を示します。AIは最終成果と
+受入条件から必要な機能を逆向きにたどり、各ToDoが必要とする機能と作る機能を定義します。
+全体目的、後続の利用、未知の理由と次の問いも担当者へ渡します。同じ入口で既存storeへの
+新plan追加と、開発中にゴールが変わったplanの後継版作成まで行えます。
+
+```bash
+lattice plan backchain --schema --json
+lattice plan backchain --input .lattice/backchain.json --dry-run --json
+lattice plan backchain --input .lattice/backchain.json --json
+```
+
+`backchain.json`はrepo内の`lattice.plan_create_input.v4`を`authoring_ref`で参照します。
+機能の意味を判断するのは操作AIで、Latticeは宣言した機能・工程・依存の接続を検査します。
+旧planは従来どおり読めます。
 
 ```bash
 lattice plan create --schema-version 4 --json   # v4のJSON Schemaを取る（作成はしない）

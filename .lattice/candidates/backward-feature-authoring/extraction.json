@@ -1,0 +1,181 @@
+{
+  "schema": "lattice.todo_extraction.v4",
+  "project_id": "lattice",
+  "plan_key": "backward-feature-authoring-20261023",
+  "plan_version": "v1",
+  "actor": {
+    "host": "terminal",
+    "session": "backward-feature-authoring",
+    "agent": "bell"
+  },
+  "recorded_at": "2026-10-22T20:43:32.024Z",
+  "tasks": [
+    {
+      "task_id": "bfa-01-contract",
+      "title": "ゴールから機能を逆算し、各工程の必要・提供機能を検査する",
+      "lane": "implementation",
+      "design_memo": "全体目的: 最終成果から機能を逆算し、担当者に目的と後続用途が届くLattice工程を作る。\n必要な機能: なし。\n作る機能: 機能契約と逆算compile。\n最終ゴールの目的と受入条件から機能前提を再帰的に記録する公開入力契約と検査を実装する。各ToDoの必要・提供機能、既知の提供元、未知の理由と問い、後続の用途を明示する。欠落、孤立、循環、依存欠落は該当IDを返す。意味的十分性はAIの判断として残す。focused test、契約文書、自己監査を完了する。",
+      "narrative_ref": "docs/plan_backward-feature-authoring.md",
+      "compile_binding": null,
+      "disposition": "register_pending",
+      "start": null,
+      "completion": null,
+      "source": {
+        "origin_plan_ref": "docs/plan_backward-feature-authoring.md",
+        "origin_line": 26,
+        "source_commit": "91c03f278313cd2e79ae2565d5e26dc530e34d65",
+        "heading_path": [
+          "最終成果から逆算するLattice工程作成",
+          "逆算する機能関係"
+        ],
+        "markdown_depth": 0,
+        "parent_task_id": null,
+        "checkbox_state": "absent"
+      },
+      "migration_context": {
+        "external_canonical_ref": null,
+        "carry_over_ref": null,
+        "h_required": false,
+        "condition": null,
+        "evidence_refs": [],
+        "notes": []
+      }
+    },
+    {
+      "task_id": "bfa-02-create-context",
+      "title": "逆算した機能契約から工程を登録し、担当者へ全体目的と後続用途を渡す",
+      "lane": "implementation",
+      "design_memo": "全体目的: 最終成果から機能を逆算し、担当者に目的と後続用途が届くLattice工程を作る。\n必要な機能: 機能契約と逆算compile。\n作る機能: 初回工程作成、作業文脈配信。\n逆算済みの機能契約を工程作成の正規入口で受け、各taskの必要・提供機能をplan versionへ束縛して登録する。todo show/startは全体目的、受入条件、必要・提供機能、後続用途、未知を返す。未解決があっても工程作成を拒否せず、既知の接続違反だけをtyped診断する。実repoで初回作成からstart/readまで確認する。",
+      "narrative_ref": "docs/plan_backward-feature-authoring.md",
+      "compile_binding": null,
+      "disposition": "register_pending",
+      "start": null,
+      "completion": null,
+      "source": {
+        "origin_plan_ref": "docs/plan_backward-feature-authoring.md",
+        "origin_line": 27,
+        "source_commit": "91c03f278313cd2e79ae2565d5e26dc530e34d65",
+        "heading_path": [
+          "最終成果から逆算するLattice工程作成",
+          "逆算する機能関係"
+        ],
+        "markdown_depth": 0,
+        "parent_task_id": null,
+        "checkbox_state": "absent"
+      },
+      "migration_context": {
+        "external_canonical_ref": null,
+        "carry_over_ref": null,
+        "h_required": false,
+        "condition": null,
+        "evidence_refs": [],
+        "notes": []
+      }
+    },
+    {
+      "task_id": "bfa-03-revise-goal",
+      "title": "ゴール変更から機能と工程を再編し、無関係な完了を保つ",
+      "lane": "implementation",
+      "design_memo": "全体目的: 最終成果から機能を逆算し、担当者に目的と後続用途が届くLattice工程を作る。\n必要な機能: 初回工程作成、作業文脈配信。\n作る機能: ゴール変更後の工程修正。\n開発途中にゴール、機能前提、task集合が変わる実例を扱う。後継plan versionへ新しい機能契約と工程を反映し、旧版は履歴に残す。変更されていないtaskの結果を維持し、意味が変わるtaskだけ明示reset/退役する。旧source inventory等の低層契約が通常の修正を塞ぐなら、製品の正規入口で吸収する。初回→一部done→ゴール変更→後続着手を実repoで通す。",
+      "narrative_ref": "docs/plan_backward-feature-authoring.md",
+      "compile_binding": null,
+      "disposition": "register_pending",
+      "start": null,
+      "completion": null,
+      "source": {
+        "origin_plan_ref": "docs/plan_backward-feature-authoring.md",
+        "origin_line": 28,
+        "source_commit": "91c03f278313cd2e79ae2565d5e26dc530e34d65",
+        "heading_path": [
+          "最終成果から逆算するLattice工程作成",
+          "逆算する機能関係"
+        ],
+        "markdown_depth": 0,
+        "parent_task_id": null,
+        "checkbox_state": "absent"
+      },
+      "migration_context": {
+        "external_canonical_ref": null,
+        "carry_over_ref": null,
+        "h_required": false,
+        "condition": null,
+        "evidence_refs": [],
+        "notes": []
+      }
+    },
+    {
+      "task_id": "bfa-04-entry-release",
+      "title": "「Latticeで工程作って」から逆算工程を起動し、公開利用面まで届ける",
+      "lane": "implementation",
+      "design_memo": "全体目的: 最終成果から機能を逆算し、担当者に目的と後続用途が届くLattice工程を作る。\n必要な機能: ゴール変更後の工程修正。\n作る機能: 依頼から逆算工程への導線、公開利用可能な逆算工程。\n対応AI hostのprompt導線で「Latticeで工程作って」に逆算の正規入口を提示する。AIが意味を決め、Latticeは検証・記録だけを担う。初回作成とゴール変更の一気通貫を再確認し、関連gate、version bump、push、npm公開、global install、公開後smokeまで完了する。",
+      "narrative_ref": "docs/plan_backward-feature-authoring.md",
+      "compile_binding": null,
+      "disposition": "register_pending",
+      "start": null,
+      "completion": null,
+      "source": {
+        "origin_plan_ref": "docs/plan_backward-feature-authoring.md",
+        "origin_line": 25,
+        "source_commit": "91c03f278313cd2e79ae2565d5e26dc530e34d65",
+        "heading_path": [
+          "最終成果から逆算するLattice工程作成",
+          "逆算する機能関係"
+        ],
+        "markdown_depth": 0,
+        "parent_task_id": null,
+        "checkbox_state": "absent"
+      },
+      "migration_context": {
+        "external_canonical_ref": null,
+        "carry_over_ref": null,
+        "h_required": false,
+        "condition": null,
+        "evidence_refs": [],
+        "notes": []
+      }
+    }
+  ],
+  "hard_dependencies": [
+    {
+      "from": {
+        "project_id": "lattice",
+        "plan_key": "backward-feature-authoring-20261023",
+        "task_id": "bfa-01-contract"
+      },
+      "to": {
+        "project_id": "lattice",
+        "plan_key": "backward-feature-authoring-20261023",
+        "task_id": "bfa-02-create-context"
+      },
+      "reason": "bfa-01-contractの提供機能がbfa-02-create-contextの入力になる"
+    },
+    {
+      "from": {
+        "project_id": "lattice",
+        "plan_key": "backward-feature-authoring-20261023",
+        "task_id": "bfa-02-create-context"
+      },
+      "to": {
+        "project_id": "lattice",
+        "plan_key": "backward-feature-authoring-20261023",
+        "task_id": "bfa-03-revise-goal"
+      },
+      "reason": "bfa-02-create-contextの提供機能がbfa-03-revise-goalの入力になる"
+    },
+    {
+      "from": {
+        "project_id": "lattice",
+        "plan_key": "backward-feature-authoring-20261023",
+        "task_id": "bfa-03-revise-goal"
+      },
+      "to": {
+        "project_id": "lattice",
+        "plan_key": "backward-feature-authoring-20261023",
+        "task_id": "bfa-04-entry-release"
+      },
+      "reason": "bfa-03-revise-goalの提供機能がbfa-04-entry-releaseの入力になる"
+    }
+  ],
+  "joins": [],
+  "extraction_digest": "633f222f9dcaf4808056882f8b97c1f9740d884fd521440be4584e62495d5ab1"
+}

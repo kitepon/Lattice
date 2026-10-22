@@ -112,6 +112,37 @@ if (help !== null) {
   } catch (error) {
     process.exitCode = projectCliFailure(process.stderr, error);
   }
+} else if (args.length === 4 && args[0] === 'plan' && args[1] === 'backchain'
+  && args[2] === '--schema' && args[3] === '--json') {
+  const { backchainSchema } = await import('../src/plan-backchain.mjs');
+  const { projectCliFailure } = await import('../src/project-cli.mjs');
+  try {
+    process.stdout.write(`${JSON.stringify(await backchainSchema())}\n`);
+    process.exitCode = 0;
+  } catch (error) {
+    process.exitCode = projectCliFailure(process.stderr, error);
+  }
+} else if (args[0] === 'plan' && args[1] === 'backchain') {
+  const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
+  const flags = matchFlagCommand(args, ['plan', 'backchain'], {
+    known: ['input', 'dry-run', 'json'], required: ['input'],
+    booleans: ['dry-run', 'json'],
+  });
+  if (flags === null || flags.json !== true) {
+    process.stderr.write(`lattice: unsupported command or arguments: ${args.join(' ')}\n`);
+    process.exitCode = 2;
+  } else {
+    const { runPlanBackchain } = await import('../src/plan-backchain.mjs');
+    const { projectCliFailure } = await import('../src/project-cli.mjs');
+    try {
+      process.exitCode = await runPlanBackchain({
+        cwd: process.cwd(), inputRef: flags.input, dryRun: flags['dry-run'] === true,
+        stdout: process.stdout, env: process.env,
+      });
+    } catch (error) {
+      process.exitCode = projectCliFailure(process.stderr, error);
+    }
+  }
 } else if (args.length === 2 && args[0] === 'factory-diagnostics' && args[1] === '--json') {
   const { buildFactoryDiagnostics } = await import('../src/factory-diagnostics.mjs');
   const diagnostics = await buildFactoryDiagnostics();

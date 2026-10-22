@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.79.0 — 2026-10-23
+
+### 追加: 最終成果から機能を逆算する工程作成
+
+- `lattice plan backchain --input <file> --json`を追加。操作AIが最終成果から必要な機能を逆算して宣言し、Latticeが各工程の必要・提供機能、提供元、後続への依存を検査して工程を登録する。提供元がまだ分からない機能は理由と次の問いを残せる。
+- 機能契約をplan versionへ束縛し、`todo show`と`todo start`へ全体目的、受入条件、必要・提供機能、後続の利用を同梱する。旧planの応答は維持する。
+- ゴール変更を同じ入口で後継plan versionへ反映する。追加・退役・再実行・理由付きcarryを扱い、無関係な完了結果を保持する。作業中ToDoの着手束縛は新versionへ結び直し、同じ入力の再実行で版を増やさない。
+- Claude・Codex・Cursorの対応hookは「Latticeで工程作って」という依頼に逆算の正規入口を示す。Lattice内部からAIは起動しない。
+
+### 修正
+
+- 隔離checkoutの`npm test`が内蔵sensorのbuild不在で大量に失敗していた。製品test入口がsensor依存の導入とbuildを先に行う。GitHub CIと公開workflowの重複した事前buildは外し、同じ正規入口で検査する。
+- WindowsのHub設定テストが無関係な固定ポートの競合で失敗するのを直し、空きポートを実bindで選ぶ。
+- 製品testがCPU数だけsuiteを並行実行し、各suiteの子processでmacOS runnerが過負荷となっていた。同時suiteを最大4本にして、競合介入・故障報告の時間競合を抑える。3対象suiteの4並列実測で成功を確認した。
+
 ## 0.78.1 — 2026-10-12
 
 ### 修正: projectごとのページが、記録された端末名をそのまま出していた（ADR 0198）

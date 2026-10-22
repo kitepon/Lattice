@@ -1,6 +1,6 @@
 {
   "name": "@quolu/lattice",
-  "version": "0.78.1",
+  "version": "0.79.0",
   "description": "Schedulability compiler for multi-agent development: observe real code boundaries, refactor the conflicting seam, recompile the plan for parallel execution",
   "author": {
     "name": "Quo / クオ at kitepon.dev",
@@ -30,6 +30,7 @@
     "docs/schemas/lattice.plan_create_input.v3.schema.json",
     "docs/schemas/lattice.plan_create_input.v4.schema.json",
     "docs/schemas/lattice.plan_scope_review.v1.schema.json",
+    "docs/schemas/lattice.plan_backchain.v1.schema.json",
     "docs/schemas/lattice.todo_revision.v2.schema.json",
     "docs/schemas/lattice.todo_revision_set.v3.schema.json",
     "docs/schemas/lattice.phase_todo_revision.v3.schema.json",
@@ -79,8 +80,8 @@
     "prepack": "npm --prefix sensor run build",
     "verify:release-commit": "node scripts/verify-release-commit.mjs",
     "prepublishOnly": "npm run verify:release-commit",
-    "test": "node scripts/run-product-tests.mjs",
-    "test:profile": "node scripts/run-product-tests.mjs",
+    "test": "npm --prefix sensor ci && npm --prefix sensor run build && node scripts/run-product-tests.mjs",
+    "test:profile": "npm --prefix sensor ci && npm --prefix sensor run build && node scripts/run-product-tests.mjs",
     "test:sensor": "npm --prefix sensor test",
     "check": "node scripts/check-syntax.mjs",
     "ci": "npm run check:docs && npm run test && npm run test:sensor && npm run check && npm run check:cli-surface && npm run check:open-questions && npm run check:reachability && npm run verify:todo-store",

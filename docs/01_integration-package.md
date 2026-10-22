@@ -156,6 +156,12 @@ setupはそのhookを移植・統合・削除しない。
 
 ## 5.1 hooks導線（sensor気づかせ導線）
 
+対応hostの`UserPromptSubmit`（Cursorは`beforeSubmitPrompt`）で利用者が
+「Latticeで工程作って」と依頼した時は、sensor indexの有無や同sessionの既読状態にかかわらず、
+最終成果から機能を逆算する`lattice plan backchain --schema --json`と
+`lattice plan backchain --input <file> --json`の正規導線を返す。通常のsensor案内は従来の
+一回通知を維持する。AIが機能の意味を判断し、Latticeは入力契約と工程状態を所有する。
+
 正典: [設計契約r5](evidence/2026-08-01-sah-p1-design-contract.md)。公開構文は
 `lattice hooks <install|status|uninstall|emit> --host <claude|codex|cursor>`で、v1はPOSIX専用とする。
 native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書き込まない。

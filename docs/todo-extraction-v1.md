@@ -4,8 +4,10 @@
 > **空 store の初回 authoring だけが `lattice plan create --input <lattice.plan_create_input.v4>`**。
 > `plan create` は store 初期化専用で、既に `.lattice/todo` がある project では
 > `STORE_WRITE_CONFLICT: store_already_exists` を返す。**既に plan を持つ store へ新しい plan を
-> 足す、または既存task同士へ明示cross-plan hard dependencyを一件追加する入口は
-> `lattice todo migrate --input <extraction JSON>` だけ**。Phase gate を伴う plan は
+> 足す、または既存task同士へ明示cross-plan hard dependencyを一件追加する移行入口は
+> `lattice todo migrate --input <extraction JSON>`**。最終成果から機能を逆算して
+> 新planを作る入口は`lattice plan backchain --input <file> --json`であり、
+> 初回作成・既存storeへの追加・同じplanのゴール変更を同じ契約で扱う。Phase gate を伴う移行planは
 > migrate で登録した後に `lattice todo revise-phase` で Phase を与える。
 
 `lattice.todo_extraction.v4` は既存storeへ新planを足す、または既存task同士の一件の理由付き

@@ -29,6 +29,9 @@ Commands:
       # 結果へdispatch_shapeを載せる。--serialization-reviewedは互換のため受理するだけで門ではない
   create --schema --json             # 既定は最新版（v4）のJSON Schemaを返す
   create --schema-version <1|2|3|4> --json
+  backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
+  backchain --input <file> [--dry-run] --json
+      # 各工程の必要・提供機能を照合し、初回又は既存storeへのplan登録まで行う
   show <plan_key> --json             # task・依存・phase・状態をplan本体から1コマンドで投影する
   compile --request <request.json>
   compile --schema --json            # lattice.run_request.v1 の JSON Schema を出す
@@ -231,6 +234,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4> --json',
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
+  'plan backchain': 'plan backchain --input <file> [--dry-run] --json | --schema --json',
   'plan compile': 'plan compile --request <request.json> | --schema --json',
   'plan verify': 'plan verify --request <request.json> --plan <plan.json>',
   'run start': 'run start --request <request.json> --executor <adapter>'
