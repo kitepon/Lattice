@@ -165,6 +165,16 @@ Markdownへ暗黙fallbackしない。
 
 初期工程表の意味上の入力は、オーナーが与えた作業仕様と受入条件である。操作AIは作業仕様を
 dispatchableなToDoへ分割・統合・並列配置できるが、工程全体が実現する製品目的を増やしてはならない。
+最終成果から機能を逆算して作る時は、`lattice plan backchain --schema --json`で
+`lattice.plan_backchain.v1`を取得し、`lattice plan backchain --input <file> --json`へ渡す。
+入力は全体の目的、最終成果と受入条件、機能ごとの前提と提供元、各ToDoの必要・提供機能を持つ。
+既知の機能は提供元とToDo間の依存を検査し、提供元が未知なら理由と次の問いを保持する。
+未知を完成扱いせず、未知だけを理由に工程登録を拒否しない。本文の意味的十分性は操作AIが判断する。
+この入口は機能関係を照合してから、空storeでは初期authoring、既存storeでは新planの登録までを
+一回で行う。元のauthoring JSONは別fileとして参照するが、機械は必要・提供機能と全体目的を各ToDoの
+設計メモへ写し、機能契約をplan versionの保存領域へ束縛する。
+機能契約を持つplanの`todo show`は`lattice.todo_detail_result.v4`、`todo start`は
+`lattice.todo_mutation_result.v6`で`feature_context`を返す。旧planの返却schemaは変えない。
 工程表を完成させた後、storeへ登録する前に`lattice plan scope-review --plan-input <authoring.json>
 --review <lattice.plan_scope_review.v1> --json`を実行する。reviewは元の作業仕様、登録対象の全taskに対する
 対応先と必要性の判断、全体verdictを持ち、authoring artifactのdigestへ束縛する。Latticeは全taskが一度ずつ

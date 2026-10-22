@@ -1,16 +1,21 @@
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
+import path from 'node:path';
 
 import {
   exactRecord, isTodoDesignMemo, isTodoDigest, isTodoIdentifier, isTodoRef,
   todoSelfDigest,
 } from './todo-contracts.mjs';
 import { TodoStoreError } from './todo-store.mjs';
+import { gitSync } from './git-process.mjs';
+import { readAuthoringJsonFile } from './todo-authoring-input.mjs';
 
 export const BACKCHAIN_SCHEMA = 'lattice.plan_backchain.v1';
 const CREATE_SCHEMA = 'lattice.plan_create_input.v4';
 const EXTRACTION_SCHEMA = 'lattice.todo_extraction.v4';
 const MAX_FEATURES = 2_048;
 const MAX_TEXT_BYTES = 16_384;
+const MAX_BINDING_BYTES = 8_388_608;
+const BINDING_SCHEMA = 'lattice.plan_backchain_binding.v1';
 
 function fail(reason, pointer, detail = {}) {
   throw new TodoStoreError('PLAN_BACKCHAIN_INVALID', reason, undefined, {
@@ -39,7 +44,10 @@ function provider(value) {
 }
 
 function registeredTasks(authoring) {
-  if (authoring?.schema === CREATE_SCHEMA) return authoring.tasks;
+  if (!Array.isArray(authoring?.tasks) || !Array.isArray(authoring?.hard_dependencies)) {
+    fail('authoring_invalid', '/authoring_ref');
+  }
+  if (authoring.schema === CREATE_SCHEMA) return authoring.tasks;
   if (authoring?.schema === EXTRACTION_SCHEMA) {
     return authoring.tasks.filter(({ disposition }) => disposition.startsWith('register_'));
   }
@@ -215,6 +223,106 @@ export function attachBackchainMemos(chain, authoring) {
   const digestField = authoring.schema === CREATE_SCHEMA ? 'input_digest' : 'extraction_digest';
   amended[digestField] = todoSelfDigest(amended, digestField);
   return amended;
+}
+
+export async function readTaskBackchainContext({ repoRoot, plan, taskId }) {
+  const ref = `.lattice/todo/plans/${plan.plan_key}/${plan.plan_version}/backchain.json`;
+  const absolute = path.resolve(repoRoot, ref);
+  let bytes;
+  try {
+    const state = await lstat(absolute);
+    if (!state.isFile() || state.isSymbolicLink() || state.size > MAX_BINDING_BYTES
+      || await realpath(absolute) !== absolute) fail('binding_unsafe', ref);
+    bytes = await readFile(absolute);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    if (error instanceof TodoStoreError) throw error;
+    fail('binding_unreadable', ref);
+  }
+  let binding;
+  try { binding = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { fail('binding_invalid_json', ref); }
+  if (!exactRecord(binding, ['schema', 'plan_digest', 'chain', 'binding_digest'])
+    || binding.schema !== BINDING_SCHEMA || binding.plan_digest !== plan.plan_digest
+    || !isTodoDigest(binding.binding_digest)
+    || binding.binding_digest !== todoSelfDigest(binding, 'binding_digest')) {
+    fail('binding_invalid', ref);
+  }
+  const chain = binding.chain;
+  validatePlanBackchain(chain, {
+    schema: CREATE_SCHEMA, project_id: plan.project_id, plan_key: plan.plan_key,
+    plan_version: plan.plan_version, tasks: plan.tasks,
+    hard_dependencies: plan.hard_dependencies,
+  });
+  const task = chain.tasks.find(({ task_id: id }) => id === taskId);
+  if (task === undefined) fail('binding_task_missing', ref, { task_id: taskId });
+  const features = new Map(chain.features.map((feature) => [feature.feature_id, feature]));
+  const downstream = chain.tasks.filter((other) => other.task_id !== taskId
+    && other.requires_feature_ids.some((id) => task.provides_feature_ids.includes(id)))
+    .map(({ task_id: id }) => id).sort();
+  const required = task.requires_feature_ids.map((id) => features.get(id));
+  return {
+    schema: 'lattice.todo_feature_context.v1',
+    plan_key: chain.plan_key, plan_version: chain.plan_version,
+    goal: chain.goal,
+    requires: required,
+    provides: task.provides_feature_ids.map((id) => features.get(id)),
+    downstream_task_ids: downstream,
+    unknown_feature_ids: required.filter(({ provider }) => provider.kind === 'unknown')
+      .map(({ feature_id: id }) => id),
+    chain_digest: chain.chain_digest,
+  };
+}
+
+function gitRoot(cwd) {
+  try {
+    return path.resolve(gitSync(['rev-parse', '--show-toplevel'], {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).replace(/\r?\n$/u, ''));
+  } catch { fail('repository_unresolved', '/'); }
+}
+
+export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false }) {
+  const repoRoot = gitRoot(cwd);
+  const chain = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'PLAN_BACKCHAIN_INVALID' });
+  const authoring = await readAuthoringJsonFile(repoRoot, chain.authoring_ref, {
+    invalidCode: 'PLAN_BACKCHAIN_INVALID',
+  });
+  validatePlanBackchain(chain, authoring);
+  const amended = attachBackchainMemos(chain, authoring);
+  const unknownFeatureIds = chain.features.filter(({ provider: source }) => source.kind === 'unknown')
+    .map(({ feature_id: id }) => id).sort();
+  if (dryRun) {
+    stdout.write(`${JSON.stringify({
+      schema: 'lattice.plan_backchain_check.v1', valid: true,
+      project_id: chain.project_id, plan_key: chain.plan_key,
+      task_count: chain.tasks.length, feature_count: chain.features.length,
+      unknown_feature_ids: unknownFeatureIds, chain_digest: chain.chain_digest,
+    })}\n`);
+    return 0;
+  }
+  let created;
+  if (authoring.schema === CREATE_SCHEMA) {
+    const { runPlanCreate } = await import('./project-cli.mjs');
+    let output = '';
+    await runPlanCreate({ cwd: repoRoot, inputRef: chain.authoring_ref,
+      inputValue: amended, featureChain: chain,
+      stdout: { write(value) { output += value; } } });
+    created = JSON.parse(output);
+  } else {
+    const { migrate } = await import('./todo-cli.mjs');
+    created = await migrate({ repoRoot, inputRef: chain.authoring_ref,
+      inputValue: amended, featureChain: chain });
+  }
+  stdout.write(`${JSON.stringify({
+    schema: 'lattice.plan_backchain_result.v1',
+    project_id: chain.project_id, plan_key: chain.plan_key,
+    plan_version: created.plan_version, plan_digest: created.plan_digest ?? null,
+    feature_count: chain.features.length, task_count: chain.tasks.length,
+    unknown_feature_ids: unknownFeatureIds,
+    chain_digest: chain.chain_digest, authoring_result: created,
+  })}\n`);
+  return 0;
 }
 
 export async function backchainSchema() {

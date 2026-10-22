@@ -1,5 +1,6 @@
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
+import { readTaskBackchainContext } from './plan-backchain.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
 import {
@@ -636,7 +637,8 @@ function terminalAuditDoneAdvisory(plan, phases) {
 
 async function mutate({
   repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
-  advisory = null, noteContext = null, structureContext = null, testResultRef = null,
+  advisory = null, noteContext = null, structureContext = null, featureContext = null,
+  testResultRef = null,
 }) {
   const actor = mutationActor(env);
   const evidence = evidenceRef === null && evidenceMessage === null
@@ -683,7 +685,9 @@ async function mutate({
     throw new TypeError('start mutation requires note context');
   }
   const result = {
-    schema: includesNoteContext ? 'lattice.todo_mutation_result.v5' : 'lattice.todo_mutation_result.v2',
+    schema: includesNoteContext
+      ? featureContext === null ? 'lattice.todo_mutation_result.v5' : 'lattice.todo_mutation_result.v6'
+      : 'lattice.todo_mutation_result.v2',
     project_id: event.project_id,
     plan_key: event.plan_key,
     plan_version: event.plan_version,
@@ -699,6 +703,7 @@ async function mutate({
       design_memo: designMemoProjection(authoredTask),
       note_context: noteContext,
       structure_context: structureContext,
+      ...(featureContext === null ? {} : { feature_context: featureContext }),
     } : {}),
     result_digest: '',
   };
@@ -906,9 +911,12 @@ async function startTask({
   const structureContext = await startStructureContext({
     repoRoot, store, planKey, taskId: resolvedTaskId,
   });
+  const featureContext = await readTaskBackchainContext({
+    repoRoot, plan: member.plan, taskId: resolvedTaskId,
+  });
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, evidenceRef: null, advisory, noteContext,
-    structureContext });
+    structureContext, featureContext });
 }
 
 // plan改訂でcarryされたin-progress ToDoの再束縛入口（ADR 0191）。task状態・開始時刻は
@@ -1339,8 +1347,8 @@ async function phaseBaseline({ repoRoot, env, reason, exceptPlanKeys }) {
   return result;
 }
 
-async function migrate({ repoRoot, inputRef }) {
-  const extraction = await readMigrationInput(repoRoot, inputRef);
+export async function migrate({ repoRoot, inputRef, inputValue = null, featureChain = null }) {
+  const extraction = inputValue ?? await readMigrationInput(repoRoot, inputRef);
   // unresolved/空集合の早期gateは、compileTodoExtraction内部の同名gateをここでも
   // 先に通しておくことで、既存のエラー優先順位を変えない。
   // dispatch_shapeは結果へ載せる観測であり、直列度では書込みを拒まない（ADR 0180）。
@@ -1366,7 +1374,7 @@ async function migrate({ repoRoot, inputRef }) {
     joins: extraction.joins,
   });
 
-  const imported = await appendTodoExtraction({ repoRoot, extraction });
+  const imported = await appendTodoExtraction({ repoRoot, extraction, featureChain });
   let companion = null;
   if ((imported.crossPlanDependencies ?? []).length > 0) {
     const connectedStore = await readTodoStore({ repoRoot });
@@ -1816,8 +1824,11 @@ async function todoDetail({ repoRoot, planKey, taskId }) {
   const { context } = await readTodoNoteContext({
     repoRoot, store, planKey, taskId: task.task_id,
   });
+  const featureContext = await readTaskBackchainContext({
+    repoRoot, plan: member.plan, taskId: task.task_id,
+  });
   const result = {
-    schema: 'lattice.todo_detail_result.v3',
+    schema: featureContext === null ? 'lattice.todo_detail_result.v3' : 'lattice.todo_detail_result.v4',
     project_id: store.project_id,
     plan_key: planKey,
     plan_version: member.plan.plan_version,
@@ -1825,6 +1836,7 @@ async function todoDetail({ repoRoot, planKey, taskId }) {
     design_memo: designMemoProjection(task),
     state,
     note_context: context,
+    ...(featureContext === null ? {} : { feature_context: featureContext }),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');

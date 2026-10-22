@@ -2207,6 +2207,26 @@ export function buildTodoPlan(input) {
   return plan;
 }
 
+function boundPlanBackchain(plan, chain) {
+  if (chain === null || chain === undefined) return null;
+  if (chain.schema !== 'lattice.plan_backchain.v1'
+    || chain.project_id !== plan.project_id || chain.plan_key !== plan.plan_key
+    || chain.plan_version !== plan.plan_version
+    || !isTodoDigest(chain.chain_digest)
+    || chain.chain_digest !== todoSelfDigest(chain, 'chain_digest')) {
+    fail('STORE_INCONSISTENT', 'backchain_plan_binding_invalid');
+  }
+  const binding = {
+    schema: 'lattice.plan_backchain_binding.v1',
+    plan_digest: plan.plan_digest, chain, binding_digest: '',
+  };
+  binding.binding_digest = todoSelfDigest(binding, 'binding_digest');
+  if (Buffer.byteLength(JSON.stringify(binding), 'utf8') > TODO_LIMITS.snapshotBytes) {
+    fail('STORE_WRITE_REFUSED', 'backchain_binding_too_large');
+  }
+  return binding;
+}
+
 export function buildPlanGenesis(plan, input) {
   const event = {
     schema: isPhaseTodoPlanSchema(plan.schema)
@@ -2347,6 +2367,7 @@ async function bootstrapImportedPlan(repoRoot, options) {
   }
   const prepared = prepareImportedArtifacts(repoRoot, options, initialization.projectId, []);
   const { plan, genesis, events, snapshot } = prepared;
+  const backchain = boundPlanBackchain(plan, options.featureChain);
   const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}/${plan.plan_version}`;
   const planRef = `${base}/plan.json`;
   const journalRef = `${base}/journal/active.jsonl`;
@@ -2370,6 +2391,7 @@ async function bootstrapImportedPlan(repoRoot, options) {
     await atomicWrite(path.join(stagedBase, 'plan.json'), canonicalLine(plan));
     await atomicWrite(path.join(stagedBase, 'journal', 'active.jsonl'), Buffer.concat(events.map(canonicalLine)));
     await atomicWrite(path.join(stagedBase, 'snapshot.json'), canonicalLine(snapshot));
+    if (backchain !== null) await atomicWrite(path.join(stagedBase, 'backchain.json'), canonicalLine(backchain));
     await atomicWrite(path.join(stage, 'manifest.json'), canonicalLine(manifest));
     await protocolStage(options, 'bootstrap_staged');
 
@@ -2753,6 +2775,7 @@ export async function appendImportedPlan(options = {}) {
       repoRoot, options, store.project_id, store.members.map(({ plan: memberPlan }) => ({ plan: memberPlan })),
     );
     const { plan, genesis, events, snapshot, tasks } = prepared;
+    const backchain = boundPlanBackchain(plan, options.featureChain);
 
     const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}/${plan.plan_version}`;
     const planRef = `${base}/plan.json`;
@@ -2780,6 +2803,7 @@ export async function appendImportedPlan(options = {}) {
     await atomicWrite(stagedPlan, canonicalLine(plan));
     await atomicWrite(stagedJournal, Buffer.concat(events.map(canonicalLine)));
     await atomicWrite(stagedSnapshot, canonicalLine(snapshot));
+    if (backchain !== null) await atomicWrite(path.join(stagedBase, 'backchain.json'), canonicalLine(backchain));
     for (const [index, artifact] of importedCrossPlan.artifacts.entries()) {
       artifact.stagedAbsolute = path.join(transactionAbsolute, 'plan-scoped', `${index}.jsonl`);
       await atomicWrite(artifact.stagedAbsolute, artifact.finalBytes);
@@ -2824,6 +2848,9 @@ export async function appendImportedPlan(options = {}) {
         await rename(stagedPlan, path.resolve(repoRoot, planRef));
         await rename(stagedJournal, path.resolve(repoRoot, journalRef));
         await rename(stagedSnapshot, path.resolve(repoRoot, snapshotRef));
+        if (backchain !== null) {
+          await rename(path.join(stagedBase, 'backchain.json'), path.join(finalBaseAbsolute, 'backchain.json'));
+        }
         await fsyncDirectory(path.dirname(path.resolve(repoRoot, planRef)));
         await fsyncDirectory(path.dirname(path.resolve(repoRoot, journalRef)));
       }
@@ -2911,14 +2938,16 @@ export async function initializeAuthoredTodoStore(options = {}) {
   const optionKeys = [
     'repoRoot', 'writer', 'projectId', 'repositories', 'plan', 'genesis',
   ];
-  if (!(exactRecord(options, optionKeys)
-    || (exactRecord(options, [...optionKeys, 'onProtocolStage'])
+  const allowedOptions = options.featureChain === undefined ? optionKeys : [...optionKeys, 'featureChain'];
+  if (!(exactRecord(options, allowedOptions)
+    || (exactRecord(options, [...allowedOptions, 'onProtocolStage'])
       && typeof options.onProtocolStage === 'function'))
     || options.projectId !== options.plan?.project_id
     || options.plan?.predecessor_plan_digest !== null) {
     throw new TypeError('authored store initialization input invalid');
   }
   const plan = buildTodoPlan(options.plan);
+  const backchain = boundPlanBackchain(plan, options.featureChain);
   verifyPlanNarrativeAnchors(repoRoot, plan);
   const genesis = buildPlanGenesis(plan, options.genesis);
   const tasks = replay(plan, [genesis]);
@@ -2962,6 +2991,7 @@ export async function initializeAuthoredTodoStore(options = {}) {
     await atomicWrite(path.join(stage, base, 'plan.json'), canonicalLine(plan));
     await atomicWrite(path.join(stage, base, 'journal', 'active.jsonl'), canonicalLine(genesis));
     await atomicWrite(path.join(stage, base, 'snapshot.json'), canonicalLine(snapshot));
+    if (backchain !== null) await atomicWrite(path.join(stage, base, 'backchain.json'), canonicalLine(backchain));
     await atomicWrite(path.join(stage, 'manifest.json'), canonicalLine(manifest));
 
     try {

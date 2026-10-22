@@ -30,6 +30,7 @@
     "docs/schemas/lattice.plan_create_input.v3.schema.json",
     "docs/schemas/lattice.plan_create_input.v4.schema.json",
     "docs/schemas/lattice.plan_scope_review.v1.schema.json",
+    "docs/schemas/lattice.plan_backchain.v1.schema.json",
     "docs/schemas/lattice.todo_revision.v2.schema.json",
     "docs/schemas/lattice.todo_revision_set.v3.schema.json",
     "docs/schemas/lattice.phase_todo_revision.v3.schema.json",

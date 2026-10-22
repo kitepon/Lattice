@@ -596,10 +596,10 @@ function describeCreateInputViolation(value) {
   return null;
 }
 
-export async function runPlanCreate({ cwd, inputRef, stdout }) {
+export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, featureChain = null }) {
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved');
-  const input = await readCanonicalInput(repoRoot, inputRef);
+  const input = inputValue ?? await readCanonicalInput(repoRoot, inputRef);
   if (input?.schema !== MEMO_PHASE_CREATE_INPUT_SCHEMA) {
     throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_retired', undefined, {
       violation_kind: 'const_mismatch', pointer: '/schema',
@@ -656,6 +656,7 @@ export async function runPlanCreate({ cwd, inputRef, stdout }) {
         ? { phase_accept_dependencies: input.phase_accept_dependencies } : {}),
     },
     genesis: { actor: input.actor, recorded_at: input.recorded_at, provenance: null },
+    ...(featureChain === null ? {} : { featureChain }),
   });
   const member = store.members[0];
   const result = {
