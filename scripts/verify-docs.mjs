@@ -104,7 +104,13 @@ async function listProductDocumentation(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (['.git', '.lattice', '.claude', '.codex', 'node_modules'].includes(entry.name)) continue;
     const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) out.push(...await listProductDocumentation(file));
+    if (entry.isDirectory()) {
+      // 他のcheckoutは同じGit rootに置かれていても製品文書ではない。
+      // linked worktreeの.gitはdirectoryでなくfileなので、入口で判定する。
+      try { await access(path.join(file, '.git')); continue; }
+      catch (error) { if (error?.code !== 'ENOENT') throw error; }
+      out.push(...await listProductDocumentation(file));
+    }
     else if (entry.isFile() && entry.name.endsWith('.md')) out.push(file);
   }
   return out;
