@@ -152,6 +152,20 @@ test('機能の受入条件が変わり判断を明示しない時は、その�
   assert.equal(JSON.parse(detail.stdout).state.status, 'pending');
 });
 
+test('工程自身の設計メモが変わった時も、明示判断なしに完了を持ち越さない', async (context) => {
+  const root = await createAndFinishIndex(context);
+  const revised = plan({ revised: true });
+  revised.tasks.find(({ task_id: id }) => id === 'index').design_memo =
+    '文書を索引に登録し、新しい権限条件を検査する。';
+  await writeFile(path.join(root, 'plan-v2.json'), `${JSON.stringify(revised)}\n`);
+  await writeFile(path.join(root, 'chain-v2.json'), `${JSON.stringify(chain({ revised: true }))}\n`);
+  const result = run(root, ['plan', 'backchain', '--input', 'chain-v2.json', '--json']);
+  assert.equal(result.status, 0, result.stderr);
+  const detail = run(root, ['todo', 'show', '--plan', 'search', '--task', 'index', '--json']);
+  assert.equal(detail.status, 0, detail.stderr);
+  assert.equal(JSON.parse(detail.stdout).state.status, 'pending');
+});
+
 test('ゴールから不要になった工程を退役させ、残る完了を保つ', async (context) => {
   const root = await createAndFinishIndex(context);
   const updatedPlan = plan();

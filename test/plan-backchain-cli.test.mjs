@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { todoSelfDigest } from '../src/todo-contracts.mjs';
+
 const BIN = path.resolve(import.meta.dirname, '../bin/lattice.mjs');
 const ACTOR = { host: 'fixture', session: 'fixture', agent: 'fixture' };
 
@@ -88,7 +90,9 @@ test('逆算した初回工程を一回で作り、担当者へ目的・必要�
   assert.equal(JSON.parse(preview.stdout).valid, true);
   const created = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
   assert.equal(created.status, 0, created.stderr);
-  assert.equal(JSON.parse(created.stdout).authoring_result.schema, 'lattice.plan_create_result.v1');
+  const createdResult = JSON.parse(created.stdout);
+  assert.equal(createdResult.authoring_result.schema, 'lattice.plan_create_result.v1');
+  assert.equal(createdResult.result_digest, todoSelfDigest(createdResult, 'result_digest'));
   const binding = JSON.parse(await readFile(path.join(root,
     '.lattice/todo/plans/search/v1/backchain.json')));
   assert.equal(binding.schema, 'lattice.plan_backchain_binding.v1');
@@ -116,6 +120,23 @@ test('後続の必要機能を作る工程が無ければstoreを作らない', 
   assert.equal(JSON.parse(result.stderr).code, 'PLAN_BACKCHAIN_INVALID');
   const status = run(root, ['status', '--json']);
   assert.equal(JSON.parse(status.stdout).state, 'uninitialized');
+});
+
+test('既存機能を申告する参照が実在しない時は作成前に理由を返す', async (context) => {
+  const root = await repo(context);
+  await writeFile(path.join(root, 'plan.json'), `${JSON.stringify(createInput())}\n`);
+  const input = chain();
+  input.features.push({ feature_id: 'format', capability: '既存形式を読む',
+    acceptance: '対象形式を扱える', requires_feature_ids: [],
+    provider: { kind: 'existing', evidence_ref: 'missing-format.md' } });
+  input.features.find(({ feature_id: id }) => id === 'index').requires_feature_ids = ['format'];
+  input.tasks.find(({ task_id: id }) => id === 'index').requires_feature_ids = ['format'];
+  await writeFile(path.join(root, 'chain.json'), `${JSON.stringify(input)}\n`);
+  const result = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
+  assert.equal(result.status, 1);
+  const failure = JSON.parse(result.stderr);
+  assert.equal(failure.code, 'PLAN_BACKCHAIN_INVALID');
+  assert.equal(failure.message, 'existing_feature_reference_missing');
 });
 
 test('既存storeへのplan追加も同じ逆算入口で行う', async (context) => {

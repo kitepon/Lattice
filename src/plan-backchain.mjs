@@ -207,7 +207,7 @@ export function backchainTaskMemo(chain, taskId) {
       const provider = feature.provider.kind === 'task'
         ? `工程 ${feature.provider.task_id}`
         : feature.provider.kind === 'existing'
-          ? `既存機能 ${feature.provider.evidence_ref}`
+          ? `既存機能として申告（参照: ${feature.provider.evidence_ref}）`
           : `未解決（${feature.provider.reason}。確認すること: ${feature.provider.question}）`;
       return `- ${id}: ${feature.capability}（提供元: ${provider}）`;
     }),
@@ -222,17 +222,21 @@ export function backchainTaskMemo(chain, taskId) {
   return lines.join('\n');
 }
 
+function localDesignMemo(memo, chain, taskId) {
+  const generated = chain?.tasks.some(({ task_id: id }) => id === taskId)
+    ? backchainTaskMemo(chain, taskId) : null;
+  const text = memo.trimEnd();
+  return generated !== null && text.endsWith(`\n\n${generated}`)
+    ? text.slice(0, -generated.length - 2) : text;
+}
+
 export function attachBackchainMemos(chain, authoring, { previousChain = null } = {}) {
   const tasks = new Set(chain.tasks.map(({ task_id: id }) => id));
   const amended = {
     ...authoring,
     tasks: authoring.tasks.map((task) => {
       if (!tasks.has(task.task_id)) return task;
-      const previous = previousChain?.tasks.some(({ task_id: id }) => id === task.task_id)
-        ? backchainTaskMemo(previousChain, task.task_id) : null;
-      const oldMemo = task.design_memo.trimEnd();
-      const baseMemo = previous !== null && oldMemo.endsWith(`\n\n${previous}`)
-        ? oldMemo.slice(0, -previous.length - 2) : oldMemo;
+      const baseMemo = localDesignMemo(task.design_memo, previousChain, task.task_id);
       const designMemo = `${baseMemo}\n\n${backchainTaskMemo(chain, task.task_id)}`;
       if (!isTodoDesignMemo(designMemo)) fail('design_memo_limit', `/tasks/${task.task_id}/design_memo`);
       return { ...task, design_memo: designMemo };
@@ -308,6 +312,29 @@ function gitRoot(cwd) {
   } catch { fail('repository_unresolved', '/'); }
 }
 
+async function verifyExistingFeatureReferences(repoRoot, chain) {
+  for (const feature of chain.features) {
+    if (feature.provider.kind !== 'existing') continue;
+    const ref = feature.provider.evidence_ref;
+    const absolute = path.resolve(repoRoot, ref);
+    if (!absolute.startsWith(`${repoRoot}${path.sep}`)) {
+      fail('existing_feature_reference_unsafe', `/features/${feature.feature_id}/provider`, {
+        evidence_ref: ref,
+      });
+    }
+    let state;
+    try { state = await lstat(absolute); }
+    catch { fail('existing_feature_reference_missing', `/features/${feature.feature_id}/provider`, {
+      evidence_ref: ref,
+    }); }
+    if (!state.isFile() || state.isSymbolicLink() || await realpath(absolute) !== absolute) {
+      fail('existing_feature_reference_unsafe', `/features/${feature.feature_id}/provider`, {
+        evidence_ref: ref,
+      });
+    }
+  }
+}
+
 function planSeed(authoring, predecessorPlanDigest) {
   return {
     schema: 'lattice.todo_plan.v7', project_id: authoring.project_id,
@@ -362,6 +389,8 @@ function compileTaskMigration(previousPlan, oldChain, desiredSeed, newChain) {
     const sameTask = oldTask.title === nextTask.title && oldTask.lane === nextTask.lane
       && oldTask.phase_id === nextTask.phase_id
       && oldTask.parent_task_id === nextTask.parent_task_id
+      && localDesignMemo(oldTask.design_memo, oldChain, id)
+        === localDesignMemo(nextTask.design_memo, newChain, id)
       && canonicalizeTodoArtifact(oldTask.compile_binding)
         === canonicalizeTodoArtifact(nextTask.compile_binding)
       && incoming(previousPlan, id) === incoming(desiredSeed, id);
@@ -487,6 +516,7 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     invalidCode: 'PLAN_BACKCHAIN_INVALID',
   });
   validatePlanBackchain(chain, authoring);
+  await verifyExistingFeatureReferences(repoRoot, chain);
   let member = null;
   let store = null;
   try {
@@ -497,24 +527,35 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
+  if (member === null && (chain.continuity?.length ?? 0) > 0) {
+    fail('continuity_without_predecessor', '/continuity');
+  }
   const unchanged = member !== null && await activeIntentUnchanged({
     repoRoot, member, chain, authoring,
   });
   const revision = member === null || unchanged ? null
     : await compileBackchainRevision({ repoRoot, member, chain, authoring });
   const amended = revision === null ? attachBackchainMemos(chain, authoring) : null;
+  if (!unchanged && revision === null) {
+    try { buildTodoPlan({ ...planSeed(amended, null), plan_version: chain.plan_version }); }
+    catch { fail('authoring_plan_invalid', '/authoring_ref'); }
+  }
   const unknownFeatureIds = chain.features.filter(({ provider: source }) => source.kind === 'unknown')
     .map(({ feature_id: id }) => id).sort();
   if (dryRun) {
-    stdout.write(`${JSON.stringify({
+    const checked = {
       schema: 'lattice.plan_backchain_check.v1', valid: true,
+      validation_scope: 'feature_chain_and_plan_shape',
       project_id: chain.project_id, plan_key: chain.plan_key,
       task_count: chain.tasks.length, feature_count: chain.features.length,
       unknown_feature_ids: unknownFeatureIds, chain_digest: chain.chain_digest,
       operation: unchanged ? 'unchanged' : revision !== null ? 'revise'
         : store === null ? 'create' : 'add',
       task_migration: revision?.task_migration ?? null,
-    })}\n`);
+      result_digest: '',
+    };
+    checked.result_digest = todoSelfDigest(checked, 'result_digest');
+    stdout.write(`${JSON.stringify(checked)}\n`);
     return 0;
   }
   let created;
@@ -555,7 +596,9 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
   }
   const reboundTaskIds = unchanged || revision !== null
     ? await rebindCarriedWork({ repoRoot, planKey: chain.plan_key, env }) : [];
-  stdout.write(`${JSON.stringify({
+  const finalStore = await readTodoStore({ repoRoot });
+  const finalMember = finalStore.members.find(({ plan }) => plan.plan_key === chain.plan_key);
+  const result = {
     schema: 'lattice.plan_backchain_result.v1',
     project_id: chain.project_id, plan_key: chain.plan_key,
     plan_version: created.plan_version, plan_digest: created.plan_digest ?? null,
@@ -563,7 +606,13 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     unknown_feature_ids: unknownFeatureIds,
     chain_digest: effectiveChain.chain_digest, authoring_result: created,
     rebound_task_ids: reboundTaskIds,
-  })}\n`);
+    operation: unchanged ? 'unchanged' : revision !== null ? 'revise'
+      : store === null ? 'create' : 'add',
+    journal_head_digest: finalMember.journal.events.at(-1).event_digest,
+    result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
 }
 

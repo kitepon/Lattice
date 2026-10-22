@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { hostPaths } from './setup-hosts.mjs';
 
 const INFO = 'INFO: このrepoにはLattice sensor index（.lattice/sensor/）があります。コード構造の調査はsensor入口（MCP: lattice_sensor_explore 等／CLI: lattice sensor）を優先できます。';
+const BACKCHAIN_INFO = 'Lattice工程作成: 最終成果の目的と受入条件から必要な機能を逆算し、各機能の前提・提供元と各ToDoの必要・提供機能を定義する。未知は理由と次の問いを残す。まず lattice status --json と lattice plan backchain --schema --json を読み、repo内のauthoring JSONと機能契約を作る。lattice plan backchain --input <機能契約.json> --json が初回作成・既存storeへの追加・ゴール変更後の工程修正まで行う。AIが意味を判断し、Latticeは宣言の接続と記録を検査する。';
 const HOSTS = new Set(['claude', 'codex', 'cursor']);
 const HOST_USAGE = 'usage: lattice hooks <install|status|uninstall|emit> --host <claude|codex|cursor>';
 const MAX_STDIN_BYTES = 64 * 1024;
@@ -970,11 +971,11 @@ async function acquireClaim(claim) {
   }
 }
 
-function outputLine(host) {
-  if (host === 'claude') return `${INFO}\n`;
-  if (host === 'cursor') return `${JSON.stringify({ additional_context: INFO })}\n`;
+function outputLine(host, message = INFO) {
+  if (host === 'claude') return `${message}\n`;
+  if (host === 'cursor') return `${JSON.stringify({ additional_context: message })}\n`;
   return `${JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: INFO },
+    hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: message },
   })}\n`;
 }
 
@@ -986,14 +987,23 @@ async function writeOutput(stdout, line) {
 
 async function emit(host, env, stdin, stdout, spawnImpl, gitTimeoutMs, testHooks) {
   if (env.LATTICE_HOOKS === 'off') return 0;
+  let event;
+  try { event = await readHookInput(stdin); } catch (error) {
+    let state;
+    try { state = await secureStateDirectory(env, ['lattice', 'hooks']); } catch {
+      stdout.write('Lattice hooks: state directory unavailable\n');
+      return 0;
+    }
+    await recordOrDiagnose(state, stdout, error.message, 'cannot record invalid stdin');
+    return 0;
+  }
+  if (typeof event.prompt === 'string' && /Latticeで工程(?:を)?作って/iu.test(event.prompt)) {
+    await writeOutput(stdout, outputLine(host, BACKCHAIN_INFO));
+    return 0;
+  }
   let state;
   try { state = await secureStateDirectory(env, ['lattice', 'hooks']); } catch {
     stdout.write('Lattice hooks: state directory unavailable\n');
-    return 0;
-  }
-  let event;
-  try { event = await readHookInput(stdin); } catch (error) {
-    await recordOrDiagnose(state, stdout, error.message, 'cannot record invalid stdin');
     return 0;
   }
   const git = await gitRoot(event.cwd, spawnImpl, gitTimeoutMs);

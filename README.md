@@ -175,6 +175,25 @@ AIの設定がまだ無い初回は`lattice setup --host claude --json`のよう
 
 ## Quick start
 
+Ask a configured AI host **「Latticeで工程作って」** to plan from an outcome. The
+Lattice prompt hook points the agent to `lattice plan backchain`: the agent starts
+with the final acceptance conditions, works backward through required capabilities,
+and defines what each ToDo needs and provides. The result carries the overall purpose
+and downstream consumers into `todo show` and `todo start`. Unknown capabilities keep
+their reason and next question. The same entry revises an active plan when the goal
+changes, preserving completed work that still satisfies the new goal.
+
+```bash
+lattice plan backchain --schema --json
+lattice plan backchain --input .lattice/backchain.json --dry-run --json
+lattice plan backchain --input .lattice/backchain.json --json
+```
+
+The input refers to an AI-authored `lattice.plan_create_input.v4` file in the same
+repository. Lattice validates the declared feature relationships and records them;
+the operating agent judges their meaning. Existing plans without a feature chain keep
+their previous behavior.
+
 Every project begins with typed discovery. Never guess from directory layout:
 
 ```bash

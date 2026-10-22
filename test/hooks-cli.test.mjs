@@ -289,6 +289,42 @@ test('P3 実CLI: Claude/Codex/Cursorのinstall/status/uninstallとemitは隔離H
   }
 });
 
+test('「Latticeで工程作って」は索引の無いprojectでも毎回逆算入口を案内する', async (t) => {
+  for (const host of ['claude', 'codex', 'cursor']) {
+    const fixture = await hooksFixture(t, host, { config: '{}', git: true });
+    const input = JSON.stringify({ session_id: `backchain-${host}`, cwd: fixture.root,
+      prompt: 'Latticeで工程作って。最終成果から逆算してね。' });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const emitted = runCli(['hooks', 'emit', '--host', host], options(fixture, { input }));
+      assert.equal(emitted.status, 0, emitted.stderr);
+      const message = host === 'claude' ? emitted.stdout
+        : host === 'cursor' ? JSON.parse(emitted.stdout).additional_context
+          : JSON.parse(emitted.stdout).hookSpecificOutput.additionalContext;
+      assert.match(message, /最終成果の目的と受入条件から必要な機能を逆算/u);
+      assert.match(message, /lattice plan backchain --input/u);
+    }
+    const unrelated = runCli(['hooks', 'emit', '--host', host], options(fixture, {
+      input: JSON.stringify({ session_id: `backchain-${host}`, cwd: fixture.root,
+        prompt: '別の作業をする' }),
+    }));
+    assert.equal(unrelated.stdout, '');
+  }
+});
+
+test('工程作成の案内はsensor通知用stateを作れない時にも届く', async (t) => {
+  const fixture = await hooksFixture(t, 'codex', { config: '{}' });
+  const occupied = path.join(fixture.root, 'occupied-state');
+  await writeFile(occupied, 'file');
+  const emitted = runCli(['hooks', 'emit', '--host', 'codex'], options(fixture, {
+    input: JSON.stringify({ session_id: 'backchain-state', cwd: fixture.root,
+      prompt: 'Latticeで工程作って' }),
+    extraEnv: { XDG_STATE_HOME: occupied },
+  }));
+  assert.equal(emitted.status, 0, emitted.stderr);
+  assert.match(JSON.parse(emitted.stdout).hookSpecificOutput.additionalContext,
+    /lattice plan backchain --schema --json/u);
+});
+
 // C1: 4 subcommand と --host 構文の公開surface（emitも位置引数を許さない）。
 test('P3 C1: install/status/uninstall/emit は --host claude|codex|cursor のみを受理し、emit位置引数をusage拒否する', async (t) => {
   const fixture = await hooksFixture(t, 'claude', { config: '{}' });
