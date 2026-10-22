@@ -1,0 +1,82 @@
+{
+  "schema": "lattice.todo_witness_draft.v2",
+  "project_id": "lattice",
+  "plan_key": "backward-feature-authoring-20261023",
+  "capacity": {
+    "executors": 2
+  },
+  "tasks": {
+    "bfa-01-contract": {
+      "owns": [
+        "src/plan-backchain.mjs",
+        {
+          "path": "docs/schemas/lattice.plan_backchain.v1.schema.json",
+          "creates": true
+        },
+        {
+          "path": "test/plan-backchain.test.mjs",
+          "creates": true
+        },
+        "docs/00_product-contract.md"
+      ],
+      "reads": [
+        "src/todo-contracts.mjs",
+        "src/plan-scope-review.mjs",
+        "docs/plan_backward-feature-authoring.md"
+      ]
+    },
+    "bfa-02-create-context": {
+      "owns": [
+        "src/project-cli.mjs",
+        "src/todo-migration.mjs",
+        "src/todo-store.mjs",
+        "src/todo-cli.mjs",
+        "bin/lattice.mjs",
+        {
+          "path": "test/plan-backchain-cli.test.mjs",
+          "creates": true
+        }
+      ],
+      "reads": [
+        "src/plan-backchain.mjs",
+        "src/todo-authoring-input.mjs",
+        "docs/00_product-contract.md"
+      ]
+    },
+    "bfa-03-revise-goal": {
+      "owns": [
+        "src/todo-revision.mjs",
+        "src/todo-store.mjs",
+        "src/todo-cli.mjs",
+        "src/plan-backchain.mjs",
+        {
+          "path": "test/plan-backchain-revise.test.mjs",
+          "creates": true
+        }
+      ],
+      "reads": [
+        "src/todo-split.mjs",
+        "docs/adr/0055-todo-revision-and-source-reconciliation.md",
+        "docs/plan_backward-feature-authoring.md"
+      ]
+    },
+    "bfa-04-entry-release": {
+      "owns": [
+        "src/hooks-cli.mjs",
+        "src/cli-help.mjs",
+        "bin/lattice.mjs",
+        "README.md",
+        "README.ja.md",
+        "CHANGELOG.md",
+        "package.json",
+        "package-lock.json",
+        "test/hooks-cli.test.mjs"
+      ],
+      "reads": [
+        "src/plan-backchain.mjs",
+        "docs/00_product-contract.md",
+        "docs/01_integration-package.md"
+      ]
+    }
+  }
+}

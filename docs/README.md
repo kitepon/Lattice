@@ -30,7 +30,7 @@ Lattice storeで判定する。
 
 - [`plan_backlog.md`](plan_backlog.md): 保守・裁定待ちbacklog
 - [`plan_rebuilt-from-minimal-plans-20260813.md`](plan_rebuilt-from-minimal-plans-20260813.md):
-  repo storeで唯一activeな`minimal-plan-repairs-20260813`の散文正本
+  完了済みの`minimal-plan-repairs-20260813`の散文正本
 
 ## 履歴
 
