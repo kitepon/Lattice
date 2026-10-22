@@ -313,11 +313,12 @@ function gitRoot(cwd) {
 }
 
 async function verifyExistingFeatureReferences(repoRoot, chain) {
+  const canonicalRoot = await realpath(repoRoot);
   for (const feature of chain.features) {
     if (feature.provider.kind !== 'existing') continue;
     const ref = feature.provider.evidence_ref;
-    const absolute = path.resolve(repoRoot, ref);
-    if (!absolute.startsWith(`${repoRoot}${path.sep}`)) {
+    const absolute = path.resolve(canonicalRoot, ref);
+    if (!absolute.startsWith(`${canonicalRoot}${path.sep}`)) {
       fail('existing_feature_reference_unsafe', `/features/${feature.feature_id}/provider`, {
         evidence_ref: ref,
       });
@@ -327,7 +328,13 @@ async function verifyExistingFeatureReferences(repoRoot, chain) {
     catch { fail('existing_feature_reference_missing', `/features/${feature.feature_id}/provider`, {
       evidence_ref: ref,
     }); }
-    if (!state.isFile() || state.isSymbolicLink() || await realpath(absolute) !== absolute) {
+    let resolved;
+    try { resolved = await realpath(absolute); }
+    catch { fail('existing_feature_reference_unreadable', `/features/${feature.feature_id}/provider`, {
+      evidence_ref: ref,
+    }); }
+    if (!state.isFile() || state.isSymbolicLink()
+      || !resolved.startsWith(`${canonicalRoot}${path.sep}`)) {
       fail('existing_feature_reference_unsafe', `/features/${feature.feature_id}/provider`, {
         evidence_ref: ref,
       });

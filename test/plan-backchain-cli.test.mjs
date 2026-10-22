@@ -139,6 +139,24 @@ test('既存機能を申告する参照が実在しない時は作成前に理�
   assert.equal(failure.message, 'existing_feature_reference_missing');
 });
 
+test('repo内の既存機能を参照し、必要機能として担当者へ渡す', async (context) => {
+  const root = await repo(context);
+  await writeFile(path.join(root, 'format.md'), '# 既存の文書形式\n');
+  await writeFile(path.join(root, 'plan.json'), `${JSON.stringify(createInput())}\n`);
+  const input = chain();
+  input.features.push({ feature_id: 'format', capability: '既存形式を読む',
+    acceptance: '対象形式を扱える', requires_feature_ids: [],
+    provider: { kind: 'existing', evidence_ref: 'format.md' } });
+  input.features.find(({ feature_id: id }) => id === 'index').requires_feature_ids = ['format'];
+  input.tasks.find(({ task_id: id }) => id === 'index').requires_feature_ids = ['format'];
+  await writeFile(path.join(root, 'chain.json'), `${JSON.stringify(input)}\n`);
+  const created = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
+  assert.equal(created.status, 0, created.stderr);
+  const detail = run(root, ['todo', 'show', '--plan', 'search', '--task', 'index', '--json']);
+  assert.equal(detail.status, 0, detail.stderr);
+  assert.equal(JSON.parse(detail.stdout).feature_context.requires[0].provider.evidence_ref, 'format.md');
+});
+
 test('既存storeへのplan追加も同じ逆算入口で行う', async (context) => {
   const root = await repo(context);
   const base = createInput();
