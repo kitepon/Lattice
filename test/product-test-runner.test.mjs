@@ -5,8 +5,9 @@ import {
   nativeTestProfiles, productTestConcurrency, productTestEnvironment, selectProductTests,
 } from '../scripts/run-product-tests.mjs';
 
-test('product testは端末から利用可能なCPU並列数をそのまま使う', () => {
-  assert.equal(productTestConcurrency(24), 24);
+test('product testは子processを含むsuiteを4本まで同時実行する', () => {
+  assert.equal(productTestConcurrency(24), 4);
+  assert.equal(productTestConcurrency(2), 2);
 });
 
 test('product test child envはFORCE_COLORを除去しdashboard autostartを無効化する', () => {

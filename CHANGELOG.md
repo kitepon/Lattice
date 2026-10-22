@@ -13,6 +13,7 @@
 
 - 隔離checkoutの`npm test`が内蔵sensorのbuild不在で大量に失敗していた。製品test入口がsensor依存の導入とbuildを先に行う。GitHub CIと公開workflowの重複した事前buildは外し、同じ正規入口で検査する。
 - WindowsのHub設定テストが無関係な固定ポートの競合で失敗するのを直し、空きポートを実bindで選ぶ。
+- 製品testがCPU数だけsuiteを並行実行し、各suiteの子processでmacOS runnerが過負荷となっていた。同時suiteを最大4本にして、競合介入・故障報告の時間競合を抑える。3対象suiteの4並列実測で成功を確認した。
 
 ## 0.78.1 — 2026-10-12
 

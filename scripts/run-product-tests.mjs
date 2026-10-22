@@ -109,7 +109,10 @@ export function productTestEnvironment(parentEnv = process.env, { configDir = nu
 }
 
 export function productTestConcurrency(parallelism = availableParallelism()) {
-  return parallelism;
+  // 各suiteはCLI・sensor・managed workerを子processとしてさらに起動する。
+  // 10 suite同時のMac CIではworker停止窓を越えるほどprocessが競合し、
+  // hold・io-sentinel・報告送信の3試験が失敗した。対象3 suiteは4並列で通過。
+  return Math.min(parallelism, 4);
 }
 
 export function selectProductTests(allTests, profile = 'core') {
