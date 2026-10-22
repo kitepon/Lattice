@@ -16,6 +16,7 @@ import { TodoStoreError } from './todo-store.mjs';
 const MAX_AUTHORING_INPUT_BYTES = 8_388_608;
 
 export const AUTHORING_DIGEST_FIELDS = Object.freeze({
+  'lattice.plan_backchain.v1': 'chain_digest',
   'lattice.todo_witness_set.v1': 'witness_set_digest',
   'lattice.todo_witness_set.v2': 'witness_set_digest',
   'lattice.todo_witness_set.v3': 'witness_set_digest',
