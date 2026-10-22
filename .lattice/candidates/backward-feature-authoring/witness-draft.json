@@ -36,7 +36,11 @@
         {
           "path": "test/plan-backchain-cli.test.mjs",
           "creates": true
-        }
+        },
+        "src/plan-backchain.mjs",
+        "src/cli-help.mjs",
+        "package.json",
+        "docs/00_product-contract.md"
       ],
       "reads": [
         "src/plan-backchain.mjs",
@@ -54,7 +58,16 @@
         {
           "path": "test/plan-backchain-revise.test.mjs",
           "creates": true
-        }
+        },
+        "bin/lattice.mjs",
+        "docs/00_product-contract.md",
+        "docs/adr/0199-backward-feature-authoring.md",
+        "docs/schemas/lattice.plan_backchain.v1.schema.json",
+        "docs/todo-extraction-v1.md",
+        "src/todo-authoring-input.mjs",
+        "src/todo-migration.mjs",
+        "test/plan-backchain-cli.test.mjs",
+        "test/todo-phase-revision-v3.test.mjs"
       ],
       "reads": [
         "src/todo-split.mjs",
