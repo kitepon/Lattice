@@ -162,7 +162,7 @@ release commitを既定branchへ着地・pushしてから、同じ版をregistry
 ```bash
 npm run ci
 npm run verify:release-commit
-npm publish --access public
+gh workflow run publish.yml --repo kitepon/Lattice --ref main
 npm install -g @quolu/lattice@<version>
 lattice --version
 lattice status --json
@@ -187,6 +187,9 @@ npm test
 npm run check
 npm run ci
 ```
+
+最初にrootの依存を`npm ci`で導入します。`npm test`は内蔵sensorの依存とbuildを準備してから
+製品testを実行するため、隔離checkoutでも別のbuild手順は要りません。
 
 製品localの保守で必要な時だけ次を使います。
 

@@ -30,9 +30,9 @@ jobs:
       - name: npmの公開認証対応版を導入
         run: npm install --global npm@11.17.0
       - name: 依存導入
-        run: npm ci && npm --prefix sensor ci
+        run: npm ci
       - name: 配布物を構築して製品検査
-        run: npm --prefix sensor run build && npm run ci
+        run: npm run ci
       - name: 配布物だけを導入してdashboardの読込を確認
         shell: bash
         run: |

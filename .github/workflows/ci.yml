@@ -42,8 +42,6 @@ jobs:
     uses: ./.github/workflows/product-full-ci.yml
     with:
       environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'all' }}
-      dependency-command: npm ci && npm --prefix sensor ci
+      dependency-command: npm ci
       documentation-command: npm ci --ignore-scripts --no-audit --no-fund && npm run check:docs
-      full-command: >-
-        npm --prefix sensor run build &&
-        npm run ci
+      full-command: npm run ci

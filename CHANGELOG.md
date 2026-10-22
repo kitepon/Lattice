@@ -9,6 +9,10 @@
 - ゴール変更を同じ入口で後継plan versionへ反映する。追加・退役・再実行・理由付きcarryを扱い、無関係な完了結果を保持する。作業中ToDoの着手束縛は新versionへ結び直し、同じ入力の再実行で版を増やさない。
 - Claude・Codex・Cursorの対応hookは「Latticeで工程作って」という依頼に逆算の正規入口を示す。Lattice内部からAIは起動しない。
 
+### 修正
+
+- 隔離checkoutの`npm test`が内蔵sensorのbuild不在で大量に失敗していた。製品test入口がsensor依存の導入とbuildを先に行う。GitHub CIと公開workflowの重複した事前buildは外し、同じ正規入口で検査する。
+
 ## 0.78.1 — 2026-10-12
 
 ### 修正: projectごとのページが、記録された端末名をそのまま出していた（ADR 0198）

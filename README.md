@@ -345,6 +345,9 @@ npm run check   # syntax + control-character gate
 npm run ci      # full gate
 ```
 
+The test entry builds the bundled sensor before running product fixtures. Install
+the root dependencies with `npm ci` once; the test entry prepares the sensor package.
+
 Product-local maintenance, when relevant:
 
 ```bash
