@@ -22,7 +22,6 @@ Latticeの文書は、現行契約、現在の計画・構想、履歴、証拠�
 
 ## 現在の計画・構想
 
-- [`plan_backward-feature-authoring.md`](plan_backward-feature-authoring.md): 最終成果から機能を逆算して工程を作り、ゴール変更後も修正する
 - [`plan_product-setup.md`](plan_product-setup.md): 製品所有のMCP登録・hook準備入口と公開実機受入
 
 次のMarkdownは目的、判断、非目標を持つ。実際に着手中か、完了したかは本文のcheckboxでなく
@@ -35,6 +34,7 @@ Lattice storeで判定する。
 ## 履歴
 
 - [`archive/`](archive/): 完了、撤回、置換済みのplan、handoff、authoring、rollout記録の全文
+- [`archive/plan_backward-feature-authoring.md`](archive/plan_backward-feature-authoring.md): 機能逆算工程の完了済み計画
 - top-levelの「履歴参照stub」: store、ADR、証拠、CHANGELOGに固定された旧pathを保つ短い案内。
   stubは現行契約でも進行中planでもない
 - [`../CHANGELOG.md`](../CHANGELOG.md): release履歴
