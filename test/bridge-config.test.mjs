@@ -132,7 +132,7 @@ test('invalid listen/upstream/config modeはtyped failでsilent defaultしない
 
 test('hubは既定nullで、明示URLを渡すと正規化して永続化する', async (context) => {
   const { env } = await fixture(context);
-  const noHub = await configureBridge({ address: '127.0.0.1', port: 58_749, env });
+  const noHub = await configureBridge({ address: '127.0.0.1', env });
   assert.equal(noHub.hub, null);
   const withHub = await configureBridge({ address: '127.0.0.1', env,
     hub: { url: 'http://192.168.1.2:8080' } });

@@ -12,6 +12,7 @@
 ### 修正
 
 - 隔離checkoutの`npm test`が内蔵sensorのbuild不在で大量に失敗していた。製品test入口がsensor依存の導入とbuildを先に行う。GitHub CIと公開workflowの重複した事前buildは外し、同じ正規入口で検査する。
+- WindowsのHub設定テストが無関係な固定ポートの競合で失敗するのを直し、空きポートを実bindで選ぶ。
 
 ## 0.78.1 — 2026-10-12
 
