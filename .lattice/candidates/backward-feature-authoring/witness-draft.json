@@ -17,7 +17,8 @@
           "path": "test/plan-backchain.test.mjs",
           "creates": true
         },
-        "docs/00_product-contract.md"
+        "docs/00_product-contract.md",
+        "src/todo-authoring-input.mjs"
       ],
       "reads": [
         "src/todo-contracts.mjs",
@@ -40,7 +41,8 @@
       "reads": [
         "src/plan-backchain.mjs",
         "src/todo-authoring-input.mjs",
-        "docs/00_product-contract.md"
+        "docs/00_product-contract.md",
+        "src/todo-authoring-input.mjs"
       ]
     },
     "bfa-03-revise-goal": {
