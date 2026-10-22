@@ -2,16 +2,22 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  exactRecord, isTodoDesignMemo, isTodoDigest, isTodoIdentifier, isTodoRef,
-  todoSelfDigest,
+  canonicalizeTodoArtifact, exactRecord, isTodoDesignMemo, isTodoDigest,
+  isTodoIdentifier, isTodoRef,
+  digestTodoArtifact, todoSelfDigest,
 } from './todo-contracts.mjs';
-import { TodoStoreError } from './todo-store.mjs';
+import {
+  appendImportedPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+  readTodoStore, TodoStoreError,
+} from './todo-store.mjs';
 import { gitSync } from './git-process.mjs';
 import { readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import {
+  explainPhaseTodoRevision, phaseTodoRevisionPlanVersion, validatePhaseTodoRevision,
+} from './todo-revision.mjs';
 
 export const BACKCHAIN_SCHEMA = 'lattice.plan_backchain.v1';
 const CREATE_SCHEMA = 'lattice.plan_create_input.v4';
-const EXTRACTION_SCHEMA = 'lattice.todo_extraction.v4';
 const MAX_FEATURES = 2_048;
 const MAX_TEXT_BYTES = 16_384;
 const MAX_BINDING_BYTES = 8_388_608;
@@ -48,11 +54,8 @@ function registeredTasks(authoring) {
     fail('authoring_invalid', '/authoring_ref');
   }
   if (authoring.schema === CREATE_SCHEMA) return authoring.tasks;
-  if (authoring?.schema === EXTRACTION_SCHEMA) {
-    return authoring.tasks.filter(({ disposition }) => disposition.startsWith('register_'));
-  }
   fail('authoring_schema_unsupported', '/authoring_ref', {
-    expected: [CREATE_SCHEMA, EXTRACTION_SCHEMA], actual: authoring?.schema ?? null,
+    expected: CREATE_SCHEMA, actual: authoring?.schema ?? null,
   });
 }
 
@@ -61,12 +64,22 @@ function registeredTasks(authoring) {
  * producer/consumer の契約が閉じていることだけを機械が保証する。
  */
 export function validatePlanBackchain(chain, authoring) {
-  if (!exactRecord(chain, [
+  const keys = [
     'schema', 'authoring_ref', 'project_id', 'plan_key', 'plan_version',
     'goal', 'features', 'tasks', 'chain_digest',
-  ]) || chain.schema !== BACKCHAIN_SCHEMA || !isTodoRef(chain.authoring_ref)
+  ];
+  if (!(exactRecord(chain, keys) || exactRecord(chain, [...keys, 'continuity']))
+    || chain.schema !== BACKCHAIN_SCHEMA || !isTodoRef(chain.authoring_ref)
     || !isTodoIdentifier(chain.project_id) || !isTodoIdentifier(chain.plan_key)
     || !isTodoIdentifier(chain.plan_version)) fail('schema_invalid', '/');
+  if (chain.continuity !== undefined && (!Array.isArray(chain.continuity)
+    || chain.continuity.length > 512
+    || !chain.continuity.every((entry) => exactRecord(entry, ['task_id', 'policy', 'reason'])
+      && isTodoIdentifier(entry.task_id) && ['carry', 'reset', 'retire'].includes(entry.policy)
+      && text(entry.reason))
+    || new Set(chain.continuity.map(({ task_id: id }) => id)).size !== chain.continuity.length)) {
+    fail('continuity_invalid', '/continuity');
+  }
   if (!isTodoDigest(chain.chain_digest)
     || chain.chain_digest !== todoSelfDigest(chain, 'chain_digest')) {
     fail('digest_mismatch', '/chain_digest');
@@ -209,23 +222,28 @@ export function backchainTaskMemo(chain, taskId) {
   return lines.join('\n');
 }
 
-export function attachBackchainMemos(chain, authoring) {
+export function attachBackchainMemos(chain, authoring, { previousChain = null } = {}) {
   const tasks = new Set(chain.tasks.map(({ task_id: id }) => id));
   const amended = {
     ...authoring,
     tasks: authoring.tasks.map((task) => {
       if (!tasks.has(task.task_id)) return task;
-      const designMemo = `${task.design_memo.trimEnd()}\n\n${backchainTaskMemo(chain, task.task_id)}`;
+      const previous = previousChain?.tasks.some(({ task_id: id }) => id === task.task_id)
+        ? backchainTaskMemo(previousChain, task.task_id) : null;
+      const oldMemo = task.design_memo.trimEnd();
+      const baseMemo = previous !== null && oldMemo.endsWith(`\n\n${previous}`)
+        ? oldMemo.slice(0, -previous.length - 2) : oldMemo;
+      const designMemo = `${baseMemo}\n\n${backchainTaskMemo(chain, task.task_id)}`;
       if (!isTodoDesignMemo(designMemo)) fail('design_memo_limit', `/tasks/${task.task_id}/design_memo`);
       return { ...task, design_memo: designMemo };
     }),
   };
-  const digestField = authoring.schema === CREATE_SCHEMA ? 'input_digest' : 'extraction_digest';
+  const digestField = 'input_digest';
   amended[digestField] = todoSelfDigest(amended, digestField);
   return amended;
 }
 
-export async function readTaskBackchainContext({ repoRoot, plan, taskId }) {
+export async function readPlanBackchainBinding({ repoRoot, plan }) {
   const ref = `.lattice/todo/plans/${plan.plan_key}/${plan.plan_version}/backchain.json`;
   const absolute = path.resolve(repoRoot, ref);
   let bytes;
@@ -254,7 +272,15 @@ export async function readTaskBackchainContext({ repoRoot, plan, taskId }) {
     plan_version: plan.plan_version, tasks: plan.tasks,
     hard_dependencies: plan.hard_dependencies,
   });
+  return binding;
+}
+
+export async function readTaskBackchainContext({ repoRoot, plan, taskId }) {
+  const binding = await readPlanBackchainBinding({ repoRoot, plan });
+  if (binding === null) return null;
+  const chain = binding.chain;
   const task = chain.tasks.find(({ task_id: id }) => id === taskId);
+  const ref = `.lattice/todo/plans/${plan.plan_key}/${plan.plan_version}/backchain.json`;
   if (task === undefined) fail('binding_task_missing', ref, { task_id: taskId });
   const features = new Map(chain.features.map((feature) => [feature.feature_id, feature]));
   const downstream = chain.tasks.filter((other) => other.task_id !== taskId
@@ -282,14 +308,201 @@ function gitRoot(cwd) {
   } catch { fail('repository_unresolved', '/'); }
 }
 
-export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false }) {
+function planSeed(authoring, predecessorPlanDigest) {
+  return {
+    schema: 'lattice.todo_plan.v7', project_id: authoring.project_id,
+    plan_key: authoring.plan_key, predecessor_plan_digest: predecessorPlanDigest,
+    tasks: authoring.tasks, phases: authoring.phases,
+    hard_dependencies: authoring.hard_dependencies, joins: authoring.joins,
+    phase_accept_dependencies: authoring.phase_accept_dependencies,
+  };
+}
+
+function featureGraphDigest(chain) {
+  return digestTodoArtifact({ goal: chain.goal, features: chain.features, tasks: chain.tasks });
+}
+
+function taskSignature(chain, taskId) {
+  const task = chain?.tasks?.find(({ task_id: id }) => id === taskId);
+  if (task === undefined) return null;
+  const byId = new Map(chain.features.map((feature) => [feature.feature_id, feature]));
+  const ids = [...new Set([...task.requires_feature_ids, ...task.provides_feature_ids])].sort();
+  return canonicalizeTodoArtifact({
+    requires_feature_ids: task.requires_feature_ids,
+    provides_feature_ids: task.provides_feature_ids,
+    features: ids.map((id) => byId.get(id)),
+  });
+}
+
+function incoming(plan, taskId) {
+  return canonicalizeTodoArtifact({
+    hard: plan.hard_dependencies.filter(({ to }) => to.task_id === taskId),
+    phase: plan.phase_accept_dependencies.filter(({ to }) => to.task_id === taskId),
+    joins: plan.joins.filter(({ before }) => before.task_id === taskId),
+  });
+}
+
+function compileTaskMigration(previousPlan, oldChain, desiredSeed, newChain) {
+  const desired = new Map(desiredSeed.tasks.map((task) => [task.task_id, task]));
+  const decisions = new Map((newChain.continuity ?? []).map((entry) => [entry.task_id, entry]));
+  const oldIds = new Set(previousPlan.tasks.map(({ task_id: id }) => id));
+  if ([...decisions.keys()].some((id) => !oldIds.has(id))) fail('continuity_task_missing', '/continuity');
+  return previousPlan.tasks.map((oldTask) => {
+    const id = oldTask.task_id;
+    const nextTask = desired.get(id);
+    const decision = decisions.get(id);
+    if (nextTask === undefined) {
+      if (decision !== undefined && decision.policy !== 'retire') {
+        fail('continuity_removed_task_mismatch', '/continuity', { task_id: id });
+      }
+      return { from_task_id: id, to_task_id: 'removed', state_policy: 'removed' };
+    }
+    if (decision?.policy === 'retire') fail('continuity_live_task_mismatch', '/continuity', { task_id: id });
+    const sameContract = taskSignature(oldChain, id) === taskSignature(newChain, id);
+    const sameTask = oldTask.title === nextTask.title && oldTask.lane === nextTask.lane
+      && oldTask.phase_id === nextTask.phase_id
+      && oldTask.parent_task_id === nextTask.parent_task_id
+      && canonicalizeTodoArtifact(oldTask.compile_binding)
+        === canonicalizeTodoArtifact(nextTask.compile_binding)
+      && incoming(previousPlan, id) === incoming(desiredSeed, id);
+    const carry = decision?.policy === 'carry'
+      || (decision === undefined && sameContract && sameTask);
+    return { from_task_id: id, to_task_id: id,
+      state_policy: carry ? 'carry_reconciled_metadata' : 'reset_pending' };
+  }).sort((left, right) => left.from_task_id.localeCompare(right.from_task_id));
+}
+
+function compilePhaseMigration(previousPlan, desiredSeed, taskMigration) {
+  const nextPhases = new Map(desiredSeed.phases.map((phase) => [phase.phase_id, phase]));
+  const oldPhases = new Set(previousPlan.phases.map(({ phase_id: id }) => id));
+  const affected = new Set(taskMigration.filter(({ state_policy }) =>
+    !['carry', 'carry_reconciled_metadata'].includes(state_policy))
+    .map(({ from_task_id: id }) => previousPlan.tasks.find(({ task_id }) => task_id === id)?.phase_id));
+  for (const task of desiredSeed.tasks) {
+    if (!previousPlan.tasks.some(({ task_id: id }) => id === task.task_id)) affected.add(task.phase_id);
+  }
+  return [
+    ...previousPlan.phases.map((phase) => {
+      const next = nextPhases.get(phase.phase_id);
+      if (next === undefined) return { from_phase_id: phase.phase_id,
+        to_phase_id: 'removed', state_policy: 'removed' };
+      const carry = !affected.has(phase.phase_id)
+        && canonicalizeTodoArtifact(phase) === canonicalizeTodoArtifact(next);
+      return { from_phase_id: phase.phase_id, to_phase_id: phase.phase_id,
+        state_policy: carry ? 'carry' : 'reset' };
+    }),
+    ...desiredSeed.phases.filter(({ phase_id: id }) => !oldPhases.has(id))
+      .map(({ phase_id: id }) => ({ from_phase_id: null,
+        to_phase_id: id, state_policy: 'reset' })),
+  ];
+}
+
+async function compileBackchainRevision({ repoRoot, member, chain, authoring }) {
+  if (member.plan.schema !== 'lattice.todo_plan.v7') {
+    fail('predecessor_plan_schema_unsupported', '/plan_key', {
+      actual: member.plan.schema, next_action: 'author_a_new_backchain_plan',
+    });
+  }
+  const previousBinding = await readPlanBackchainBinding({ repoRoot, plan: member.plan });
+  const previousChain = previousBinding?.chain ?? null;
+  const amended = attachBackchainMemos(chain, authoring, { previousChain });
+  const predecessor = {
+    plan_digest: member.plan.plan_digest,
+    journal_head_digest: member.journal.events.at(-1).event_digest,
+    plan_version: member.plan.plan_version,
+  };
+  const seed = planSeed(amended, predecessor.plan_digest);
+  const taskMigration = compileTaskMigration(member.plan, previousChain, seed, chain);
+  const phaseMigration = compilePhaseMigration(member.plan, seed, taskMigration);
+  const version = phaseTodoRevisionPlanVersion({
+    projectId: chain.project_id, planKey: chain.plan_key, predecessor,
+    desiredPlan: seed, taskMigration, phaseMigration,
+    featureGraphDigest: featureGraphDigest(chain),
+  });
+  const successorChain = { ...chain, plan_version: version, chain_digest: '' };
+  successorChain.chain_digest = todoSelfDigest(successorChain, 'chain_digest');
+  const desiredPlan = buildTodoPlan({ ...seed, plan_version: version });
+  validatePlanBackchain(successorChain, {
+    schema: CREATE_SCHEMA, project_id: desiredPlan.project_id,
+    plan_key: desiredPlan.plan_key, plan_version: desiredPlan.plan_version,
+    tasks: desiredPlan.tasks, hard_dependencies: desiredPlan.hard_dependencies,
+  });
+  const revision = {
+    schema: 'lattice.phase_todo_revision.v4',
+    project_id: chain.project_id, plan_key: chain.plan_key,
+    predecessor, desired_plan: desiredPlan, task_migration: taskMigration,
+    phase_migration: phaseMigration, backchain: successorChain, revision_digest: '',
+  };
+  revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
+  if (!validatePhaseTodoRevision(revision)) {
+    fail('revision_invalid', '/revision', { diagnosis: explainPhaseTodoRevision(revision) });
+  }
+  return revision;
+}
+
+async function activeIntentUnchanged({ repoRoot, member, chain, authoring }) {
+  if (member.plan.schema !== 'lattice.todo_plan.v7') return false;
+  const binding = await readPlanBackchainBinding({ repoRoot, plan: member.plan });
+  if (binding === null || featureGraphDigest(binding.chain) !== featureGraphDigest(chain)) return false;
+  const amended = attachBackchainMemos(chain, authoring, { previousChain: binding.chain });
+  return canonicalizeTodoArtifact({
+    tasks: amended.tasks, phases: amended.phases,
+    hard_dependencies: amended.hard_dependencies, joins: amended.joins,
+    phase_accept_dependencies: amended.phase_accept_dependencies,
+  }) === canonicalizeTodoArtifact({
+    tasks: member.plan.tasks, phases: member.plan.phases,
+    hard_dependencies: member.plan.hard_dependencies, joins: member.plan.joins,
+    phase_accept_dependencies: member.plan.phase_accept_dependencies,
+  });
+}
+
+async function rebindCarriedWork({ repoRoot, planKey, env }) {
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ plan }) => plan.plan_key === planKey);
+  const rebound = [];
+  for (const state of member.tasks.filter(({ status }) => status === 'in-progress')) {
+    const hasCurrentStart = member.journal.events.some((event) => event.kind === 'start'
+      && event.task_id === state.task_id && event.payload?.start_mode !== 'historical_import');
+    if (hasCurrentStart) continue;
+    const { rebindStart } = await import('./todo-cli.mjs');
+    try {
+      await rebindStart({ repoRoot, env, planKey, taskId: state.task_id,
+        reason: 'ゴール変更後のplan versionへ作業中ToDoを結び直す' });
+    } catch (error) {
+      throw new TodoStoreError('BACKCHAIN_REBIND_PENDING', 'carried_task_rebind_failed', undefined, {
+        task_id: state.task_id, plan_version: member.plan.plan_version,
+        cause_code: error?.code ?? 'unknown',
+        next_action: `lattice todo start --plan ${planKey} --task ${state.task_id} --rebind --reason <text>`,
+      });
+    }
+    rebound.push(state.task_id);
+  }
+  return rebound;
+}
+
+export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, env = process.env }) {
   const repoRoot = gitRoot(cwd);
   const chain = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'PLAN_BACKCHAIN_INVALID' });
   const authoring = await readAuthoringJsonFile(repoRoot, chain.authoring_ref, {
     invalidCode: 'PLAN_BACKCHAIN_INVALID',
   });
   validatePlanBackchain(chain, authoring);
-  const amended = attachBackchainMemos(chain, authoring);
+  let member = null;
+  let store = null;
+  try {
+    await lstat(path.join(repoRoot, '.lattice', 'todo', 'manifest.json'));
+    store = await readTodoStore({ repoRoot });
+    if (store.project_id !== chain.project_id) fail('project_id_mismatch', '/project_id');
+    member = store.members.find(({ plan }) => plan.plan_key === chain.plan_key) ?? null;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const unchanged = member !== null && await activeIntentUnchanged({
+    repoRoot, member, chain, authoring,
+  });
+  const revision = member === null || unchanged ? null
+    : await compileBackchainRevision({ repoRoot, member, chain, authoring });
+  const amended = revision === null ? attachBackchainMemos(chain, authoring) : null;
   const unknownFeatureIds = chain.features.filter(({ provider: source }) => source.kind === 'unknown')
     .map(({ feature_id: id }) => id).sort();
   if (dryRun) {
@@ -298,11 +511,27 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false }
       project_id: chain.project_id, plan_key: chain.plan_key,
       task_count: chain.tasks.length, feature_count: chain.features.length,
       unknown_feature_ids: unknownFeatureIds, chain_digest: chain.chain_digest,
+      operation: unchanged ? 'unchanged' : revision !== null ? 'revise'
+        : store === null ? 'create' : 'add',
+      task_migration: revision?.task_migration ?? null,
     })}\n`);
     return 0;
   }
   let created;
-  if (authoring.schema === CREATE_SCHEMA) {
+  let effectiveChain = chain;
+  if (unchanged) {
+    const binding = await readPlanBackchainBinding({ repoRoot, plan: member.plan });
+    effectiveChain = binding.chain;
+    created = { schema: 'lattice.plan_backchain_unchanged.v1',
+      plan_key: member.plan.plan_key, plan_version: member.plan.plan_version,
+      plan_digest: member.plan.plan_digest };
+  } else if (revision !== null) {
+    created = await applyPhaseTodoRevision({
+      repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+      revision, actor: authoring.actor, recordedAt: new Date().toISOString(),
+    });
+    effectiveChain = revision.backchain;
+  } else if (store === null) {
     const { runPlanCreate } = await import('./project-cli.mjs');
     let output = '';
     await runPlanCreate({ cwd: repoRoot, inputRef: chain.authoring_ref,
@@ -310,17 +539,30 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false }
       stdout: { write(value) { output += value; } } });
     created = JSON.parse(output);
   } else {
-    const { migrate } = await import('./todo-cli.mjs');
-    created = await migrate({ repoRoot, inputRef: chain.authoring_ref,
-      inputValue: amended, featureChain: chain });
+    const plan = buildTodoPlan({
+      ...planSeed(amended, null), plan_version: chain.plan_version,
+    });
+    const added = await appendImportedPlan({
+      repoRoot, writer: createTodoStoreWriter({ caller: 'g4-migration' }),
+      plan, genesis: { actor: authoring.actor, recorded_at: authoring.recorded_at,
+        provenance: null }, featureChain: chain,
+    });
+    created = {
+      schema: 'lattice.plan_backchain_add_result.v1',
+      plan_key: added.plan.plan_key, plan_version: added.plan.plan_version,
+      plan_digest: added.plan.plan_digest,
+    };
   }
+  const reboundTaskIds = unchanged || revision !== null
+    ? await rebindCarriedWork({ repoRoot, planKey: chain.plan_key, env }) : [];
   stdout.write(`${JSON.stringify({
     schema: 'lattice.plan_backchain_result.v1',
     project_id: chain.project_id, plan_key: chain.plan_key,
     plan_version: created.plan_version, plan_digest: created.plan_digest ?? null,
     feature_count: chain.features.length, task_count: chain.tasks.length,
     unknown_feature_ids: unknownFeatureIds,
-    chain_digest: chain.chain_digest, authoring_result: created,
+    chain_digest: effectiveChain.chain_digest, authoring_result: created,
+    rebound_task_ids: reboundTaskIds,
   })}\n`);
   return 0;
 }

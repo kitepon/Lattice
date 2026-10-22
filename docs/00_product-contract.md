@@ -170,8 +170,14 @@ dispatchableなToDoへ分割・統合・並列配置できるが、工程全体�
 入力は全体の目的、最終成果と受入条件、機能ごとの前提と提供元、各ToDoの必要・提供機能を持つ。
 既知の機能は提供元とToDo間の依存を検査し、提供元が未知なら理由と次の問いを保持する。
 未知を完成扱いせず、未知だけを理由に工程登録を拒否しない。本文の意味的十分性は操作AIが判断する。
-この入口は機能関係を照合してから、空storeでは初期authoring、既存storeでは新planの登録までを
-一回で行う。元のauthoring JSONは別fileとして参照するが、機械は必要・提供機能と全体目的を各ToDoの
+この入口は同じ`lattice.plan_create_input.v4`を使い、空storeでは初期authoring、既存storeでは
+新planの登録、同じplan keyならゴール変更から後継版の作成までを一回で行う。
+後継版には`lattice.phase_todo_revision.v4`を使い、機能契約を工程の正本にしたplanに
+Markdownのsource inventoryとcutoverを要求しない。planとjournalの旧版は保持する。
+旧工程と機能・担当の意味が一致するものは状態と証拠を引き継ぎ、変更されたものはpendingへ戻し、
+不要なものは後継版から外す。AIは`continuity`で理由付きのcarry／reset／retireを明示できる。
+carryの意味判断を機械が文章の一致へすり替えず、記録された判断を後継版へ束縛する。
+元のauthoring JSONは別fileとして参照するが、機械は必要・提供機能と全体目的を各ToDoの
 設計メモへ写し、機能契約をplan versionの保存領域へ束縛する。
 機能契約を持つplanの`todo show`は`lattice.todo_detail_result.v4`、`todo start`は
 `lattice.todo_mutation_result.v6`で`feature_context`を返す。旧planの返却schemaは変えない。

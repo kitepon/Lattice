@@ -126,25 +126,15 @@ test('既存storeへのplan追加も同じ逆算入口で行う', async (context
   base.hard_dependencies = [];
   await writeFile(path.join(root, 'base.json'), `${JSON.stringify(base)}\n`);
   assert.equal(run(root, ['plan', 'create', '--input', 'base.json']).status, 0);
-  const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  const extraction = {
-    schema: 'lattice.todo_extraction.v4', project_id: 'example', plan_key: 'archive',
-    plan_version: 'v1', actor: ACTOR, recorded_at: new Date().toISOString(),
-    tasks: [{
-      task_id: 'save', title: '保存', lane: 'implementation', design_memo: '保存する。',
-      narrative_ref: 'plan.md', compile_binding: null, disposition: 'register_pending',
-      start: null, completion: null,
-      source: { origin_plan_ref: 'plan.md', origin_line: 2, source_commit: sourceCommit,
-        heading_path: ['計画'], markdown_depth: 0, parent_task_id: null, checkbox_state: 'absent' },
-      migration_context: { external_canonical_ref: null, carry_over_ref: null, h_required: false,
-        condition: null, evidence_refs: [], notes: [] },
-    }], hard_dependencies: [], joins: [],
-  };
-  await writeFile(path.join(root, 'extraction.json'), `${JSON.stringify(extraction)}\n`);
-  await writeFile(path.join(root, 'chain.json'), `${JSON.stringify(chain('archive', 'extraction.json', ['save']))}\n`);
+  const archive = createInput();
+  archive.plan_key = 'archive';
+  archive.tasks = [{ ...archive.tasks[0], task_id: 'save', title: '保存' }];
+  archive.hard_dependencies = [];
+  await writeFile(path.join(root, 'archive.json'), `${JSON.stringify(archive)}\n`);
+  await writeFile(path.join(root, 'chain.json'), `${JSON.stringify(chain('archive', 'archive.json', ['save']))}\n`);
   const created = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
   assert.equal(created.status, 0, created.stderr);
-  assert.equal(JSON.parse(created.stdout).authoring_result.schema, 'lattice.todo_migrate_result.v4');
+  assert.equal(JSON.parse(created.stdout).authoring_result.schema, 'lattice.plan_backchain_add_result.v1');
   const detail = JSON.parse(run(root, ['todo', 'show', '--plan', 'archive', '--task', 'save', '--json']).stdout);
   assert.equal(detail.feature_context.provides[0].feature_id, 'archive');
 });

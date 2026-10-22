@@ -518,7 +518,7 @@ export function compileTodoExtraction(value, repoRoot) {
   };
 }
 
-export async function appendTodoExtraction({ repoRoot, extraction, featureChain = null }) {
+export async function appendTodoExtraction({ repoRoot, extraction }) {
   const request = compileTodoExtraction(extraction, repoRoot);
-  return appendImportedPlan(featureChain === null ? request : { ...request, featureChain });
+  return appendImportedPlan(request);
 }

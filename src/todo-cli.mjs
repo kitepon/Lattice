@@ -924,7 +924,7 @@ async function startTask({
 // literal startだけを束縛に使いcarryを推定しないため、改訂を跨いだ進行中工程の
 // 再開はこの入口だけが正規経路になる。advisory・independence gateは初回startで
 // 済んでいるため再適用しない。
-async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
+export async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active');
@@ -1347,8 +1347,8 @@ async function phaseBaseline({ repoRoot, env, reason, exceptPlanKeys }) {
   return result;
 }
 
-export async function migrate({ repoRoot, inputRef, inputValue = null, featureChain = null }) {
-  const extraction = inputValue ?? await readMigrationInput(repoRoot, inputRef);
+async function migrate({ repoRoot, inputRef }) {
+  const extraction = await readMigrationInput(repoRoot, inputRef);
   // unresolved/空集合の早期gateは、compileTodoExtraction内部の同名gateをここでも
   // 先に通しておくことで、既存のエラー優先順位を変えない。
   // dispatch_shapeは結果へ載せる観測であり、直列度では書込みを拒まない（ADR 0180）。
@@ -1374,7 +1374,7 @@ export async function migrate({ repoRoot, inputRef, inputValue = null, featureCh
     joins: extraction.joins,
   });
 
-  const imported = await appendTodoExtraction({ repoRoot, extraction, featureChain });
+  const imported = await appendTodoExtraction({ repoRoot, extraction });
   let companion = null;
   if ((imported.crossPlanDependencies ?? []).length > 0) {
     const connectedStore = await readTodoStore({ repoRoot });
@@ -3670,6 +3670,7 @@ async function verify({ repoRoot, requestedPlanKey }) {
         case 'lattice.phase_todo_revision.v1':
         case 'lattice.phase_todo_revision.v2':
         case 'lattice.phase_todo_revision.v3':
+        case 'lattice.phase_todo_revision.v4':
           verifiedSourceInventories.set(member.descriptor.plan_key,
             await verifyEffectivePhaseTodoRevisionSources({ repoRoot, member }));
           break;
@@ -3682,7 +3683,7 @@ async function verify({ repoRoot, requestedPlanKey }) {
     const reconciled = member.revision !== null;
     const sourceInventory = verifiedSourceInventories.get(member.descriptor.plan_key) ?? null;
     const phaseRevision = ['lattice.phase_todo_revision.v1', 'lattice.phase_todo_revision.v2',
-      'lattice.phase_todo_revision.v3']
+      'lattice.phase_todo_revision.v3', 'lattice.phase_todo_revision.v4']
       .includes(member.revision?.schema);
     return {
       plan_key: member.descriptor.plan_key,

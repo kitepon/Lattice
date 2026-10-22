@@ -34,6 +34,7 @@ export const AUTHORING_DIGEST_FIELDS = Object.freeze({
   'lattice.phase_todo_revision.v1': 'revision_digest',
   'lattice.phase_todo_revision.v2': 'revision_digest',
   'lattice.phase_todo_revision.v3': 'revision_digest',
+  'lattice.phase_todo_revision.v4': 'revision_digest',
   'lattice.todo_revision_set.v1': 'revision_set_digest',
   'lattice.todo_revision_set.v2': 'revision_set_digest',
   'lattice.todo_revision_set.v3': 'revision_set_digest',

@@ -30,6 +30,11 @@
       "type": "array", "minItems": 1, "maxItems": 512,
       "items": { "$ref": "#/$defs/task" }
     },
+    "continuity": {
+      "type": "array", "maxItems": 512, "uniqueItems": true,
+      "description": "Optional goal-change decisions for predecessor tasks. A carry decision is an explicit AI judgment that previous work still satisfies the revised goal; reset and retire remain available without proving equivalence.",
+      "items": { "$ref": "#/$defs/continuity" }
+    },
     "chain_digest": { "$ref": "#/$defs/digest" }
   },
   "$defs": {
@@ -83,6 +88,15 @@
         "task_id": { "$ref": "#/$defs/identifier" },
         "requires_feature_ids": { "$ref": "#/$defs/ids" },
         "provides_feature_ids": { "$ref": "#/$defs/nonemptyIds" }
+      }
+    },
+    "continuity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "policy", "reason"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/identifier" },
+        "policy": { "enum": ["carry", "reset", "retire"] },
+        "reason": { "$ref": "#/$defs/text" }
       }
     }
   }

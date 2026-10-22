@@ -137,7 +137,7 @@ if (help !== null) {
     try {
       process.exitCode = await runPlanBackchain({
         cwd: process.cwd(), inputRef: flags.input, dryRun: flags['dry-run'] === true,
-        stdout: process.stdout,
+        stdout: process.stdout, env: process.env,
       });
     } catch (error) {
       process.exitCode = projectCliFailure(process.stderr, error);
