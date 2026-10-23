@@ -43,6 +43,7 @@
  */
 
 import { evaluateNodeVersionGuard } from '../src/node-version-guard.mjs';
+import packageJson from '../package.json' with { type: 'json' };
 
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 
@@ -114,8 +115,10 @@ if (nodeVersionGuard.blocked) {
   if (parsed.error) {
     usageFailure(parsed.error);
   } else {
+    let startupStage = 'mcp.import';
     try {
       const { MCPServer } = await import('../sensor/dist/index.js');
+      startupStage = 'mcp.construct';
       const server = new MCPServer(parsed.path);
       // MCPServer.start() resolves only when startup itself declined to serve
       // (there is no such path today — every mode keeps the process alive via
@@ -123,11 +126,15 @@ if (nodeVersionGuard.blocked) {
       // throws on a genuine startup failure (e.g. the sentinel-version fatal
       // in MCPServer.start — ADR 0049 Decision 3(c)). Either way, nothing more
       // to do here on a clean resolve.
+      startupStage = 'mcp.start';
       await server.start();
     } catch (err) {
       // opt-in runtime error store（既定OFF・config有効時のみ）。観測失敗はstderr一行のbest-effort。
       const { observeRuntimeError, runtimeErrorSafeContext } = await import('../src/runtime-errors.mjs');
-      observeRuntimeError('LATTICE.MCP_SERVER_FAILED', { safeContext: runtimeErrorSafeContext({ error: err }) });
+      observeRuntimeError('LATTICE.MCP_SERVER_FAILED', {
+        version: packageJson.version,
+        safeContext: runtimeErrorSafeContext({ commandKind: startupStage, error: err }),
+      });
       startupFailure('MCP_STARTUP_FAILED', err instanceof Error ? err.message : String(err));
     }
   }

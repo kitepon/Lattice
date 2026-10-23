@@ -270,6 +270,9 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
     Latticeが持つ一覧の語だけ。無ければ`other`）、`error_kind`（例外の種類。一覧に無ければ`other`）、
     `cause_code`（Nodeが付けるerror code。無ければ`none`）。付ける時は3つを必ずそろえる。
     message本文・path・引数の値・stackは載せない。
+    MCP起動例外の`command_kind`は`mcp.import`（内蔵server読込）、`mcp.construct`（server生成）、
+    `mcp.start`（server起動）を区別し、`product_version`は配布packageの版を記録する。
+    起動前のusage違反とNode版拒否、確立済みsessionのツールエラーはこの起動例外に含めない。
   - fingerprintは、`safe_context`を持つ記録では
     `sha256(product \0 component \0 error_code \0 message_template \0 command_kind \0 error_kind \0 cause_code)`、
     持たない旧記録では前の4要素だけ。dotagentsのadapterが同じ式で再計算して照合する。
