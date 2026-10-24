@@ -45,7 +45,8 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  const args = direct ? ['-accepteula', '-mm', '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
+  const dumpOptions = experiment === 'heap' ? ['-mp', '-at', '15'] : ['-mm'];
+  const args = direct ? ['-accepteula', ...dumpOptions, '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
   const result = await new Promise(resolve => {
@@ -148,7 +149,16 @@ async function sequence(mode, lane, iteration) {
 }
 // First preserve the original uninstrumented launch path, then add flushed
 // phase probes, and finally debug the same canonical inner Node invocation.
-if (experiment === 'cache') {
+if (experiment === 'heap') {
+  const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
+  // The previous Mini dump omitted referenced heap blocks. Capture Private
+  // memory only in the failing cache-disabled real-pool condition.
+  for (let iteration = 0; iteration < 8; iteration++) {
+    await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, 'pool-heap-metadata', lane, iteration,
+      target, [], ['pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1' })));
+    if (results.some(x => x.exceptionCode === '0xc0000374') || results.filter(x => x.exceptionCode).length >= 2) break;
+  }
+} else if (experiment === 'cache') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
   // Necessary matched control on the failing pre-repair real pool. Only the
   // cache environment changes; do not rerun the successful natural/after set.
