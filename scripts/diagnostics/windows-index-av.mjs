@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { mkdir, writeFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const output = path.resolve(process.argv[2]);
@@ -39,12 +40,11 @@ function fixtureEnvironment(dir, trace) {
 }
 async function execute(mode, dir, command, lane, iteration, target = bin, additionalFlags = [], commandArgs = [command]) {
   const direct = mode === 'debug';
-  const nodeArgs = [...additionalFlags, ...(direct ? [...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
+  const ownershipMarker = `lattice-av-${randomUUID()}`;
+  const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  // ProcDump must finish the owned debuggee after a dump. Otherwise a fatal
-  // exception can leave inherited pipes open after the debugger has exited.
-  const args = direct ? ['-accepteula', '-mm', '-e', '-n', '1', '-k', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
+  const args = direct ? ['-accepteula', '-mm', '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
   const result = await new Promise(resolve => {
@@ -57,9 +57,26 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
       settled = true;
       clearTimeout(timeout);
       clearTimeout(drainTimer);
+      let cleanup = null;
+      const decoded = stdout.replaceAll('\0', '');
+      const debuggeePid = /Process:\s*node\.exe\s*\((\d+)\)/i.exec(decoded)?.[1];
+      if (direct && process.platform === 'win32' && debuggeePid && !/Process Exit: PID/i.test(decoded)) {
+        // The debugger can detach after its first dump while the debuggee
+        // still owns stdout. Authenticate that exact synthetic process by its
+        // random argv marker, then retain its handle and creation-time match.
+        // Never terminate a process by PID alone or alter host crash policy.
+        const script = `$p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${debuggeePid}'; ` +
+          `if($p -and $p.CommandLine.Contains('${ownershipMarker}')) { ` +
+          `$owned=Get-Process -Id ${debuggeePid} -ErrorAction Stop; ` +
+          `if($owned.StartTime.ToUniversalTime() -eq $p.CreationDate.ToUniversalTime()) { ` +
+          `$owned.Kill(); $owned.WaitForExit(5000); 'owned-process-exited' } } else { 'already-gone-or-identity-mismatch' }`;
+        try { cleanup = execFileSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+          { encoding: 'utf8', timeout: 10_000, env: fixtureEnvironment(dir, false) }).trim(); }
+        catch (error) { cleanup = `incomplete: ${error.code || error.message}`; }
+      }
       child.stdout.destroy();
       child.stderr.destroy();
-      resolve({ pid: child.pid, code, signal, stdout, stderr, timedOut, ...extra });
+      resolve({ pid: child.pid, code, signal, stdout, stderr, timedOut, cleanup, ...extra });
     };
     child.stdout.on('data', b => { stdout += b.toString(); });
     child.stderr.on('data', b => { stderr += b.toString(); });
@@ -73,7 +90,7 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
       } else child.kill('SIGKILL');
       // A timeout must itself be bounded, even if a pipe remains inherited.
       drainTimer = setTimeout(() => finish(child.exitCode, child.signalCode, { streamsIncomplete: true }), 2000);
-    }, 90_000);
+    }, 30_000);
     child.on('error', error => finish(null, null, { error: String(error) }));
     child.on('exit', (code, signal) => {
       drainTimer = setTimeout(() => finish(code, signal, { streamsIncomplete: true }), 2000);
@@ -93,7 +110,7 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   results.push(item);
   await appendFile(path.join(output, 'commands.jsonl'), JSON.stringify(item) + '\n');
   process.stdout.write(JSON.stringify({ mode, lane, iteration, command, code: item.code, hex: item.hex, elapsedMs: item.elapsedMs }) + '\n');
-  if (/MODULE_NOT_FOUND|looks like your home directory/.test(item.stdout + item.stderr)) {
+  if (/MODULE_NOT_FOUND|looks like your home directory|Kill after dump is only valid/.test((item.stdout + item.stderr).replaceAll('\0', ''))) {
     throw new Error(`Diagnostic setup failed for ${mode}; see commands.jsonl`);
   }
   return item;
