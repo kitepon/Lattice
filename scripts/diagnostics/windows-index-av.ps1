@@ -19,7 +19,7 @@ if ($LASTEXITCODE -ne 0) { throw "Diagnostic harness exited $LASTEXITCODE" }
 # Read only application-crash events whose faulting PID belongs to these
 # fixture traces. The message/body and unrelated application events are omitted.
 $pids = [Collections.Generic.HashSet[int]]::new()
-Get-ChildItem (Join-Path $output 'traces') -Filter '*.jsonl' -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem (Join-Path $output 'traces') -Recurse -Filter '*.jsonl' -ErrorAction SilentlyContinue | ForEach-Object {
   if ($_.BaseName -match '^(\d+)-') { [void]$pids.Add([int]$Matches[1]) }
 }
 $events = @()

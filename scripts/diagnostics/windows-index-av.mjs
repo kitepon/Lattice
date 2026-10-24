@@ -22,7 +22,7 @@ await writeFile(path.join(output, 'runtime.json'), JSON.stringify({ node: proces
   v8: process.versions.v8, platform: process.platform, arch: process.arch,
   runtimeFlags: [...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS], source: process.env.GITHUB_SHA || null }, null, 2));
 const results = [];
-function fixtureEnvironment(dir, trace) {
+function fixtureEnvironment(dir, trace, traceDirectory = path.join(output, 'traces')) {
   // Dumps contain only a synthetic fixture process. Do not inherit credentials,
   // user host settings, service tokens, or the Actions runner's environment.
   const env = {};
@@ -34,13 +34,14 @@ function fixtureEnvironment(dir, trace) {
     LATTICE_SENSOR_NO_DAEMON: '1', LATTICE_RUNTIME_ERROR_REPORTING: '0', NO_COLOR: '1' });
   if (trace) {
     env.NODE_OPTIONS = `--require="${preload.replaceAll('\\', '/')}"`;
-    env.LATTICE_AV_TRACE_DIR = path.join(output, 'traces');
+    env.LATTICE_AV_TRACE_DIR = traceDirectory;
   }
   return env;
 }
-async function execute(mode, dir, command, lane, iteration, target = bin, additionalFlags = [], commandArgs = [command]) {
+async function execute(mode, dir, command, lane, iteration, target = bin, additionalFlags = [], commandArgs = [command], environmentOverrides = {}) {
   const direct = mode === 'debug';
   const ownershipMarker = `lattice-av-${randomUUID()}`;
+  const traceDirectory = path.join(output, 'traces', ownershipMarker);
   const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
@@ -48,7 +49,8 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
   const result = await new Promise(resolve => {
-    const child = spawn(executable, args, { cwd: dir, env: fixtureEnvironment(dir, mode !== 'baseline'), windowsHide: true,
+    const child = spawn(executable, args, { cwd: dir,
+      env: { ...fixtureEnvironment(dir, mode !== 'baseline', traceDirectory), ...environmentOverrides }, windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', timedOut = false, settled = false;
     let drainTimer;
@@ -103,7 +105,8 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const childExit = direct ? [...result.stdout.replaceAll('\0', '').matchAll(/Process Exit: PID \d+, Exit Code (0x[0-9a-f]+)/gi)].at(-1) : null;
   const nativeException = [...result.stdout.replaceAll('\0', '').matchAll(/Unhandled:\s*([0-9a-f]{8})/gi)].at(-1);
   const actualCode = direct ? (childExit ? Number.parseInt(childExit[1].slice(2), 16) : null) : result.code;
-  const item = { mode, lane, iteration, command, elapsedMs: Date.now() - started, ...result,
+  const item = { mode, lane, iteration, command, ownershipMarker, traceDirectory, environmentOverrides,
+    elapsedMs: Date.now() - started, ...result,
     exceptionCode: nativeException ? `0x${nativeException[1].toLowerCase()}` : null,
     debuggeeExitObserved: direct ? Boolean(childExit) : true,
     wrapperCode: result.code, code: actualCode, hex: Number.isInteger(actualCode) ? `0x${(actualCode >>> 0).toString(16)}` : null };
@@ -145,7 +148,18 @@ async function sequence(mode, lane, iteration) {
 }
 // First preserve the original uninstrumented launch path, then add flushed
 // phase probes, and finally debug the same canonical inner Node invocation.
-if (experiment === 'race' || experiment === 'pool') {
+if (experiment === 'cache') {
+  const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
+  // Necessary matched control on the failing pre-repair real pool. Only the
+  // cache environment changes; do not rerun the successful natural/after set.
+  for (const variant of ['pool-cache-enabled', 'pool-cache-disabled']) {
+    for (let iteration = 0; iteration < 8; iteration++) {
+      await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, variant, lane, iteration,
+        target, [], ['pool', '8'], variant === 'pool-cache-disabled' ? { NODE_DISABLE_COMPILE_CACHE: '1' } : {})));
+      if (results.filter(x => x.command === variant && x.exceptionCode).length >= 3) break;
+    }
+  }
+} else if (experiment === 'race' || experiment === 'pool') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
   const variants = experiment === 'pool' ? ['pool', 'pool-marker-off'] : ['cooperative', 'settled', 'natural', 'marker-off', 'serial', 'early'];
   for (const variant of variants) {

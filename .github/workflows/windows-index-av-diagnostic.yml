@@ -1,7 +1,7 @@
-name: Windows index access violation diagnostic
+name: Windows native compile cache isolation
 on:
   push:
-    branches: [snowwhite/windows-index-access-violation-20261024]
+    branches: [snowwhite/native-compile-cache-isolation-20261024]
 permissions:
   contents: read
 jobs:
@@ -19,31 +19,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm --prefix sensor run build
           exit $LASTEXITCODE
-      - name: Reproduce original path and collect owned process crash evidence
+      - name: Isolate compile cache in the failing pre-repair real parse pool
         shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./diagnostic-output
-      - name: Reduce worker startup and concurrent GC race
-        shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./race-output -Experiment race
-      - name: Exercise real parse pool startup parse and destruction
-        shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./pool-output -Experiment pool
+        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./cache-output -Experiment cache
       - name: Preserve isolated diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-index-av-${{ github.run_id }}
+          name: native-cache-isolation-${{ github.run_id }}
           path: |
-            diagnostic-output/*.json
-            diagnostic-output/*.jsonl
-            diagnostic-output/traces
-            diagnostic-output/dumps
-            race-output/*.json
-            race-output/*.jsonl
-            race-output/traces
-            race-output/dumps
-            pool-output/*.json
-            pool-output/*.jsonl
-            pool-output/traces
-            pool-output/dumps
+            cache-output/*.json
+            cache-output/*.jsonl
+            cache-output/traces
+            cache-output/dumps
           retention-days: 7

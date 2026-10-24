@@ -28,10 +28,13 @@ if (directory) {
         try {
           const result = Reflect.apply(original, this, args);
           if (result && typeof result.then === 'function') {
-            return result.then(value => { record('return', { call, label }); return value; },
+            return result.then(value => { record('return', { call, label,
+              ...(label === 'Worker.terminate' ? { exitCode: value } : {}) }); return value; },
               error => { record('throw', { call, label, message: String(error) }); throw error; });
           }
-          record('return', { call, label });
+          record('return', { call, label, ...(label === 'module.enableCompileCache' ? {
+            cacheStatus: result?.status, cacheDirectory: result?.directory || null,
+            cacheMessage: result?.message || null } : {}) });
           return result;
         } catch (error) {
           record('throw', { call, label, message: String(error) });
@@ -42,7 +45,10 @@ if (directory) {
   }
   record('boot', { argv: process.argv, execArgv: process.execArgv,
     node: process.versions.node, v8: process.versions.v8, platform: process.platform,
-    arch: process.arch, relaunched: process.env.LATTICE_SENSOR_WASM_RELAUNCHED || null });
+    arch: process.arch, relaunched: process.env.LATTICE_SENSOR_WASM_RELAUNCHED || null,
+    compileCacheDisabled: process.env.NODE_DISABLE_COMPILE_CACHE || null });
+  // Observe the product's own call; do not enable the cache from the probe.
+  wrap(Module, 'enableCompileCache', 'module.enableCompileCache');
   for (const name of ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming']) {
     wrap(WebAssembly, name, `WebAssembly.${name}`);
   }
