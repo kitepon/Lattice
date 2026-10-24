@@ -30,13 +30,14 @@ if (workerData?.raceWorker) {
         v8.setFlagsFromString('--no-expose-gc');
         collect();
       }
-      process.exit(0);
+      if (variant === 'natural' || variant === 'serial') parentPort.close();
+      else process.exit(0);
     }
   });
 } else {
   (async () => {
     for (let round = 0; round < rounds; round++) {
-      await Promise.all(Array.from({ length: 4 }, (_, lane) => new Promise((resolve, reject) => {
+      const runWorker = lane => new Promise((resolve, reject) => {
         const worker = new Worker(__filename, { argv: [variant], workerData: { raceWorker: true } });
         log('created', { round, lane, targetThreadId: worker.threadId });
         const timeout = setTimeout(() => { worker.terminate().then(resolve, reject); }, 15000);
@@ -52,7 +53,10 @@ if (workerData?.raceWorker) {
             worker.postMessage('close');
           });
         }
-      })));
+      });
+      if (variant === 'serial') {
+        for (let lane = 0; lane < 4; lane++) await runWorker(lane);
+      } else await Promise.all(Array.from({ length: 4 }, (_, lane) => runWorker(lane)));
     }
     log('completed', { rounds, variant });
   })().catch(error => { console.error(error); process.exitCode = 1; });

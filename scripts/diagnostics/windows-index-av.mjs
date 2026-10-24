@@ -42,32 +42,53 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const nodeArgs = [...additionalFlags, ...(direct ? [...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  const args = direct ? ['-accepteula', '-mm', '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
+  // ProcDump must finish the owned debuggee after a dump. Otherwise a fatal
+  // exception can leave inherited pipes open after the debugger has exited.
+  const args = direct ? ['-accepteula', '-mm', '-e', '-n', '1', '-k', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
   const result = await new Promise(resolve => {
     const child = spawn(executable, args, { cwd: dir, env: fixtureEnvironment(dir, mode !== 'baseline'), windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', timedOut = false;
+    let stdout = '', stderr = '', timedOut = false, settled = false;
+    let drainTimer;
+    const finish = (code, signal, extra = {}) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(drainTimer);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({ pid: child.pid, code, signal, stdout, stderr, timedOut, ...extra });
+    };
     child.stdout.on('data', b => { stdout += b.toString(); });
     child.stderr.on('data', b => { stderr += b.toString(); });
     const timeout = setTimeout(() => {
       timedOut = true;
       // Only the process tree just created by this fixture is eligible.
       if (process.platform === 'win32') {
-        try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {}
+        if (child.exitCode === null) {
+          try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000 }); } catch {}
+        }
       } else child.kill('SIGKILL');
+      // A timeout must itself be bounded, even if a pipe remains inherited.
+      drainTimer = setTimeout(() => finish(child.exitCode, child.signalCode, { streamsIncomplete: true }), 2000);
     }, 90_000);
-    child.on('error', error => { clearTimeout(timeout); resolve({ pid: child.pid, error: String(error), stdout, stderr, timedOut }); });
-    child.on('close', (code, signal) => { clearTimeout(timeout); resolve({ pid: child.pid, code,
-      hex: Number.isInteger(code) ? `0x${(code >>> 0).toString(16)}` : null, signal, stdout, stderr, timedOut }); });
+    child.on('error', error => finish(null, null, { error: String(error) }));
+    child.on('exit', (code, signal) => {
+      drainTimer = setTimeout(() => finish(code, signal, { streamsIncomplete: true }), 2000);
+    });
+    child.on('close', (code, signal) => finish(code, signal));
   });
   // ProcDump's own exit status does not represent the debuggee's exit status.
   // Its redirected Windows output is UTF-16; strip NULs before parsing the
   // ASCII exit record while retaining the original stream as evidence.
   const childExit = direct ? [...result.stdout.replaceAll('\0', '').matchAll(/Process Exit: PID \d+, Exit Code (0x[0-9a-f]+)/gi)].at(-1) : null;
-  const actualCode = childExit ? Number.parseInt(childExit[1].slice(2), 16) : result.code;
+  const nativeException = [...result.stdout.replaceAll('\0', '').matchAll(/Unhandled:\s*([0-9a-f]{8})/gi)].at(-1);
+  const actualCode = direct ? (childExit ? Number.parseInt(childExit[1].slice(2), 16) : null) : result.code;
   const item = { mode, lane, iteration, command, elapsedMs: Date.now() - started, ...result,
+    exceptionCode: nativeException ? `0x${nativeException[1].toLowerCase()}` : null,
+    debuggeeExitObserved: direct ? Boolean(childExit) : true,
     wrapperCode: result.code, code: actualCode, hex: Number.isInteger(actualCode) ? `0x${(actualCode >>> 0).toString(16)}` : null };
   results.push(item);
   await appendFile(path.join(output, 'commands.jsonl'), JSON.stringify(item) + '\n');
@@ -109,10 +130,11 @@ async function sequence(mode, lane, iteration) {
 // phase probes, and finally debug the same canonical inner Node invocation.
 if (experiment === 'race') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
-  for (const variant of ['early', 'cooperative', 'settled', 'marker-off']) {
-    for (let iteration = 0; iteration < 12; iteration++) {
+  for (const variant of ['cooperative', 'settled', 'natural', 'marker-off', 'serial', 'early']) {
+    for (let iteration = 0; iteration < 8; iteration++) {
       await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, variant, lane, iteration,
-        target, variant === 'marker-off' ? ['--no-concurrent-marking'] : [], [variant === 'marker-off' ? 'early' : variant, '4'])));
+        target, variant === 'marker-off' ? ['--no-concurrent-marking'] : [], [variant === 'marker-off' ? 'cooperative' : variant, '4'])));
+      if (results.filter(x => x.command === variant && x.exceptionCode).length >= 3) break;
     }
   }
 } else {
