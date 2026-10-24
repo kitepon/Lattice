@@ -11,7 +11,7 @@
  *
  * `src/mcp/index.ts` polls `process.ppid` and shuts down the moment it
  * diverges from the value observed at startup. This test stands up a
- * four-tier process tree (vitest → wrapper → {stdin-holder, latticeSensor}) and
+ * process tree (vitest → wrapper → {stdin-holder, CLI → MCP runtime}) and
  * SIGKILL's the wrapper. The stdin-holder is a long-lived sibling whose
  * `stdout` pipe is dup'd into latticeSensor's `stdin`. After the wrapper dies
  * the pipe stays open (stdin-holder still owns the write-end), so the
@@ -23,7 +23,7 @@
  * relies on are POSIX-specific.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, execFileSync, ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -57,9 +57,24 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
   let stdinHolderPid: number | null = null;
   let tmpDir: string | null = null;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (wrapper && !wrapper.killed) {
       try { wrapper.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+    // A flagless CLI relaunches itself. Record both launcher and runtime PIDs
+    // from the fixture preload so a failed startup cannot leave the runtime.
+    let runtimePids: number[] = [];
+    if (tmpDir) {
+      try {
+        runtimePids = fs.readFileSync(path.join(tmpDir, 'runtime-pids'), 'utf8').trim().split('\n').map(Number)
+          .filter(pid => Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid);
+      } catch { /* no runtime started */ }
+    }
+    for (const pid of runtimePids) {
+      try {
+        const argv = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        if (argv.includes(path.join(tmpDir!, 'boot.cjs'))) process.kill(pid, 'SIGKILL');
+      } catch { /* already gone */ }
     }
     // Belt and suspenders — don't leak processes if an assertion failed.
     for (const pid of [childPid, stdinHolderPid]) {
@@ -67,6 +82,8 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
         try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
       }
     }
+    await Promise.all([childPid, stdinHolderPid, ...runtimePids].filter((pid): pid is number => pid !== null)
+      .map(async pid => { expect(await waitForExit(pid, 5000), `fixture process ${pid} survived cleanup`).toBe(true); }));
     wrapper = null;
     childPid = null;
     stdinHolderPid = null;
@@ -74,7 +91,7 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
     tmpDir = null;
   });
 
-  it("shuts down when its parent is SIGKILL'd and stdin stays open", async () => {
+  it.each([0, 1500])("shuts down when its parent is SIGKILL'd and stdin stays open (boot delay %ims)", async (bootDelayMs) => {
     // The wrapper:
     //   1. Spawns a "stdin-holder" — a tiny long-lived node process whose
     //      `stdout` pipe is dup'd into latticeSensor's `stdin`. As long as the
@@ -88,22 +105,28 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
     // production default is 5000ms.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-ppid-watchdog-'));
     const stderrLog = path.join(tmpDir, 'latticeSensor.stderr.log');
-    // The wrapper waits 800ms before reporting the PIDs so the lattice sensor
-    // child has time to finish its async start() (dynamic import + transport
-    // setup + watchdog registration). Otherwise the test races: it
-    // SIGKILL's the wrapper before the watchdog interval is installed, and
-    // nothing terminates latticeSensor.
+    const bootPreload = path.join(tmpDir, 'boot.cjs');
+    fs.writeFileSync(bootPreload, `
+      require('fs').appendFileSync(${JSON.stringify(path.join(tmpDir, 'runtime-pids'))}, process.pid + '\\n');
+      if (!process.env.CG_PPID_BOOT_DELAYED) {
+        process.env.CG_PPID_BOOT_DELAYED = '1';
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${bootDelayMs});
+      }
+    `);
+    // Wait for a real initialize response. An elapsed delay does not prove
+    // that the direct-mode watchdog was installed, especially on a loaded host.
     const wrapperSrc = `
       const { spawn } = require('child_process');
       const fs = require('fs');
       const stderrFd = fs.openSync(${JSON.stringify(stderrLog)}, 'a');
-      const stdinHolder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
+      const stdinHolder = spawn(process.execPath, ['-e',
+        "process.on('message', line => process.stdout.write(line)); setInterval(() => {}, 60000)"], {
+        stdio: ['ignore', 'pipe', 'ignore', 'ipc'],
         detached: true,
       });
       stdinHolder.unref();
-      const child = spawn(process.execPath, [${JSON.stringify(BIN)}, 'serve', '--mcp'], {
-        stdio: [stdinHolder.stdout, 'ignore', stderrFd],
+      const child = spawn(process.execPath, ['--require', ${JSON.stringify(bootPreload)}, ${JSON.stringify(BIN)}, 'serve', '--mcp'], {
+        stdio: [stdinHolder.stdout, 'pipe', stderrFd],
         // Pin to direct (in-process) mode: this test targets the in-process
         // server's PPID watchdog (#277). The detached-daemon/proxy watchdog is
         // covered separately in mcp-daemon.test.ts ("daemon survives the first
@@ -113,9 +136,26 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
         detached: true,
       });
       child.unref();
-      setTimeout(() => {
-        process.stdout.write(JSON.stringify({ pid: child.pid, stdinHolderPid: stdinHolder.pid }) + '\\n');
-      }, 800);
+      const pids = { pid: child.pid, stdinHolderPid: stdinHolder.pid };
+      process.stdout.write(JSON.stringify({ ...pids, ready: false }) + '\\n');
+      let responses = '';
+      child.stdout.on('data', chunk => {
+        responses += chunk.toString('utf8');
+        let newline;
+        while ((newline = responses.indexOf('\\n')) !== -1) {
+          const line = responses.slice(0, newline);
+          responses = responses.slice(newline + 1);
+          try {
+            const response = JSON.parse(line);
+            if (response.id === 1 && response.result) {
+              process.stdout.write(JSON.stringify({ ...pids, ready: true }) + '\\n');
+            }
+          } catch { /* only initialize responses count as readiness */ }
+        }
+      });
+      stdinHolder.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {},
+          clientInfo: { name: 'ppid-watchdog-test', version: '1' } } }) + '\\n');
       setInterval(() => {}, 60000);
     `;
     wrapper = spawn(process.execPath, ['-e', wrapperSrc], {
@@ -128,15 +168,22 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
     const pids = await new Promise<{ pid: number; stdinHolderPid: number }>((resolve, reject) => {
       let buf = '';
       const timer = setTimeout(
-        () => reject(new Error('wrapper did not report PIDs in time')),
+        () => reject(new Error('wrapper did not receive MCP initialize response within 10s')),
         10000,
       );
       wrapper!.stdout.on('data', (chunk: Buffer) => {
         buf += chunk.toString('utf8');
-        const m = buf.match(/\{"pid":(\d+),"stdinHolderPid":(\d+)\}/);
-        if (m) {
-          clearTimeout(timer);
-          resolve({ pid: parseInt(m[1], 10), stdinHolderPid: parseInt(m[2], 10) });
+        let newline;
+        while ((newline = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, newline);
+          buf = buf.slice(newline + 1);
+          const report = JSON.parse(line);
+          childPid = report.pid;
+          stdinHolderPid = report.stdinHolderPid;
+          if (report.ready) {
+            clearTimeout(timer);
+            resolve({ pid: report.pid, stdinHolderPid: report.stdinHolderPid });
+          }
         }
       });
       wrapper!.on('exit', () => {
@@ -166,6 +213,11 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
     // The watchdog announces itself before tearing down — assert that the
     // shutdown came from the parent-death path, not from any other signal.
     expect(stderrContent).toMatch(/Parent process exited.*shutting down/);
+    expect(isAlive(stdinHolderPid)).toBe(true); // shutdown happened with stdin still held open
+    const runtimePids = fs.readFileSync(path.join(tmpDir, 'runtime-pids'), 'utf8').trim().split('\n').map(Number);
+    for (const pid of runtimePids) {
+      expect(isAlive(pid), `runtime ${pid} survived its launcher's exit`).toBe(false);
+    }
 
     // The stdin-holder is now an orphan — kill it explicitly so it doesn't
     // outlive the test. It's still tracked in `stdinHolderPid` for the

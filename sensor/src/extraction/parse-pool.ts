@@ -89,6 +89,16 @@ const MAX_CONCURRENT_SPAWN = 2;
  * orchestrator's retry pass and shouldn't trip this on a merely-crashy repo.
  */
 const CRASH_BUDGET = 100;
+/** Startup plus orderly shutdown deadline; wedged workers still have a backstop. */
+const SHUTDOWN_TIMEOUT_MS = 15_000;
+
+interface WorkerLifecycle {
+  ready: Promise<void>;
+  started: () => void;
+  exited: Promise<void>;
+  gone: () => void;
+  didExit: boolean;
+}
 
 /**
  * Resolve the pool size from the `LATTICE_SENSOR_PARSE_WORKERS` override and the
@@ -194,6 +204,10 @@ export class ParseWorkerPool {
   private nextId = 1;
   private totalCrashes = 0;
   private destroyed = false;
+  private readonly lifecycle = new WeakMap<ParsePoolWorker, WorkerLifecycle>();
+  private readonly retiring = new Set<Promise<void>>();
+  private readonly retirement = new WeakMap<ParsePoolWorker, Promise<void>>();
+  private destroying?: Promise<void>;
 
   private readonly languages: Language[];
   private readonly maxSize: number;
@@ -278,9 +292,22 @@ export class ParseWorkerPool {
     this.workers.add(w);
     this.pending.add(w);
     this.parseCounts.set(w, 0);
+    let started!: () => void;
+    let gone!: () => void;
+    const life: WorkerLifecycle = {
+      ready: new Promise<void>((resolve) => { started = resolve; }),
+      exited: new Promise<void>((resolve) => { gone = resolve; }),
+      started: () => started(), gone: () => gone(), didExit: false,
+    };
+    this.lifecycle.set(w, life);
     w.on('message', (m) => this.onMessage(w, (m ?? {}) as ParseWorkerMessage));
     w.on('error', (e) => this.onWorkerGone(w, `Worker error: ${e?.message ?? 'unknown'}`));
-    w.on('exit', (code) => { if (code !== 0) this.onWorkerGone(w, `Worker exited with code ${code}`); });
+    w.on('exit', (code) => {
+      life.didExit = true;
+      life.started();
+      life.gone();
+      if (code !== 0) this.onWorkerGone(w, `Worker exited with code ${code}`);
+    });
     // Load grammars; the worker replies 'grammars-loaded' and only then is idle.
     // Pre-read WASM bytes (when the orchestrator provided them) make this a
     // memory load instead of a per-spawn disk read.
@@ -289,6 +316,7 @@ export class ParseWorkerPool {
 
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {
     if (m.type === 'grammars-loaded') {
+      this.lifecycle.get(w)?.started();
       if (!this.workers.has(w)) return; // recycled/destroyed before ready
       this.pending.delete(w);
       this.idle.push(w);
@@ -346,8 +374,9 @@ export class ParseWorkerPool {
   private recycle(w: ParsePoolWorker): void {
     this.log(`Recycling worker after ${this.parseCounts.get(w)} parses (heap: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS)`);
     this.removeWorker(w);
-    // Fire-and-forget: worker.terminate() can hang if WASM is wedged.
-    try { void w.terminate(); } catch { /* already gone */ }
+    // An idle worker can close its port and let Node finish outstanding native
+    // work. Windows crash captures coincide with forced V8 teardown here.
+    void this.stopWorker(w);
     if (this.healthy && !this.destroyed) this.spawnOne();
   }
 
@@ -457,9 +486,48 @@ export class ParseWorkerPool {
     for (const w of [...this.idle]) this.recycle(w);
   }
 
-  /** Terminate all workers and reject any outstanding parses. */
-  async destroy(): Promise<void> {
-    if (this.destroyed) return;
+  /** Request natural exit once grammars have loaded; force only a wedged worker. */
+  private stopWorker(w: ParsePoolWorker): Promise<void> {
+    const existing = this.retirement.get(w);
+    if (existing) return existing;
+    const stopping = this.waitForShutdown(w);
+    this.retirement.set(w, stopping);
+    this.retiring.add(stopping);
+    void stopping.finally(() => this.retiring.delete(stopping));
+    return stopping;
+  }
+
+  private async waitForShutdown(w: ParsePoolWorker): Promise<void> {
+    const life = this.lifecycle.get(w)!;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const force = async () => {
+      if (!life.didExit) {
+        try { await w.terminate(); } catch { /* already gone */ }
+      }
+    };
+    const orderly = life.ready.then(async () => {
+      if (!life.didExit) {
+        try { w.postMessage({ type: 'shutdown' }); }
+        catch { await force(); return; }
+      }
+      await life.exited;
+    });
+    try {
+      await Promise.race([
+        orderly,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            this.log(`Parse worker did not exit after ${SHUTDOWN_TIMEOUT_MS}ms — forcing termination`);
+            void force().then(resolve);
+          }, SHUTDOWN_TIMEOUT_MS);
+        }),
+      ]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
+  /** Close all workers and reject outstanding parses. Also join prior recycling. */
+  destroy(): Promise<void> {
+    if (this.destroying) return this.destroying;
     this.destroyed = true;
     const ws = [...this.workers];
     this.workers.clear();
@@ -471,6 +539,8 @@ export class ParseWorkerPool {
     }
     this.inflight.clear();
     this.queue = [];
-    await Promise.all(ws.map((w) => Promise.resolve(w.terminate()).catch(() => { /* already gone */ })));
+    for (const w of ws) this.stopWorker(w);
+    this.destroying = Promise.all([...this.retiring]).then(() => {});
+    return this.destroying;
   }
 }
