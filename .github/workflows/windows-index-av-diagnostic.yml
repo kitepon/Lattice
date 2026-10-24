@@ -1,4 +1,4 @@
-name: Windows native heap validation boundaries
+name: Windows native WASM termination window
 on:
   push:
     branches: [snowwhite/native-compile-cache-isolation-20261024]
@@ -24,7 +24,7 @@ jobs:
         run: ./scripts/diagnostics/build-windows-heap-probe.ps1 -OutputDirectory ./heap-probe-build
       - name: Locate first invalid heap boundary in the pre-repair real pool
         shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./heap-check-output -Experiment heapcheck
+        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./heap-check-output -Experiment heapwindow
       - name: Preserve isolated diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

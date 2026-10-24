@@ -9,7 +9,7 @@ const rounds = Number(process.argv[3] || 5);
 const trace = process.env.LATTICE_AV_TRACE_DIR;
 function log(event, more = {}) {
   if (trace) fs.appendFileSync(path.join(trace, `race-${process.pid}.jsonl`), JSON.stringify({
-    at: new Date().toISOString(), pid: process.pid, event, ...more }) + '\n');
+    at: new Date().toISOString(), monoNs: process.hrtime.bigint().toString(), pid: process.pid, event, ...more }) + '\n');
 }
 if (workerData?.raceWorker) {
   require(path.resolve(__dirname, '../../sensor/dist/index.js'));
@@ -35,7 +35,7 @@ if (workerData?.raceWorker) {
   });
 } else {
   (async () => {
-    if (variant === 'pool') {
+    if (variant === 'pool' || variant === 'pool-window') {
       const checkHeap = label => globalThis.__latticeAvCheckHeap?.(label);
       checkHeap('pool.before-load');
       const { ParseWorkerPool } = require('../../sensor/dist/extraction/parse-pool.js');
@@ -47,8 +47,32 @@ if (workerData?.raceWorker) {
       }, 1);
       try {
         for (let round = 0; round < rounds; round++) {
+          const windowed = variant === 'pool-window';
+          const gate = new Int32Array(new SharedArrayBuffer(4));
+          let created = 0, windowResolve, windowReject;
+          const windowReady = new Promise((resolve, reject) => { windowResolve = resolve; windowReject = reject; });
+          // A worker failure is still surfaced by requestParse/destroy; prevent
+          // an unhandled promise rejection before the explicit window wait.
+          windowReady.catch(() => {});
           const pool = new ParseWorkerPool({ languages: ['typescript'], size: 4,
-            workerScriptPath: path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js') });
+            workerScriptPath: path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js'),
+            createWorker: windowed ? () => {
+              const selected = created++ === 0;
+              const worker = new Worker(path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js'),
+                { workerData: selected ? { heapWindowGate: gate.buffer } : undefined });
+              if (selected) {
+                const targetThreadId = worker.threadId;
+                worker.on('message', message => {
+                  if (message.type === 'diagnostic-wasm-window-pending') {
+                    log('window-pending', { round, targetThreadId, asynchronous: message.asynchronous });
+                    message.asynchronous ? windowResolve() : windowReject(new Error('WASM request was synchronous'));
+                  }
+                });
+                worker.once('error', windowReject);
+                worker.once('exit', code => windowReject(new Error(`Window worker exited ${code} before pending observation`)));
+              }
+              return worker;
+            } : undefined });
           checkHeap(`pool.${round}.before-prewarm`);
           pool.prewarm();
           checkHeap(`pool.${round}.after-prewarm`);
@@ -57,7 +81,17 @@ if (workerData?.raceWorker) {
               content: 'export function hello() { return 42; }', language: 'typescript' });
             log('pool-parsed', { round, nodes: result.nodes.length });
             checkHeap(`pool.${round}.after-parse`);
+            if (windowed) {
+              log('window-release-after-parse', { round });
+              Atomics.store(gate, 0, 1); Atomics.notify(gate, 0);
+              let timer;
+              try { await Promise.race([windowReady, new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('WASM pending observation exceeded 15s')), 15000);
+              })]); } finally { clearTimeout(timer); }
+              log('window-destroy-ready', { round });
+            }
           } finally {
+            Atomics.store(gate, 0, 1); Atomics.notify(gate, 0);
             log('pool-destroy-enter', { round });
             checkHeap(`pool.${round}.before-destroy`);
             await pool.destroy();

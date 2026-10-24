@@ -10,6 +10,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const output = path.resolve(process.argv[2]);
 const debuggerPath = process.argv[3];
 const experiment = process.argv[4] || 'index';
+const heapValidation = experiment === 'heapcheck' || experiment === 'heapwindow';
 const bin = path.join(root, 'sensor/dist/bin/lattice-sensor.js');
 const preload = path.join(root, 'scripts/diagnostics/windows-index-av-preload.cjs');
 const require = createRequire(import.meta.url);
@@ -45,9 +46,9 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  const dumpOptions = experiment === 'heapcheck' ? ['-ma', '-at', '15', '-e', '1', '-f', 'E0424C54,C0000374'] :
+  const dumpOptions = heapValidation ? ['-ma', '-at', '15', '-e', '1', '-f', 'E0424C54,C0000374'] :
     experiment === 'heap' ? ['-mp', '-at', '15', '-f', 'C0000374'] : ['-mm'];
-  const args = direct ? ['-accepteula', ...dumpOptions, ...(experiment === 'heapcheck' ? [] : ['-e']), '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
+  const args = direct ? ['-accepteula', ...dumpOptions, ...(heapValidation ? [] : ['-e']), '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
   const result = await new Promise(resolve => {
@@ -152,12 +153,13 @@ async function sequence(mode, lane, iteration) {
 }
 // First preserve the original uninstrumented launch path, then add flushed
 // phase probes, and finally debug the same canonical inner Node invocation.
-if (experiment === 'heapcheck') {
+if (heapValidation) {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
   const addon = path.join(root, 'heap-probe-build', 'heap-probe.node');
   for (let iteration = 0; iteration < 8; iteration++) {
-    await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, 'pool-heap-check', lane, iteration,
-      target, [], ['pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1', LATTICE_AV_HEAP_PROBE: addon,
+    await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root,
+      experiment === 'heapwindow' ? 'pool-wasm-window' : 'pool-heap-check', lane, iteration,
+      target, [], [experiment === 'heapwindow' ? 'pool-window' : 'pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1', LATTICE_AV_HEAP_PROBE: addon,
         LATTICE_AV_DUMP_HELPER: path.join(root, 'heap-probe-build', 'heap-dump-helper.exe') })));
     if (results.some(x => x.diagnosticHeapInvalid || x.exceptionCode === '0xc0000374')) break;
   }

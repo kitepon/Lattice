@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
-const { threadId } = require('node:worker_threads');
+const { threadId, parentPort, workerData } = require('node:worker_threads');
 const directory = process.env.LATTICE_AV_TRACE_DIR;
 if (directory) {
   fs.mkdirSync(directory, { recursive: true });
@@ -11,7 +11,7 @@ if (directory) {
   let sequence = 0;
   const seen = new WeakMap();
   function record(event, details = {}) {
-    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), pid: process.pid,
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), monoNs: process.hrtime.bigint().toString(), pid: process.pid,
       threadId, sequence: ++sequence, event, ...details }) + '\n');
   }
   const heapProbe = process.env.LATTICE_AV_HEAP_PROBE ? require(process.env.LATTICE_AV_HEAP_PROBE) : null;
@@ -20,6 +20,7 @@ if (directory) {
     record('dump-helper-prearmed');
   }
   let heapPhase = 0;
+  let wasmWindowUsed = false;
   function checkHeap(label) {
     if (!heapProbe) return;
     const phase = ++heapPhase;
@@ -42,12 +43,24 @@ if (directory) {
           targetThreadId: this.threadId, stack: new Error().stack } : {}) });
         try {
           checkHeap(`${label}.before`);
+          const window = label === 'WebAssembly.instantiate' && workerData?.heapWindowGate && !wasmWindowUsed;
+          if (window) {
+            wasmWindowUsed = true;
+            record('wasm-window-wait');
+            const gate = new Int32Array(workerData.heapWindowGate);
+            if (Atomics.wait(gate, 0, 0, 15000) === 'timed-out') throw new Error('WASM window gate exceeded 15s');
+            record('wasm-window-released');
+          }
           const result = Reflect.apply(original, this, args);
+          if (window) {
+            record('wasm-window-native-request-return', { asynchronous: Boolean(result?.then) });
+            parentPort.postMessage({ type: 'diagnostic-wasm-window-pending', asynchronous: Boolean(result?.then) });
+          }
           if (label === 'Worker.terminate') checkHeap(`${label}.request-return`);
           if (result && typeof result.then === 'function') {
-            return result.then(value => { checkHeap(`${label}.after`); record('return', { call, label,
+            return result.then(value => { if (window) record('wasm-window-fulfilled'); checkHeap(`${label}.after`); record('return', { call, label,
               ...(label === 'Worker.terminate' ? { exitCode: value } : {}) }); return value; },
-              error => { record('throw', { call, label, message: String(error) }); throw error; });
+              error => { if (window) record('wasm-window-rejected'); record('throw', { call, label, message: String(error) }); throw error; });
           }
           checkHeap(`${label}.after`);
           record('return', { call, label, ...(label === 'module.enableCompileCache' ? {
