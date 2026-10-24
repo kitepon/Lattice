@@ -14,6 +14,8 @@ const require = createRequire(import.meta.url);
 const { WASM_RUNTIME_FLAGS, NODE_RUNTIME_FLAGS } = require(path.join(root, 'sensor/dist/extraction/wasm-runtime-flags.js'));
 const { LatticeSensor } = require(path.join(root, 'sensor/dist/index.js'));
 await mkdir(output, { recursive: true });
+const isolatedHome = path.join(output, 'home');
+await mkdir(isolatedHome, { recursive: true });
 await writeFile(path.join(output, 'runtime.json'), JSON.stringify({ node: process.versions.node,
   v8: process.versions.v8, platform: process.platform, arch: process.arch,
   runtimeFlags: [...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS], source: process.env.GITHUB_SHA || null }, null, 2));
@@ -25,11 +27,11 @@ function fixtureEnvironment(dir, trace) {
   for (const [key, value] of Object.entries(process.env)) {
     if (/^(path|pathext|systemroot|windir|comspec|processor_architecture|number_of_processors)$/i.test(key)) env[key] = value;
   }
-  Object.assign(env, { HOME: dir, USERPROFILE: dir, APPDATA: path.join(dir, 'appdata'),
-    LOCALAPPDATA: path.join(dir, 'localappdata'), TMP: dir, TEMP: dir,
+  Object.assign(env, { HOME: isolatedHome, USERPROFILE: isolatedHome, APPDATA: path.join(isolatedHome, 'appdata'),
+    LOCALAPPDATA: path.join(isolatedHome, 'localappdata'), TMP: output, TEMP: output,
     LATTICE_SENSOR_NO_DAEMON: '1', LATTICE_RUNTIME_ERROR_REPORTING: '0', NO_COLOR: '1' });
   if (trace) {
-    env.NODE_OPTIONS = `--require="${preload}"`;
+    env.NODE_OPTIONS = `--require="${preload.replaceAll('\\', '/')}"`;
     env.LATTICE_AV_TRACE_DIR = path.join(output, 'traces');
   }
   return env;
@@ -59,10 +61,19 @@ async function execute(mode, dir, command, lane, iteration) {
     child.on('close', (code, signal) => { clearTimeout(timeout); resolve({ pid: child.pid, code,
       hex: Number.isInteger(code) ? `0x${(code >>> 0).toString(16)}` : null, signal, stdout, stderr, timedOut }); });
   });
-  const item = { mode, lane, iteration, command, elapsedMs: Date.now() - started, ...result };
+  // ProcDump's own exit status does not represent the debuggee's exit status.
+  // Its redirected Windows output is UTF-16; strip NULs before parsing the
+  // ASCII exit record while retaining the original stream as evidence.
+  const childExit = direct ? [...result.stdout.replaceAll('\0', '').matchAll(/Process Exit: PID \d+, Exit Code (0x[0-9a-f]+)/gi)].at(-1) : null;
+  const actualCode = childExit ? Number.parseInt(childExit[1].slice(2), 16) : result.code;
+  const item = { mode, lane, iteration, command, elapsedMs: Date.now() - started, ...result,
+    wrapperCode: result.code, code: actualCode, hex: Number.isInteger(actualCode) ? `0x${(actualCode >>> 0).toString(16)}` : null };
   results.push(item);
   await appendFile(path.join(output, 'commands.jsonl'), JSON.stringify(item) + '\n');
   process.stdout.write(JSON.stringify({ mode, lane, iteration, command, code: item.code, hex: item.hex, elapsedMs: item.elapsedMs }) + '\n');
+  if (/MODULE_NOT_FOUND|looks like your home directory/.test(item.stdout + item.stderr)) {
+    throw new Error(`Diagnostic setup failed for ${mode}; see commands.jsonl`);
+  }
   return item;
 }
 function counts(dir) {
