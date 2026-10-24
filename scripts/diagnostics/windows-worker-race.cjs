@@ -11,7 +11,14 @@ function log(event, more = {}) {
   if (trace) fs.appendFileSync(path.join(trace, `race-${process.pid}.jsonl`), JSON.stringify({
     at: new Date().toISOString(), pid: process.pid, event, ...more }) + '\n');
 }
-if (workerData?.raceWorker) {
+if (workerData?.poolWorker) {
+  // Same real parse worker, with diagnostic-only natural shutdown on its
+  // existing shutdown protocol. No runtime flag or parser behavior changes.
+  require('../../sensor/dist/extraction/parse-worker.js');
+  parentPort.on('message', message => {
+    if (message.type === 'shutdown') parentPort.close();
+  });
+} else if (workerData?.raceWorker) {
   require(path.resolve(__dirname, '../../sensor/dist/index.js'));
   const garbage = [];
   for (let i = 0; i < 40; i++) garbage.push(Array.from({ length: 4096 }, (_, n) => ({ n, i })));
@@ -35,7 +42,7 @@ if (workerData?.raceWorker) {
   });
 } else {
   (async () => {
-    if (variant === 'pool') {
+    if (variant.startsWith('pool')) {
       const { ParseWorkerPool } = require('../../sensor/dist/extraction/parse-pool.js');
       const garbage = [];
       const pressure = setInterval(() => {
@@ -45,7 +52,40 @@ if (workerData?.raceWorker) {
       try {
         for (let round = 0; round < rounds; round++) {
           const pool = new ParseWorkerPool({ languages: ['typescript'], size: 4,
-            workerScriptPath: path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js') });
+            createWorker: () => {
+              const worker = variant === 'pool-natural'
+                ? new Worker(__filename, { workerData: { poolWorker: true } })
+                : new Worker(path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js'));
+              let readyResolve;
+              const ready = new Promise(resolve => { readyResolve = resolve; });
+              const gone = new Promise(resolve => worker.once('exit', code => {
+                log('pool-worker-exit', { code, targetThreadId: worker.threadId });
+                readyResolve(); resolve(code);
+              }));
+              worker.on('message', message => { if (message.type === 'grammars-loaded') readyResolve(); });
+              worker.on('error', () => readyResolve());
+              return {
+                postMessage: worker.postMessage.bind(worker),
+                on: worker.on.bind(worker),
+                async terminate() {
+                  if (variant === 'pool') return worker.terminate();
+                  let timer;
+                  try {
+                    await Promise.race([ready, new Promise((_, reject) => {
+                      timer = setTimeout(() => reject(new Error('pool startup exceeded 15s')), 15000);
+                    })]);
+                  } finally { clearTimeout(timer); }
+                  log('pool-worker-ready-stop', { variant, targetThreadId: worker.threadId });
+                  if (variant === 'pool-ready') return worker.terminate();
+                  worker.postMessage({ type: 'shutdown' });
+                  try {
+                    return await Promise.race([gone, new Promise((_, reject) => {
+                      timer = setTimeout(() => reject(new Error('pool natural exit exceeded 15s')), 15000);
+                    })]);
+                  } finally { clearTimeout(timer); }
+                }
+              };
+            } });
           pool.prewarm();
           try {
             const result = await pool.requestParse({ filePath: 'owned.ts',

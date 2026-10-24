@@ -19,12 +19,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm --prefix sensor run build
           exit $LASTEXITCODE
-      - name: Reproduce original path and collect owned process crash evidence
-        shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./diagnostic-output
-      - name: Reduce worker startup and concurrent GC race
-        shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./race-output -Experiment race
       - name: Exercise real parse pool startup parse and destruction
         shell: pwsh
         run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./pool-output -Experiment pool
