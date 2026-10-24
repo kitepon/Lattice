@@ -45,7 +45,7 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  const dumpOptions = experiment === 'heap' ? ['-mp', '-at', '15'] : ['-mm'];
+  const dumpOptions = experiment === 'heap' ? ['-mp', '-at', '15', '-f', 'C0000374'] : ['-mm'];
   const args = direct ? ['-accepteula', ...dumpOptions, '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
@@ -156,7 +156,9 @@ if (experiment === 'heap') {
   for (let iteration = 0; iteration < 8; iteration++) {
     await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, 'pool-heap-metadata', lane, iteration,
       target, [], ['pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1' })));
-    if (results.some(x => x.exceptionCode === '0xc0000374') || results.filter(x => x.exceptionCode).length >= 2) break;
+    // FAST_FAIL7 during worker startup does not contain the heap-failure
+    // record sought here; keep the fixed bound instead of stopping on it.
+    if (results.some(x => x.exceptionCode === '0xc0000374')) break;
   }
 } else if (experiment === 'cache') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
