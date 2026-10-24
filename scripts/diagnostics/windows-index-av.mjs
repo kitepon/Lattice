@@ -145,12 +145,14 @@ async function sequence(mode, lane, iteration) {
 }
 // First preserve the original uninstrumented launch path, then add flushed
 // phase probes, and finally debug the same canonical inner Node invocation.
-if (experiment === 'race') {
+if (experiment === 'race' || experiment === 'pool') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
-  for (const variant of ['cooperative', 'settled', 'natural', 'marker-off', 'serial', 'early']) {
+  const variants = experiment === 'pool' ? ['pool', 'pool-marker-off'] : ['cooperative', 'settled', 'natural', 'marker-off', 'serial', 'early'];
+  for (const variant of variants) {
     for (let iteration = 0; iteration < 8; iteration++) {
       await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, variant, lane, iteration,
-        target, variant === 'marker-off' ? ['--no-concurrent-marking'] : [], [variant === 'marker-off' ? 'cooperative' : variant, '4'])));
+        target, variant.includes('marker-off') ? ['--no-concurrent-marking'] : variant === 'settled' ? ['--expose-gc'] : [],
+        [variant === 'marker-off' ? 'cooperative' : variant === 'pool-marker-off' ? 'pool' : variant, experiment === 'pool' ? '8' : '4'])));
       if (results.filter(x => x.command === variant && x.exceptionCode).length >= 3) break;
     }
   }

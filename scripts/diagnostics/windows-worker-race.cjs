@@ -24,11 +24,10 @@ if (workerData?.raceWorker) {
     if (message === 'close') {
       clearInterval(interval);
       if (variant === 'settled') {
-        const v8 = require('node:v8');
-        v8.setFlagsFromString('--expose-gc');
-        const collect = require('node:vm').runInNewContext('gc');
-        v8.setFlagsFromString('--no-expose-gc');
-        collect();
+        // Exposed once at process startup, inherited by workers. Toggling V8's
+        // process-global flag from concurrent workers races with other loads.
+        if (typeof global.gc !== 'function') throw new Error('GC control was not enabled at startup');
+        global.gc();
       }
       if (variant === 'natural' || variant === 'serial') parentPort.close();
       else process.exit(0);
@@ -36,6 +35,32 @@ if (workerData?.raceWorker) {
   });
 } else {
   (async () => {
+    if (variant === 'pool') {
+      const { ParseWorkerPool } = require('../../sensor/dist/extraction/parse-pool.js');
+      const garbage = [];
+      const pressure = setInterval(() => {
+        garbage.push(Array.from({ length: 8192 }, (_, n) => ({ n, value: String(n) })));
+        if (garbage.length > 30) garbage.shift();
+      }, 1);
+      try {
+        for (let round = 0; round < rounds; round++) {
+          const pool = new ParseWorkerPool({ languages: ['typescript'], size: 4,
+            workerScriptPath: path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js') });
+          pool.prewarm();
+          try {
+            const result = await pool.requestParse({ filePath: 'owned.ts',
+              content: 'export function hello() { return 42; }', language: 'typescript' });
+            log('pool-parsed', { round, nodes: result.nodes.length });
+          } finally {
+            log('pool-destroy-enter', { round });
+            await pool.destroy();
+            log('pool-destroy-return', { round });
+          }
+        }
+      } finally { clearInterval(pressure); }
+      log('completed', { rounds, variant });
+      return;
+    }
     for (let round = 0; round < rounds; round++) {
       const runWorker = lane => new Promise((resolve, reject) => {
         const worker = new Worker(__filename, { argv: [variant], workerData: { raceWorker: true } });
