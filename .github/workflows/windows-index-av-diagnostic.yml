@@ -22,6 +22,9 @@ jobs:
       - name: Reproduce original path and collect owned process crash evidence
         shell: pwsh
         run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./diagnostic-output
+      - name: Reduce worker startup and concurrent GC race
+        shell: pwsh
+        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./race-output -Experiment race
       - name: Preserve isolated diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -32,4 +35,8 @@ jobs:
             diagnostic-output/*.jsonl
             diagnostic-output/traces
             diagnostic-output/dumps
+            race-output/*.json
+            race-output/*.jsonl
+            race-output/traces
+            race-output/dumps
           retention-days: 7

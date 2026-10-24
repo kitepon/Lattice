@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$OutputDirectory)
+param([Parameter(Mandatory=$true)][string]$OutputDirectory, [string]$Experiment = 'index')
 $ErrorActionPreference = 'Stop'
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force $output | Out-Null
@@ -14,7 +14,7 @@ $signature = Get-AuthenticodeSignature $debugger
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') { throw 'ProcDump signature verification failed' }
 @{sha256=$hash;signatureStatus=[string]$signature.Status;signer=$signature.SignerCertificate.Subject;version=(Get-Item $debugger).VersionInfo.FileVersion} |
   ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $output 'debugger.json')
-node scripts/diagnostics/windows-index-av.mjs $output $debugger
+node scripts/diagnostics/windows-index-av.mjs $output $debugger $Experiment
 if ($LASTEXITCODE -ne 0) { throw "Diagnostic harness exited $LASTEXITCODE" }
 # Read only application-crash events whose faulting PID belongs to these
 # fixture traces. The message/body and unrelated application events are omitted.

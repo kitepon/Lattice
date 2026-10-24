@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const output = path.resolve(process.argv[2]);
 const debuggerPath = process.argv[3];
+const experiment = process.argv[4] || 'index';
 const bin = path.join(root, 'sensor/dist/bin/lattice-sensor.js');
 const preload = path.join(root, 'scripts/diagnostics/windows-index-av-preload.cjs');
 const require = createRequire(import.meta.url);
@@ -36,9 +37,9 @@ function fixtureEnvironment(dir, trace) {
   }
   return env;
 }
-async function execute(mode, dir, command, lane, iteration) {
+async function execute(mode, dir, command, lane, iteration, target = bin, additionalFlags = [], commandArgs = [command]) {
   const direct = mode === 'debug';
-  const nodeArgs = [...(direct ? [...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), bin, command];
+  const nodeArgs = [...additionalFlags, ...(direct ? [...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
   const args = direct ? ['-accepteula', '-mm', '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
@@ -106,10 +107,20 @@ async function sequence(mode, lane, iteration) {
 }
 // First preserve the original uninstrumented launch path, then add flushed
 // phase probes, and finally debug the same canonical inner Node invocation.
-for (const mode of ['baseline', 'trace', 'debug']) {
-  for (let iteration = 0; iteration < 4; iteration++) {
-    await Promise.all(Array.from({ length: mode === 'debug' ? 2 : 4 }, (_, lane) => sequence(mode, lane, iteration)));
-    if (results.filter(x => x.hex === '0xc0000005').length >= 3 && mode === 'debug') break;
+if (experiment === 'race') {
+  const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
+  for (const variant of ['early', 'cooperative', 'settled', 'marker-off']) {
+    for (let iteration = 0; iteration < 12; iteration++) {
+      await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, variant, lane, iteration,
+        target, variant === 'marker-off' ? ['--no-concurrent-marking'] : [], [variant === 'marker-off' ? 'early' : variant, '4'])));
+    }
+  }
+} else {
+  for (const mode of ['baseline', 'trace', 'debug']) {
+    for (let iteration = 0; iteration < 4; iteration++) {
+      await Promise.all(Array.from({ length: mode === 'debug' ? 2 : 4 }, (_, lane) => sequence(mode, lane, iteration)));
+      if (results.filter(x => x.hex === '0xc0000005').length >= 3 && mode === 'debug') break;
+    }
   }
 }
 await writeFile(path.join(output, 'summary.json'), JSON.stringify({ commands: results.length,

@@ -23,7 +23,8 @@ if (directory) {
     try {
       object[name] = function (...args) {
         const call = sequence + 1;
-        record('enter', { call, label });
+        record('enter', { call, label, ...(label === 'Worker.terminate' ? {
+          targetThreadId: this.threadId, stack: new Error().stack } : {}) });
         try {
           const result = Reflect.apply(original, this, args);
           if (result && typeof result.then === 'function') {
