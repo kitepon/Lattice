@@ -258,22 +258,36 @@ describe('Shared MCP daemon (issue #411)', () => {
     });
     servers.push(server);
     sendInitialize(server.child, `file://${tempDir}`, 1);
-    await waitFor(() => findResponse(server.stdout, 1), 10000);
-    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 10000);
-    const pid = await waitFor(() => readLockPid(realRoot), 10000);
+    await waitFor(() => findResponse(server.stdout, 1), 10000, 25, 'initialize before early disconnect');
+    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 10000, 25, 'proxy attached before early disconnect');
+    const pid = await waitFor(() => readLockPid(realRoot), 10000, 25, 'daemon pid before early disconnect');
     const raw = net.connect(getDaemonSocketPath(realRoot));
     try {
       await new Promise<void>((resolve, reject) => {
-        raw.once('data', () => resolve());
-        raw.once('error', reject);
+        const onData = () => finish();
+        const onError = (error: Error) => finish(error);
+        const onClose = () => finish(new Error('Daemon socket closed before its hello'));
+        const timer = setTimeout(() => finish(new Error('Timed out after 5000ms waiting for raw daemon hello')), 5000);
+        function finish(error?: Error) {
+          clearTimeout(timer);
+          raw.off('data', onData);
+          raw.off('error', onError);
+          raw.off('close', onClose);
+          if (error) reject(error);
+          else resolve();
+        }
+        raw.once('data', onData);
+        raw.once('error', onError);
+        raw.once('close', onClose);
       });
       raw.destroy();
       server.child.stdin.end();
-      expect(await waitProcessExit(pid, 8000)).toBe(true);
+      expect(await waitProcessExit(pid, 8000), readDaemonLog(realRoot)).toBe(true);
       expect(readDaemonLog(realRoot)).toContain('Shutting down (idle timeout; clients=0)');
       expect(fs.existsSync(path.join(realRoot, '.lattice/sensor', 'writer.pid'))).toBe(false);
     } finally { raw.destroy(); }
-  }, 20000);
+  // Three 10s startup waits, a 5s hello wait and an 8s exit wait must fit.
+  }, 50000);
 
   it('two invocations share ONE detached daemon; both attach as proxies', async () => {
     const env = { LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '15000' };
