@@ -1,0 +1,35 @@
+name: Windows index access violation diagnostic
+on:
+  push:
+    branches: [snowwhite/windows-index-access-violation-20261024]
+permissions:
+  contents: read
+jobs:
+  reproduce:
+    runs-on: [self-hosted, factory, windows-native]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install existing dependencies and build sensor
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix sensor ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix sensor run build
+          exit $LASTEXITCODE
+      - name: Reproduce original path and collect owned process crash evidence
+        shell: pwsh
+        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./diagnostic-output
+      - name: Preserve isolated diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-index-av-${{ github.run_id }}
+          path: |
+            diagnostic-output/*.json
+            diagnostic-output/*.jsonl
+            diagnostic-output/traces
+            diagnostic-output/dumps
+          retention-days: 7
