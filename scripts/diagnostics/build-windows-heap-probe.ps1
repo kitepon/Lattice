@@ -26,13 +26,21 @@ $addon = Join-Path $output 'heap-probe.node'
 $object = Join-Path $output 'heap-probe.obj'
 $library = Join-Path $output 'node.lib'
 $pdb = Join-Path $output 'heap-probe.pdb'
+$helperSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'windows-minidump-helper.cc'))
+$helper = Join-Path $output 'heap-dump-helper.exe'
+$helperObject = Join-Path $output 'heap-dump-helper.obj'
+$helperPdb = Join-Path $output 'heap-dump-helper.pdb'
 $build = Join-Path $output 'build-probe.cmd'
 @("@echo off", "call `"$vcvars`"", 'if errorlevel 1 exit /b %errorlevel%',
-  "cl.exe /nologo /LD /MT /EHsc /Z7 /std:c++17 /DNODE_GYP_MODULE_NAME=heap_probe /DBUILDING_NODE_EXTENSION /DNAPI_VERSION=8 /I`"$include`" `"$source`" /Fo`"$object`" /link /DEBUG /PDB:`"$pdb`" /OUT:`"$addon`" `"$library`" kernel32.lib", 'exit /b %errorlevel%') |
+  "cl.exe /nologo /LD /MT /EHsc /Z7 /std:c++17 /DNODE_GYP_MODULE_NAME=heap_probe /DBUILDING_NODE_EXTENSION /DNAPI_VERSION=8 /I`"$include`" `"$source`" /Fo`"$object`" /link /DEBUG /PDB:`"$pdb`" /OUT:`"$addon`" `"$library`" kernel32.lib",
+  'if errorlevel 1 exit /b %errorlevel%',
+  "cl.exe /nologo /MT /EHsc /Z7 /std:c++17 `"$helperSource`" /Fo`"$helperObject`" /link /DEBUG /SUBSYSTEM:CONSOLE /PDB:`"$helperPdb`" /OUT:`"$helper`" kernel32.lib", 'exit /b %errorlevel%') |
   Set-Content -Encoding ascii $build
 & cmd.exe /d /c $build
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $addon)) { throw 'Native heap probe build failed' }
 & node -e 'const p=require(process.argv[1]);for(let i=0;i<10;i++)if(p.check(i)!==true)process.exit(2);console.log("heap probe load/default heap check passed")' $addon
 if ($LASTEXITCODE -ne 0) { throw 'Native heap probe load/default heap smoke failed' }
-@{ Node=$version; Inputs=$inputs; SourceHash=(Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant(); AddonHash=(Get-FileHash -Algorithm SHA256 $addon).Hash.ToLowerInvariant(); CompilerInstallation=$installation; Smoke='passed' } |
+@{ Node=$version; Inputs=$inputs; SourceHash=(Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant(); AddonHash=(Get-FileHash -Algorithm SHA256 $addon).Hash.ToLowerInvariant(); HelperHash=(Get-FileHash -Algorithm SHA256 $helper).Hash.ToLowerInvariant(); HelperSourceHash=(Get-FileHash -Algorithm SHA256 $helperSource).Hash.ToLowerInvariant(); DbgHelpHash=(Get-FileHash -Algorithm SHA256 (Join-Path $env:SystemRoot 'System32/dbghelp.dll')).Hash.ToLowerInvariant(); DbgHelpVersion=(Get-Item (Join-Path $env:SystemRoot 'System32/dbghelp.dll')).VersionInfo.FileVersion; CompilerInstallation=$installation; Smoke='addon-load-passed' } |
   ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'build.json')
+& node (Join-Path $PSScriptRoot 'verify-owned-minidump.mjs') $addon $helper (Join-Path $output 'smoke')
+if ($LASTEXITCODE -ne 0) { throw 'Owned healthy snapshot stream validation failed; native trial was not started' }

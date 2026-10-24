@@ -157,7 +157,8 @@ if (experiment === 'heapcheck') {
   const addon = path.join(root, 'heap-probe-build', 'heap-probe.node');
   for (let iteration = 0; iteration < 8; iteration++) {
     await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, 'pool-heap-check', lane, iteration,
-      target, [], ['pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1', LATTICE_AV_HEAP_PROBE: addon })));
+      target, [], ['pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1', LATTICE_AV_HEAP_PROBE: addon,
+        LATTICE_AV_DUMP_HELPER: path.join(root, 'heap-probe-build', 'heap-dump-helper.exe') })));
     if (results.some(x => x.diagnosticHeapInvalid || x.exceptionCode === '0xc0000374')) break;
   }
 } else if (experiment === 'heap') {

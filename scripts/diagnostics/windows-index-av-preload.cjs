@@ -15,6 +15,10 @@ if (directory) {
       threadId, sequence: ++sequence, event, ...details }) + '\n');
   }
   const heapProbe = process.env.LATTICE_AV_HEAP_PROBE ? require(process.env.LATTICE_AV_HEAP_PROBE) : null;
+  if (heapProbe && threadId === 0 && process.env.LATTICE_AV_DUMP_HELPER) {
+    if (heapProbe.configure(process.env.LATTICE_AV_DUMP_HELPER, directory) !== true) throw new Error('Dump helper prearm failed');
+    record('dump-helper-prearmed');
+  }
   let heapPhase = 0;
   function checkHeap(label) {
     if (!heapProbe) return;
@@ -39,6 +43,7 @@ if (directory) {
         try {
           checkHeap(`${label}.before`);
           const result = Reflect.apply(original, this, args);
+          if (label === 'Worker.terminate') checkHeap(`${label}.request-return`);
           if (result && typeof result.then === 'function') {
             return result.then(value => { checkHeap(`${label}.after`); record('return', { call, label,
               ...(label === 'Worker.terminate' ? { exitCode: value } : {}) }); return value; },

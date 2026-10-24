@@ -34,6 +34,9 @@ jobs:
             heap-probe-build/build.json
             heap-probe-build/heap-probe.node
             heap-probe-build/heap-probe.pdb
+            heap-probe-build/heap-dump-helper.exe
+            heap-probe-build/heap-dump-helper.pdb
+            heap-probe-build/smoke
             heap-check-output/*.json
             heap-check-output/*.jsonl
             heap-check-output/traces
