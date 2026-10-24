@@ -10,7 +10,7 @@
  * against a real temp project; here we pin the orchestration that makes the
  * parallelism safe.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ParseWorkerPool, resolveParseBudgetMs, resolveParsePoolSize, resolveParseTimeoutMs, type ParsePoolWorker, type ParseTask } from '../src/extraction/parse-pool';
 import type { Language, ExtractionResult } from '../src/types';
 
@@ -31,6 +31,8 @@ class FakeWorker implements ParsePoolWorker {
   private msgCb?: (m: unknown) => void;
   private exitCb?: (code: number) => void;
   alive = true;
+  messages: string[] = [];
+  forced = 0;
   constructor(private behavior: (m: ParseMsg) => Action, private onTerminate?: () => void) {}
   on(event: string, cb: (...args: any[]) => void): void {
     if (event === 'message') this.msgCb = cb;
@@ -42,6 +44,10 @@ class FakeWorker implements ParsePoolWorker {
   }
   postMessage(msg: unknown): void {
     const m = msg as { type: string } & Partial<ParseMsg>;
+    this.messages.push(m.type);
+    if (m.type === 'shutdown') {
+      this.alive = false; this.onTerminate?.(); this.exitCb?.(0); return;
+    }
     if (m.type === 'load-grammars') {
       setTimeout(() => { if (this.alive) this.msgCb?.({ type: 'grammars-loaded' }); }, 0);
       return;
@@ -57,7 +63,7 @@ class FakeWorker implements ParsePoolWorker {
     if ('wait' in action) { void action.wait.then((r) => this.reply(m.id!, r)); return; }
     setTimeout(() => this.reply(m.id!, action.result), 0);
   }
-  terminate(): Promise<number> { this.alive = false; this.onTerminate?.(); return Promise.resolve(0); }
+  terminate(): Promise<number> { this.forced++; this.alive = false; this.onTerminate?.(); this.exitCb?.(1); return Promise.resolve(1); }
 }
 
 const task = (filePath: string, content = 'code'): ParseTask => ({ filePath, content, language: 'typescript' as Language });
@@ -247,4 +253,94 @@ describe('ParseWorkerPool', () => {
     await expect(p).rejects.toThrow(/destroyed/);
     await expect(pool.requestParse(task('y.ts'))).rejects.toThrow(/destroyed/);
   });
+});
+
+
+describe('parse worker shutdown protocol', () => {
+  it('closes ready workers naturally without forcing their V8 isolate to stop', async () => {
+    const worker = new FakeWorker(() => ({ result: result() }));
+    const pool = new ParseWorkerPool({ languages: ['typescript'], size: 1, createWorker: () => worker });
+    await pool.requestParse(task('a.ts'));
+    await pool.destroy();
+    expect(worker.messages).toContain('shutdown');
+    expect(worker.forced).toBe(0);
+    expect(worker.alive).toBe(false);
+  });
+
+  it('waits for grammar initialization before requesting shutdown during destroy', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = new FakeWorker(() => ({ result: result() }));
+      const pool = new ParseWorkerPool({ languages: ['typescript'], size: 1, createWorker: () => worker });
+      const destroying = pool.destroy();
+      expect(worker.forced).toBe(0);
+      expect(worker.messages).not.toContain('shutdown');
+      await vi.advanceTimersByTimeAsync(0);
+      await destroying;
+      expect(worker.messages).toContain('shutdown');
+      expect(worker.forced).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('forces a worker that never completes startup after a bounded wait', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = new FakeWorker(() => ({ hang: true }));
+      const original = worker.postMessage.bind(worker);
+      worker.postMessage = message => {
+        if ((message as { type: string }).type !== 'load-grammars') original(message);
+      };
+      const pool = new ParseWorkerPool({ languages: ['typescript'], size: 1, createWorker: () => worker });
+      const destroying = pool.destroy();
+      expect(worker.forced).toBe(0);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await destroying;
+      expect(worker.forced).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+  it('joins a recycled worker still closing, including repeated destroy calls', async () => {
+    const first = new FakeWorker(() => ({ result: result() }));
+    const original = first.postMessage.bind(first);
+    let finishShutdown!: () => void;
+    first.postMessage = message => {
+      if ((message as { type: string }).type === 'shutdown') {
+        finishShutdown = () => original(message);
+      } else original(message);
+    };
+    let created = 0;
+    const pool = new ParseWorkerPool({ languages: ['typescript'], size: 1, recycleInterval: 1,
+      createWorker: () => created++ === 0 ? first : new FakeWorker(() => ({ result: result() })) });
+    await pool.requestParse(task('a.ts'));
+    const destroying = pool.destroy();
+    expect(pool.destroy()).toBe(destroying);
+    let done = false;
+    void destroying.then(() => { done = true; });
+    await sleep(5);
+    expect(done).toBe(false);
+    expect(first.alive).toBe(true);
+    finishShutdown();
+    await destroying;
+    expect(first.forced).toBe(0);
+    expect(first.alive).toBe(false);
+  });
+
+  it('forces a ready worker that ignores shutdown after the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = new FakeWorker(() => ({ result: result() }));
+      const original = worker.postMessage.bind(worker);
+      worker.postMessage = message => {
+        if ((message as { type: string }).type !== 'shutdown') original(message);
+      };
+      const pool = new ParseWorkerPool({ languages: ['typescript'], size: 1, createWorker: () => worker });
+      await vi.advanceTimersByTimeAsync(0);
+      const destroying = pool.destroy();
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(worker.forced).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await destroying;
+      expect(worker.forced).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
 });
