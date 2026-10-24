@@ -146,5 +146,7 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
     }
   } else if (msg.type === 'shutdown') {
     parentPort!.postMessage({ type: 'shutdown-ack' });
+    // Let Node drain native work and dispose the isolate naturally.
+    parentPort!.close();
   }
 });
