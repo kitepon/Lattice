@@ -446,7 +446,7 @@ authoring入口と閉じる口の契約は
   中で使う場合を含みます
 
 **商用利用には**、別途の商用ライセンスが必要です。
-問い合わせは[kitepon@gmail.com](mailto:kitepon@gmail.com)へのメールで受け付けます。
+問い合わせは[quolu@kitepon.dev](mailto:quolu@kitepon.dev)へのメールで受け付けます。
 許諾するかどうか、どのような条件にするかは個別に判断します。
 
 同梱の構造sensor（[`sensor/`](sensor/)）は本repositoryへ吸収した第三者成果物で、

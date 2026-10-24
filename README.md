@@ -385,7 +385,7 @@ Detailed operational notes (dashboard, bridge, actor environment, store transact
   regardless of whether Lattice itself is redistributed.
 
 **For commercial use**, a separate commercial license is required.
-Enquiries can be made by email at [kitepon@gmail.com](mailto:kitepon@gmail.com). Whether a
+Enquiries can be made by email at [quolu@kitepon.dev](mailto:quolu@kitepon.dev). Whether a
 license is granted, and on what terms, is decided case by case.
 
 The bundled structure sensor in [`sensor/`](sensor/) is third-party work absorbed into this
