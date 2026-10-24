@@ -45,7 +45,7 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  const dumpOptions = experiment === 'heapcheck' ? ['-mp', '-at', '15', '-e', '1', '-f', 'E0424C54,C0000374'] :
+  const dumpOptions = experiment === 'heapcheck' ? ['-ma', '-at', '15', '-e', '1', '-f', 'E0424C54,C0000374'] :
     experiment === 'heap' ? ['-mp', '-at', '15', '-f', 'C0000374'] : ['-mm'];
   const args = direct ? ['-accepteula', ...dumpOptions, ...(experiment === 'heapcheck' ? [] : ['-e']), '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;

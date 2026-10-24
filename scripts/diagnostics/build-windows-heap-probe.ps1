@@ -25,9 +25,10 @@ $include = Join-Path $output 'node-v24.20.0/include/node'
 $addon = Join-Path $output 'heap-probe.node'
 $object = Join-Path $output 'heap-probe.obj'
 $library = Join-Path $output 'node.lib'
+$pdb = Join-Path $output 'heap-probe.pdb'
 $build = Join-Path $output 'build-probe.cmd'
 @("@echo off", "call `"$vcvars`"", 'if errorlevel 1 exit /b %errorlevel%',
-  "cl.exe /nologo /LD /MT /EHsc /std:c++17 /DNODE_GYP_MODULE_NAME=heap_probe /DBUILDING_NODE_EXTENSION /DNAPI_VERSION=8 /I`"$include`" `"$source`" /Fo`"$object`" /link /OUT:`"$addon`" `"$library`" kernel32.lib", 'exit /b %errorlevel%') |
+  "cl.exe /nologo /LD /MT /EHsc /Z7 /std:c++17 /DNODE_GYP_MODULE_NAME=heap_probe /DBUILDING_NODE_EXTENSION /DNAPI_VERSION=8 /I`"$include`" `"$source`" /Fo`"$object`" /link /DEBUG /PDB:`"$pdb`" /OUT:`"$addon`" `"$library`" kernel32.lib", 'exit /b %errorlevel%') |
   Set-Content -Encoding ascii $build
 & cmd.exe /d /c $build
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $addon)) { throw 'Native heap probe build failed' }

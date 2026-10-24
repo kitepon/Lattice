@@ -32,6 +32,8 @@ jobs:
           name: native-heap-validation-${{ github.run_id }}
           path: |
             heap-probe-build/build.json
+            heap-probe-build/heap-probe.node
+            heap-probe-build/heap-probe.pdb
             heap-check-output/*.json
             heap-check-output/*.jsonl
             heap-check-output/traces
