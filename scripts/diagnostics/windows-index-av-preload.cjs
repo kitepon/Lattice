@@ -14,6 +14,17 @@ if (directory) {
     fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), pid: process.pid,
       threadId, sequence: ++sequence, event, ...details }) + '\n');
   }
+  const heapProbe = process.env.LATTICE_AV_HEAP_PROBE ? require(process.env.LATTICE_AV_HEAP_PROBE) : null;
+  let heapPhase = 0;
+  function checkHeap(label) {
+    if (!heapProbe) return;
+    const phase = ++heapPhase;
+    record('heap-check-enter', { phase, label });
+    const valid = heapProbe.check(phase);
+    record('heap-check-return', { phase, label, valid });
+    if (valid !== true) throw new Error('Native heap check did not return true');
+  }
+  if (heapProbe) globalThis.__latticeAvCheckHeap = checkHeap;
   function wrap(object, name, label) {
     if (!object || typeof object[name] !== 'function') return;
     const names = seen.get(object) || new Set();
@@ -26,12 +37,14 @@ if (directory) {
         record('enter', { call, label, ...(label === 'Worker.terminate' ? {
           targetThreadId: this.threadId, stack: new Error().stack } : {}) });
         try {
+          checkHeap(`${label}.before`);
           const result = Reflect.apply(original, this, args);
           if (result && typeof result.then === 'function') {
-            return result.then(value => { record('return', { call, label,
+            return result.then(value => { checkHeap(`${label}.after`); record('return', { call, label,
               ...(label === 'Worker.terminate' ? { exitCode: value } : {}) }); return value; },
               error => { record('throw', { call, label, message: String(error) }); throw error; });
           }
+          checkHeap(`${label}.after`);
           record('return', { call, label, ...(label === 'module.enableCompileCache' ? {
             cacheStatus: result?.status, cacheDirectory: result?.directory || null,
             cacheMessage: result?.message || null } : {}) });
@@ -47,6 +60,7 @@ if (directory) {
     node: process.versions.node, v8: process.versions.v8, platform: process.platform,
     arch: process.arch, relaunched: process.env.LATTICE_SENSOR_WASM_RELAUNCHED || null,
     compileCacheDisabled: process.env.NODE_DISABLE_COMPILE_CACHE || null });
+  checkHeap('preload.boot');
   // Observe the product's own call; do not enable the cache from the probe.
   wrap(Module, 'enableCompileCache', 'module.enableCompileCache');
   for (const name of ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming']) {

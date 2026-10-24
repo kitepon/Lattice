@@ -45,8 +45,9 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   const nodeArgs = [...additionalFlags, ...(direct ? [`--title=${ownershipMarker}`, ...NODE_RUNTIME_FLAGS, ...WASM_RUNTIME_FLAGS] : []), target, ...commandArgs];
   const dumpDir = path.join(output, 'dumps');
   await mkdir(dumpDir, { recursive: true });
-  const dumpOptions = experiment === 'heap' ? ['-mp', '-at', '15', '-f', 'C0000374'] : ['-mm'];
-  const args = direct ? ['-accepteula', ...dumpOptions, '-e', '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
+  const dumpOptions = experiment === 'heapcheck' ? ['-mp', '-at', '15', '-e', '1', '-f', 'E0424C54,C0000374'] :
+    experiment === 'heap' ? ['-mp', '-at', '15', '-f', 'C0000374'] : ['-mm'];
+  const args = direct ? ['-accepteula', ...dumpOptions, ...(experiment === 'heapcheck' ? [] : ['-e']), '-n', '1', '-x', dumpDir, process.execPath, ...nodeArgs] : nodeArgs;
   const executable = direct ? debuggerPath : process.execPath;
   const started = Date.now();
   const result = await new Promise(resolve => {
@@ -105,10 +106,12 @@ async function execute(mode, dir, command, lane, iteration, target = bin, additi
   // ASCII exit record while retaining the original stream as evidence.
   const childExit = direct ? [...result.stdout.replaceAll('\0', '').matchAll(/Process Exit: PID \d+, Exit Code (0x[0-9a-f]+)/gi)].at(-1) : null;
   const nativeException = [...result.stdout.replaceAll('\0', '').matchAll(/Unhandled:\s*([0-9a-f]{8})/gi)].at(-1);
+  const probeException = /(?:Exception|Unhandled):\s*E0424C54/i.test(result.stdout.replaceAll('\0', ''));
   const actualCode = direct ? (childExit ? Number.parseInt(childExit[1].slice(2), 16) : null) : result.code;
   const item = { mode, lane, iteration, command, ownershipMarker, traceDirectory, environmentOverrides,
     elapsedMs: Date.now() - started, ...result,
-    exceptionCode: nativeException ? `0x${nativeException[1].toLowerCase()}` : null,
+    exceptionCode: nativeException ? `0x${nativeException[1].toLowerCase()}` : probeException ? '0xe0424c54' : null,
+    diagnosticHeapInvalid: probeException,
     debuggeeExitObserved: direct ? Boolean(childExit) : true,
     wrapperCode: result.code, code: actualCode, hex: Number.isInteger(actualCode) ? `0x${(actualCode >>> 0).toString(16)}` : null };
   results.push(item);
@@ -149,7 +152,15 @@ async function sequence(mode, lane, iteration) {
 }
 // First preserve the original uninstrumented launch path, then add flushed
 // phase probes, and finally debug the same canonical inner Node invocation.
-if (experiment === 'heap') {
+if (experiment === 'heapcheck') {
+  const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
+  const addon = path.join(root, 'heap-probe-build', 'heap-probe.node');
+  for (let iteration = 0; iteration < 8; iteration++) {
+    await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, 'pool-heap-check', lane, iteration,
+      target, [], ['pool', '8'], { NODE_DISABLE_COMPILE_CACHE: '1', LATTICE_AV_HEAP_PROBE: addon })));
+    if (results.some(x => x.diagnosticHeapInvalid || x.exceptionCode === '0xc0000374')) break;
+  }
+} else if (experiment === 'heap') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
   // The previous Mini dump omitted referenced heap blocks. Capture Private
   // memory only in the failing cache-disabled real-pool condition.

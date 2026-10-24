@@ -1,4 +1,4 @@
-name: Windows native heap metadata capture
+name: Windows native heap validation boundaries
 on:
   push:
     branches: [snowwhite/native-compile-cache-isolation-20261024]
@@ -19,17 +19,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm --prefix sensor run build
           exit $LASTEXITCODE
-      - name: Capture missing heap metadata in the failing pre-repair real pool
+      - name: Build and load the owned native heap diagnostic addon
         shell: pwsh
-        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./heap-output -Experiment heap
+        run: ./scripts/diagnostics/build-windows-heap-probe.ps1 -OutputDirectory ./heap-probe-build
+      - name: Locate first invalid heap boundary in the pre-repair real pool
+        shell: pwsh
+        run: ./scripts/diagnostics/windows-index-av.ps1 -OutputDirectory ./heap-check-output -Experiment heapcheck
       - name: Preserve isolated diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-heap-metadata-${{ github.run_id }}
+          name: native-heap-validation-${{ github.run_id }}
           path: |
-            heap-output/*.json
-            heap-output/*.jsonl
-            heap-output/traces
-            heap-output/dumps
+            heap-probe-build/build.json
+            heap-check-output/*.json
+            heap-check-output/*.jsonl
+            heap-check-output/traces
+            heap-check-output/dumps
           retention-days: 7

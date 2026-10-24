@@ -36,7 +36,10 @@ if (workerData?.raceWorker) {
 } else {
   (async () => {
     if (variant === 'pool') {
+      const checkHeap = label => globalThis.__latticeAvCheckHeap?.(label);
+      checkHeap('pool.before-load');
       const { ParseWorkerPool } = require('../../sensor/dist/extraction/parse-pool.js');
+      checkHeap('pool.after-load');
       const garbage = [];
       const pressure = setInterval(() => {
         garbage.push(Array.from({ length: 8192 }, (_, n) => ({ n, value: String(n) })));
@@ -46,19 +49,25 @@ if (workerData?.raceWorker) {
         for (let round = 0; round < rounds; round++) {
           const pool = new ParseWorkerPool({ languages: ['typescript'], size: 4,
             workerScriptPath: path.resolve(__dirname, '../../sensor/dist/extraction/parse-worker.js') });
+          checkHeap(`pool.${round}.before-prewarm`);
           pool.prewarm();
+          checkHeap(`pool.${round}.after-prewarm`);
           try {
             const result = await pool.requestParse({ filePath: 'owned.ts',
               content: 'export function hello() { return 42; }', language: 'typescript' });
             log('pool-parsed', { round, nodes: result.nodes.length });
+            checkHeap(`pool.${round}.after-parse`);
           } finally {
             log('pool-destroy-enter', { round });
+            checkHeap(`pool.${round}.before-destroy`);
             await pool.destroy();
+            checkHeap(`pool.${round}.after-destroy`);
             log('pool-destroy-return', { round });
           }
         }
       } finally { clearInterval(pressure); }
       log('completed', { rounds, variant });
+      checkHeap('pool.completed');
       return;
     }
     for (let round = 0; round < rounds; round++) {
