@@ -138,7 +138,7 @@ Patent notice: the design implemented by this software is the subject of Japanes
 patent application 特願2026-178950 (filed 2026-07-27).
 
 Commercial use requires a separate commercial license.
-Enquiries: kitepon@gmail.com
+Enquiries: quolu@kitepon.dev
 Whether such a license is granted, and on what terms, is decided case by case.
 
 Third-party components: the bundled structure sensor in `sensor/` is third-party work
