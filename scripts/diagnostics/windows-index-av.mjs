@@ -147,7 +147,7 @@ async function sequence(mode, lane, iteration) {
 // phase probes, and finally debug the same canonical inner Node invocation.
 if (experiment === 'race' || experiment === 'pool') {
   const target = path.join(root, 'scripts/diagnostics/windows-worker-race.cjs');
-  const variants = experiment === 'pool' ? ['pool-ready', 'pool-natural'] : ['cooperative', 'settled', 'natural', 'marker-off', 'serial', 'early'];
+  const variants = experiment === 'pool' ? ['pool'] : ['cooperative', 'settled', 'natural', 'marker-off', 'serial', 'early'];
   for (const variant of variants) {
     for (let iteration = 0; iteration < 8; iteration++) {
       await Promise.all(Array.from({ length: 2 }, (_, lane) => execute('debug', root, variant, lane, iteration,
