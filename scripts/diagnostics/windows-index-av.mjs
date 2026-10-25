@@ -196,6 +196,9 @@ if (heapValidation) {
       if (results.filter(x => x.command === variant && x.exceptionCode).length >= 3) break;
     }
   }
+} else if (experiment === 'runtimefixed-normal') {
+  // One normal original input cycle under the repaired runtime; no old success sweep.
+  await sequence('baseline', 0, 0);
 } else {
   for (const mode of ['baseline', 'trace', 'debug']) {
     for (let iteration = 0; iteration < 4; iteration++) {
