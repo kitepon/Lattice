@@ -63,7 +63,11 @@ $commands = Join-Path $output 'commands.txt'
   '!exts.heap -triage 0x1c33b5b0000', '!exts.heap -v 0x1c33b5b0000', '.echo LATTICE_HEAP_TRIAGE_END',
   '!exts.heap -s 0x1c33b5b0000', 'dt ntdll!_HEAP 0x1c33b5b0000',
   'dt ntdll!_HEAP_ENTRY', 'dt ntdll!_HEAP_SEGMENT', 'dt ntdll!_HEAP_UCR_DESCRIPTOR',
-  'dq 0x1c33b5b0000 L80', '.echo LATTICE_OFFLINE_ANALYSIS_END', 'q') | Set-Content -Encoding ascii $commands
+  'dq 0x1c33b5b0000 L80',
+  'dt node!node::BaseObject', 'dt node!node::AsyncWrap', 'dt node!node::worker::Worker',
+  'dt node!node::Environment', 'dt node!node::MessagePort', 'dt node!v8::internal::StackGuard',
+  '!exts.heap -x 0x1c3d4e2c2a8', 'dq 0x1c3d4e2c230 L70',
+  '.echo LATTICE_OFFLINE_ANALYSIS_END', 'q') | Set-Content -Encoding ascii $commands
 $symbolPath = "$nodeSymbols;$(Join-Path $evidence 'heap-probe-build');srv*$cache*https://msdl.microsoft.com/download/symbols"
 $start = [Diagnostics.ProcessStartInfo]::new($cdb)
 $start.UseShellExecute = $false
