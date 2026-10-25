@@ -58,9 +58,11 @@ $extensionCommandPath = $extension.Replace('\', '/')
 $commands = Join-Path $output 'commands.txt'
 @('.symopt- 0x40', '.reload /f ntdll.dll', '.reload /f node.exe', '.reload /f heap-probe.node',
   'lmv m ntdll', 'lmv m node', 'lmv m heap*', '.exr -1', '.ecxr', '~* kb',
-  ".load `"$extensionCommandPath`"", '.chain', '.echo LATTICE_HEAP_TRIAGE_BEGIN',
-  '!ext.heap -triage 0x1c33b5b0000', '.echo LATTICE_HEAP_TRIAGE_END',
-  '!ext.heap -v 0x1c33b5b0000', 'dt ntdll!_HEAP 0x1c33b5b0000',
+  ".load `"$extensionCommandPath`"", '.chain', '!exts.heap -?', '!peb',
+  '.echo LATTICE_HEAP_TRIAGE_BEGIN',
+  '!exts.heap -triage 0x1c33b5b0000', '!exts.heap -v 0x1c33b5b0000', '.echo LATTICE_HEAP_TRIAGE_END',
+  '!exts.heap -s 0x1c33b5b0000', 'dt ntdll!_HEAP 0x1c33b5b0000',
+  'dt ntdll!_HEAP_ENTRY', 'dt ntdll!_HEAP_SEGMENT', 'dt ntdll!_HEAP_UCR_DESCRIPTOR',
   'dq 0x1c33b5b0000 L80', '.echo LATTICE_OFFLINE_ANALYSIS_END', 'q') | Set-Content -Encoding ascii $commands
 $symbolPath = "$nodeSymbols;$(Join-Path $evidence 'heap-probe-build');srv*$cache*https://msdl.microsoft.com/download/symbols"
 $start = [Diagnostics.ProcessStartInfo]::new($cdb)
