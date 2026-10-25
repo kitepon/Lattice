@@ -261,8 +261,14 @@ test('journalは上限でclosedだけを消し、activeを捨てずspawn前に�
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-dashboard-journal-'));
   registerManagedDaemonFixture(t, root);
   const first = await createLifecycleRun(root, 'fixture');
+  recordLifecyclePhase(first, 'ready');
+  recordLifecyclePhase(first, 'store_read_failed');
   for (let index = 0; index < 100; index += 1) recordLifecyclePhase(first, index % 2 ? 'registry' : 'store');
   assert.equal(first.events.length, 64);
+  assert.equal(first.events.some((event) => event.phase === 'ready'), false, 'retain the recent tail');
+  assert.ok(first.ready_at, 'startup time remains even when its event rotates');
+  assert.equal(first.events.at(-1).phase, first.phase);
+  assert.equal(first.last_failure_observed.phase, 'store_read_failed');
   for (let index = 1; index < LIFECYCLE_MAX_RUNS; index += 1) await createLifecycleRun(root, 'fixture');
   await assert.rejects(createLifecycleRun(root, 'fixture'), { code: 'DASHBOARD_LIFECYCLE_CAPACITY' });
   first.state = 'closed'; await writeLifecycleRun(root, first);

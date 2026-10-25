@@ -133,7 +133,11 @@ export function recordLifecyclePhase(run, phase) {
   }
   const at = new Date().toISOString();
   if (phase === 'ready' && run.ready_at === null) run.ready_at = at;
-  if (run.events.length < 64) run.events.push({ at, phase });
+  if (['store_read_failed', 'sync_failed', 'cleanup_failed', 'close_failed'].includes(phase)) {
+    run.last_failure_observed = { at, phase };
+  }
+  run.events.push({ at, phase });
+  if (run.events.length > 64) run.events.shift();
   return true;
 }
 
