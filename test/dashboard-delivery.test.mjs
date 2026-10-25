@@ -82,3 +82,28 @@ test('一部拒否を端末全体の成功にしないが、受理済みの対�
   assert.equal((await verifyBridgeHubDelivery({ config, heartbeat: partial,
     projectId: 'movie', fetchImpl: deliveredFetch })).state, 'hub_delivered');
 });
+
+test('reportのcatchは配信3段階のsubreasonを落とさず、任意detailは保存しない', async () => {
+  const cases = [
+    { heartbeat: async () => ({ state: 'unreachable' }), fetchImpl: deliveredFetch,
+      stage: 'heartbeat_registration', subreason: 'unreachable' },
+    { heartbeat, fetchImpl: async () => new Response('', { status: 503 }),
+      stage: 'hub_listing', subreason: 'hub_listing_unavailable' },
+    { heartbeat, fetchImpl: async (url) => String(url).endsWith('/projects/')
+      ? deliveredFetch(url) : new Response('', { status: 503 }),
+    stage: 'project_route', subreason: 'project_unreachable' },
+  ];
+  for (const entry of cases) {
+    const result = await reportProjectDashboardDelivery({ projectId: 'movie', env: {},
+      ensureDelivery: () => verifyBridgeHubDelivery({ config, ...entry }) });
+    assert.equal(result.state, 'failed');
+    assert.equal(result.reason, 'BRIDGE_HUB_DELIVERY_UNCONFIRMED');
+    assert.deepEqual(result.failure, { stage: entry.stage, subreason: entry.subreason });
+  }
+  const result = await reportProjectDashboardDelivery({ projectId: 'movie', env: {},
+    ensureDelivery: async () => { throw Object.assign(new Error('secret-marker'), {
+      code: 'BRIDGE_HUB_DELIVERY_UNCONFIRMED', detail: { reason: 'secret-marker', token: 'secret-marker' },
+    }); } });
+  assert.deepEqual(result.failure, { stage: 'unknown', subreason: 'unavailable' });
+  assert.doesNotMatch(JSON.stringify(result), /secret-marker/u);
+});

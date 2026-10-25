@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import {
@@ -9,6 +8,10 @@ import path from 'node:path';
 import packageJson from '../package.json' with { type: 'json' };
 import { isAuditPendingPhaseStatus } from './todo-audit-pending.mjs';
 import { observeStartIdentityEpochMs } from './runtime-os-observation.mjs';
+import { spawnSupervisedDashboard } from './dashboard-supervisor.mjs';
+import { reconcileLifecycleRuns, readDashboardLifecycleStatus,
+  recordDashboardEnsureDecision } from './dashboard-lifecycle-journal.mjs';
+import { observeDashboardProcess } from './dashboard-process-control.mjs';
 
 /**
  * The version of the code in THIS process. A daemon loads its modules once at
@@ -47,6 +50,10 @@ function paths(env) {
     lock: path.join(root, 'registry.lock'),
     startupLock: path.join(root, 'daemon-start.lock'),
   };
+}
+
+export async function readTodoDashboardLifecycleStatus({ env = process.env } = {}) {
+  return readDashboardLifecycleStatus(runtimeDir(env));
 }
 
 function validEntry(entry) {
@@ -523,7 +530,7 @@ export async function forgetTodoDashboardDaemonRecord({ env = process.env } = {}
   await rm(daemonRecordRef(paths(env), process.pid), { force: true });
 }
 
-export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon = spawn,
+export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon = spawnSupervisedDashboard,
   signalProcess = process.kill, isProcessAlive = processIsAlive, startupTimeoutMs = 120_000,
   legacyStopTimeoutMs = 3_000, replacementIsProcessAlive = processIsAlive,
   attestationTimeoutMs = 2_000, strayStopTimeoutMs = 3_000,
@@ -535,15 +542,18 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
   const reap = (keepPid) => reapStrayDaemons(refs, keepPid,
     { signalProcess, isProcessAlive, timeoutMs: strayStopTimeoutMs });
   return withLock(refs.startupLock, async () => {
+    await reconcileLifecycleRuns(refs.root, observeDashboardProcess);
     const existing = await readJson(refs.descriptor, null);
     const existingAttestation = await daemonAttestation(existing, { timeoutMs: attestationTimeoutMs });
     if (existingAttestation === 'current') {
+      await recordDashboardEnsureDecision(refs.root, 'reuse_current', existing.pid);
       await reap(existing.pid);
       return existing;
     }
     if (validDaemonDescriptor(existing) && existingAttestation === null
       && await isProcessAlive(existing.pid)
       && !await descriptorPidWasReused(existing, { observeProcessStartEpochMs })) {
+      await recordDashboardEnsureDecision(refs.root, 'alive_unresponsive', existing.pid);
       throw dashboardError('DASHBOARD_DAEMON_UNRESPONSIVE', 'dashboard daemon is alive but temporarily unresponsive');
     }
     let legacy = existingAttestation === 'legacy' ? existing : null;
@@ -558,6 +568,7 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
         // 引き取った相手は生きて応答しているので、descriptorの不変条件を満たす。
         await atomicJson(refs.descriptor, adopted.record);
         if (adopted.attestation === 'current') {
+          await recordDashboardEnsureDecision(refs.root, 'adopt_current', adopted.record.pid);
           await reap(adopted.record.pid);
           return adopted.record;
         }
@@ -569,9 +580,14 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
       && Number(portText) <= 65_535 ? Number(portText) : DEFAULT_PORT;
     const port = legacy === null ? configuredPort : 0;
     if (legacy === null) await rm(refs.descriptor, { force: true });
-    const child = spawnDaemon(process.execPath, [path.resolve(import.meta.dirname, '../bin/lattice-dashboard.mjs')], {
+    const startupDecision = legacy !== null ? 'replace_legacy'
+      : validDaemonDescriptor(existing) && await isProcessAlive(existing.pid) ? 'pid_reused'
+        : 'start_missing';
+    await recordDashboardEnsureDecision(refs.root, startupDecision, legacy?.pid ?? null);
+    const child = await spawnDaemon(process.execPath, [path.resolve(import.meta.dirname, '../bin/lattice-dashboard.mjs')], {
       detached: true,
       stdio: 'ignore',
+      version: TODO_DASHBOARD_CODE_VERSION,
       env: { ...env, LATTICE_DASHBOARD_RUNTIME_DIR: refs.root, LATTICE_DASHBOARD_PORT: String(port) },
     });
     child.unref();
@@ -584,6 +600,10 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
     const deadline = Date.now() + startupTimeoutMs;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
+      if (child.observationError) {
+        child.kill?.('SIGTERM');
+        throw child.observationError;
+      }
       const descriptor = typeof child.pid === 'number'
         ? await readJson(daemonRecordRef(refs, child.pid), null) : null;
       const healthy = await daemonHealthy(descriptor);
@@ -601,6 +621,7 @@ export async function ensureTodoDashboardDaemon({ env = process.env, spawnDaemon
           }
         }
         await atomicJson(refs.descriptor, descriptor);
+        await recordDashboardEnsureDecision(refs.root, startupDecision, descriptor.pid);
         await reap(descriptor.pid);
         return descriptor;
       }

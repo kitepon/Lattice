@@ -9,6 +9,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runTodoCli } from '../src/todo-cli.mjs';
+import { removeManagedDaemonFixture } from './helpers/managed-daemon-fixture.mjs';
 import {
   adoptTodoDashboardActivity,
   ensureTodoDashboardDaemon,
@@ -226,7 +227,7 @@ test('通常session activityだけでdashboard daemonを起動し同じdaemonを
     if (daemonPid !== null) {
       try { process.kill(daemonPid, 'SIGTERM'); } catch {}
     }
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   const [first, concurrent] = await Promise.all([
     ensureTodoDashboardActivity({ repoRoot: process.cwd(), projectId: 'lattice',
@@ -280,7 +281,7 @@ test('legacy health daemonは新daemon成功後だけPID一致を根拠に停止
   context.after(async () => {
     if (replacement !== null) try { process.kill(replacement.pid, 'SIGTERM'); } catch {}
     await new Promise((resolve) => legacy.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   replacement = await ensureTodoDashboardDaemon({ env,
     signalProcess(pid, signal) {
@@ -314,7 +315,7 @@ test('古い版を配信し続けているdaemonは新版へ置換される', as
   context.after(async () => {
     if (replacement !== null) try { process.kill(replacement.pid, 'SIGTERM'); } catch {}
     await new Promise((resolve) => stale.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   replacement = await ensureTodoDashboardDaemon({ env,
     signalProcess(pid, signal) {
@@ -342,7 +343,7 @@ test('PID不一致healthの無関係serviceにはsignalせず新daemonへ置換�
   context.after(async () => {
     if (replacement !== null) try { process.kill(replacement.pid, 'SIGTERM'); } catch {}
     await new Promise((resolve) => unrelated.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   replacement = await ensureTodoDashboardDaemon({ env,
     signalProcess() { throw new Error('unrelated PID must not be signaled'); },
@@ -376,7 +377,7 @@ test('生存中dashboardの一時的health timeoutは新daemonで孤児化せず
   let spawnCount = 0;
   context.after(async () => {
     await new Promise((resolve) => busy.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   await assert.rejects(ensureTodoDashboardDaemon({ env, attestationTimeoutMs: 20,
     isProcessAlive: () => true,
@@ -400,7 +401,7 @@ test('health不能でPIDが別processに再利用されたdescriptorはsignalせ
   let spawnCount = 0;
   context.after(async () => {
     await new Promise((resolve) => replacement.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   const result = await ensureTodoDashboardDaemon({ env, startupTimeoutMs: 1_000,
     isProcessAlive: (pid) => pid === reusedPid || pid === replacementPid,
@@ -437,7 +438,7 @@ test('新daemon起動中にlegacy再attestationを失ったPIDへはsignalしな
     const descriptor = JSON.parse(await readFile(path.join(runtime, 'daemon.json'), 'utf8'));
     if (descriptor.pid !== legacyPid) try { process.kill(descriptor.pid, 'SIGTERM'); } catch {}
     await new Promise((resolve) => legacy.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   await assert.rejects(ensureTodoDashboardDaemon({ env,
     spawnDaemon(...args) {
@@ -465,7 +466,7 @@ test('死んだreplacementは猶予の満了を待たず諦め、生きている
     const env = { ...process.env, LATTICE_DASHBOARD_RUNTIME_DIR: runtime, LATTICE_DASHBOARD_PORT: '0' };
     context.after(async () => {
       await new Promise((resolve) => served.server.close(resolve));
-      await rm(root, { recursive: true, force: true });
+      await removeManagedDaemonFixture(root);
     });
 
     // 死んだ子を待ち続けない。猶予10秒でも、死を見た時点で諦める。
@@ -512,7 +513,7 @@ test('新daemon起動失敗時はattested legacyを停止せずdescriptorと可�
     let fakeKilled = false;
     context.after(async () => {
       await new Promise((resolve) => legacy.server.close(resolve));
-      await rm(root, { recursive: true, force: true });
+      await removeManagedDaemonFixture(root);
     });
     await assert.rejects(ensureTodoDashboardDaemon({ env, startupTimeoutMs: 120,
       spawnDaemon: () => ({ pid: 444_444, unref() {}, kill() { fakeKilled = true; } }),
@@ -541,7 +542,7 @@ test('旧daemon停止失敗時はreplacementを停止確認してlegacy descript
         replacementChild.kill('SIGKILL');
       }
       await new Promise((resolve) => legacy.server.close(resolve));
-      await rm(root, { recursive: true, force: true });
+      await removeManagedDaemonFixture(root);
     });
     await assert.rejects(ensureTodoDashboardDaemon({ env, legacyStopTimeoutMs: 120,
       spawnDaemon(...args) { replacementChild = spawn(...args); return replacementChild; },
@@ -575,7 +576,7 @@ test('descriptorから外れた生存daemonを登録簿から見つけて停止�
   context.after(async () => {
     await new Promise((resolve) => current.server.close(resolve));
     await new Promise((resolve) => stray.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   const served = await ensureTodoDashboardDaemon({ env,
     spawnDaemon() { throw new Error('配信中のdaemonが居るのにspawnしてはいけない'); },
@@ -603,7 +604,7 @@ test('descriptorだけが失われた時は2本目を建てず生存daemonを引
   let spawned = 0;
   context.after(async () => {
     await new Promise((resolve) => served.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   const adopted = await ensureTodoDashboardDaemon({ env,
     spawnDaemon() { spawned += 1; throw new Error('引き取れる相手が居るのにspawnしてはいけない'); },
@@ -635,7 +636,7 @@ test('認証できない生存pidへはsignalせず記録を残して次の起�
   context.after(async () => {
     await new Promise((resolve) => served.server.close(resolve));
     await new Promise((resolve) => unrelated.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   const result = await ensureTodoDashboardDaemon({ env,
     spawnDaemon() { throw new Error('配信中のdaemonが居るのにspawnしてはいけない'); },
@@ -666,7 +667,7 @@ test('停止に応じない孤児はtyped errorで報せ、descriptorの整合�
   context.after(async () => {
     await new Promise((resolve) => served.server.close(resolve));
     await new Promise((resolve) => stray.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   await assert.rejects(ensureTodoDashboardDaemon({ env, strayStopTimeoutMs: 120,
     spawnDaemon() { throw new Error('配信中のdaemonが居るのにspawnしてはいけない'); },
@@ -693,7 +694,7 @@ test('起動のたびに死んだ記録を掃除するので登録簿が無限�
   const env = { ...process.env, LATTICE_DASHBOARD_RUNTIME_DIR: runtime };
   context.after(async () => {
     await new Promise((resolve) => served.server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   const result = await ensureTodoDashboardDaemon({ env,
     spawnDaemon() { throw new Error('配信中のdaemonが居るのにspawnしてはいけない'); },
@@ -714,7 +715,7 @@ test('daemonは自分の記録をdescriptorと同時に置き、停止時に落�
     if (daemonPid !== null) {
       try { process.kill(daemonPid, 'SIGTERM'); } catch {}
     }
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   await ensureTodoDashboardActivity({ repoRoot: process.cwd(), projectId: 'lattice',
     displayName: 'Lattice', sessionId: 'session-record', env });
@@ -858,7 +859,7 @@ test('store書き込みのtodo commandが明示serveなしでproject登録とdae
     if (daemonPid !== null) {
       try { process.kill(daemonPid, 'SIGTERM'); } catch {}
     }
-    await rm(root, { recursive: true, force: true });
+    await removeManagedDaemonFixture(root);
   });
   let stdout = '';
   let stderr = '';

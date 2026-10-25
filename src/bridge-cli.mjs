@@ -6,7 +6,7 @@ import * as clack from '@clack/prompts';
 import packageJson from '../package.json' with { type: 'json' };
 import { resolveBridgeListenAddress } from './bridge-address.mjs';
 import { registerBridgeUpstream } from './bridge-registrar.mjs';
-import { ensureTodoDashboardDaemon } from './todo-dashboard-registry.mjs';
+import { ensureTodoDashboardDaemon, readTodoDashboardLifecycleStatus } from './todo-dashboard-registry.mjs';
 import { verifyBridgeHubDelivery } from './dashboard-delivery.mjs';
 import {
   BridgeConfigError, configureBridge, disableBridge, readBridgeConfig, restoreBridgeConfig,
@@ -472,7 +472,11 @@ export async function runBridgeCli({ argv, stdout, stderr, env = process.env,
     if (wizard) {
       stdout.write(`Lattice bridgeを${config.listen.address}:${config.listen.port}で有効にしました。\n`);
       for (const warning of warnings ?? []) stdout.write(`警告: ${warning.message}\n`);
-    } else stdout.write(`${JSON.stringify(result(command, config, recovery, liveness, diagnostics, warnings))}\n`);
+    } else {
+      const output = result(command, config, recovery, liveness, diagnostics, warnings);
+      if (command === 'status') output.dashboard_lifecycle = await readTodoDashboardLifecycleStatus({ env });
+      stdout.write(`${JSON.stringify(output)}\n`);
+    }
     return 0;
   } catch (error) {
     const payload = { schema: 'lattice.cli_error.v2',

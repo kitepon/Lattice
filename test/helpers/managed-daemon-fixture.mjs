@@ -88,6 +88,13 @@ export async function reapDaemonsUnder(temporary, tracked = []) {
 
 const liveFixtures = new Set();
 
+/** Wait for fixture-owned processes before removing files their exit receipts need. */
+export async function removeManagedDaemonFixture(temporary, tracked = []) {
+  const survivors = await reapDaemonsUnder(temporary, tracked);
+  assert.deepEqual(survivors, [], `fixtureのdaemonが停まらずに残った: ${survivors.join(', ')}`);
+  await rm(temporary, { recursive: true, force: true });
+}
+
 // timeout等でafter hook自体が走らなかった時の同期的な最後の受け皿。
 process.on('exit', () => {
   for (const temporary of liveFixtures) {
