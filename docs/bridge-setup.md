@@ -135,8 +135,11 @@ Windowsの`observed_exit`は実waitで得たDWORDの`uint32`と`hex`を保持し
 FILETIMEで認証したhandleへのTerminateProcess要求・実GetExitCodeProcess結果を別に記録する。
 Nodeの疑似SIGTERMしか残らない場合はraw値を得た扱いにしない。
 
-supervisorだけがKILLやOS再起動で消えた場合、childは残して配信を継続する。次の通常ensureはchildのhealthと
+supervisorだけがKILLなどで消えた場合、childは残して配信を継続する。Windowsではchildをdetachedで起動し、
+supervisorが所有するJobの終了に連動させない。通常の停止要求はIPCで送り、実childの終了をwaitする。
+次の通常ensureはchildのhealthと
 identityを確認し、同じdaemonを再利用する。監督消失後の過去の終了値・終了時刻はunknownのまま残す。
+OS再起動などでsupervisorとchildの両方が消えた場合も、観測できなかった終了値や理由はunknownのまま残す。
 周期LaunchAgentは従来のstableなCLI pathでensureするままで、plist・Node・信用設定の書換えは要らない。
 
 配信失敗のreceiptには、`reason`のtyped codeに加え、許可済みの`failure.stage`と`failure.subreason`が入る。

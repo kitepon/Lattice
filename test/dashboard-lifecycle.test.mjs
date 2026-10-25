@@ -105,24 +105,20 @@ test('supervisorは実childの0・非0・例外をwaitし、段階と有限diges
   }
 });
 
-test('supervisorの通常TERMはIPCを転送し、要求と実child exitを分ける', { timeout: 30_000 }, async (t) => {
+test('supervisorの通常終了要求はIPCを転送し、要求と実child exitを分ける', { timeout: 30_000 }, async (t) => {
   const f = await fixture(t, 'wait');
   await until(f.read, (run) => run.phase === 'ready');
-  f.supervisor.kill('SIGTERM');
+  if (process.platform === 'win32') f.supervisor.send({ type: 'dashboard_supervisor_stop' });
+  else f.supervisor.kill('SIGTERM');
   const closed = await f.closed;
-  // Windows ChildProcess.kill is a forced termination, not a delivered POSIX signal.
-  if (process.platform === 'win32') {
-    const run = await f.read();
-    assert.equal(run.state, 'active');
-    assert.equal(run.observed_exit.status, 'unknown');
-    assert.notEqual(await observeDashboardProcess(run.child.pid), null);
-  } else {
-    assert.equal(closed.code, 0);
-    const run = await f.read();
-    assert.equal(run.termination_request.reason, 'supervisor_SIGTERM');
-    assert.equal(run.termination_request.mechanism, 'ipc_shutdown');
-    assert.equal(run.observed_exit.code, 0);
-  }
+  // Windows has no delivered POSIX TERM. Its ordinary stop uses owner IPC;
+  // forced observer death is exercised separately by the KILL/reuse cases.
+  assert.equal(closed.code, 0);
+  const run = await f.read();
+  assert.equal(run.termination_request.reason, process.platform === 'win32' ? 'owner_stop' : 'supervisor_SIGTERM');
+  assert.equal(run.termination_request.mechanism, 'ipc_shutdown');
+  assert.equal(run.termination_request.os_request, null);
+  assert.equal(process.platform === 'win32' ? run.observed_exit.uint32 : run.observed_exit.code, 0);
 });
 
 test('supervisorだけのKILLはchildを残し、終了値をunknownのまま照合する', { timeout: 30_000 }, async (t) => {
