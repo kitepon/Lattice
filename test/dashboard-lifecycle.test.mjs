@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { createLifecycleRun, LIFECYCLE_MAX_RUNS, readLifecycleRuns, recordLifecyclePhase,
   reconcileLifecycleRuns, writeLifecycleRun } from '../src/dashboard-lifecycle-journal.mjs';
@@ -14,6 +15,8 @@ import { registerManagedDaemonFixture } from './helpers/managed-daemon-fixture.m
 import { ensureTodoDashboardDaemon, registerTodoDashboardActivity } from '../src/todo-dashboard-registry.mjs';
 import { runBridgeCli } from '../src/bridge-cli.mjs';
 import { reportProjectDashboardDelivery, verifyBridgeHubDelivery } from '../src/dashboard-delivery.mjs';
+
+const execute = promisify(execFile);
 
 async function until(read, accepts, timeout = 15_000) {
   const deadline = Date.now() + timeout;
@@ -31,17 +34,23 @@ async function fixture(t, mode) {
   const run = await createLifecycleRun(root, 'fixture');
   const child = path.join(root, 'child.mjs');
   await writeFile(child, `
-    process.send({type:'dashboard_phase', phase:'ready'});
-    process.send({type:'dashboard_phase', phase:'secret-project-body-marker'});
-    process.stderr.write('secret-token-marker\\n'.repeat(10000));
+    import { existsSync } from 'node:fs';
+    import path from 'node:path';
     const mode = process.argv[2];
     process.on('message', message => {
       if (message.type === 'dashboard_shutdown' && mode !== 'ignore-stop') process.exit(0);
     });
-    if (mode === 'zero') setTimeout(() => process.exit(0), 200);
-    else if (mode === 'seven') setTimeout(() => process.exit(7), 200);
-    else if (mode === 'throw') setTimeout(() => { throw new Error('secret-exception-marker'); }, 200);
-    else setInterval(() => {}, 1000);
+    process.stderr.write('secret-token-marker\\n'.repeat(10000), () => {
+      process.send({type:'dashboard_phase', phase:'ready'});
+      process.send({type:'dashboard_phase', phase:'secret-project-body-marker'});
+      if (mode === 'zero') setTimeout(() => process.exit(0), 200);
+      else if (mode === 'seven') setTimeout(() => process.exit(7), 200);
+      else if (mode === 'throw') setTimeout(() => { throw new Error('secret-exception-marker'); }, 200);
+      else if (mode === 'natural-race') setInterval(() => {
+        if (existsSync(path.join(process.argv[3], 'natural-exit'))) process.exit(0);
+      }, 10);
+      else setInterval(() => {}, 1000);
+    });
   `);
   const launcher = path.join(root, 'supervisor.mjs');
   const moduleUrl = pathToFileURL(path.resolve('src/dashboard-supervisor.mjs')).href;
@@ -198,6 +207,54 @@ test('Windows所有handleはbirth不一致を拒否し実TerminateProcess終了�
     assert.equal(after.observed_exit.uint32, 3221225477);
     assert.equal(after.observed_exit.origin, 'unknown');
     assert.equal(after.termination_request, null);
+  });
+
+test('Windowsの自然終了と外部終了要求のraceでも要求値で実結果を埋めない',
+  { skip: process.platform !== 'win32', timeout: 60_000 }, async (t) => {
+    const f = await fixture(t, 'natural-race');
+    const run = await until(f.read, (value) => value.phase === 'ready' && value.child.birth !== null);
+    await writeFile(path.join(f.root, 'natural-exit'), 'exit\n');
+    let result = null; let failure = null;
+    try { result = await terminateOwnedWindowsDashboard(run.child, 7); }
+    catch (error) { failure = error; }
+    await f.closed;
+    const after = await f.read();
+    if (result === null) {
+      assert.ok(failure);
+      assert.equal(after.observed_exit.uint32, 0);
+    } else {
+      assert.equal(after.observed_exit.uint32, result.actual_exit_code);
+      assert.ok([0, 7].includes(result.actual_exit_code));
+      if (!result.termination_requested) assert.equal(result.actual_exit_code, 0);
+    }
+    assert.equal(after.termination_request, null);
+    assert.equal(after.observed_exit.origin, 'unknown');
+  });
+
+test('Windows GetExitCodeProcess失敗は実APIの無効handleで非0になりstdout値を返さない',
+  { skip: process.platform !== 'win32', timeout: 60_000 }, async (t) => {
+    const f = await fixture(t, 'wait');
+    const run = await until(f.read, (value) => value.phase === 'ready' && value.child.birth !== null);
+    const source = await readFile('src/dashboard-windows-process-control.ps1', 'utf8');
+    const anchor = '  if (-not [DashboardOwnedProcess]::GetExitCodeProcess';
+    assert.equal(source.split(anchor).length, 2);
+    // Fault injection is confined to a private copy, with the same owned identity.
+    // The product ships no fault flag. Close just this handle immediately before read.
+    const script = path.join(f.root, 'closed-handle-control.ps1');
+    await writeFile(script, source.replace(anchor,
+      '  [void][DashboardOwnedProcess]::CloseHandle($handle)\n' + anchor));
+    await assert.rejects(execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-File', script,
+      '-ChildPid', String(run.child.pid), '-BirthFileTime', run.child.birth, '-RequestedExitCode', '7'],
+    { encoding: 'utf8', timeout: 15_000, windowsHide: true }), (error) => {
+      assert.notEqual(error.code, 0);
+      assert.match(error.stderr, /DASHBOARD_CHILD_EXIT_READ_FAILED/u);
+      assert.equal(error.stdout.trim(), '');
+      return true;
+    });
+    await f.closed;
+    const after = await f.read();
+    assert.equal(after.observed_exit.uint32, 7, 'the independent Node wait still observes the child');
+    assert.equal(after.observed_exit.origin, 'unknown');
   });
 
 test('journalは上限でclosedだけを消し、activeを捨てずspawn前に拒否する', async (t) => {
