@@ -53,10 +53,10 @@ interface SpawnedServer {
   stderr: string[];
 }
 
-function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}, args: string[] = []): SpawnedServer {
+function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}, args: string[] = [], nodeArgs: string[] = []): SpawnedServer {
   // Record the daemon candidates this launcher spawns, for the teardown.
   const recorder = recordSpawns(cwd);
-  const child = spawn(process.execPath, [...WASM_RUNTIME_FLAGS, ...recorder.args, BIN, 'serve', '--mcp', ...args], {
+  const child = spawn(process.execPath, [...WASM_RUNTIME_FLAGS, ...recorder.args, ...nodeArgs, BIN, 'serve', '--mcp', ...args], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // #618: the daemon-attach log line is now off by default; opt the test
@@ -328,12 +328,24 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(readLockPid(realRoot)).toBe(daemonPid);
   }, 40000);
 
-  it('concurrent launchers converge on a single daemon (lockfile race — must-fix 1)', async () => {
-    const env = { LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '15000' };
+  it.each([{ label: 'normal', delayMs: 0 }, { label: 'protected startup grace', delayMs: 8000 }])(
+    'concurrent launchers converge on a single daemon (lockfile race — must-fix 1, $label)', async ({ delayMs }) => {
+    const marker = path.join(realRoot, 'controlled-bind.jsonl');
+    const env: NodeJS.ProcessEnv = { LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '15000',
+      ...(delayMs ? { CG_TEST_BIND_SOCKET: getDaemonSocketPath(realRoot), CG_TEST_BIND_ROOT: realRoot,
+        CG_TEST_BIND_MARKER: marker, CG_TEST_BIND_DELAY_MS: String(delayMs) } : {}) };
+    const nodeArgs = delayMs ? ['--require', path.resolve(__dirname, 'fixtures/delay-daemon-bind.cjs')] : [];
+    const bindEvents = (): { phase: string; pid: number; at: number; startedAt: number }[] => {
+      try { return fs.readFileSync(marker, 'utf8').trim().split('\n').map((line) => JSON.parse(line)); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw error;
+      }
+    };
 
     // Fire three launchers as close to simultaneously as possible — this is the
     // race window where the old code could end up with two daemons.
-    const procs = [spawnServer(tempDir, env), spawnServer(tempDir, env), spawnServer(tempDir, env)];
+    const procs = [spawnServer(tempDir, env, [], nodeArgs), spawnServer(tempDir, env, [], nodeArgs), spawnServer(tempDir, env, [], nodeArgs)];
     procs.forEach((p, i) => { servers.push(p); sendInitialize(p.child, `file://${tempDir}`, i + 1); });
 
     try {
@@ -343,6 +355,8 @@ describe('Shared MCP daemon (issue #411)', () => {
           `concurrent launcher ${i + 1} initialize`);
         expect(resp.result.serverInfo.name).toBe('lattice-sensor');
       }
+      if (delayMs) await waitFor(() => bindEvents().find((e) => e.phase === 'owned_before_bind'),
+        10000, 25, 'controlled elected owner reached bind delay');
       // ...and all three attached as proxies (none fell back / wedged).
       for (const [i, p] of procs.entries()) {
         await waitFor(() => p.stderr.some((l) => l.includes('Attached to shared daemon')), 10000, 25,
@@ -369,6 +383,7 @@ describe('Shared MCP daemon (issue #411)', () => {
           initializeResponded: findResponse(p.stdout, i + 1) !== null,
           stderrTail: p.stderr.join('\n').slice(-8000) })),
         daemonLogTail: readDaemonLog(realRoot).slice(-8000),
+        bindEvents: bindEvents(),
       };
       throw new Error(`Concurrent daemon startup failed: ${JSON.stringify(evidence)}`, { cause: error });
     }
@@ -379,6 +394,12 @@ describe('Shared MCP daemon (issue #411)', () => {
     const daemonPid = readLockPid(realRoot);
     expect(daemonPid).toBeTruthy();
     expect(isAlive(daemonPid!)).toBe(true);
+    if (delayMs) {
+      const listening = bindEvents().find((e) => e.phase === 'listening');
+      expect(listening).toBeTruthy();
+      expect(listening!.pid).toBe(daemonPid);
+      expect(listening!.at - listening!.startedAt).toBeLessThan(10000);
+    }
   }, 45000);
 
   it('daemon survives the first client dying; a second client keeps working (must-fix 2 / #277)', async () => {

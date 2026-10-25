@@ -107,6 +107,17 @@ export interface DaemonLockInfo {
   startedAt: number;
 }
 
+/** The election and its clients must agree how long an observed startup is protected. */
+export const DAEMON_STARTUP_GRACE_MS = 10_000;
+
+/** Time component only: callers still verify liveness and the socket hello. */
+export function daemonStartupDeadline(info: Pick<DaemonLockInfo, 'startedAt'> | null, now = Date.now()): number | null {
+  const startedAt = info?.startedAt;
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt <= 0
+    || !Number.isFinite(now) || now < startedAt || now - startedAt >= DAEMON_STARTUP_GRACE_MS) return null;
+  return startedAt + DAEMON_STARTUP_GRACE_MS;
+}
+
 /** Whether a lock record contains enough identity data for a socket hello. */
 export function canProbeDaemonIdentity(info: DaemonLockInfo): boolean {
   return (
