@@ -4,6 +4,8 @@
 
 - Nodeのcppgc wrapper/Realm寿命修理を含むruntimeをWindowsとLinuxの製品CI内で使用する。既知の影響版（24.2〜24.21、26.0〜26.9）はsensor/MCP共通の起動前判定で修正版への更新を案内し、packageのruntime契約も揃える。ホストのNodeは入れ替えない。元Windowsアクセス違反との同因は引き続き確認中。
 
+- bridgeの停止要求の発行とdaemonの自律終了を同じ停止遷移で順序付け、既にdisabledの設定でも停止receiptを失わないようにする。並行要求は同じnonceへ合流し、終了処理の失敗は非0で返す。
+
 ## 0.79.3 — 2026-10-25
 
 ### 修正

@@ -2,8 +2,8 @@
 
 import { readBridgeConfig } from '../src/bridge-config.mjs';
 import {
-  bridgeDaemonVersionDrifted, readBridgeStopRequest, removeBridgeDaemonActiveMarker,
-  removeBridgeDaemonDescriptor, writeBridgeDaemonDescriptor, writeBridgeStopReceipt,
+  bridgeDaemonVersionDrifted, completeBridgeDaemonStop, readBridgeStopRequest,
+  writeBridgeDaemonDescriptor,
 } from '../src/bridge-daemon.mjs';
 import { createBridgeHubHeartbeatController } from '../src/bridge-hub-heartbeat.mjs';
 import { migrateBridgeToHub, retireBridgeTunnelLaunchAgent } from '../src/bridge-hub-migration.mjs';
@@ -31,25 +31,29 @@ if (typeof instanceToken !== 'string' || !/^[0-9a-f]{64}$/u.test(instanceToken))
 const controller = bridgeRuntimeController({ env, instanceToken,
   heartbeat: () => hubHeartbeat.lastHeartbeatSummary() });
 let timer;
-let closing = false;
+let closing = null;
+let stopping = null;
 let descriptorFingerprint = null;
 let heartbeatBinding = null;
 let checking = false;
 let failClosedError = null;
 let hubHeartbeatError = null;
-const close = async () => {
-  if (closing) return;
-  closing = true;
-  clearInterval(timer);
-  await controller.close();
+const close = () => {
+  if (closing === null) {
+    clearInterval(timer);
+    closing = controller.close();
+  }
+  return closing;
+};
+const stop = () => {
+  if (stopping === null) stopping = completeBridgeDaemonStop({ env, close });
+  return stopping;
 };
 
 try {
   const stopRequest = await readBridgeStopRequest({ env });
   if (stopRequest !== null) {
-    await writeBridgeStopReceipt({ nonce: stopRequest.nonce, env });
-    await removeBridgeDaemonDescriptor({ env });
-    await removeBridgeDaemonActiveMarker({ env });
+    await stop();
     process.exit(0);
   }
   const config = await readBridgeConfig({ env });
@@ -64,15 +68,12 @@ try {
 }
 
 timer = setInterval(async () => {
-  if (checking || closing) return;
+  if (checking || closing !== null || stopping !== null) return;
   checking = true;
   try {
     const stopRequest = await readBridgeStopRequest({ env });
     if (stopRequest !== null) {
-      await close();
-      await writeBridgeStopReceipt({ nonce: stopRequest.nonce, env });
-      await removeBridgeDaemonDescriptor({ env });
-      await removeBridgeDaemonActiveMarker({ env });
+      await stop();
       process.exit(0);
     }
     // A stale-version exit is a clean stop, not a failure: whatever supervises
@@ -83,9 +84,7 @@ timer = setInterval(async () => {
     if (Date.now() - lastVersionCheckAt >= BACKGROUND_CHECK_INTERVAL_MS) {
       lastVersionCheckAt = Date.now();
       if (await bridgeDaemonVersionDrifted({})) {
-        await close();
-        await removeBridgeDaemonDescriptor({ env });
-        await removeBridgeDaemonActiveMarker({ env });
+        await stop();
         process.exit(0);
       }
     }
@@ -122,9 +121,7 @@ timer = setInterval(async () => {
     }
     const config = await readBridgeConfig({ env });
     if (config === null || !config.enabled) {
-      await close();
-      await removeBridgeDaemonDescriptor({ env });
-      await removeBridgeDaemonActiveMarker({ env });
+      await stop();
       process.exit(0);
     }
     const binding = await controller.reconcile();
@@ -169,10 +166,20 @@ timer = setInterval(async () => {
     const fingerprint = JSON.stringify(failure);
     if (fingerprint !== failClosedError) process.stderr.write(`${fingerprint}\n`);
     failClosedError = fingerprint;
+    if (stopping !== null) {
+      // A failed terminal transition cannot be acknowledged or turned into exit 0.
+      clearInterval(timer);
+      process.exit(1);
+    }
     // Public traffic fails closed immediately. Keep only the local control loop alive so an
     // authenticated nonce stop request can still receive a socket-closed receipt.
     await controller.close();
   } finally { checking = false; }
 }, 250);
-process.once('SIGINT', () => close().finally(() => process.exit(0)));
-process.once('SIGTERM', () => close().finally(() => process.exit(0)));
+const stopOnSignal = () => stop().then(() => process.exit(0), (error) => {
+  process.stderr.write(`${JSON.stringify({ schema: 'lattice.bridge_daemon_error.v1',
+    code: error?.code ?? 'BRIDGE_DAEMON_STOP_FAILED', message: 'bridge daemon did not complete shutdown' })}\n`);
+  process.exit(1);
+});
+process.once('SIGINT', stopOnSignal);
+process.once('SIGTERM', stopOnSignal);
