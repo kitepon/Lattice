@@ -58,6 +58,8 @@ import {
 } from './writer-lock';
 import {
   canProbeDaemonIdentity,
+  DAEMON_STARTUP_GRACE_MS,
+  daemonStartupDeadline,
   decodeLockInfo,
   getDaemonPidPath,
   getDaemonSocketCandidates,
@@ -139,21 +141,24 @@ function makeFallbackEngine(root: string): MCPEngine {
   return new MCPEngine({ writerLockRoot: root, queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
 }
 
-/**
- * How long a launcher waits for a freshly-spawned daemon to bind its socket
- * before giving up and running in-process. The daemon binds the socket *before*
- * the (backgrounded) engine/grammar warm-up, so this only needs to cover node
- * process startup. 60 × 100ms = 6s of headroom for a cold/slow box; on the
- * common path the socket appears within a few rounds.
- */
-// Poll finely (25ms) so the proxy attaches the instant the freshly-spawned
-// daemon binds, instead of waiting up to a coarse 100ms after — shaves the
-// cold-start handshake (the window the headless agent races). Same ~6s total
-// give-up budget (240 × 25ms), just finer granularity; socket-connect probes
-// are cheap. Paired with deferring the LatticeSensor load (engine.ts) off the bind
-// path, this narrows the "No such tool available" race window.
+/** Initial socket polling budget. A positively observed live same-version
+ * startup owner may receive the remainder of its original shared startup grace
+ * below; absent, expired, or untrusted owners do not extend this budget. Only a
+ * verified hello establishes readiness. */
+// Fine polling attaches promptly without renewing the owner's fixed deadline.
 const DAEMON_CONNECT_MAX_RETRIES = 240;
 const DAEMON_CONNECT_RETRY_DELAY_MS = 25;
+
+function observeStartupLock(root: string): ReturnType<typeof decodeLockInfo> {
+  try { return decodeLockInfo(fs.readFileSync(getDaemonPidPath(root), 'utf8')); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    const safeCode = typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'UNKNOWN';
+    process.stderr.write(`[LatticeSensor MCP] Startup owner observation failed (${safeCode}).\n`);
+    throw error;
+  }
+}
 
 /** Whether `LATTICE_SENSOR_NO_DAEMON` was set to a truthy value. */
 function daemonOptOutSet(): boolean {
@@ -558,9 +563,7 @@ export class MCPServer {
         // Give a newly-elected daemon time to bind, then require its socket hello
         // to match the lock PID/version. PID existence alone accepts an unrelated
         // process after OS PID reuse and permanently wedges startup (#1553).
-        const age = Date.now() - existing.startedAt;
-        const startupGraceMs = 10_000;
-        const stillStarting = existing.startedAt > 0 && age >= 0 && age < startupGraceMs;
+        const stillStarting = daemonStartupDeadline(existing) !== null;
         // Legacy plain-PID locks have no socket identity to test. Preserve those
         // live holders: an inconclusive probe is not permission to create a
         // second writer.
@@ -625,25 +628,46 @@ export class MCPServer {
       }
       return null;
     };
+    const connectOutcome = async (): Promise<DaemonSocketOutcome | null> => {
+      const socket = await connectAnyCandidate();
+      if (socket === 'foreign-product') return 'foreign-product';
+      if (socket === 'version-mismatch') return { fallbackReason: 'version-skew' };
+      return socket;
+    };
     const getDaemonSocket = async (): Promise<DaemonSocketOutcome> => {
       // Fast path: a daemon may already be listening (on either candidate).
-      const probe = await connectAnyCandidate();
+      const probe = await connectOutcome();
       // ADR 0049 Decision 5③: a different product's daemon — propagate
       // verbatim so the local-handshake proxy fails the session closed
       // instead of silently falling back to direct mode.
-      if (probe === 'foreign-product') return 'foreign-product';
-      // Same-product version skew — definitive, serve in-process (direct,
-      // reason: version-skew), don't poll for 6s.
-      if (probe === 'version-mismatch') return { fallbackReason: 'version-skew' };
       if (probe) return probe;
       // None reachable — spawn one (detached) and poll for its bind.
       spawnDetachedDaemon(root);
       for (let attempt = 0; attempt < DAEMON_CONNECT_MAX_RETRIES; attempt++) {
         await sleep(DAEMON_CONNECT_RETRY_DELAY_MS);
-        const s = await connectAnyCandidate();
-        if (s === 'foreign-product') return 'foreign-product';
-        if (s === 'version-mismatch') return { fallbackReason: 'version-skew' };
+        const s = await connectOutcome();
         if (s) return s;
+      }
+      // An elected same-version owner may still be inside the very grace window
+      // in which competing candidates are required to leave it alone. Do not
+      // permanently degrade its clients before that owner's original deadline.
+      const owner = observeStartupLock(root);
+      const startupDeadline = owner?.version === LatticeSensorPackageVersion
+        && canProbeDaemonIdentity(owner) && isProcessAlive(owner.pid) ? daemonStartupDeadline(owner) : null;
+      if (owner && startupDeadline !== null) {
+        const monotonicDeadline = performance.now() + Math.max(0, startupDeadline - Date.now());
+        const maxAttempts = Math.ceil(DAEMON_STARTUP_GRACE_MS / DAEMON_CONNECT_RETRY_DELAY_MS);
+        for (let attempt = 0; attempt < maxAttempts && Date.now() < startupDeadline
+          && performance.now() < monotonicDeadline; attempt++) {
+          await sleep(Math.min(DAEMON_CONNECT_RETRY_DELAY_MS, Math.max(1, monotonicDeadline - performance.now())));
+          const socket = await connectOutcome();
+          if (socket) return socket;
+          const current = observeStartupLock(root);
+          // A temporarily missing record neither revokes nor renews the fixed
+          // observed wait. It never proves readiness; only the hello above does.
+          if (!isProcessAlive(owner.pid) || (current !== null && (current.pid !== owner.pid
+            || current.startedAt !== owner.startedAt || current.version !== owner.version))) break;
+        }
       }
       return { fallbackReason: 'no-daemon' }; // never bound — the proxy serves this session in-process
     };
