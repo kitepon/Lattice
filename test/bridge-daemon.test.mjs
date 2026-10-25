@@ -9,6 +9,7 @@ import { BRIDGE_CONFIG_SCHEMA, configureBridge, disableBridge, readBridgeConfig,
 import { runBridgeCli } from '../src/bridge-cli.mjs';
 import {
   bridgeDaemonActiveMarkerPath, bridgeDaemonDescriptorPath, bridgeDaemonVersionDrifted,
+  completeBridgeDaemonStop,
   ensureBridgeDaemon, readBridgeDaemonDescriptor, readBridgeRuntimeIdentity, readBridgeStopRequest, requestBridgeDaemonStop,
   stopBridgeDaemon, writeBridgeDaemonDescriptor, writeBridgeStopReceipt,
 } from '../src/bridge-daemon.mjs';
@@ -24,7 +25,8 @@ const unmanagedLaunchAgent = Object.freeze({
 const DHCP_REBOUND = '127.0.0.1';
 const DHCP_REBOUND_INTERFACES = { lo0: [{ address: DHCP_REBOUND, internal: false }] };
 
-const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+const closeServer = (server) => new Promise((resolve, reject) => server.close((error) =>
+  error && error.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(error) : resolve()));
 
 async function legacyBindingFixture(context) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-legacy-binding-'));
@@ -113,6 +115,82 @@ test('configが既にdisabledでも残存daemonの停止確認を省略しない
     stderr: { write: (chunk) => { stderr += chunk; } } });
   assert.equal(code, 0, stderr);
   await assertBridgeIdentityGone(health, descriptor.pid);
+});
+
+test('停止前のhealth取得中にdaemonが自律終了してもnonceの発行とreceiptを失わない',
+  { timeout: 10_000 }, async (context) => {
+    const { config, env, server } = await legacyBindingFixture(context);
+    const nativeFetch = globalThis.fetch;
+    let stopping = null;
+    let raced = false;
+    context.mock.method(globalThis, 'fetch', async (...args) => {
+      const response = await nativeFetch(...args);
+      if (!raced && args[1]?.headers?.['x-lattice-bridge-instance-token']) {
+        raced = true;
+        let publicationLocked = false;
+        try { await stat(path.join(env.LATTICE_CONFIG_DIR, 'bridge-stop-transition.lock')); publicationLocked = true; }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        stopping = completeBridgeDaemonStop({ env, close: () => closeServer(server) });
+        // Old publication has no lock: finish the autonomous close before the
+        // successful health response reaches it. The lost-receipt window is exact.
+        if (!publicationLocked) await stopping;
+      }
+      return response;
+    });
+    const result = await requestBridgeDaemonStop({ env, listen: config.listen });
+    await stopping;
+    assert.equal(raced, true);
+    assert.equal(result.state, 'stopped');
+    const receipt = JSON.parse(await readFile(path.join(env.LATTICE_CONFIG_DIR, 'bridge-stop-receipt.json'), 'utf8'));
+    assert.equal(receipt.nonce, result.nonce);
+    assert.equal(server.listening, false);
+  });
+
+test('daemonの自律停止が先なら要求側は停止完了後に状態を読み、不要なnonceを発行しない',
+  { timeout: 10_000 }, async (context) => {
+    const { config, env, server } = await legacyBindingFixture(context);
+    let entered; const closeEntered = new Promise((resolve) => { entered = resolve; });
+    let release; const closingAllowed = new Promise((resolve) => { release = resolve; });
+    const stopping = completeBridgeDaemonStop({ env, close: async () => {
+      entered(); await closingAllowed; await closeServer(server);
+    } });
+    await closeEntered;
+    const requested = requestBridgeDaemonStop({ env, listen: config.listen });
+    release(); await stopping;
+    assert.deepEqual(await requested, { state: 'not_running', nonce: null });
+    assert.equal(await readBridgeStopRequest({ env }), null);
+  });
+
+test('並行する停止要求は同じnonceへ合流し、互いのreceiptを上書きしない',
+  { timeout: 10_000 }, async (context) => {
+    const { config, env, server } = await legacyBindingFixture(context);
+    const nativeFetch = globalThis.fetch;
+    let count = 0; let second;
+    const secondHealth = new Promise((resolve) => { second = resolve; });
+    context.mock.method(globalThis, 'fetch', async (...args) => {
+      const response = await nativeFetch(...args);
+      if (args[1]?.headers?.['x-lattice-bridge-instance-token'] && ++count === 2) second();
+      return response;
+    });
+    const first = requestBridgeDaemonStop({ env, listen: config.listen });
+    const next = requestBridgeDaemonStop({ env, listen: config.listen });
+    await secondHealth;
+    await completeBridgeDaemonStop({ env, close: () => closeServer(server) });
+    const [left, right] = await Promise.all([first, next]);
+    assert.equal(left.state, 'stopped'); assert.equal(right.state, 'stopped');
+    assert.equal(left.nonce, right.nonce);
+  });
+
+test('socket closeが失敗した停止はreceiptを書かずdaemon記録も消さない', async (context) => {
+  const { env, server } = await legacyBindingFixture(context);
+  await writeFile(path.join(env.LATTICE_CONFIG_DIR, 'bridge-stop-request.json'), JSON.stringify({
+    schema: 'lattice.bridge_stop_request.v1', nonce: 'a'.repeat(64), requested_at: new Date().toISOString(),
+  }), { mode: 0o600 });
+  await assert.rejects(completeBridgeDaemonStop({ env,
+    close: async () => { throw new Error('owned socket close failed'); } }), /owned socket close failed/u);
+  await assert.rejects(readFile(path.join(env.LATTICE_CONFIG_DIR, 'bridge-stop-receipt.json')), { code: 'ENOENT' });
+  assert.equal(server.listening, true);
+  assert.notEqual(await readBridgeDaemonDescriptor({ env }), null);
 });
 
 test('config fileが消えても残存daemonの停止確認を省略しない', async (context) => {

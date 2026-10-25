@@ -56,7 +56,12 @@ test('windows-nativeの全commandはPowerShell 7だけで実行する', async ()
     /if:\s+[^\n]*matrix\.environment == 'windows-native'[\s\S]*?(?=\n      - name:|$)/gu,
   )];
 
-  assert.equal(windowsSteps.length, 3);
+  assert.equal(windowsSteps.length, 4);
+  assert.match(windowsSteps[0][0], /id:\s+windows_runtime/u);
+  assert.match(windowsSteps[0][0], /ci-windows-node-runtime\.ps1/u);
+  for (const step of windowsSteps.slice(1)) {
+    assert.match(step[0], /\$env:PATH = '\$\{\{ steps\.windows_runtime\.outputs\.directory \}\};'/u);
+  }
   for (const step of windowsSteps) assert.match(step[0], /shell:\s+pwsh/u);
   assert.doesNotMatch(reusable, /(?:bash|cmd|powershell)(?:\.exe)?[^\n]*\{0\}/iu);
 });

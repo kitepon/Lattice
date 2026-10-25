@@ -9,6 +9,7 @@ import { parseTree } from 'jsonc-parser';
 
 import {
   BRIDGE_PORT_MAX, BRIDGE_PORT_MIN, BridgeConfigError, bridgeConfigPaths, readBridgeConfig,
+  withBridgeStopTransition,
 } from './bridge-config.mjs';
 import { resolveBridgeListenAddress } from './bridge-address.mjs';
 import packageJson from '../package.json' with { type: 'json' };
@@ -201,9 +202,24 @@ export async function clearBridgeStopControl({ env = process.env } = {}) {
   await rm(refs.receipt, { force: true });
 }
 
-export async function requestBridgeDaemonStop({ env = process.env, listen = null } = {}) {
+/** Close the data plane before acknowledging the latest published request. */
+export async function completeBridgeDaemonStop({ env = process.env, close } = {}) {
+  if (typeof close !== 'function') throw new TypeError('bridge close action required');
+  return withBridgeStopTransition({ env }, async () => {
+    await close();
+    const request = await readBridgeStopRequest({ env });
+    if (request !== null) await writeBridgeStopReceipt({ nonce: request.nonce, env });
+    await removeBridgeDaemonDescriptor({ env });
+    await removeBridgeDaemonActiveMarker({ env });
+    return { nonce: request?.nonce ?? null };
+  });
+}
+
+async function publishBridgeStopRequest({ env, listen }) {
   let descriptor = null;
-  try { descriptor = await readBridgeDaemonDescriptor({ env }); } catch {}
+  try { descriptor = await readBridgeDaemonDescriptor({ env }); } catch (error) {
+    if (error?.code !== 'BRIDGE_DAEMON_DESCRIPTOR_INVALID') throw error;
+  }
   let config = null;
   try { config = await readBridgeConfig({ env }); } catch (error) {
     if (!['BRIDGE_CONFIG_INVALID', 'BRIDGE_CONFIG_MODE_INVALID'].includes(error?.code)) throw error;
@@ -234,11 +250,23 @@ export async function requestBridgeDaemonStop({ env = process.env, listen = null
     }
   }
   const refs = bridgeStopPaths(env);
+  // Concurrent callers join the published request instead of overwriting its nonce.
+  const pending = await readBridgeStopRequest({ env });
+  if (pending !== null) return { state: 'requested', nonce: pending.nonce };
   const nonce = randomBytes(32).toString('hex');
   await rm(refs.receipt, { force: true });
   await atomicDescriptor(refs.request, {
     schema: STOP_REQUEST_SCHEMA, nonce, requested_at: new Date().toISOString(),
   });
+  return { state: 'requested', nonce };
+}
+
+export async function requestBridgeDaemonStop({ env = process.env, listen = null } = {}) {
+  const published = await withBridgeStopTransition({ env }, () => publishBridgeStopRequest({ env, listen }));
+  if (published.state === 'not_running') return published;
+  const { nonce } = published;
+  const refs = bridgeStopPaths(env);
+  // Wait outside the transition lock: the daemon needs it to close and acknowledge.
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -103,31 +103,60 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+      - name: repaired Windows Node in the product job
+        if: matrix.environment == 'windows-native'
+        id: windows_runtime
+        shell: pwsh
+        run: ./scripts/ci-windows-node-runtime.ps1 -Directory "$env:RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: repaired Linux Node in the product job
+        if: matrix.environment == 'linux-workstation'
+        id: linux_runtime
+        shell: bash
+        run: bash scripts/ci-linux-node-runtime.sh "$RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: logical CPU parallelism
         if: matrix.environment != 'windows-native'
         shell: bash
         run: |
+          if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
+            export PATH='${{ steps.linux_runtime.outputs.directory }}/bin':"$PATH"
+          fi
+          node -p 'JSON.stringify({node:process.versions.node,execPath:process.execPath})'
           jobs=$(node -p "require('node:os').availableParallelism()")
           printf 'FACTORY_CI_JOBS=%s\n' "$jobs" >> "$GITHUB_ENV"
       - name: logical CPU parallelism
         if: matrix.environment == 'windows-native'
         shell: pwsh
         run: |
+          $env:PATH = '${{ steps.windows_runtime.outputs.directory }};' + $env:PATH
           $jobs = node -p "require('node:os').availableParallelism()"
           "FACTORY_CI_JOBS=$jobs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: dependency install
         if: inputs.dependency-command != '' && matrix.environment != 'windows-native'
         shell: bash
-        run: ${{ inputs.dependency-command }}
+        run: |
+          if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
+            export PATH='${{ steps.linux_runtime.outputs.directory }}/bin':"$PATH"
+          fi
+          if [[ '${{ matrix.environment }}' == linux-workstation ]]; then export npm_config_engine_strict=true; fi
+          ${{ inputs.dependency-command }}
       - name: dependency install
         if: inputs.dependency-command != '' && matrix.environment == 'windows-native'
         shell: pwsh
-        run: ${{ inputs.dependency-command }}
+        run: |
+          $env:PATH = '${{ steps.windows_runtime.outputs.directory }};' + $env:PATH
+          $env:npm_config_engine_strict = 'true'
+          ${{ inputs.dependency-command }}
       - name: product full test
         if: matrix.environment != 'windows-native'
         shell: bash
-        run: ${{ inputs.full-command }}
+        run: |
+          if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
+            export PATH='${{ steps.linux_runtime.outputs.directory }}/bin':"$PATH"
+          fi
+          ${{ inputs.full-command }}
       - name: product full test
         if: matrix.environment == 'windows-native'
         shell: pwsh
-        run: ${{ inputs.full-command }}
+        run: |
+          $env:PATH = '${{ steps.windows_runtime.outputs.directory }};' + $env:PATH
+          ${{ inputs.full-command }}

@@ -23,15 +23,20 @@ test('本repoではoverall okの正規schemaを返しexact keyで検証が通る
     ['package_version', 'node_runtime', 'cli_surface', 'mcp_entry', 'sensor_attribution'],
   );
   const nodeRuntime = diagnostics.checks.find(({ id }) => id === 'node_runtime');
-  assert.match(nodeRuntime.detail, /satisfies engines\.node floor >=22\.13$/u);
+  const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
+  assert.equal(nodeRuntime.detail, `${process.version} satisfies engines.node ${packageJson.engines.node}`);
   const belowFloor = await buildFactoryDiagnostics({ nodeVersion: 'v22.12.99' });
   assert.equal(belowFloor.checks.find(({ id }) => id === 'node_runtime').status, 'failed');
   assert.equal(belowFloor.checks.find(({ id }) => id === 'node_runtime').detail,
-    'v22.12.99 is below engines.node floor >=22.13');
-  const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
-  assert.equal(packageJson.engines.node, '>=22.13 <25 || >=26');
-  const node26 = await buildFactoryDiagnostics({ nodeVersion: 'v26.5.0' });
-  assert.equal(node26.checks.find(({ id }) => id === 'node_runtime').status, 'ok');
+    `v22.12.99 does not satisfy engines.node ${packageJson.engines.node}`);
+  for (const nodeVersion of ['v24.2.0', 'v24.20.0', 'v24.21.99', 'v25.1.0', 'v26.0.0', 'v26.9.99']) {
+    const result = await buildFactoryDiagnostics({ nodeVersion });
+    assert.equal(result.checks.find(({ id }) => id === 'node_runtime').status, 'failed', nodeVersion);
+  }
+  for (const nodeVersion of ['v22.13.0', 'v24.1.99', 'v24.22.0', 'v26.10.0']) {
+    const result = await buildFactoryDiagnostics({ nodeVersion });
+    assert.equal(result.checks.find(({ id }) => id === 'node_runtime').status, 'ok', nodeVersion);
+  }
   assert.equal(validateFactoryDiagnostics(diagnostics), true);
 });
 

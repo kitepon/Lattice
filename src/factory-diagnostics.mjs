@@ -1,6 +1,7 @@
 import { readFile, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { evaluateNodeVersionGuard } from './node-version-guard.mjs';
 
 /**
  * dotagents工場の native factory diagnostics 面（親plan L6要件）。
@@ -17,7 +18,7 @@ const MAX_DETAIL_LENGTH = 256;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const UNKNOWN_VERSION_SENTINEL = '0.0.0-unknown';
 const NODE_VERSION_PATTERN = /^v(\d+)\.(\d+)\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const ENGINES_FLOOR_RANGE_PATTERN = /^(>=(\d+)(?:\.(\d+))?(?:\.\d+)?)(?: +<25(?:\.0\.0)? +\|\| +>=26(?:\.0\.0)?)$/;
+const ENGINE_COMPARATOR = /^(>=|<)(\d+)(?:\.(\d+))?(?:\.(\d+))?$/u;
 const CHECK_IDS = Object.freeze([
   'package_version',
   'node_runtime',
@@ -70,18 +71,30 @@ function checkNodeRuntime(nodeVersion, enginesNode) {
   if (!runtime) {
     return check('node_runtime', false, 'node version is unreadable');
   }
-  const floor = ENGINES_FLOOR_RANGE_PATTERN.exec(enginesNode ?? '');
-  if (!floor) {
-    return check('node_runtime', false, 'package.json engines.node floor is unreadable');
+  // Lattice declares disjunctions of numeric >= floors and optional < ceilings.
+  // Parse the entire declared contract; a floor-only check silently accepts holes.
+  const alternatives = typeof enginesNode === 'string' ? enginesNode.split(' || ') : [];
+  const ranges = alternatives.map((range) => range.split(' ').map((part) => ENGINE_COMPARATOR.exec(part)));
+  if (ranges.length === 0 || ranges.some((range) => range.length < 1 || range.length > 2
+    || range.some((part) => part === null) || range[0][1] !== '>='
+    || (range.length === 2 && range[1][1] !== '<'))) {
+    return check('node_runtime', false, 'package.json engines.node range is unreadable');
   }
-  const [major, minor] = [Number(runtime[1]), Number(runtime[2])];
-  const [floorMajor, floorMinor] = [Number(floor[2]), Number(floor[3] ?? '0')];
-  const satisfied = major > floorMajor || (major === floorMajor && minor >= floorMinor);
+  const actual = nodeVersion.slice(1).split(/[.+-]/u).slice(0, 3).map(Number);
+  const compare = (bound) => {
+    const version = bound.slice(2, 5).map((part) => Number(part ?? 0));
+    for (let index = 0; index < 3; index += 1) {
+      if (actual[index] !== version[index]) return actual[index] < version[index] ? -1 : 1;
+    }
+    return 0;
+  };
+  const satisfied = ranges.some((range) => range.every((bound) =>
+    bound[1] === '>=' ? compare(bound) >= 0 : compare(bound) < 0))
+    && !evaluateNodeVersionGuard(nodeVersion.slice(1), false).blocked;
   return check(
     'node_runtime',
     satisfied,
-    satisfied ? `${nodeVersion} satisfies engines.node floor ${floor[1]}`
-      : `${nodeVersion} is below engines.node floor ${floor[1]}`,
+    `${nodeVersion} ${satisfied ? 'satisfies' : 'does not satisfy'} engines.node ${enginesNode}`,
   );
 }
 

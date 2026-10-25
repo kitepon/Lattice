@@ -270,6 +270,14 @@ export async function withBridgeOperationLock({ env = process.env } = {}, action
   return withLock(refs.operationLock, action);
 }
 
+/** Serialize request publication with daemon shutdown; never hold this while waiting for a receipt. */
+export async function withBridgeStopTransition({ env = process.env } = {}, action) {
+  if (typeof action !== 'function') throw new TypeError('bridge stop action required');
+  const refs = bridgeConfigPaths(env);
+  await prepareRoot(refs.root);
+  return withLock(path.join(refs.root, 'bridge-stop-transition.lock'), action);
+}
+
 function closeServer(server) {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }

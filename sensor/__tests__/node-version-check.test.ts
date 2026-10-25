@@ -12,6 +12,8 @@ import {
   buildNodeTooOldBanner,
   isNode25Affected,
   MIN_NODE_MAJOR,
+  isNodeRealmLifetimeAffected,
+  evaluateNodeVersionGuard,
 } from '../src/bin/node-version-check';
 
 describe('isNode25Affected', () => {
@@ -78,5 +80,22 @@ describe('buildNodeTooOldBanner', () => {
 
   it('documents the LATTICE_SENSOR_ALLOW_UNSAFE_NODE override', () => {
     expect(buildNodeTooOldBanner('18.0.0')).toContain('LATTICE_SENSOR_ALLOW_UNSAFE_NODE=1');
+  });
+});
+
+describe('Realm lifetime runtime compatibility', () => {
+  it.each(['24.2.0', '24.20.0', '24.21.999', '26.0.0', '26.9.999'])('rejects unpatched %s before worker startup', (version) => {
+    expect(isNodeRealmLifetimeAffected(version)).toBe(true);
+    expect(evaluateNodeVersionGuard(version, false).blocked).toBe(true);
+  });
+  it.each(['22.13.0', '22.23.1', '24.0.0', '24.1.0', '24.22.0', '24.22.1', '26.10.0', '26.12.0'])('keeps supported %s available', (version) => {
+    expect(isNodeRealmLifetimeAffected(version)).toBe(false);
+    expect(evaluateNodeVersionGuard(version, false)).toEqual({ blocked: false, banner: null });
+  });
+  it('keeps the explicit patched-runtime override visible', () => {
+    const support = evaluateNodeVersionGuard('24.20.0', true);
+    expect(support.blocked).toBe(false);
+    expect(support.banner).toContain('24.22.0');
+    expect(support.banner).toContain('nodejs/node/pull/65778');
   });
 });
