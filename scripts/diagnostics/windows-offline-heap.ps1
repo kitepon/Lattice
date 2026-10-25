@@ -53,10 +53,12 @@ New-Item -ItemType Directory $cache, $homeDirectory | Out-Null
 $cdb = Join-Path $tools 'amd64/cdb.exe'
 if ((Get-FileHash -Algorithm SHA256 $cdb).Hash.ToLowerInvariant() -ne 'a9e81c9051a7902fbd8ebd8d348cf83c96f2d8bffd6c2174171a23cef16bb039') { throw 'CDB mismatch' }
 $extension = Join-Path $tools 'amd64/winext/ext.dll'
+# CDB's command parser interprets backslashes inside quoted arguments.
+$extensionCommandPath = $extension.Replace('\', '/')
 $commands = Join-Path $output 'commands.txt'
 @('.symopt- 0x40', '.reload /f ntdll.dll', '.reload /f node.exe', '.reload /f heap-probe.node',
   'lmv m ntdll', 'lmv m node', 'lmv m heap*', '.exr -1', '.ecxr', '~* kb',
-  ".load `"$extension`"", '.chain', '.echo LATTICE_HEAP_TRIAGE_BEGIN',
+  ".load `"$extensionCommandPath`"", '.chain', '.echo LATTICE_HEAP_TRIAGE_BEGIN',
   '!ext.heap -triage 0x1c33b5b0000', '.echo LATTICE_HEAP_TRIAGE_END',
   '!ext.heap -v 0x1c33b5b0000', 'dt ntdll!_HEAP 0x1c33b5b0000',
   'dq 0x1c33b5b0000 L80', '.echo LATTICE_OFFLINE_ANALYSIS_END', 'q') | Set-Content -Encoding ascii $commands
@@ -85,9 +87,15 @@ $textError = $stderr.GetAwaiter().GetResult()
 $textOutput | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stdout.txt')
 $textError | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stderr.txt')
 $completed = $textOutput.Contains('LATTICE_OFFLINE_ANALYSIS_END')
+$triageMatch = [regex]::Match($textOutput, '(?ms)^LATTICE_HEAP_TRIAGE_BEGIN\r?\n(.*?)^LATTICE_HEAP_TRIAGE_END\r?$')
+$triageOutput = if ($triageMatch.Success) {
+  (($triageMatch.Groups[1].Value -split '\r?\n') | Where-Object { $_ -notmatch '^\s*[0-9a-f]+:[0-9a-f]+>' -and $_.Trim() }) -join "`n"
+} else { '' }
+$toolErrors = @([regex]::Matches($textOutput, '(?im)^.*(?:failed, Win32 error|Error: Failed to load extension|No export .*heap.*found|extension DLL.*could not be loaded).*$') | ForEach-Object { $_.Value })
 @{ Kind='saved-dump-offline-analysis'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
   DumpSha256=(Get-FileHash -Algorithm SHA256 $dump).Hash.ToLowerInvariant();
   ToolVersion=(Get-Item $cdb).VersionInfo.FileVersion; Exit=$process.ExitCode; TimedOut=$timedOut;
-  CommandSequenceCompleted=$completed; HeapVerdict='requires review of raw debugger output';
+  CommandSequenceCompleted=$completed; HeapTriageOutput=$triageOutput; ToolErrors=$toolErrors;
+  HeapVerdict='requires review of raw debugger output';
   Commands=(Get-Content $commands); NoLiveTarget=$true } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'analysis.json')
-if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed) { throw 'Offline debugger did not complete; inspect preserved output' }
+if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or -not $triageOutput -or $toolErrors.Count) { throw 'Offline debugger or heap extension did not complete; inspect preserved output' }
