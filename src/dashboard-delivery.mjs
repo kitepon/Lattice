@@ -5,6 +5,12 @@ import { createBridgeHubHeartbeatController } from './bridge-hub-heartbeat.mjs';
 
 const SCHEMA = 'lattice.dashboard_delivery.v1';
 const SETUP = 'lattice bridge setup --listen <IP> --dashboard --hub <URL> --json';
+const FAILURE_STAGES = new Map([
+  ...['heartbeat_missing', 'heartbeat_invalid', 'unreachable', 'rejected', 'skipped_no_dashboard',
+    'skipped_no_projects', 'project_not_registered'].map((reason) => [reason, 'heartbeat_registration']),
+  ...['hub_listing_unavailable', 'project_not_visible'].map((reason) => [reason, 'hub_listing']),
+  ...['project_unreachable', 'project_response_invalid'].map((reason) => [reason, 'project_route']),
+]);
 
 function receipt(state, reason, projectIds = [], urls = [], nextAction = null) {
   return { schema: SCHEMA, state, reason, project_ids: projectIds, urls, next_action: nextAction };
@@ -13,7 +19,8 @@ function receipt(state, reason, projectIds = [], urls = [], nextAction = null) {
 function unconfirmed(reason, projectIds = []) {
   return new BridgeConfigError('BRIDGE_HUB_DELIVERY_UNCONFIRMED',
     '工程の公開配信を確認できません。接続設定は保存済みです。', {
-      reason, project_ids: projectIds, next_action: 'lattice todo dashboard ensure --json',
+      reason, stage: FAILURE_STAGES.get(reason), project_ids: projectIds,
+      next_action: 'lattice todo dashboard ensure --json',
     });
 }
 
@@ -29,7 +36,8 @@ export async function verifyBridgeHubDelivery({ config, env = process.env, proje
     || result?.schema !== 'lattice.bridge_hub_registration_result.v2'
     || !Array.isArray(registered) || !registered.every((id) => typeof id === 'string')
     || !Array.isArray(result.rejected)) {
-    throw unconfirmed(delivered?.state ?? 'heartbeat_missing');
+    throw unconfirmed(FAILURE_STAGES.has(delivered?.state) ? delivered.state
+      : delivered?.state == null ? 'heartbeat_missing' : 'heartbeat_invalid');
   }
   const projectIds = projectId === null ? registered : [projectId];
   if (projectIds.length === 0 || projectIds.some((id) => !registered.includes(id))
@@ -97,6 +105,10 @@ export async function reportProjectDashboardDelivery({ projectId, env, stderr,
     if (typeof error?.code !== 'string') throw error;
     delivery = receipt('failed', error.code, [projectId], [],
       error.detail?.next_action ?? 'lattice bridge status --json');
+    const subreason = error.detail?.reason;
+    delivery.failure = error.code === 'BRIDGE_HUB_DELIVERY_UNCONFIRMED' && FAILURE_STAGES.has(subreason)
+      ? { stage: FAILURE_STAGES.get(subreason), subreason }
+      : { stage: 'unknown', subreason: 'unavailable' };
   }
   stderr?.write(`${JSON.stringify(delivery)}\n`);
   return delivery;

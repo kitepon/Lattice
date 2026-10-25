@@ -43,7 +43,7 @@ import { getDaemonSocketPath } from '../src/mcp/daemon-paths';
 import { LatticeSensorPackageVersion } from '../src/mcp/version';
 import { once } from 'events';
 import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
-import { recordSpawns, removeSpawnLog, settleLosingCandidates } from './daemon-candidates';
+import { recordSpawns, removeSpawnLog, settleLosingCandidates, spawnLogFor } from './daemon-candidates';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
@@ -336,14 +336,41 @@ describe('Shared MCP daemon (issue #411)', () => {
     const procs = [spawnServer(tempDir, env), spawnServer(tempDir, env), spawnServer(tempDir, env)];
     procs.forEach((p, i) => { servers.push(p); sendInitialize(p.child, `file://${tempDir}`, i + 1); });
 
-    // All three get a valid initialize response...
-    for (let i = 0; i < procs.length; i++) {
-      const resp = await waitFor(() => findResponse(procs[i].stdout, i + 1), 12000);
-      expect(resp.result.serverInfo.name).toBe('lattice-sensor');
-    }
-    // ...and all three attached as proxies (none fell back / wedged).
-    for (const p of procs) {
-      await waitFor(() => p.stderr.some((l) => l.includes('Attached to shared daemon')), 10000);
+    try {
+      // All three get a valid initialize response...
+      for (let i = 0; i < procs.length; i++) {
+        const resp = await waitFor(() => findResponse(procs[i].stdout, i + 1), 12000, 25,
+          `concurrent launcher ${i + 1} initialize`);
+        expect(resp.result.serverInfo.name).toBe('lattice-sensor');
+      }
+      // ...and all three attached as proxies (none fell back / wedged).
+      for (const [i, p] of procs.entries()) {
+        await waitFor(() => p.stderr.some((l) => l.includes('Attached to shared daemon')), 10000, 25,
+          `concurrent launcher ${i + 1} shared-daemon attach`);
+      }
+    } catch (error) {
+      // Teardown removes these owned fixtures. Keep bounded causal evidence in
+      // the failing result; do not turn an attach timeout into a passing retry.
+      let candidates: { status: 'observed'; items: { pid: number; alive: boolean }[] }
+        | { status: 'missing' | 'unreadable'; errorCode: string };
+      try {
+        const pids = fs.readFileSync(spawnLogFor(tempDir), 'utf8').split('\n')
+          .map(Number).filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(-16);
+        candidates = { status: 'observed', items: pids.map((pid) => ({ pid, alive: isAlive(pid) })) };
+      } catch (readError) {
+        const errorCode = (readError as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+        candidates = { status: errorCode === 'ENOENT' ? 'missing' : 'unreadable', errorCode };
+      }
+      const evidence = {
+        lockPid: readLockPid(realRoot),
+        candidates,
+        launchers: procs.map((p, i) => ({ index: i + 1, pid: p.child.pid,
+          exitCode: p.child.exitCode, signalCode: p.child.signalCode,
+          initializeResponded: findResponse(p.stdout, i + 1) !== null,
+          stderrTail: p.stderr.join('\n').slice(-8000) })),
+        daemonLogTail: readDaemonLog(realRoot).slice(-8000),
+      };
+      throw new Error(`Concurrent daemon startup failed: ${JSON.stringify(evidence)}`, { cause: error });
     }
 
     // The decisive assertion: exactly ONE daemon bound the socket. Losing

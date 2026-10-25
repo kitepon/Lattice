@@ -14,8 +14,11 @@ import {
   createTodoGanttProjectRegistry,
   startTodoGanttDashboardServer,
 } from '../src/todo-gantt-live.mjs';
+import { dashboardLifecyclePhase } from '../src/dashboard-lifecycle-ipc.mjs';
 
 const args = process.argv.slice(2);
+if (args.length === 2 && args[0] === '--supervised-runtime' && process.connected
+  && args[1] === process.env.LATTICE_DASHBOARD_RUNTIME_DIR) args.splice(0, 2);
 if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
   process.stdout.write('Usage: lattice-dashboard\n');
   process.exit(0);
@@ -40,8 +43,10 @@ const storeCache = createTodoStoreCache();
 const readCachedStore = (repoRoot) => storeCache.read(repoRoot);
 
 async function synchronize() {
+  dashboardLifecyclePhase('registry');
   const active = await readVisibleTodoDashboardProjects({ env,
     projectHasActiveRun: async (entry) => {
+      dashboardLifecyclePhase('store');
       try {
         const store = await readCachedStore(entry.repo_root);
         const active = projectTodoStatus(store, TODO_STATUS_DISPATCH_ONLY).active_set.length > 0
@@ -51,8 +56,10 @@ async function synchronize() {
       } catch (error) {
         if (!reportedStoreReadFailures.has(entry.project_id)) {
           reportedStoreReadFailures.add(entry.project_id);
-          console.error(JSON.stringify({ schema: 'lattice.dashboard_project_store_error.v1',
-            project_id: entry.project_id, message: error instanceof Error ? error.message : String(error) }));
+          // This finite stage survives in the parent's receipt without project/error text.
+          // A lost supervisor leaves no stderr reader; do not create an EPIPE failure
+          // in an otherwise serving daemon by writing to its abandoned pipe.
+          dashboardLifecyclePhase('store_read_failed');
         }
         return false;
       }
@@ -103,28 +110,43 @@ let closing = null;
  */
 function close() {
   if (closing === null) {
+    dashboardLifecyclePhase('close');
     clearInterval(timer);
     closing = (async () => {
-      try { await forgetTodoDashboardDaemonRecord({ env }); } catch {}
-      await dashboard.close();
+      let cleanupFailure = false;
+      try { await forgetTodoDashboardDaemonRecord({ env }); }
+      catch { cleanupFailure = true; dashboardLifecyclePhase('cleanup_failed'); }
+      try { await dashboard.close(); }
+      catch (error) { dashboardLifecyclePhase('close_failed'); throw error; }
+      if (cleanupFailure) throw new Error('dashboard record cleanup failed');
     })();
   }
   return closing;
 }
 
 function exit(code) {
-  close().catch(() => {}).finally(() => process.exit(code));
+  close().then(() => process.exit(code), () => process.exit(code === 0 ? 1 : code));
 }
 
 await synchronize();
+dashboardLifecyclePhase('listen');
 const dashboard = await startTodoGanttDashboardServer({
   registry,
   port,
-  onShutdown: process.platform === 'win32' ? () => exit(0) : null,
+  onShutdown: process.platform === 'win32' ? () => {
+    dashboardLifecyclePhase('shutdown_request'); exit(0);
+  } : null,
 });
 await writeTodoDashboardDaemonRecord({ port: dashboard.port, env });
+dashboardLifecyclePhase('ready');
 const timer = setInterval(() => synchronize().then((count) => {
-  if (count === 0) exit(0);
-}).catch(() => exit(1)), 1_000);
-process.once('SIGINT', () => exit(0));
-process.once('SIGTERM', () => exit(0));
+  dashboardLifecyclePhase('periodic_sync');
+  if (count === 0) { dashboardLifecyclePhase('empty_shutdown'); exit(0); }
+}).catch(() => { dashboardLifecyclePhase('sync_failed'); exit(1); }), 1_000);
+process.on('message', (message) => {
+  if (message?.type === 'dashboard_shutdown') {
+    dashboardLifecyclePhase('shutdown_request'); exit(0);
+  }
+});
+process.once('SIGINT', () => { dashboardLifecyclePhase('shutdown_request'); exit(0); });
+process.once('SIGTERM', () => { dashboardLifecyclePhase('shutdown_request'); exit(0); });

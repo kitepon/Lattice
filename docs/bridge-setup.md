@@ -119,6 +119,33 @@ bridgeが無効な間は以下すべてnullで、bridgeを有効にしている�
 | `node_path`・`node_version` | そのprocessを実行しているNodeの実体pathと版 |
 | `bridge_path` | そのprocessが実行しているbridge script |
 
+**`dashboard_lifecycle`** — `bridge status --json`の読み取り専用の終了記録。
+`lattice.dashboard_lifecycle_status.v1`の`last_ensure`に起動・再利用・無応答拒否の判断、
+`active`に監視中のrun、`last_termination`に最後の実終了または監督消失を返す。
+読み取りでdaemonを起動したり欠測を補完したりしない。未導入の旧daemonには記録が無い。
+
+通常のdashboard起動は小さいsupervisorが子をwaitし、実終了の観測時刻・codeまたはsignal・最後の段階を
+所有runtimeの`lifecycle/`へ保存する。POSIXはprivate directory/file、Windowsは既存storeの所有境界を使う。
+64run、各16KiB・64段階イベントまでとし、activeや生存中の監視外childは削除しない。閉じた古いrunから
+整理し、満杯なら記録を捨てて起動を続けずtyped容量エラーで止める。stderr本文やproject本文は保存せず、
+byte数と先頭64KiBまでのdigestを残す。中断された一時fileも上限内で扱い、所有writerの死亡確認後に除去する。
+
+Windowsの`observed_exit`は実waitで得たDWORDの`uint32`と`hex`を保持し、signalは`not_applicable`とする。
+`0xC0000005`等の値だけでは例外と外部TerminateProcessを区別できない。`termination_request`は自分のIPC終了要求と、
+FILETIMEで認証したhandleへのTerminateProcess要求・実GetExitCodeProcess結果を別に記録する。
+Nodeの疑似SIGTERMしか残らない場合はraw値を得た扱いにしない。
+
+supervisorだけがKILLなどで消えた場合、childは残して配信を継続する。Windowsではchildをdetachedで起動し、
+supervisorが所有するJobの終了に連動させない。通常の停止要求はIPCで送り、実childの終了をwaitする。
+次の通常ensureはchildのhealthと
+identityを確認し、同じdaemonを再利用する。監督消失後の過去の終了値・終了時刻はunknownのまま残す。
+OS再起動などでsupervisorとchildの両方が消えた場合も、観測できなかった終了値や理由はunknownのまま残す。
+周期LaunchAgentは従来のstableなCLI pathでensureするままで、plist・Node・信用設定の書換えは要らない。
+
+配信失敗のreceiptには、`reason`のtyped codeに加え、許可済みの`failure.stage`と`failure.subreason`が入る。
+段階は`heartbeat_registration`、`hub_listing`、`project_route`、欠測時の`unknown`であり、任意のerror detailや
+messageは写さない。配信確認の失敗は、daemonの死亡を示す判定には使わない。
+
 **`runtime_drift`** — 両者の食い違い。空配列は「差が無い」または「`runtime`が名乗っていないので
 判定できない」のどちらかである。
 
