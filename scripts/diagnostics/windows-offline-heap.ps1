@@ -65,7 +65,9 @@ $commands = Join-Path $output 'commands.txt'
   'dt ntdll!_HEAP_ENTRY', 'dt ntdll!_HEAP_SEGMENT', 'dt ntdll!_HEAP_UCR_DESCRIPTOR',
   'dq 0x1c33b5b0000 L80',
   'dt node!node::BaseObject', 'dt node!node::AsyncWrap', 'dt node!node::worker::Worker',
-  'dt node!node::Environment', 'dt node!node::MessagePort', 'dt node!v8::internal::StackGuard',
+  'dt node!node::Environment', 'dt node!node::worker::MessagePort',
+  'dt node!node::Realm', 'dt node!node::PrincipalRealm', 'dt node!node::CppgcMixin',
+  'dt node!node::contextify::ContextifyScript', 'dt node!v8::internal::StackGuard',
   '!exts.heap -x 0x1c3d4e2c2a8', 'dq 0x1c3d4e2c230 L70',
   '.echo LATTICE_OFFLINE_ANALYSIS_END', 'q') | Set-Content -Encoding ascii $commands
 $symbolPath = "$nodeSymbols;$(Join-Path $evidence 'heap-probe-build');srv*$cache*https://msdl.microsoft.com/download/symbols"
