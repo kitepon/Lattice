@@ -59,16 +59,9 @@ $commands = Join-Path $output 'commands.txt'
 @('.symopt- 0x40',
   '.reload /f node.exe',
   'lmv m node',
-  '.echo LATTICE_V8_METADATA_BEGIN',
-  'x /v node!v8dbg_class_Map__instance_type__uint16_t',
-  'x /v node!v8dbg_class_FixedArray*',
-  'x /v node!v8dbg_type_*',
-  'x /v node!v8dbg_*Tag*',
-  'dd node!v8dbg_class_Map__instance_type__uint16_t L1',
-  '.printf "LATTICE_MAP_INSTANCE_TYPE_OFFSET=%x\n", dwo(node!v8dbg_class_Map__instance_type__uint16_t)',
-  '.printf "LATTICE_CANDIDATE_MAP_TYPE=%x\n", wo(0x262a5bc10d0+dwo(node!v8dbg_class_Map__instance_type__uint16_t))',
-  'dd 0x7ff6082b1580 L1',
-  '.echo LATTICE_V8_METADATA_END',
+  '.echo LATTICE_INSTANCE_TYPE_ENUM_BEGIN',
+  'dt node!v8::internal::InstanceType',
+  '.echo LATTICE_INSTANCE_TYPE_ENUM_END',
   '.echo LATTICE_OFFLINE_ANALYSIS_END',
   'q') | Set-Content -Encoding ascii $commands
 $symbolPath = "$nodeSymbols;$(Join-Path $evidence 'heap-probe-build');srv*$cache*https://msdl.microsoft.com/download/symbols"
@@ -96,16 +89,14 @@ $textError = $stderr.GetAwaiter().GetResult()
 $textOutput | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stdout.txt')
 $textError | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stderr.txt')
 $completed = $textOutput.Contains('LATTICE_OFFLINE_ANALYSIS_END')
-$metadataOffset = [regex]::Match($textOutput, '(?m)^LATTICE_MAP_INSTANCE_TYPE_OFFSET=([0-9a-f]+)\r?$')
-$candidateType = [regex]::Match($textOutput, '(?m)^LATTICE_CANDIDATE_MAP_TYPE=([0-9a-f]+)\r?$')
+$enumBlock = [regex]::Match($textOutput, '(?ms)^LATTICE_INSTANCE_TYPE_ENUM_BEGIN\r?\n(.*?)^LATTICE_INSTANCE_TYPE_ENUM_END\r?$')
+$enumRead = $enumBlock.Success -and $enumBlock.Groups[1].Value.Contains('EMBEDDER_DATA_ARRAY_TYPE') -and $enumBlock.Groups[1].Value.Contains('FIXED_ARRAY_TYPE')
 $missingQueries = @([regex]::Matches($textOutput, '(?im)^.*(?:symbol.*not found|could not be found|could not resolve|could not be resolved|couldn.t resolve|unable to resolve|type information missing).*$') | ForEach-Object { $_.Value })
-@{ Kind='saved-v8-postmortem-metadata'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
+@{ Kind='saved-v8-instance-type-enum'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
   DumpSha256=(Get-FileHash -Algorithm SHA256 $dump).Hash.ToLowerInvariant();
   ToolVersion=(Get-Item $cdb).VersionInfo.FileVersion; Exit=$process.ExitCode; TimedOut=$timedOut;
-  CommandSequenceCompleted=$completed; MetadataOffsetRead=$metadataOffset.Success;
-  MetadataOffsetHex=$metadataOffset.Groups[1].Value; CandidateMapTypeRead=$candidateType.Success;
-  CandidateMapTypeHex=$candidateType.Groups[1].Value; MissingTypeQueries=$missingQueries;
-  TypeCompleteness='requires exact matching type-enum review';
-  ReferenceVerdict='not allocation or write-PC proof';
+  CommandSequenceCompleted=$completed; RequiredInstanceTypeEnumRead=$enumRead;
+  MissingTypeQueries=$missingQueries; TypeCompleteness='compare enum values with separately saved matching executable disassembly and dump bytes';
+  ReferenceVerdict='not allocation, reachability or write-PC proof';
   Commands=(Get-Content $commands); NoLiveTarget=$true } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'analysis.json')
-if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or -not $metadataOffset.Success -or -not $candidateType.Success) { throw 'Required saved V8 metadata was not read; inspect preserved raw output' }
+if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or -not $enumRead) { throw 'Required matching InstanceType enum was not read; inspect preserved raw output' }

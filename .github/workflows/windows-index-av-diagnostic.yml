@@ -1,4 +1,4 @@
-name: Windows saved V8 metadata analysis
+name: Windows saved V8 instance-type analysis
 on:
   push:
     branches: [snowwhite/native-compile-cache-isolation-20261024]
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - name: Read matching V8 metadata without launching a target
+      - name: Read the matching InstanceType enum without launching a target
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
