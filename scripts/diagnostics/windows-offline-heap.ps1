@@ -59,21 +59,16 @@ $commands = Join-Path $output 'commands.txt'
 @('.symopt- 0x40',
   '.reload /f node.exe',
   'lmv m node',
-  '.echo LATTICE_CONTEXT_TYPES_BEGIN',
-  'dt node!node::ContextEmbedderIndex',
-  'x node!node::ContextEmbedderTag::*',
-  'dps node!node::ContextEmbedderTag::kNodeContextTagPtr L1',
-  'dt node!v8::internal::EmbedderDataArray',
-  'dt node!v8::internal::Map',
-  'dt node!v8::internal::NativeContext',
-  'dt node!node::Environment 0x1c3d5018fe0',
-  '.echo LATTICE_CONTEXT_TYPES_END',
-  '.echo LATTICE_CONTEXT_BYTES_BEGIN',
-  'dq 0x16ba1704060 L2b',
-  'dq 0x262a5bc10d0 L10',
-  'dq 0x262a5bc32e0 L8',
-  'dq 0x1c3d5018fe0 L10',
-  '.echo LATTICE_CONTEXT_BYTES_END',
+  '.echo LATTICE_V8_METADATA_BEGIN',
+  'x /v node!v8dbg_class_Map__instance_type__uint16_t',
+  'x /v node!v8dbg_class_FixedArray*',
+  'x /v node!v8dbg_type_*',
+  'x /v node!v8dbg_*Tag*',
+  'dd node!v8dbg_class_Map__instance_type__uint16_t L1',
+  '.printf "LATTICE_MAP_INSTANCE_TYPE_OFFSET=%x\n", dwo(node!v8dbg_class_Map__instance_type__uint16_t)',
+  '.printf "LATTICE_CANDIDATE_MAP_TYPE=%x\n", wo(0x262a5bc10d0+dwo(node!v8dbg_class_Map__instance_type__uint16_t))',
+  'dd 0x7ff6082b1580 L1',
+  '.echo LATTICE_V8_METADATA_END',
   '.echo LATTICE_OFFLINE_ANALYSIS_END',
   'q') | Set-Content -Encoding ascii $commands
 $symbolPath = "$nodeSymbols;$(Join-Path $evidence 'heap-probe-build');srv*$cache*https://msdl.microsoft.com/download/symbols"
@@ -101,16 +96,16 @@ $textError = $stderr.GetAwaiter().GetResult()
 $textOutput | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stdout.txt')
 $textError | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stderr.txt')
 $completed = $textOutput.Contains('LATTICE_OFFLINE_ANALYSIS_END')
-$referenceMatch = [regex]::Match($textOutput, '(?ms)^LATTICE_CONTEXT_BYTES_BEGIN\r?\n(.*?)^LATTICE_CONTEXT_BYTES_END\r?$')
-$memoryLines = if ($referenceMatch.Success) {
-  @($referenceMatch.Groups[1].Value -split '\r?\n' | Where-Object { $_ -match '^\s*[0-9a-f]{8}`[0-9a-f]{8}\s+[0-9a-f]{8}`[0-9a-f]{8}' })
-} else { @() }
-$missingQueries = @([regex]::Matches($textOutput, '(?im)^.*(?:symbol.*not found|could not be found|could not resolve|could not be resolved|unable to resolve|type information missing).*$') | ForEach-Object { $_.Value })
-@{ Kind='saved-context-reference-analysis'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
+$metadataOffset = [regex]::Match($textOutput, '(?m)^LATTICE_MAP_INSTANCE_TYPE_OFFSET=([0-9a-f]+)\r?$')
+$candidateType = [regex]::Match($textOutput, '(?m)^LATTICE_CANDIDATE_MAP_TYPE=([0-9a-f]+)\r?$')
+$missingQueries = @([regex]::Matches($textOutput, '(?im)^.*(?:symbol.*not found|could not be found|could not resolve|could not be resolved|couldn.t resolve|unable to resolve|type information missing).*$') | ForEach-Object { $_.Value })
+@{ Kind='saved-v8-postmortem-metadata'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
   DumpSha256=(Get-FileHash -Algorithm SHA256 $dump).Hash.ToLowerInvariant();
   ToolVersion=(Get-Item $cdb).VersionInfo.FileVersion; Exit=$process.ExitCode; TimedOut=$timedOut;
-  CommandSequenceCompleted=$completed; MemoryLinesRead=$memoryLines.Count;
-  MissingTypeQueries=$missingQueries; TypeCompleteness='requires exact raw-output review';
-  ReferenceVerdict='requires matching type/constants and saved-byte comparison; not allocation or write-PC proof';
+  CommandSequenceCompleted=$completed; MetadataOffsetRead=$metadataOffset.Success;
+  MetadataOffsetHex=$metadataOffset.Groups[1].Value; CandidateMapTypeRead=$candidateType.Success;
+  CandidateMapTypeHex=$candidateType.Groups[1].Value; MissingTypeQueries=$missingQueries;
+  TypeCompleteness='requires exact matching type-enum review';
+  ReferenceVerdict='not allocation or write-PC proof';
   Commands=(Get-Content $commands); NoLiveTarget=$true } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'analysis.json')
-if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or $memoryLines.Count -lt 25) { throw 'Saved reference read did not complete; inspect preserved raw output' }
+if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or -not $metadataOffset.Success -or -not $candidateType.Success) { throw 'Required saved V8 metadata was not read; inspect preserved raw output' }
