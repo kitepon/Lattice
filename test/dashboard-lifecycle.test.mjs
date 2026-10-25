@@ -64,8 +64,20 @@ async function fixture(t, mode) {
   });
   let stderr = '';
   supervisor.stderr.on('data', (bytes) => { stderr += bytes; });
-  const closed = new Promise((resolve) => supervisor.once('close', (code, signal) => resolve({ code, signal, stderr })));
-  const read = async () => (await readLifecycleRuns(root))[0];
+  let closedState = null;
+  const closed = new Promise((resolve) => supervisor.once('close', (code, signal) => {
+    closedState = { code, signal, stderr };
+    resolve(closedState);
+  }));
+  const read = async () => {
+    const value = (await readLifecycleRuns(root))[0];
+    if (value.child === null && closedState !== null) {
+      throw new Error(`fixture supervisor exited before child registration: ${JSON.stringify({
+        code: closedState.code, signal: closedState.signal, stderr: stderr.slice(-4000),
+      })}`);
+    }
+    return value;
+  };
   await until(read, (value) => value.child !== null);
   return { root, read, supervisor, closed };
 }

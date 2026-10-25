@@ -18,7 +18,9 @@ export async function superviseDashboard({ executable = process.execPath, args, 
   if (!run || run.state !== 'active') throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID');
   run.supervisor = await observeDashboardProcess(process.pid);
   await writeLifecycleRun(root, run);
-  const child = spawn(executable, args, { env, windowsHide: true,
+  // libuv assigns non-detached Windows children to its parent's kill-on-close Job.
+  // The observer-loss contract keeps this child serving after supervisor death.
+  const child = spawn(executable, args, { env, windowsHide: true, detached: process.platform === 'win32',
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
   child.once('spawn', () => { run.child_spawn_observed_at = new Date().toISOString(); });
   recordLifecyclePhase(run, 'import');
