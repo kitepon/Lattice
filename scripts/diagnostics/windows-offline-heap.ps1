@@ -56,20 +56,26 @@ $extension = Join-Path $tools 'amd64/winext/ext.dll'
 # CDB's command parser interprets backslashes inside quoted arguments.
 $extensionCommandPath = $extension.Replace('\', '/')
 $commands = Join-Path $output 'commands.txt'
-@('.symopt- 0x40', '.reload /f ntdll.dll', '.reload /f node.exe', '.reload /f heap-probe.node',
-  'lmv m ntdll', 'lmv m node', 'lmv m heap*', '.exr -1', '.ecxr', '~* kb',
-  ".load `"$extensionCommandPath`"", '.chain', '!exts.heap -?', '!peb',
-  '.echo LATTICE_HEAP_TRIAGE_BEGIN',
-  '!exts.heap -triage 0x1c33b5b0000', '!exts.heap -v 0x1c33b5b0000', '.echo LATTICE_HEAP_TRIAGE_END',
-  '!exts.heap -s 0x1c33b5b0000', 'dt ntdll!_HEAP 0x1c33b5b0000',
-  'dt ntdll!_HEAP_ENTRY', 'dt ntdll!_HEAP_SEGMENT', 'dt ntdll!_HEAP_UCR_DESCRIPTOR',
-  'dq 0x1c33b5b0000 L80',
-  'dt node!node::BaseObject', 'dt node!node::AsyncWrap', 'dt node!node::worker::Worker',
-  'dt node!node::Environment', 'dt node!node::worker::MessagePort',
-  'dt node!node::Realm', 'dt node!node::PrincipalRealm', 'dt node!node::CppgcMixin',
-  'dt node!node::contextify::ContextifyScript', 'dt node!v8::internal::StackGuard',
-  '!exts.heap -x 0x1c3d4e2c2a8', 'dq 0x1c3d4e2c230 L70',
-  '.echo LATTICE_OFFLINE_ANALYSIS_END', 'q') | Set-Content -Encoding ascii $commands
+@('.symopt- 0x40',
+  '.reload /f node.exe',
+  'lmv m node',
+  '.echo LATTICE_CONTEXT_TYPES_BEGIN',
+  'dt node!node::ContextEmbedderIndex',
+  'x node!node::ContextEmbedderTag::*',
+  'dps node!node::ContextEmbedderTag::kNodeContextTagPtr L1',
+  'dt node!v8::internal::EmbedderDataArray',
+  'dt node!v8::internal::Map',
+  'dt node!v8::internal::NativeContext',
+  'dt node!node::Environment 0x1c3d5018fe0',
+  '.echo LATTICE_CONTEXT_TYPES_END',
+  '.echo LATTICE_CONTEXT_BYTES_BEGIN',
+  'dq 0x16ba1704060 L2b',
+  'dq 0x262a5bc10d0 L10',
+  'dq 0x262a5bc32e0 L8',
+  'dq 0x1c3d5018fe0 L10',
+  '.echo LATTICE_CONTEXT_BYTES_END',
+  '.echo LATTICE_OFFLINE_ANALYSIS_END',
+  'q') | Set-Content -Encoding ascii $commands
 $symbolPath = "$nodeSymbols;$(Join-Path $evidence 'heap-probe-build');srv*$cache*https://msdl.microsoft.com/download/symbols"
 $start = [Diagnostics.ProcessStartInfo]::new($cdb)
 $start.UseShellExecute = $false
@@ -95,15 +101,16 @@ $textError = $stderr.GetAwaiter().GetResult()
 $textOutput | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stdout.txt')
 $textError | Set-Content -Encoding utf8 (Join-Path $output 'cdb-stderr.txt')
 $completed = $textOutput.Contains('LATTICE_OFFLINE_ANALYSIS_END')
-$triageMatch = [regex]::Match($textOutput, '(?ms)^LATTICE_HEAP_TRIAGE_BEGIN\r?\n(.*?)^LATTICE_HEAP_TRIAGE_END\r?$')
-$triageOutput = if ($triageMatch.Success) {
-  (($triageMatch.Groups[1].Value -split '\r?\n') | Where-Object { $_ -notmatch '^\s*[0-9a-f]+:[0-9a-f]+>' -and $_.Trim() }) -join "`n"
-} else { '' }
-$toolErrors = @([regex]::Matches($textOutput, '(?im)^.*(?:failed, Win32 error|Error: Failed to load extension|No export .*heap.*found|extension DLL.*could not be loaded).*$') | ForEach-Object { $_.Value })
-@{ Kind='saved-dump-offline-analysis'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
+$referenceMatch = [regex]::Match($textOutput, '(?ms)^LATTICE_CONTEXT_BYTES_BEGIN\r?\n(.*?)^LATTICE_CONTEXT_BYTES_END\r?$')
+$memoryLines = if ($referenceMatch.Success) {
+  @($referenceMatch.Groups[1].Value -split '\r?\n' | Where-Object { $_ -match '^\s*[0-9a-f]{8}`[0-9a-f]{8}\s+[0-9a-f]{8}`[0-9a-f]{8}' })
+} else { @() }
+$missingQueries = @([regex]::Matches($textOutput, '(?im)^.*(?:symbol.*not found|could not be found|could not resolve|could not be resolved|unable to resolve|type information missing).*$') | ForEach-Object { $_.Value })
+@{ Kind='saved-context-reference-analysis'; FixedSourceRun=40111138520; FixedArtifact=12566363578;
   DumpSha256=(Get-FileHash -Algorithm SHA256 $dump).Hash.ToLowerInvariant();
   ToolVersion=(Get-Item $cdb).VersionInfo.FileVersion; Exit=$process.ExitCode; TimedOut=$timedOut;
-  CommandSequenceCompleted=$completed; HeapTriageOutput=$triageOutput; ToolErrors=$toolErrors;
-  HeapVerdict='requires review of raw debugger output';
+  CommandSequenceCompleted=$completed; MemoryLinesRead=$memoryLines.Count;
+  MissingTypeQueries=$missingQueries; TypeCompleteness='requires exact raw-output review';
+  ReferenceVerdict='requires matching type/constants and saved-byte comparison; not allocation or write-PC proof';
   Commands=(Get-Content $commands); NoLiveTarget=$true } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'analysis.json')
-if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or -not $triageOutput -or $toolErrors.Count) { throw 'Offline debugger or heap extension did not complete; inspect preserved output' }
+if ($timedOut -or $process.ExitCode -ne 0 -or -not $completed -or $memoryLines.Count -lt 25) { throw 'Saved reference read did not complete; inspect preserved raw output' }

@@ -1,4 +1,4 @@
-name: Windows fixed Node Realm lifetime comparison
+name: Windows saved heap dump analysis
 on:
   push:
     branches: [snowwhite/native-compile-cache-isolation-20261024]
@@ -11,33 +11,18 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - name: Build the unchanged old product sensor
-        shell: pwsh
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm --prefix sensor ci --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm --prefix sensor run build
-          exit $LASTEXITCODE
-      - name: Compare the owned fixed runtime without changing host Node
+      - name: Analyze the fixed saved dump without launching a target
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/diagnostics/windows-fixed-runtime.ps1 -OutputDirectory ./fixed-runtime-output
-      - name: Preserve isolated comparison evidence
+        run: |
+          ./scripts/diagnostics/windows-offline-heap.ps1 -OutputDirectory ./offline-heap-output
+      - name: Preserve isolated diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: fixed-runtime-comparison-${{ github.run_id }}
+          name: saved-heap-analysis-${{ github.run_id }}
           path: |
-            heap-probe-build/build.json
-            heap-probe-build/*.node
-            heap-probe-build/*.exe
-            heap-probe-build/*.pdb
-            fixed-runtime-output/*.json
-            fixed-runtime-output/*.txt
-            fixed-runtime-output/healthy-fixed-runtime
-            fixed-runtime-output/heapwindow
-            fixed-runtime-output/normal
+            offline-heap-output/*.json
+            offline-heap-output/*.txt
           retention-days: 7
