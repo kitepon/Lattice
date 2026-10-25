@@ -1,5 +1,6 @@
 /**
- * Node.js version compatibility check.
+ * Shared Node.js compatibility policy for CLI and MCP bootstrap.
+ * Includes the Node cppgc Realm lifetime repair and the existing Node25 exclusion.
  *
  * Node 25.x has a V8 turboshaft WASM JIT Zone allocator bug that
  * reliably crashes LatticeSensor with `Fatal process out of memory: Zone`
@@ -78,4 +79,42 @@ export function buildNodeTooOldBanner(nodeVersion: string): string {
     '  LATTICE_SENSOR_ALLOW_UNSAFE_NODE=1 lattice sensor ...',
     sep,
   ].join('\n');
+}
+
+/** Node's cppgc Realm lifetime repair: nodejs/node#65778 (24.x backport#83b3431c). */
+export function isNodeRealmLifetimeAffected(nodeVersion: string): boolean {
+  const parts = nodeVersion.split('.');
+  const major = Number(parts[0]);
+  const minor = Number(parts[1]);
+  return (major === 24 && minor >= 2 && minor < 22)
+    || (major === 26 && minor < 10);
+}
+
+export function buildNodeRealmLifetimeBanner(nodeVersion: string): string {
+  const sep = '-'.repeat(72);
+  return [
+    sep,
+    `[LatticeSensor] Unsupported Node.js version: ${nodeVersion}`,
+    sep,
+    'This Node.js release has a cppgc wrapper/Realm lifetime defect.',
+    'Worker teardown can write to freed memory and corrupt the native heap.',
+    'Upstream repair: https://github.com/nodejs/node/pull/65778',
+    '',
+    'Fix: use Node.js 24.22.0+ on the 24.x line or 26.10.0+ on the 26.x line.',
+    'Supported Node.js 22 LTS is also outside this affected implementation.',
+    '',
+    'For a custom patched runtime only, the existing override is:',
+    '  LATTICE_SENSOR_ALLOW_UNSAFE_NODE=1 lattice sensor ...',
+    sep,
+  ].join('\n');
+}
+
+/** Shared bootstrap policy for the sensor CLI and the packaged MCP entry. */
+export function evaluateNodeVersionGuard(nodeVersion: string, overrideActive: boolean): { blocked: boolean; banner: string | null } {
+  const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
+  let banner: string | null = null;
+  if (isNode25Affected(nodeMajor)) banner = buildNode25BlockBanner(nodeVersion);
+  else if (nodeMajor < MIN_NODE_MAJOR) banner = buildNodeTooOldBanner(nodeVersion);
+  else if (isNodeRealmLifetimeAffected(nodeVersion)) banner = buildNodeRealmLifetimeBanner(nodeVersion);
+  return { blocked: banner !== null && !overrideActive, banner };
 }

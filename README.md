@@ -159,8 +159,14 @@ npm install -g @quolu/lattice
 lattice setup --json
 ```
 
-Requires **Node.js 22.13 or newer, except 25.x** (`engines: >=22.13 <25 || >=26`; Node 25's V8
-turboshaft WASM JIT breaks the bundled sensor, so it is blocked with a banner). The structure sensor ships inside the package — there is nothing
+Requires **Node.js 22.13 or newer** with the supported runtime ranges
+`>=22.13 <24.2 || >=24.22 <25 || >=26.10`. Node 24.2–24.21 and 26.0–26.9
+contain the [upstream cppgc Realm lifetime defect](https://github.com/nodejs/node/pull/65778),
+which can corrupt the heap during worker teardown. Use 24.22.0+ or 26.10.0+ on
+those release lines; Node 22 LTS remains supported. Node 25.x remains excluded
+because its V8 WASM JIT can crash while compiling tree-sitter grammars.
+
+The structure sensor ships inside the package — there is nothing
 else to install, and Lattice never falls back to a sensor on your `PATH`.
 
 `lattice setup`は既存のClaude・Codex・Grok・Cursor設定を検出し、LatticeのMCP登録、

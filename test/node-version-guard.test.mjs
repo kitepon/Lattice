@@ -37,8 +37,8 @@ test('nodeMajor 25はoverride有りでblocked=falseだがbannerは表示のみ�
   assert.equal(result.banner, buildNode25BlockBanner('25.0.0'));
 });
 
-test('nodeMajor 26はNode 25固有bugの対象外 — blocked=false, banner=null', () => {
-  const result = evaluateNodeVersionGuard('26.0.0', false);
+test('patched Node26.10 is supported — blocked=false, banner=null', () => {
+  const result = evaluateNodeVersionGuard('26.10.0', false);
   assert.equal(result.blocked, false);
   assert.equal(result.banner, null);
 });
@@ -62,3 +62,13 @@ test(`nodeMajor ${MIN_NODE_MAJOR - 1}(floor未満)はoverride有りでblocked=fa
   assert.equal(result.blocked, false);
   assert.equal(result.banner, buildNodeTooOldBanner(version));
 });
+
+for (const version of ['24.20.0', '24.21.0', '26.9.0']) {
+  test(`Realm lifetime: MCP blocks unpatched Node ${version} before worker startup`, () => {
+    const result = evaluateNodeVersionGuard(version, false);
+    assert.equal(result.blocked, true);
+    assert.match(result.banner, /nodejs\/node\/pull\/65778/);
+    assert.match(result.banner, /24\.22\.0/);
+    assert.match(result.banner, /26\.10\.0/);
+  });
+}
