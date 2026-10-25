@@ -4,6 +4,7 @@
 
 - Nodeのcppgc wrapper/Realm寿命修理を含むruntimeをWindowsとLinuxの製品CI内で使用する。既知の影響版（24.2〜24.21、26.0〜26.9）はsensor/MCP共通の起動前判定で修正版への更新を案内し、packageのruntime契約も揃える。ホストのNodeは入れ替えない。元Windowsアクセス違反との同因は引き続き確認中。
 - dashboardの通常起動に小さいsupervisorを接続し、実終了・段階・所有終了要求を有限receiptへ保存する。監督消失はunknownで保持し、次ensureの二重起動を防ぐ。WindowsのDWORD終了値も保持する。
+- dashboardのrun/ensure記録の公開処理を共通化し、Windowsの一時的な置換拒否を有限時間待つ。解除されなければ旧記録と元errorを保持して失敗を返す。
 - 配信確認のcatchで落ちていた許可済みsubreasonを段階とともに残し、bridge statusで最後のdashboard終了を読めるようにする。
 
 

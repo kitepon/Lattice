@@ -10,6 +10,8 @@ const PHASES = new Set(['spawn', 'import', 'registry', 'store', 'listen', 'ready
   'periodic_sync', 'empty_shutdown', 'shutdown_request', 'sync_failed', 'store_read_failed',
   'cleanup_failed', 'close_failed', 'close', 'closed']);
 const RUN_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
+const WINDOWS_REPLACE_WAIT_MS = 500;
+const REPLACE_MAX_ATTEMPTS = 32;
 
 export function lifecycleError(code) {
   return Object.assign(new Error(code), { code,
@@ -85,14 +87,14 @@ export async function readLifecycleRuns(root) {
   return runs.sort((a, b) => a.started_at.localeCompare(b.started_at));
 }
 
-export async function writeLifecycleRun(root, run) {
-  await checkOwned(directory(root), 'directory');
+/** Publish only after a real atomic replacement; Windows delete-sharing can be transient. */
+async function publishLifecycleJson(ref, bytes) {
+  const parent = path.dirname(ref);
+  await checkOwned(parent, 'directory');
   // At most 64 live writers can race this check, so even orphaned temporary files
   // have a finite bound. Refuse another write rather than discard an active run.
-  if ((await readdir(directory(root))).length >= 256) throw lifecycleError('DASHBOARD_LIFECYCLE_CAPACITY');
-  const bytes = `${JSON.stringify(run)}\n`;
+  if ((await readdir(parent)).length >= 256) throw lifecycleError('DASHBOARD_LIFECYCLE_CAPACITY');
   if (Buffer.byteLength(bytes) > LIFECYCLE_MAX_BYTES) throw lifecycleError('DASHBOARD_LIFECYCLE_CAPACITY');
-  const ref = reference(root, run.run_id);
   try { await checkOwned(ref, 'file'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const temporary = `${ref}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(temporary, 'wx', 0o600);
@@ -100,7 +102,36 @@ export async function writeLifecycleRun(root, run) {
     await handle.writeFile(bytes, 'utf8');
     await handle.sync();
   } finally { await handle.close(); }
-  try { await rename(temporary, ref); } finally { await rm(temporary, { force: true }); }
+  // Failed private temporaries stay bounded for dead-writer cleanup. Never delete
+  // the old receipt to make replacement succeed, or let cleanup mask its error.
+  const deadline = performance.now() + WINDOWS_REPLACE_WAIT_MS;
+  let attempts = 0;
+  for (;;) {
+    await checkOwned(parent, 'directory');
+    await checkOwned(temporary, 'file');
+    try { await checkOwned(ref, 'file'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    attempts++;
+    try {
+      await rename(temporary, ref);
+      return;
+    } catch (error) {
+      const busy = process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code);
+      if (!busy) throw error;
+      if (performance.now() >= deadline || attempts >= REPLACE_MAX_ATTEMPTS) {
+        const failure = lifecycleError('DASHBOARD_LIFECYCLE_PUBLISH_FAILED');
+        failure.cause = error;
+        failure.detail = { ...failure.detail, operation: 'atomic_replace',
+          fs_code: error.code, attempts, temporary_retained: true };
+        throw failure;
+      }
+      await new Promise((resolve) => setTimeout(resolve,
+        Math.min(10 * 2 ** Math.min(attempts - 1, 3), 50, Math.max(1, deadline - performance.now()))));
+    }
+  }
+}
+
+export async function writeLifecycleRun(root, run) {
+  await publishLifecycleJson(reference(root, run.run_id), `${JSON.stringify(run)}\n`);
 }
 
 /** Call under the existing dashboard startup lock, before spawning anything. */
@@ -180,16 +211,9 @@ export async function recordDashboardEnsureDecision(root, decision, childPid) {
   const supervision = childPid === null ? 'not_started' : matching?.state === 'active' ? 'supervised'
     : matching?.state === 'supervisor_lost' ? 'supervisor_lost' : 'legacy_unsupervised';
   const ref = path.join(directory(root), 'ensure.json');
-  try { await checkOwned(ref, 'file'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const temporary = `${ref}.${process.pid}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, 'wx', 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify({ schema: 'lattice.dashboard_ensure.v1',
-      observed_at: new Date().toISOString(), decision, child_pid: childPid,
-      supervision, run_id: matching?.run_id ?? null })}\n`);
-    await handle.sync();
-  } finally { await handle.close(); }
-  try { await rename(temporary, ref); } finally { await rm(temporary, { force: true }); }
+  await publishLifecycleJson(ref, `${JSON.stringify({ schema: 'lattice.dashboard_ensure.v1',
+    observed_at: new Date().toISOString(), decision, child_pid: childPid,
+    supervision, run_id: matching?.run_id ?? null })}\n`);
 }
 
 export async function readDashboardLifecycleStatus(root) {

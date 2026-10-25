@@ -129,6 +129,8 @@ bridgeが無効な間は以下すべてnullで、bridgeを有効にしている�
 64run、各16KiB・64段階イベントまでとし、activeや生存中の監視外childは削除しない。閉じた古いrunから
 整理し、満杯なら記録を捨てて起動を続けずtyped容量エラーで止める。stderr本文やproject本文は保存せず、
 byte数と先頭64KiBまでのdigestを残す。中断された一時fileも上限内で扱い、所有writerの死亡確認後に除去する。
+Windowsで記録の置換が一時的に拒否された場合は、所有pathを再検証しながら短い期限内だけ公開を待つ。
+解除されなければ元のfilesystem errorを伴う`DASHBOARD_LIFECYCLE_PUBLISH_FAILED`を返し、旧完全記録を保持する。
 
 Windowsの`observed_exit`は実waitで得たDWORDの`uint32`と`hex`を保持し、signalは`not_applicable`とする。
 `0xC0000005`等の値だけでは例外と外部TerminateProcessを区別できない。`termination_request`は自分のIPC終了要求と、
