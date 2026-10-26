@@ -66,7 +66,7 @@ test('windows-nativeの全commandはPowerShell 7だけで実行する', async ()
   assert.doesNotMatch(reusable, /(?:bash|cmd|powershell)(?:\.exe)?[^\n]*\{0\}/iu);
 });
 
-test('工場CIは現役runnerの3環境だけを要求する', async () => {
+test('工場CIは現役runnerの3環境を使い、公開も同じ修正版Nodeを選ぶ', async () => {
   const caller = await readFile(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
   const reusable = await readFile(
     path.join(repoRoot, '.github/workflows/product-full-ci.yml'),
@@ -77,4 +77,9 @@ test('工場CIは現役runnerの3環境だけを要求する', async () => {
   assert.match(caller, /options:\s+\[all, macos-native, linux-workstation, windows-native\]/u);
   assert.ok(reusable.includes(`'["macos-native","linux-workstation","windows-native"]'`));
   for (const source of [caller, reusable]) assert.doesNotMatch(source, /linux-native|wsl2/u);
+  const publish = await readFile(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
+  const runtime = publish.match(/node-version:\s*'([^']+)'/u)?.[1];
+  assert.match(runtime, /^\d+\.\d+\.\d+$/u);
+  const linuxRuntime = await readFile(path.join(repoRoot, 'scripts/ci-linux-node-runtime.sh'), 'utf8');
+  assert.ok(linuxRuntime.includes(`/dist/v${runtime}/`));
 });
