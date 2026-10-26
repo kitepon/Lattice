@@ -92,7 +92,12 @@ it('keeps an active client from reopening SQLite during rebuild and serves the n
   // Hold the exact CLI rebuild fence to deterministically exercise a request
   // arriving between daemon termination and database recreation.
   expect(tryAcquireWriterLock(root, 'rebuild', 'rebuild.pid').kind).toBe('acquired');
-  expect((await stopDaemonAt(root)).outcome).toMatch(/term|kill/);
+  const evidence = Object.fromEntries(['daemon.pid', 'daemon.log', 'writer.pid'].map(name => {
+    const file = path.join(root, '.lattice/sensor', name);
+    return [name, fs.existsSync(file) ? fs.readFileSync(file, 'utf8').slice(-16384) : null];
+  }));
+  const stopped = await stopDaemonAt(root);
+  expect(stopped.outcome, JSON.stringify({ stopped, clientStderr: server.errors(), evidence })).toMatch(/term|kill/);
   await until(() => server.errors().includes('connection lost'));
   send(server, 3, 'tools/call', { name: 'lattice_sensor_explore', arguments: { query: 'originalSymbol' } });
   expect((await response(server, 3)).error.message).toContain('rebuild is in progress');
