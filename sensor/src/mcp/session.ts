@@ -89,7 +89,14 @@ function firstRootPath(result: unknown): string | null {
   return fileUriToPath(first.uri);
 }
 
+export interface MCPStartupReceipt {
+  setMode(mode: 'direct' | 'proxy', sensorVersion: string): void;
+  initializeReceived(): void;
+  initializeWritten(): void;
+}
+
 export interface MCPSessionOptions {
+  startupReceipt?: MCPStartupReceipt;
   /**
    * Explicit project path from the `--path` CLI flag. When set, the session
    * will not bother asking the client for `roots/list` — we already know
@@ -122,7 +129,7 @@ export class MCPSession {
   constructor(
     private transport: JsonRpcTransport,
     private engine: MCPEngine,
-    opts: MCPSessionOptions = {},
+    private opts: MCPSessionOptions = {},
   ) {
     this.explicitProjectPath = opts.explicitProjectPath ?? null;
   }
@@ -200,6 +207,7 @@ export class MCPSession {
   }
 
   private async handleInitialize(request: JsonRpcRequest): Promise<void> {
+    this.opts.startupReceipt?.initializeReceived();
     const params = request.params as {
       rootUri?: string;
       workspaceFolders?: Array<{ uri: string; name: string }>;
@@ -252,7 +260,7 @@ export class MCPSession {
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
       instructions: initializeInstructions(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX),
-    });
+    }, this.opts.startupReceipt ? () => this.opts.startupReceipt!.initializeWritten() : undefined);
 
     if (explicitPath) {
       // Kick off engine init in the background. If another session in the

@@ -44,6 +44,7 @@
 
 import { evaluateNodeVersionGuard } from '../src/node-version-guard.mjs';
 import packageJson from '../package.json' with { type: 'json' };
+import { createMcpStartupReceipt } from '../src/mcp-startup-receipt.mjs';
 
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 
@@ -119,7 +120,7 @@ if (nodeVersionGuard.blocked) {
     try {
       const { MCPServer } = await import('../sensor/dist/index.js');
       startupStage = 'mcp.construct';
-      const server = new MCPServer(parsed.path);
+      const server = new MCPServer(parsed.path, createMcpStartupReceipt(packageJson.version));
       // MCPServer.start() resolves only when startup itself declined to serve
       // (there is no such path today — every mode keeps the process alive via
       // stdin/net.Server and exits through its own process.exit calls) or

@@ -77,7 +77,7 @@ export interface JsonRpcTransport {
   send(response: JsonRpcResponse): void;
   notify(method: string, params?: unknown): void;
   request(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
-  sendResult(id: string | number, result: unknown): void;
+  sendResult(id: string | number, result: unknown, onWritten?: () => void): void;
   sendError(id: string | number | null, code: number, message: string, data?: unknown): void;
 }
 
@@ -99,7 +99,7 @@ abstract class LineBasedJsonRpcTransport implements JsonRpcTransport {
   protected stopped = false;
 
   abstract start(handler: MessageHandler): void;
-  protected abstract write(line: string): void;
+  protected abstract write(line: string, onWritten?: () => void): void;
   protected abstract idPrefix(): string;
   abstract stop(): void;
 
@@ -137,8 +137,8 @@ abstract class LineBasedJsonRpcTransport implements JsonRpcTransport {
     this.write(JSON.stringify(notification));
   }
 
-  sendResult(id: string | number, result: unknown): void {
-    this.send({ jsonrpc: '2.0', id, result });
+  sendResult(id: string | number, result: unknown, onWritten?: () => void): void {
+    this.write(JSON.stringify({ jsonrpc: '2.0', id, result }), onWritten);
   }
 
   sendError(id: string | number | null, code: number, message: string, data?: unknown): void {
@@ -324,8 +324,9 @@ export class StdioTransport extends LineBasedJsonRpcTransport {
     }
   }
 
-  protected write(line: string): void {
-    process.stdout.write(line + '\n');
+  protected write(line: string, onWritten?: () => void): void {
+    if (onWritten) process.stdout.write(line + '\n', error => { if (!error) onWritten(); });
+    else process.stdout.write(line + '\n');
   }
 
   protected idPrefix(): string {
@@ -414,9 +415,10 @@ export class SocketTransport extends LineBasedJsonRpcTransport {
     }
   }
 
-  protected write(line: string): void {
+  protected write(line: string, onWritten?: () => void): void {
     if (!this.socket.destroyed) {
-      this.socket.write(line + '\n');
+      if (onWritten) this.socket.write(line + '\n', error => { if (!error) onWritten(); });
+      else this.socket.write(line + '\n');
     }
   }
 
