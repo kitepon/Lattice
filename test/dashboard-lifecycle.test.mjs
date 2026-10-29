@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,7 +12,7 @@ import { createLifecycleRun, LIFECYCLE_MAX_RUNS, readLifecycleRuns, recordLifecy
 import { observedDashboardExit, observeDashboardProcess,
   terminateOwnedWindowsDashboard } from '../src/dashboard-process-control.mjs';
 import { registerManagedDaemonFixture } from './helpers/managed-daemon-fixture.mjs';
-import { ensureTodoDashboardDaemon, registerTodoDashboardActivity } from '../src/todo-dashboard-registry.mjs';
+import { ensureTodoDashboardDaemon, registerTodoDashboardActivity, TODO_DASHBOARD_STALE_MS } from '../src/todo-dashboard-registry.mjs';
 import { runBridgeCli } from '../src/bridge-cli.mjs';
 import { reportProjectDashboardDelivery, verifyBridgeHubDelivery } from '../src/dashboard-delivery.mjs';
 
@@ -380,4 +380,61 @@ test('supervisorのimport閉包はstdlibと制御・receiptのleafだけ', async
     const source = await readFile(file, 'utf8');
     assert.doesNotMatch(source, /from ['"].*(?:sensor|todo-|bridge|sqlite)/u);
   }
+});
+
+
+test('dashboardはstore診断の変化を親へ保存し配信集合とhealth契約を保つ',
+  { timeout: 30_000 }, async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'lattice-dashboard-store-diagnostic-'));
+    registerManagedDaemonFixture(t, root);
+    const runtime = path.join(root, 'runtime');
+    const env = { ...process.env, LATTICE_DASHBOARD_RUNTIME_DIR: runtime,
+      LATTICE_DASHBOARD_PORT: '0' };
+    const missing = path.join(root, 'secret-project-path');
+    await mkdir(missing);
+    await registerTodoDashboardActivity({ repoRoot: missing, projectId: 'secret-stale-project',
+      displayName: 'secret-display-name', sessionId: 'fixture', env,
+      now: new Date(Date.now() - TODO_DASHBOARD_STALE_MS - 10_000) });
+    await registerTodoDashboardActivity({ repoRoot: root, projectId: 'normal', displayName: 'normal',
+      sessionId: 'fixture', env });
+    const registryRef = path.join(runtime, 'projects.json');
+    const registryBefore = await readFile(registryRef);
+    const daemon = await ensureTodoDashboardDaemon({ env });
+    const read = async () => (await readLifecycleRuns(runtime)).find(run => run.child?.pid === daemon.pid);
+    let run = await until(read, value => value?.ready_at);
+    assert.equal(run.last_failure_observed?.phase, 'store_manifest_missing');
+    const health = await (await fetch(`http://127.0.0.1:${daemon.port}/__lattice/health`)).json();
+    assert.deepEqual(Object.keys(health).sort(), ['pid', 'port', 'project_ids', 'schema', 'version']);
+    assert.deepEqual(health.project_ids, ['normal']);
+    assert.deepEqual(await readFile(registryRef), registryBefore);
+    assert.deepEqual(await readdir(missing), [], 'read does not create a store');
+    await mkdir(path.join(missing, '.lattice', 'todo'), { recursive: true });
+    const manifestRef = path.join(missing, '.lattice', 'todo', 'manifest.json');
+    await writeFile(manifestRef, '{secret-invalid-json\n');
+    run = await until(read, value => value?.last_failure_observed?.phase === 'store_manifest_invalid');
+    assert.equal(await readFile(manifestRef, 'utf8'), '{secret-invalid-json\n');
+    await rm(missing, { recursive: true });
+    run = await until(read, value => value?.last_failure_observed?.phase === 'store_root_missing');
+    assert.equal(run.observed_exit.status, 'unknown');
+    assert.equal(run.exit_observed_at, null);
+    assert.doesNotMatch(JSON.stringify(run), /secret-/u);
+    assert.deepEqual(await readFile(registryRef), registryBefore);
+    const after = await (await fetch(`http://127.0.0.1:${daemon.port}/__lattice/health`)).json();
+    assert.deepEqual(after, health);
+  });
+
+test('親journalは6つのstore診断を有限phaseとして保持する', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-dashboard-store-phase-'));
+  registerManagedDaemonFixture(t, root);
+  const run = await createLifecycleRun(root, 'fixture');
+  for (const phase of ['store_manifest_missing', 'store_root_missing', 'store_access_denied',
+    'store_io_failed', 'store_manifest_invalid', 'store_artifact_missing']) {
+    assert.equal(recordLifecyclePhase(run, phase), true);
+    assert.equal(run.last_failure_observed.phase, phase);
+    assert.ok(run.last_failure_observed.at);
+  }
+  assert.equal(recordLifecyclePhase(run, 'secret-error-message'), false);
+  await writeLifecycleRun(root, run);
+  assert.deepEqual((await readLifecycleRuns(root))[0], run);
+  assert.doesNotMatch(JSON.stringify(run), /secret-/u);
 });

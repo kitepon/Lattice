@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { TODO_STATUS_DISPATCH_ONLY, projectTodoStatus } from '../src/todo-status.mjs';
-import { createTodoStoreCache } from '../src/todo-store-cache.mjs';
+import { createTodoStoreCache, todoStoreReadFailurePhase } from '../src/todo-store-cache.mjs';
 import { ganttLiveHeadDigest, renderTodoGanttForProject } from '../src/todo-cli.mjs';
 import { readProjectExternalPane } from '../src/project-identity.mjs';
 import {
@@ -34,7 +34,7 @@ const port = typeof configured === 'string' && /^(?:0|[1-9][0-9]{0,4})$/u.test(c
   && Number(configured) <= 65_535 ? Number(configured) : 0;
 const registry = createTodoGanttProjectRegistry();
 const roots = new Map();
-const reportedStoreReadFailures = new Set();
+const reportedStoreReadFailures = new Map();
 // room 2488's "gantt serve固着" symptom (a dashboard stuck on stale/broken state that
 // only a process restart cleared, with the store and git both already fixed) traced to
 // this cache — see src/todo-store-cache.mjs for why it is content-digest keyed rather
@@ -54,12 +54,13 @@ async function synchronize() {
         reportedStoreReadFailures.delete(entry.project_id);
         return active;
       } catch (error) {
-        if (!reportedStoreReadFailures.has(entry.project_id)) {
-          reportedStoreReadFailures.add(entry.project_id);
+        const phase = todoStoreReadFailurePhase(error);
+        if (reportedStoreReadFailures.get(entry.project_id) !== phase) {
+          reportedStoreReadFailures.set(entry.project_id, phase);
           // This finite stage survives in the parent's receipt without project/error text.
           // A lost supervisor leaves no stderr reader; do not create an EPIPE failure
           // in an otherwise serving daemon by writing to its abandoned pipe.
-          dashboardLifecyclePhase('store_read_failed');
+          dashboardLifecyclePhase(phase);
         }
         return false;
       }

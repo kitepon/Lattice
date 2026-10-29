@@ -124,6 +124,14 @@ bridgeが無効な間は以下すべてnullで、bridgeを有効にしている�
 `active`に監視中のrun、`last_termination`に最後の実終了または監督消失を返す。
 読み取りでdaemonを起動したり欠測を補完したりしない。未導入の旧daemonには記録が無い。
 
+登録先storeの読取り失敗は、`last_failure_observed.phase`で次のように区別する。
+`store_manifest_missing`はrootあり・manifest不在、`store_root_missing`はroot不在、
+`store_access_denied`はEACCES/EPERM、`store_io_failed`はEIO、
+`store_manifest_invalid`はmanifestのJSON/schema等の不正、`store_artifact_missing`は
+manifestが参照するartifactの欠落を表す。対象を確定できない失敗は`store_read_failed`を保つ。
+診断が変われば新しい段階を記録し、登録の削除・storeの作成や修復は行わない。
+配信projectの集合と既存health JSONの形式は変えず、project名・path・例外本文はjournalへ渡さない。
+
 通常のdashboard起動は小さいsupervisorが子をwaitし、実終了の観測時刻・codeまたはsignal・最後の段階を
 所有runtimeの`lifecycle/`へ保存する。POSIXはprivate directory/file、Windowsは既存storeの所有境界を使う。
 64run、各16KiB・64段階イベントまでとし、activeや生存中の監視外childは削除しない。閉じた古いrunから
