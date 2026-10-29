@@ -21,6 +21,7 @@ async function fixture(t, sensorSource, enabled = true, seedOld = false) {
     'bin/lattice-mcp.mjs', 'src/node-version-guard.mjs',
     'sensor/package.json', 'sensor/dist/bin/node-version-check.js', 'src/runtime-errors.mjs',
     'src/cli-command-kind.mjs', 'src/cli-failure-class.mjs', 'src/windows-owner-only.mjs',
+    'src/mcp-startup-receipt.mjs', 'src/dashboard-process-control.mjs',
   ];
   for (const file of copies) {
     await mkdir(path.dirname(path.join(root, file)), { recursive: true });

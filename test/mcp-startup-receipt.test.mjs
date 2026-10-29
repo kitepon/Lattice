@@ -50,14 +50,22 @@ async function fixture(t, mode, { prepare, writeFailure = false, recordingFailur
         getDaemonSocket: () => new Promise(() => {}), makeEngine: () => { throw Error('no tool calls expected'); } });
     }
   `);
-  const child = spawn(process.execPath, wrapper ? [path.join(repo, 'bin/lattice-mcp.mjs'), '--path', root] : [script], { cwd: root, env: { ...process.env,
+  const spawnLog = path.join(root, 'daemon-spawns');
+  const recorder = path.join(repo, 'sensor/__tests__/fixtures/record-detached-spawns.cjs');
+  const child = spawn(process.execPath, wrapper ? ['--require', recorder, path.join(repo, 'bin/lattice-mcp.mjs'), '--path', root] : [script], { cwd: root, env: { ...process.env,
     HOME: home, USERPROFILE: home, XDG_STATE_HOME: path.join(root, 'state'),
+    CG_TEST_SPAWN_LOG: spawnLog,
     LATTICE_CONFIG_DIR: path.join(root, 'config'), LATTICE_DASHBOARD_RUNTIME_DIR: path.join(root, 'dashboard'),
     LATTICE_SENSOR_NO_DAEMON: wrapper && mode === 'proxy' ? '0' : '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
   tracked.push(child.pid); let output = '', stderr = '';
   child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { stderr += b; });
   child.stdin.on('error', () => {});
-  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal }))).then(async result => {
+    // Detached candidates may still be starting when the launcher has exited.
+    try { tracked.push(...(await readFile(spawnLog, 'utf8')).split('\n').map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0)); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return result;
+  });
   async function records() {
     let names; try { names = await readdir(receipts); } catch (e) { if (['ENOENT', 'ENOTDIR'].includes(e.code)) return []; throw e; }
     const rows = [];
