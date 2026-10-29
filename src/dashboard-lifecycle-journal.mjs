@@ -8,6 +8,8 @@ export const LIFECYCLE_MAX_RUNS = 64;
 export const LIFECYCLE_MAX_BYTES = 16 * 1024;
 const PHASES = new Set(['spawn', 'import', 'registry', 'store', 'listen', 'ready',
   'periodic_sync', 'empty_shutdown', 'shutdown_request', 'sync_failed', 'store_read_failed',
+  'store_manifest_missing', 'store_root_missing', 'store_access_denied', 'store_io_failed',
+  'store_manifest_invalid', 'store_artifact_missing',
   'cleanup_failed', 'close_failed', 'close', 'closed']);
 const RUN_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 const WINDOWS_REPLACE_WAIT_MS = 500;
@@ -164,7 +166,7 @@ export function recordLifecyclePhase(run, phase) {
   }
   const at = new Date().toISOString();
   if (phase === 'ready' && run.ready_at === null) run.ready_at = at;
-  if (['store_read_failed', 'sync_failed', 'cleanup_failed', 'close_failed'].includes(phase)) {
+  if (phase.startsWith('store_') || ['sync_failed', 'cleanup_failed', 'close_failed'].includes(phase)) {
     run.last_failure_observed = { at, phase };
   }
   run.events.push({ at, phase });

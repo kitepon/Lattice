@@ -113,12 +113,19 @@ jobs:
         id: linux_runtime
         shell: bash
         run: bash scripts/ci-linux-node-runtime.sh "$RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: owned macOS Node in the product job
+        if: matrix.environment == 'macos-native'
+        id: macos_runtime
+        shell: bash
+        run: bash scripts/ci-macos-node-runtime.sh "$RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: logical CPU parallelism
         if: matrix.environment != 'windows-native'
         shell: bash
         run: |
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
             export PATH='${{ steps.linux_runtime.outputs.directory }}/bin':"$PATH"
+          elif [[ '${{ matrix.environment }}' == macos-native ]]; then
+            export PATH='${{ steps.macos_runtime.outputs.directory }}/bin':"$PATH"
           fi
           node -p 'JSON.stringify({node:process.versions.node,execPath:process.execPath})'
           jobs=$(node -p "require('node:os').availableParallelism()")
@@ -136,6 +143,8 @@ jobs:
         run: |
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
             export PATH='${{ steps.linux_runtime.outputs.directory }}/bin':"$PATH"
+          elif [[ '${{ matrix.environment }}' == macos-native ]]; then
+            export PATH='${{ steps.macos_runtime.outputs.directory }}/bin':"$PATH"
           fi
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then export npm_config_engine_strict=true; fi
           ${{ inputs.dependency-command }}
@@ -152,6 +161,8 @@ jobs:
         run: |
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
             export PATH='${{ steps.linux_runtime.outputs.directory }}/bin':"$PATH"
+          elif [[ '${{ matrix.environment }}' == macos-native ]]; then
+            export PATH='${{ steps.macos_runtime.outputs.directory }}/bin':"$PATH"
           fi
           ${{ inputs.full-command }}
       - name: product full test

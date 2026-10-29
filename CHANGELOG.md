@@ -2,6 +2,10 @@
 
 ## 未公開
 
+- dashboardのstore読取りで、root/manifestの不在、アクセス/I/O失敗、manifest不正、参照artifact欠落を区別して親journalへ記録する。登録・store・配信集合・health JSONの形式は保つ。
+- setupの設定置換でumaskにかかわらず既存modeを保持し、同時にmodeを変更された設定は上書きしない。
+- macOSの製品CIでjob専有Nodeを使い、共有Homebrewの所有者・modeを変更せずLaunchAgentの安全条件を満たす。
+
 ## 0.79.4 — 2026-10-26
 
 版の更新だけで、旧集約記載b61や元のWindowsアクセス違反が解消したとは判定しない。b61の元原因・回復は未確定のまま保持する。今回の候補は以下の受入済み修理を配布するための版更新で、runtimeの追加変更はない。

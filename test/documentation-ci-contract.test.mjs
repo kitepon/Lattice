@@ -83,3 +83,16 @@ test('工場CIは現役runnerの3環境を使い、公開も同じ修正版Node�
   const linuxRuntime = await readFile(path.join(repoRoot, 'scripts/ci-linux-node-runtime.sh'), 'utf8');
   assert.ok(linuxRuntime.includes(`/dist/v${runtime}/`));
 });
+
+
+test('macOS CIは共有Homebrewを変えずjob専有Nodeを全commandへ渡す', async () => {
+  const workflow = await readFile(path.join(repoRoot, '.github/workflows/product-full-ci.yml'), 'utf8');
+  assert.match(workflow, /id: macos_runtime/u);
+  assert.match(workflow, /bash scripts\/ci-macos-node-runtime\.sh/u);
+  assert.equal((workflow.match(/steps\.macos_runtime\.outputs\.directory/gu) ?? []).length, 3);
+  const runtime = await readFile(path.join(repoRoot, 'scripts/ci-macos-node-runtime.sh'), 'utf8');
+  assert.match(runtime, /mkdir -m 700/u);
+  assert.match(runtime, /shasum --algorithm 256 --check --status/u);
+  assert.match(runtime, /--no-same-owner/u);
+  assert.doesNotMatch(runtime, /sudo|brew (?:install|upgrade)|npm install -g/u);
+});
