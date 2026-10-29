@@ -107,13 +107,17 @@ export async function writeSetupFile(target, before, text) {
   if (text === before.text) return 'unchanged';
   await mkdir(path.dirname(target), { recursive: true });
   const current = await readSetupFile(target);
-  if (current.text !== before.text || current.exists !== before.exists) throw setupError('CONFIG_CHANGED', '設定が同時に変更されました');
+  if (current.text !== before.text || current.exists !== before.exists || current.mode !== before.mode) throw setupError('CONFIG_CHANGED', '設定が同時に変更されました');
   const temporary = `${target}.lattice-${randomUUID()}`;
   try {
     const handle = await open(temporary, 'wx', before.mode);
-    try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
+    try {
+      await handle.writeFile(text);
+      await handle.chmod(before.mode);
+      await handle.sync();
+    } finally { await handle.close(); }
     const latest = await readSetupFile(target);
-    if (latest.text !== before.text || latest.exists !== before.exists) throw setupError('CONFIG_CHANGED', '設定が同時に変更されました');
+    if (latest.text !== before.text || latest.exists !== before.exists || latest.mode !== before.mode) throw setupError('CONFIG_CHANGED', '設定が同時に変更されました');
     if (before.exists) await copyFile(target, `${temporary}.backup`);
     await rename(temporary, target);
     if ((await readSetupFile(target)).text !== text) throw setupError('CONFIG_READBACK_FAILED', '設定の読戻しが一致しません');

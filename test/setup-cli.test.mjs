@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { runSetupCli } from '../src/setup-cli.mjs';
 import { hostPaths } from '../src/setup-hosts.mjs';
@@ -52,6 +54,7 @@ test('4 AIの初回・再実行・診断が設定と他登録を保持する', a
     const initial = paths.format === 'json' ? '{\n // 利用者の注記\n "mcpServers": {"other": {"command":"other"}}, "user": true\n}\n'
       : '# 利用者の注記\nuser = true\n[mcp_servers.other]\ncommand = "other"\n';
     await writeFile(paths.mcp, initial, { mode: 0o640 });
+    if (process.platform !== 'win32') await chmod(paths.mcp, 0o640);
     const hook = host === 'cursor' ? { version: 1, hooks: { beforeSubmitPrompt: [{ command: 'factory lattice-gantt' }] } }
       : { hooks: { UserPromptSubmit: [{ matcher: 'user', hooks: [{ type: 'command', command: 'factory lattice-gantt' }] }] } };
     if (host !== 'grok') await writeFile(paths.hooks, JSON.stringify(hook));
@@ -186,3 +189,29 @@ test('同じAIへのsetup競合は共有設定を変更しない', async (t) => 
   const result = await invoke(env, ['--host', 'claude']);
   assert.equal(result.value.hosts[0].mcp.code, 'SETUP_BUSY');
 });
+
+
+test('setupはumask077でも既存modeを保ち、並行mode変更を上書きしない',
+  { skip: process.platform === 'win32' }, async (t) => {
+    const { home } = await fixture(t);
+    const moduleUrl = pathToFileURL(path.resolve('src/setup-config.mjs')).href;
+    const child = `
+      import assert from 'node:assert/strict';
+      import { chmod, writeFile, stat } from 'node:fs/promises';
+      import { readSetupFile, writeSetupFile } from ${JSON.stringify(moduleUrl)};
+      process.umask(0o077);
+      const target = process.argv[1];
+      await writeFile(target, 'original');
+      await chmod(target, 0o640);
+      const before = await readSetupFile(target);
+      assert.equal(await writeSetupFile(target, before, 'updated'), 'updated');
+      assert.equal((await stat(target)).mode & 0o777, 0o640);
+      const next = await readSetupFile(target);
+      await chmod(target, 0o600);
+      await assert.rejects(writeSetupFile(target, next, 'must not replace'), { code: 'CONFIG_CHANGED' });
+      assert.equal((await readSetupFile(target)).text, 'updated');
+      assert.equal((await stat(target)).mode & 0o777, 0o600);
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', child, path.join(home, 'settings.json')],
+      { encoding: 'utf8' });
+  });

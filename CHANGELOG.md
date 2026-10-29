@@ -3,6 +3,7 @@
 ## 未公開
 
 - dashboardのstore読取りで、root/manifestの不在、アクセス/I/O失敗、manifest不正、参照artifact欠落を区別して親journalへ記録する。登録・store・配信集合・health JSONの形式は保つ。
+- setupの設定置換でumaskにかかわらず既存modeを保持し、同時にmodeを変更された設定は上書きしない。
 
 ## 0.79.4 — 2026-10-26
 
