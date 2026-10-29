@@ -15,6 +15,7 @@ Latticeの文書は、現行契約、現在の計画・構想、履歴、証拠�
 - [`todo-extraction-v1.md`](todo-extraction-v1.md): 現行v4 authoring／migration契約（filenameは互換維持）
 - [`06_design-spec.md`](06_design-spec.md): 動的工程表の表示仕様
 - [`bridge-setup.md`](bridge-setup.md): optional network bridgeと公開受入
+- [`mcp-startup-receipts.md`](mcp-startup-receipts.md): 私有の起動記録、write完了の境界と欠測・容量の限界
 - [`ci-contract.md`](ci-contract.md): 製品CIとrelease gate
 - [`operations/lattice-kitepon-deployment.md`](operations/lattice-kitepon-deployment.md):
   `lattice.kitepon.dev`の現行配備構成

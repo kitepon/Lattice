@@ -40,7 +40,7 @@ import { spawn, StdioOptions } from 'child_process';
 import { resolveServerRoot, getLatticeSensorDir } from '../directory';
 import { StdioTransport } from './transport';
 import { MCPEngine } from './engine';
-import { MCPSession } from './session';
+import { MCPSession, type MCPStartupReceipt } from './session';
 import {
   Daemon,
   clearStaleDaemonLock,
@@ -345,7 +345,7 @@ export class MCPServer {
   /** Project root whose writer.pid we hold in direct mode (#1740); released on stop. */
   private writerLockRoot: string | null = null;
 
-  constructor(projectPath?: string) {
+  constructor(projectPath?: string, private startupReceipt?: MCPStartupReceipt) {
     this.projectPath = projectPath || null;
   }
 
@@ -418,6 +418,7 @@ export class MCPServer {
       // Runs until the host disconnects; the proxy installs its own watchdog and
       // falls back to an in-process engine if the daemon never comes up.
       this.mode = 'proxy';
+      this.startupReceipt?.setMode('proxy', LatticeSensorPackageVersion);
       await this.runProxyWithLocalHandshake(root);
       return;
     } catch (err) {
@@ -467,6 +468,7 @@ export class MCPServer {
 
   /** Single-process stdio MCP session — the pre-issue-#411 code path. */
   private async startDirect(reason: string): Promise<void> {
+    this.startupReceipt?.setMode('direct', LatticeSensorPackageVersion);
     if (reason && process.env.LATTICE_SENSOR_MCP_DEBUG) {
       process.stderr.write(`[LatticeSensor MCP] Direct mode: ${reason}.\n`);
     }
@@ -492,6 +494,7 @@ export class MCPServer {
     const transport = new StdioTransport({ exitOnClose: false, onClose: () => { void this.stop(); } });
     this.session = new MCPSession(transport, this.engine, {
       explicitProjectPath: this.projectPath,
+      startupReceipt: this.startupReceipt,
     });
 
     if (this.projectPath) {
@@ -671,7 +674,7 @@ export class MCPServer {
       }
       return { fallbackReason: 'no-daemon' }; // never bound — the proxy serves this session in-process
     };
-    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => makeFallbackEngine(root), root });
+    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => makeFallbackEngine(root), root, startupReceipt: this.startupReceipt });
   }
 
   /** Standard SIGINT/SIGTERM handlers that route to our `stop()` (direct mode). */

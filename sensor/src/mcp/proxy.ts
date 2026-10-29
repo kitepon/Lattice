@@ -27,7 +27,7 @@ import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
 import { LatticeSensorPackageVersion, isLatticeVersion } from './version';
-import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './session';
+import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions, type MCPStartupReceipt } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
 import { ExploreSessionState } from './explore-session-state';
@@ -237,6 +237,7 @@ export type DaemonSocketOutcome =
 /** Dependencies the local-handshake proxy needs, injected by MCPServer (which
  *  owns the daemon-spawn machinery and the engine factory). */
 export interface LocalHandshakeDeps {
+  startupReceipt?: MCPStartupReceipt;
   /** Probe → spawn → retry → hello-verify; resolves a connected daemon socket,
    *  a typed fallback reason for in-process direct mode, or 'foreign-product'
    *  when a non-Lattice daemon occupies the socket (session must fail closed). */
@@ -301,8 +302,12 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     } catch { /* unparseable — nothing we could re-serve anyway */ }
   };
 
-  const writeClient = (obj: JsonRpc | string): void => {
-    try { process.stdout.write((typeof obj === 'string' ? obj : JSON.stringify(obj)) + '\n'); } catch { /* host gone */ }
+  const writeClient = (obj: JsonRpc | string, onWritten?: () => void): void => {
+    try {
+      const line = (typeof obj === 'string' ? obj : JSON.stringify(obj)) + '\n';
+      if (onWritten) process.stdout.write(line, error => { if (!error) onWritten(); });
+      else process.stdout.write(line);
+    } catch { /* host gone */ }
   };
   const shutdown = (): void => {
     if (shuttingDown) return; shuttingDown = true;
@@ -377,6 +382,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       if (!line) continue;
       let msg: JsonRpc; try { msg = JSON.parse(line) as JsonRpc; } catch { routeToDaemon(line); continue; }
       if (msg.method === 'initialize') {
+        deps.startupReceipt?.initializeReceived();
         clientInitId = msg.id;
         const initParams = (msg.params ?? {}) as { clientInfo?: { name?: unknown; version?: unknown } };
         if (initParams.clientInfo) {
@@ -385,7 +391,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
             version: typeof initParams.clientInfo.version === 'string' ? initParams.clientInfo.version : undefined,
           };
         }
-        writeClient({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: initializeInstructions(SERVER_INSTRUCTIONS) } });
+        writeClient({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: initializeInstructions(SERVER_INSTRUCTIONS) } }, deps.startupReceipt ? () => deps.startupReceipt!.initializeWritten() : undefined);
         routeToDaemon(line); // prime the daemon so it resolves the project (its reply is suppressed below)
       } else if (msg.method === 'tools/list') {
         writeClient({ jsonrpc: '2.0', id: msg.id, result: { tools: getStaticTools() } });
