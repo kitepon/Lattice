@@ -1,10 +1,13 @@
 # Changelog
 
-## 未公開
+## 0.79.5 — 2026-10-29
+
+以下の受入済み修理をまとめる版の候補。b61の元原因・回復、旧dashboard runの実終了、元のWindowsアクセス違反との同因は未確定のまま保持する。今回の版更新自体にruntimeの追加変更はない。
 
 - dashboardのstore読取りで、root/manifestの不在、アクセス/I/O失敗、manifest不正、参照artifact欠落を区別して親journalへ記録する。登録・store・配信集合・health JSONの形式は保つ。
 - setupの設定置換でumaskにかかわらず既存modeを保持し、同時にmodeを変更された設定は上書きしない。
 - macOSの製品CIでjob専有Nodeを使い、共有Homebrewの所有者・modeを変更せずLaunchAgentの安全条件を満たす。
+- 通常MCP起動のwrapper版・sensor版、run/PID/birth、実direct/proxy経路とinitialize受信・応答の実write完了を、本文を含まない有限の私有receiptへ記録する。記録I/Oと権限検査はworkerへ分離し、失敗や累積64枠の満杯では記録を省いて起動を続ける。短命な起動は欠測し得る。client受信・tool成功・exit/signalは保証しない。
 
 ## 0.79.4 — 2026-10-26
 
