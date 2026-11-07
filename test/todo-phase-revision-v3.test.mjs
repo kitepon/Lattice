@@ -728,6 +728,21 @@ for (const crashStage of [
   });
 }
 
+for (const crashStage of ['phase_v3_cutover_barrier_durable', 'phase_v3_source_cleanup', 'phase_v3_manifest_activated']) {
+  test(`open automatically completes the recorded phase-v3 transaction after ${crashStage}`, async (t) => {
+    const { root, revision, writer } = await fixture(t);
+    await assert.rejects(applyPhaseTodoRevision({ repoRoot: root, writer, revision, actor: ACTOR,
+      recordedAt: COMMIT_AT, now: COMMIT_AT,
+      onProtocolStage(stage) { if (stage === crashStage) throw new Error('injected crash'); },
+    }), /injected crash/u);
+    const store = await readTodoStore({ repoRoot: root, now: COMMIT_AT });
+    assert.equal(store.members[0].descriptor.active_revision_digest, revision.revision_digest);
+    await assert.rejects(readFile(path.join(root, '.lattice/todo/source-cutover-recovery.json')), { code: 'ENOENT' });
+    assert.equal((await readTodoStore({ repoRoot: root, now: COMMIT_AT })).members[0].plan.plan_digest,
+      revision.desired_plan.plan_digest);
+  });
+}
+
 test('phase v3 carryは旧outgoing削除を拒否しsafe outgoing追加を許す', async (t) => {
   const safe = await fixture(t);
   const receipt = await applyPhaseTodoRevision({ repoRoot: safe.root, writer: safe.writer,

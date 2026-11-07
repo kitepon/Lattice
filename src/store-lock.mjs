@@ -3,6 +3,7 @@ import { link, lstat, mkdir, open, readFile, readdir, rm, rmdir } from 'node:fs/
 import { hostname } from 'node:os';
 import path from 'node:path';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
+import { syncPublishedFile } from './fs-publish.mjs';
 import { observeStartIdentityRaw } from './runtime-os-observation.mjs';
 
 const HOST = hostname();
@@ -12,14 +13,17 @@ const CLAIM = /^([0-9a-f]{64})-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{16})$/u;
 let ownStart;
 
 export class StoreLockError extends Error {
-  constructor(reason, lockPath) {
+  constructor(reason, lockPath, detail = {}) {
     super(reason);
     this.name = 'StoreLockError';
     this.reason = reason;
-    this.detail = reason === 'lock_owner_unidentified' ? {
+    this.detail = {
       lock_path: lockPath,
-      next_action: `Confirm no writer is running, then manually remove the legacy lock: ${lockPath}`,
-    } : {};
+      next_action: reason === 'lock_owner_unidentified'
+        ? `Confirm no writer is running, then manually remove the unidentified lock: ${lockPath}`
+        : `Retry after the owner releases ${lockPath}; if it cannot, confirm no writer on the recorded host before manually clearing the abandoned lock.`,
+      ...detail,
+    };
   }
 }
 
@@ -114,7 +118,10 @@ async function recoveryClaim(claimsPath, owner, lockPath) {
     // Timestamp ordering could let a delayed earlier publisher enter twice.
     const candidates = await readdir(claimsPath);
     if (candidates.length === 1 && candidates[0] === name) return claimPath;
-    throw new StoreLockError('store_locked', lockPath);
+    throw new StoreLockError('store_locked', lockPath, {
+      recovery_claims_path: claimsPath,
+      next_action: `Retry after recovery claimants exit; for foreign or unidentified claims, confirm no writer on their recorded host before clearing only abandoned entries in ${claimsPath}`,
+    });
   } catch (error) {
     await rmdir(claimPath);
     throw error;
@@ -133,20 +140,39 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
   await mkdir(path.dirname(lockPath), { recursive: true });
   await removeDeadTemporaries(lockPath);
   ownStart ??= observeStartIdentityRaw(process.pid).catch((error) => { ownStart = undefined; throw error; });
+  let identity;
+  try { identity = await ownStart; }
+  catch {
+    throw new StoreLockError('store_locked', lockPath, {
+      cause: 'lock_identity_unavailable',
+      next_action: `Restore platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
+    });
+  }
   const owner = { pid: process.pid,
-    process_start: { platform: process.platform, identity: await ownStart }, host: HOST };
-  if (!identified(owner)) throw new Error('process start identity unavailable');
+    process_start: { platform: process.platform, identity }, host: HOST };
+  if (!identified(owner)) throw new StoreLockError('store_locked', lockPath, {
+    cause: 'lock_identity_unavailable',
+    next_action: `Restore platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
+  });
   const ownerBytes = `${JSON.stringify(owner)}\n`;
   const temporary = `${lockPath}.${HOST_DIGEST}-${owner.pid}-${hash(`${owner.process_start.platform}:${owner.process_start.identity}`)}-${randomBytes(8).toString('hex')}.tmp`;
   let claimPath = null;
   let acquired = false;
   try {
     const handle = await open(temporary, 'wx', 0o600);
-    try { await handle.writeFile(ownerBytes); await handle.sync(); }
+    try { await handle.writeFile(ownerBytes); await syncPublishedFile(handle, lockPath); }
     finally { await handle.close(); }
     for (;;) {
       try { await link(temporary, lockPath); acquired = true; break; }
-      catch (error) { if (error?.code !== 'EEXIST') throw error; }
+      catch (error) {
+        if (['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS'].includes(error?.code)) {
+          throw new StoreLockError('store_locked', lockPath, {
+            cause: 'lock_publication_unavailable',
+            next_action: `Use a filesystem permitting atomic hard-link publication for ${lockPath}, then retry`,
+          });
+        }
+        if (error?.code !== 'EEXIST') throw error;
+      }
       const existing = await readOwner(lockPath);
       if (existing === null) continue;
       if (!await ownerIsDead(existing)) throw new StoreLockError('store_locked', lockPath);

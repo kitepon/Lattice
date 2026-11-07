@@ -3,7 +3,8 @@
 Canonical lifecycle field trace at 0.79.5 (`047139e5`). The current-path tables
 below reuse the completed read-only Sonnet trace without repeating its verification.
 [Function map](function-map.md) owns module/state boundaries.
-The target tables describe proposed S3 behavior, not implemented behavior.
+Unchanged rows retain the baseline trace. Store recovery rows and the Store reopen
+contract below describe this S3 implementation; other target rows remain proposals.
 
 Corrections to assumptions: dependency-not-done surfaces as STORE_INCONSISTENT/invalid_start_transition (no "plan order" code); manifest CAS (todo-store.mjs:2822/4418) belongs to activation/revision, not start; dashboard ensure runs BEFORE the mutation.
 
@@ -15,7 +16,7 @@ Corrections to assumptions: dependency-not-done surfaces as STORE_INCONSISTENT/i
 | 3 | matchFlagCommand (todo-authoring-input.mjs:201/170), start spec cli 4130-4152 | plan, task, override-reason, parallel-frontier, serial-confirmed, rebind, reason | — | ids must be identifiers; override-reason non-empty | refuse INVALID_ARGUMENTS exit 2; `--json` not in known → rejected; --serial-confirmed accepted, never read | startTask closure |
 | 4 | cli resolveRepoRoot ~296 | cwd | git rev-parse | — | refuse REPO_UNRESOLVED | repoRoot |
 | 5 | cli 4266-4268 ensureActiveProjectDashboard (3614), non-strict | env | store (stable read), project identity, dashboard registry | LATTICE_DASHBOARD_AUTOSTART=0 skips | DEGRADE: all errors → null; last block writes dashboard_delivery.v1 failed to stderr (3637-3643) | activity (discarded) |
-| 6 | cli startTask 847 → readTodoStore (store 1508) unlocked, not forWrite | repoRoot | manifest, plans, journals, snapshots | store integrity | refuse SOURCE_CUTOVER_RECOVERY_REQUIRED / STORE_INCONSISTENT (e.g. manifest_journal_head_mismatch); snapshot staleness only flagged (1628) | store |
+| 6 | cli startTask 847 → readTodoStore (store 1508) unlocked, not forWrite | repoRoot | manifest, plans, journals, snapshots | store integrity + locked recovery when needed | validated journal-ahead/cache/marker state recovers automatically; unknown identity/digest corruption retains typed failure | store |
 | 7 | cli 850-858 projectTodoStatus DISPATCH_ONLY (todo-status.mjs:565; isNodeReady 513) | store | memory | is target in next_ready? | --parallel-frontier + non-ready → PARALLEL_DISPATCH_INVALID; non-ready alone not refused here | next_ready, active_set, targetReady |
 | 8 | cli 859-877 lookup | planKey, taskId | members | case-insensitive id match | STORE_INCONSISTENT/plan_not_active, TASK_NOT_FOUND, TASK_ID_AMBIGUOUS | resolvedTaskId |
 | 9 | cli 879-897 readTodoNoteContext (todo-note-store.mjs:504) | store, plan, task | note chains (task+plan), migrations | project | DEGRADE only for NOTE_LOG_CORRUPT/NOTE_PROJECTION_INVALID → note_context.unreadable.v1 stub; other errors propagate | noteContext |
@@ -28,16 +29,16 @@ Corrections to assumptions: dependency-not-done surfaces as STORE_INCONSISTENT/i
 | 12 | cli startStructureContext 714 → readTodoStructureState (todo-structure-store.mjs:213) | store, plan | structure source + binding | no source/binding → not_enabled; digest mismatch/missing task → unreadable | projected only here; reader errors (INVALID_TODO_STRUCTURE_*, STRUCTURE_SOURCE_*) propagate | structure_context |
 | 13 | cli 913 readTaskBackchainContext (plan-backchain.mjs:282; read 253) | plan, taskId | plans/<k>/<v>/backchain.json | missing file → null → result v5; present → feature_context, v6 | refuse PLAN_BACKCHAIN_INVALID (binding_unsafe/unreadable/invalid_json/invalid incl. plan_digest mismatch/task_missing/validate failure) | featureContext |
 | 14 | cli mutate 638, mutationActor 575 | LATTICE_TODO_ACTOR_HOST/SESSION/AGENT | env, terminal id, USER/LOGNAME | env values must be identifiers | refuse ACTOR_UNRESOLVED/actor_environment_invalid; unset → host label/host, session, sanitized USER/agent | actor{host,session,agent} |
-| 15 | store appendTodoEvent 2039 → withLock (~1829) | writer g5-authoring, event{kind:start,task_id,actor,payload{override_reason}} | .lattice/todo/.write.lock (O_EXCL) | lock acquired? | refuse STORE_WRITE_CONFLICT/store_locked; no wait/retry; dead-lock recovery off | lock |
-| 16 | store 2043-2047 readTodoStore({forWrite:true}) under lock | — | store | snapshot must equal journal-derived (1628) | refuse STORE_WRITE_REFUSED/snapshot_stale; steps 7-13 reads not re-validated | fresh store |
+| 15 | store appendTodoEvent 2039 → withLock (~1829) | writer g5-authoring, event{kind:start,task_id,actor,payload{override_reason}} | .lattice/todo/.write.lock (atomic hard-link publication) | complete PID/start/host owner; proven-dead recovery by default | live contender: STORE_WRITE_CONFLICT/store_locked; legacy: lock_owner_unidentified with manual next_action; no age-only reclaim | lock |
+| 16 | store readTodoStoreLocked({forWrite:true}) under lock | — | store | reread/replay validated history, repair derived snapshot and interrupted publication | unknown authoritative corruption retains typed error; steps 7-13 feature reads not re-validated | fresh store |
 | 17 | store 2048-2049, 2075-2080 resolveCanonicalTaskId (1959) | id | plan | resolves | TASK_NOT_FOUND / TASK_ID_AMBIGUOUS | task_id |
 | 18 | store enforceTodoStructureLifecycleGate 1975 (start not exempt; only done is) | member | binding + source | binding exists → source digest must match | refuse STRUCTURE_LIFECYCLE_GATE_FAILED/enabled_structure_source_unreadable (finalization/HEAD checks apply only to phase_accept/close) | — |
 | 19 | store nextEvent (~1893) | input | — | — | — | event |
 | 20 | store validateMergedTransition 1133; replay 683-717 | merged task/phase states | memory | task pending; phase active (v4); phase-accept edges accepted (mergedPhaseAcceptReady 1082); predecessors done & phases ready (1071); override_reason waives ONLY predecessor condition | refuse STORE_INCONSISTENT/invalid_start_transition (717, 1145) — one code, four causes | — |
 | 21 | store 2086-2095 prospective replay + evidence verification | journal+new event | git blobs | history replays cleanly | refuse with replay's typed error | — |
-| 22 | store 2118-2135 journal append via atomicWrite (1697) | event bytes | journal active segment (seal on overflow) | — | I/O error propagates; no rollback across 22-24 | journal seq+1 |
+| 22 | store 2118-2135 journal append via atomicWrite (1697) | event bytes | journal active segment (seal on overflow) | — | I/O error propagates; validated committed append rolls forward on reopen across 22-24 | journal seq+1 |
 | 23 | store 2141 snapshotFor (867) + atomicWrite | plan, events, tasks | — | — | — | snapshot{through_sequence, journal_head_digest, tasks, snapshot_digest} |
-| 24 | store ~2146 manifest rewrite | manifest | .lattice/todo/manifest.json | no digest compare (lock + step16 re-read protect) | crash between 22 and 24 → next read manifest_journal_head_mismatch | member.journal_head_digest, manifest_digest |
+| 24 | store ~2146 manifest rewrite | manifest | .lattice/todo/manifest.json | no digest compare (lock + step16 re-read protect) | crash between 22 and 24 → next locked reread completes snapshot/manifest publication | member.journal_head_digest, manifest_digest |
 | 25 | store ~2150 projectPhaseStates → cli 668-710 | event, snapshot, plan, phases | — | — | — | {event,snapshot,plan,phases} |
 | 26 | cli 687-710 result | event, snapshot, advisory, contexts | — | v6 if featureContext else v5; start without noteContext → TypeError (CONTRACT_VIOLATION) | — | result + result_digest |
 | 27 | cli 4270-4275 | result | stdout | — | typedFailure (220); TypeError→CONTRACT_VIOLATION; else INTERNAL_FAILURE (245) | JSON line; exit 0 / 1 (typed, internal) / 2 (args) |
@@ -102,18 +103,18 @@ Status/readiness and mutation must continue to agree.
 
 ## Recovery state transitions to establish before changing guards
 
-Current behavior and planned self-exit are distinct. These proposals do not claim
-that recovery is already implemented.
+Store and note rows below describe S3 recovery. Runtime/adapter/setup rows remain
+proposals and are not integrated by this Store change.
 
 | Protected state / current owner | Current failure | Proposed states and self-exit | Protection retained |
 |---|---|---|---|
-| Todo store write lock / withLock | Normal start publishes an empty lock; cross-plan recovery publishes PID only | Implemented: free → complete owner record atomically linked → owned → free; identified dead owner → identity-aware recovery claim → locked reread/replay → owned → free. Recovery becomes default for all todo writes. | PID + process-start identity + host identify the owner. Never reclaim a live owner or by age. Legacy empty/pid-only locks stay untouched: STORE_WRITE_CONFLICT, reason lock_owner_unidentified, next_action naming the lock and operator confirmation before clearing. |
+| Todo store write lock / withLock | Normal start publishes an empty lock; cross-plan recovery publishes PID only | Implemented: free → complete owner record atomically linked → owned → free; identified dead owner → identity-aware recovery claim → locked reread/replay → owned → free. Recovery is default for all todo writes. | PID + process-start identity + host identify the owner. Never reclaim a live owner or by age. Legacy empty/pid-only locks stay untouched: STORE_WRITE_CONFLICT, reason lock_owner_unidentified, next_action naming the lock and operator confirmation before clearing. |
 | Note lock / note-store | Empty lock cannot identify a dead owner | Implemented: same shared identified lock protocol → reread/replay note chain under lock → append → free | Append-only note integrity and sole writer. Live/unidentified/foreign-host owners stay protected; legacy failure retains NOTE_WRITE_CONFLICT with lock_owner_unidentified detail and manual next_action. |
 | Run lifecycle lock / runtime-lifecycle-lock | Torn owner record can stay busy | free → initializing → owned → free; abandoned initialization → identity-aware reclamation → owned | Do not reclaim a concurrent live initializer by age alone. |
 | Adapter registry / runtime-adapter-registry | No PID recovery | free → owned → free; proven-dead owner → reclaim + reread registry → owned | Do not overwrite a live registry writer. |
 | Setup lock / setup | Crash leaves setup locked | free → owned → free; proven-dead owner → reclaim + reread host entries → owned | Preserve unrelated host entries and exclude concurrent configuration writes. |
-| Source-cutover/cross-plan recovery marker / Store | Marker currently rejects open in some paths | clean → prepared → applying → committed → clean; reopen completes a validated transaction or rolls back its recorded before-state → clean | Never discard marker or bytes without resolving the recorded operation. |
-| Journal ahead of manifest/cache / appendTodoEvent | Crash at steps 22–24 yields manifest_journal_head_mismatch | clean → appended → projected → manifest-published → clean; reopen validates the append and finishes publication → clean | A digest mismatch of unknown origin is not permission to accept arbitrary data. Implement under recorded transaction ownership; no on-disk format change without separate design. |
+| Source-cutover/cross-plan recovery marker / Store | Marker currently rejects open in some paths | Implemented: clean → prepared → applying → committed → clean; reopen invokes the existing recorded revision recovery or resolves the cross-plan import transaction → clean | Never discard marker or bytes without resolving the recorded operation. |
+| Journal ahead of manifest/cache / appendTodoEvent | Crash at steps 22–24 yields manifest_journal_head_mismatch | Implemented: clean → appended → projected → manifest-published → clean; reopen validates the append and finishes publication → clean | A digest mismatch of unknown origin is not permission to accept arbitrary data. Repair under the shared transaction lock; old manifest head must be a validated journal ancestor. No on-disk format change. |
 | Runtime conflict hold / supervisor and pull-intake | Intentional scoped pause | running → conflict-held → conflict resolved → recompile/rebind when needed → running | Keep real overlap detection, process identity, scoped barriers and evidence checks. |
 
 ## Changed scope
@@ -207,7 +208,9 @@ unrelated product and sensor behavior is outside the focused local range.
 
 The shared Store lock module calls the platform process-start observer directly;
 it does not import runtime policy. Only todo/note integration is included here.
-The transient lock record is `{pid, process_start, host}`. Publication writes and
+The transient lock record has exact keys
+`{pid, process_start:{platform,identity}, host}`; missing/extra keys are unidentified.
+Publication writes and
 syncs a complete temporary record, hard-links it to `.write.lock` (EEXIST means
 busy), then unlinks the temporary. No reader can see a partially filled new lock.
 
@@ -220,9 +223,51 @@ busy), then unlinks the temporary. No reader can see a partially filled new lock
 | Multiple live claimants | Two recovery attempts overlap | Each preserves other live claims and exits with existing conflict; owner/claim release permits subsequent acquisition. Claim remains for the whole recovery operation. |
 | Unidentified legacy owner | Empty or pid-only pre-S3 lock; death cannot be established | Keep bytes and conflict code; reason lock_owner_unidentified and next_action identify manual clearing after the operator confirms no writer. This is the explicit legacy compatibility boundary. |
 | Unavailable observation | Observer fails and local PID still exists | Keep ownership and return existing busy result; retry can observe the owner again. PID absence is usable only for a complete local owner record. |
+| Own identity unavailable | No complete process-start identity can be observed for this writer; protect identifiable ownership | Publish no lock. Existing conflict code/reason with cause lock_identity_unavailable and next_action to restore the platform observer and retry. |
+| Publication primitive unavailable | Hard-link support is absent; protect atomic ownership publication | Existing conflict code/reason with cause lock_publication_unavailable and next_action naming the lock and a filesystem with atomic hard-link support. No empty-then-fill fallback. File sync uses fs-publish.syncPublishedFile, the shared owner of the existing WSL2 /mnt EIO allowance. |
+| Foreign or unidentified owner/claim | Local observation cannot prove a different host's process dead; preserve single writer | Existing conflict code, named lock/claim paths and next_action: retry after owner exit, or confirm no writer on the recorded host before manually removing only the abandoned lock/claim. Hostname changes receive this same explicit manual recovery. |
+
+The singleton claim decision does not wait or spin when two live claimants
+overlap: both may return busy, then the next sole attempt recovers. The todo
+claim root remains `.lattice/todo/.cross-plan-recovery`; old PID-only claim names
+are unidentified/manual. Note claims use `.write.lock.recovery`. The old
+recoverDeadLock option is ignored because recovery is unconditional; existing
+callers keep working. The cross_plan_lock_recovery_mutex_acquired protocol stage
+is preserved through onRecoveryClaim. Old binaries only reclaim exact pid-only
+records and new binaries never reclaim them, so mixed-version readers cannot
+mistake a new identified owner for a legacy dead owner.
+
+Todo/note `.write.lock`, `.write.lock.*.tmp`, `.write.lock.recovery/**` and todo
+`.cross-plan-recovery/**` are host-local exclusion state, never durable artifacts.
+Repository ignore rules and store Git transaction path selection exclude them;
+an interrupted acquisition must not distribute lock state through a commit.
 
 The Plan callback receives `validateProspectiveEvent({store,member,event})` after
 lock acquisition and fresh read/recovery, before durable append. The complete
 store includes every active member and cross-plan edge. It is read-only for Plan.
 Existing transition code/reason stay unchanged; `cause` is additive. The existing
 validateMergedTransition call is retained until Alice's extraction lands.
+
+## Store reopen publication (S3 implementation contract)
+
+Normal clean reads without an owner lock remain lock-free. An existing owner
+lock also triggers acquisition so a crash after manifest publication releases
+its dead ownership; live/unidentified contention preserves the valid read view.
+A recoverable observation takes the shared
+transaction lock, rereads all artifacts, validates before writing, then returns
+the same read schema. Writers use the private locked-read entry directly; the
+initial-authoring verification keeps its strict raw read so repair cannot hide
+an activation mismatch. A live writer's publication window keeps its previous
+typed read failure for stable-read retry; no recovery touches its bytes.
+
+| Recovery input | Locked validation and operation | Exit / retained error |
+|---|---|---|
+| Journal ahead of manifest | Existing manifest head must occur in the validated hash chain. Replay all existing semantic/identity/evidence checks and validate merged topology before any repair. Write derived snapshots first, then publish manifest heads and digest. | clean → appended → projected → manifest-published → clean. No journal truncation or invented event; an absent manifest head remains manifest_journal_head_mismatch. |
+| Stale/missing derived snapshot | Recompute from the authoritative validated journal, under lock. Validate every member before rewriting any cache. | Return snapshot_stale=false after canonical replacement. Existing unsafe path, EOL and authoritative digest failures remain typed errors. |
+| Segment sealed before active replacement | Verify sealed name/range/digest and exact byte equality of the redundant active segment with the final sealed segment. Treat that exact duplicate as one logical segment. | Next append replaces active with the new event; preserve every committed event. Differing or partial overlaps remain hash-chain errors. Same rule applies to the independent note chain. |
+| Cross-plan import transaction marker | Reuse recorded validated transaction: if manifest already published its descriptor, finish its staged bound artifacts; otherwise roll back only its unpublished directory. | Remove resolved marker; no caller must replay the original migrate input. Unknown digest/conflicting manifest remains typed error. |
+| Source-cutover barrier | Find the canonical marker matching the barrier digest in fixed transaction roots. Reconstruct only the recorded validated revision or revision-set input, actor/time/provenance from its genesis; invoke the existing recovery implementation under the already-held lock. | Finish its recorded source/artifact/manifest publication and cleanup. Private lock capability prevents nested acquisition; only recovery dispatch can supply it. Invalid/missing/conflicting marker/stage stays the existing typed recovery error. |
+
+Fault-injection stages after journal publication, snapshot publication and manifest
+publication expose the three durable boundaries to focused recovery tests. They
+do not alter event bytes or result schemas. Completed recovery is idempotent.

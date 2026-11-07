@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,6 +115,31 @@ test('dirty sourceと既存stageを保ったままstore pathだけをcommitしre
   assert.equal(await readFile(path.join(root, 'source.txt'), 'utf8'), 'source-dirty\n');
   assert.equal(git(root, ['ls-files', '--stage', '--', 'staged.txt']).stdout, stagedBefore);
   assert.equal(storeStatus(root), '');
+});
+
+test('store commits exclude host-local lock/temporary/claim state without consumer ignore rules', async (t) => {
+  const root = await workspace(t);
+  const transient = [
+    '.lattice/todo/.write.lock', '.lattice/todo/.write.lock.dead.tmp',
+    '.lattice/todo/.cross-plan-recovery/dead/owner',
+    '.lattice/todo/notes/.write.lock', '.lattice/todo/notes/.write.lock.dead.tmp',
+    '.lattice/todo/notes/.write.lock.recovery/dead/owner',
+  ];
+  for (const ref of transient) {
+    await mkdir(path.dirname(path.join(root, ref)), { recursive: true });
+    await writeFile(path.join(root, ref), 'host-local\n');
+  }
+  await commitTodoStoreMutation({ repoRoot: root, argv: ['todo', 'note'], env: cliEnv(),
+    action: async () => {
+      await writeFile(path.join(root, '.lattice/todo/durable-note.txt'), 'committed\n');
+      return { ok: true };
+    } });
+  const tree = git(root, ['ls-tree', '-r', '--name-only', 'HEAD']).stdout.split('\n');
+  assert.ok(tree.includes('.lattice/todo/durable-note.txt'));
+  for (const ref of transient) {
+    assert.ok(!tree.includes(ref), ref);
+    assert.equal(await readFile(path.join(root, ref), 'utf8'), 'host-local\n');
+  }
 });
 
 test('同じcommon Git-dirのatomic lock競合はtyped RUN_BUSYでstoreを変えない', async (t) => {

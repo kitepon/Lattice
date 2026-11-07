@@ -5,6 +5,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { StoreLockError, withStoreLock } from './store-lock.mjs';
+import { syncPublishedFile } from './fs-publish.mjs';
 
 import {
   TODO_LIMITS,
@@ -152,6 +153,7 @@ export async function readTodoNoteEvents(options = {}) {
   const names = await sealedFiles(sealed);
   const events = [];
   let previousSegmentDigest = ZERO_DIGEST;
+  let lastSealedBytes = null;
   for (const name of names) {
     const match = name.match(SEALED_NAME);
     const bytes = await readOptionalBounded(path.join(sealed, name));
@@ -164,9 +166,11 @@ export async function readTodoNoteEvents(options = {}) {
     }
     events.push(...segmentEvents);
     previousSegmentDigest = segmentDigest;
+    lastSealedBytes = bytes;
   }
   const activeBytes = await readOptionalBounded(active, { missing: true });
-  if (activeBytes !== null) events.push(...parseCanonicalSegment(activeBytes, active));
+  const duplicateActive = activeBytes !== null && lastSealedBytes?.equals(activeBytes) === true;
+  if (activeBytes !== null && !duplicateActive) events.push(...parseCanonicalSegment(activeBytes, active));
   // chainの分離は「そのfileへ何が積まれるか」で守る。混ざったchainは分離の意味を失うので
   // 黙って受けず、読んだ時点でtypedに落とす。
   if (events.some((event) => event.schema !== schema)) {
@@ -178,7 +182,7 @@ export async function readTodoNoteEvents(options = {}) {
   return {
     events,
     head_digest: events.at(-1)?.event_digest ?? null,
-    active_bytes: activeBytes ?? Buffer.alloc(0),
+    active_bytes: duplicateActive ? Buffer.alloc(0) : activeBytes ?? Buffer.alloc(0),
     previous_segment_digest: previousSegmentDigest,
   };
 }
@@ -191,7 +195,7 @@ async function atomicWrite(ref, bytes) {
   try {
     handle = await open(temporary, 'wx', 0o600);
     await handle.writeFile(bytes);
-    await handle.sync();
+    await syncPublishedFile(handle, ref);
     await handle.close();
     handle = null;
     await rename(temporary, ref);

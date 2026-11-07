@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile,
@@ -20,6 +20,7 @@ import { projectTodoChainV1 } from '../src/todo-chain.mjs';
 import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { phaseTodoRevisionPlanVersion } from '../src/todo-revision.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
+import { withStoreLock } from '../src/store-lock.mjs';
 
 const NOW = '2026-07-18T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });
@@ -664,11 +665,12 @@ for (const [name, mutate] of [
   ['trailing_bytes', async (root) => writeFile(path.join(root, snapshotRef), Buffer.concat([await bytes(root, snapshotRef), Buffer.from('x')]))],
   ['size_limit', async (root) => writeFile(path.join(root, snapshotRef), Buffer.alloc(8_388_609, 0x20))],
 ]) {
-  test(`snapshot単独 ${name} はreader継続＋snapshot_stale、writer拒否`, async (context) => {
+  test(`snapshot単独 ${name} はlocked replayで自動再構築する`, async (context) => {
     const root = await workspace(context); await mutate(root);
     const result = await readTodoStore({ repoRoot: root, now: NOW });
-    assert.equal(result.snapshot_stale, true);
-    await expectCode(readTodoStore({ repoRoot: root, now: NOW, forWrite: true }), 'STORE_WRITE_REFUSED', 'snapshot_stale');
+    assert.equal(result.snapshot_stale, false);
+    assert.equal((await readTodoStore({ repoRoot: root, now: NOW, forWrite: true })).snapshot_stale, false);
+    assert.deepEqual(await bytes(root, snapshotRef), Buffer.from(`${canonicalizeTodoArtifact(result.members[0].snapshot)}\n`));
     const rebuilt = await rebuildTodoSnapshot({ repoRoot: root, planKey: 'main', now: NOW });
     assert.equal(rebuilt.schema, 'lattice.todo_snapshot.v1');
     assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).snapshot_stale, false);
@@ -720,21 +722,98 @@ test('snapshot rebuildはcurrentでも同一canonical bytesを返す', async (co
   assert.deepEqual(await bytes(root, snapshotRef), before);
 });
 
-test('crash matrix: journal commit後にmanifestが旧headなら不整合、snapshotだけ旧版ならstale', async (context) => {
+test('crash matrix: journal commit後の旧manifestとsnapshotを自動publishする', async (context) => {
   const root = await workspace(context); const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
   const oldManifest = await bytes(root, manifestRef); const oldSnapshot = await bytes(root, snapshotRef);
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
   const newManifest = await bytes(root, manifestRef);
   await writeFile(path.join(root, manifestRef), oldManifest);
-  await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_INCONSISTENT', 'manifest_journal_head_mismatch');
-  // 恒久的に千切れた状態（このtestではmanifestを書き戻していないので、attempt間で一切変化
-  // しない）では、汎用STORE_BUSYへ丸めず実際のSTORE_INCONSISTENT reasonを返す——
-  // 復旧を試みる呼び出し元がまず読むべき情報を隠さない（2026-08-10 P0の教訓）。
-  await expectCode(readTodoStoreStable({ repoRoot: root, now: NOW, maximumAttempts: 2 }),
-    'STORE_INCONSISTENT', 'manifest_journal_head_mismatch');
+  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).members[0].tasks[0].status, 'in-progress');
+  assert.deepEqual(await bytes(root, manifestRef), newManifest);
+  await readTodoStoreStable({ repoRoot: root, now: NOW, maximumAttempts: 2 });
   await writeFile(path.join(root, manifestRef), newManifest); await writeFile(path.join(root, snapshotRef), oldSnapshot);
-  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).snapshot_stale, true);
+  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).snapshot_stale, false);
+});
+
+for (const stage of ['event_journal_published', 'event_snapshot_published', 'event_manifest_published']) {
+  test(`real process exit at ${stage} reopens without losing or inventing an event`, async (context) => {
+    const root = await workspace(context);
+    const moduleUrl = new URL('../src/todo-store.mjs', import.meta.url).href;
+    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import {appendTodoEvent,createTodoStoreWriter} from ${JSON.stringify(moduleUrl)};
+      await appendTodoEvent({repoRoot:${JSON.stringify(root)},
+        writer:createTodoStoreWriter({caller:'g5-authoring'}),planKey:'main',now:${JSON.stringify(NOW)},
+        event:{kind:'start',task_id:'T1',actor:${JSON.stringify(ACTOR)},recorded_at:${JSON.stringify(NOW)},
+          payload:{override_reason:null}},onProtocolStage:stage=>{if(stage===${JSON.stringify(stage)})process.exit(91)}});
+    `], { encoding: 'utf8' });
+    assert.equal(crashed.status, 91, crashed.stderr);
+    const committed = await bytes(root, journalRef);
+    const event = JSON.parse(committed.toString('utf8').trimEnd().split('\n').at(-1));
+    const reopened = await readTodoStore({ repoRoot: root, now: NOW });
+    const member = reopened.members[0];
+    assert.equal(member.journal.events.length, 2);
+    assert.equal(member.descriptor.journal_head_digest, event.event_digest);
+    assert.equal(member.snapshot.journal_head_digest, event.event_digest);
+    assert.equal(member.tasks[0].status, 'in-progress');
+    assert.deepEqual(await bytes(root, journalRef), committed);
+    await assert.rejects(lstat(path.join(root, '.lattice/todo/.write.lock')), { code: 'ENOENT' });
+    const next = await appendTodoEvent({ repoRoot: root, now: NOW, planKey: 'main',
+      writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+      event: { kind: 'block', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { reason: 'blocked' } } });
+    assert.equal(next.event.sequence, event.sequence + 1);
+    assert.equal(next.event.previous_digest, event.event_digest);
+  });
+}
+
+test('unknown manifest head and chain-valid invalid history remain typed errors without publication', async (context) => {
+  const root = await workspace(context);
+  const oldManifest = await bytes(root, manifestRef);
+  const oldSnapshot = await bytes(root, snapshotRef);
+  const genesisBytes = await bytes(root, journalRef);
+  const manifest = JSON.parse(oldManifest);
+  manifest.members[0].journal_head_digest = 'f'.repeat(64);
+  manifest.manifest_digest = todoSelfDigest(manifest, 'manifest_digest');
+  const unknown = Buffer.from(`${canonicalizeTodoArtifact(manifest)}\n`);
+  await writeFile(path.join(root, manifestRef), unknown);
+  await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_INCONSISTENT', 'manifest_journal_head_mismatch');
+  assert.deepEqual(await bytes(root, manifestRef), unknown);
+  await writeFile(path.join(root, manifestRef), oldManifest);
+  const valid = await appendTodoEvent({ repoRoot: root, now: NOW, planKey: 'main',
+    writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+    event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
+  const invalid = { ...valid.event, task_id: 'T2' };
+  invalid.event_digest = todoSelfDigest(invalid, 'event_digest');
+  await writeFile(path.join(root, journalRef), Buffer.concat([genesisBytes, Buffer.from(`${canonicalizeTodoArtifact(invalid)}\n`)]));
+  await writeFile(path.join(root, manifestRef), oldManifest);
+  await writeFile(path.join(root, snapshotRef), oldSnapshot);
+  await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+  assert.deepEqual(await bytes(root, manifestRef), oldManifest);
+  assert.deepEqual(await bytes(root, snapshotRef), oldSnapshot);
+});
+
+test('snapshot repair preserves a live writer and resumes after its release', async (context) => {
+  const root = await workspace(context);
+  await writeFile(path.join(root, snapshotRef), '{}\n');
+  await withStoreLock({ lockPath: path.join(root, '.lattice/todo/.write.lock') }, async () => {
+    assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).snapshot_stale, true);
+    assert.equal((await bytes(root, snapshotRef)).toString('utf8'), '{}\n');
+  });
+  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).snapshot_stale, false);
+});
+
+test('sealing crash leaves an exact redundant active segment that replays once and appends safely', async (context) => {
+  const root = await workspace(context);
+  const committed = await bytes(root, journalRef);
+  const sealed = path.join(root, path.dirname(journalRef), 'sealed');
+  await mkdir(sealed);
+  const digest = createHash('sha256').update(committed).digest('hex');
+  await writeFile(path.join(sealed, `${'0'.repeat(12)}-${'0'.repeat(12)}-${'0'.repeat(64)}-${digest}.jsonl`), committed);
+  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).members[0].journal.events.length, 1);
+  await appendTodoEvent({ repoRoot: root, now: NOW, planKey: 'main',
+    writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+    event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
+  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).members[0].journal.events.length, 2);
 });
 
 test('readTodoStoreStableは書込中の一時窓（毎attemptでmanifestが動く）なら引き続きリトライで自己解決する', async (context) => {

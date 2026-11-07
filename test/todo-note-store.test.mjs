@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -136,4 +137,18 @@ test('dead note owner is recovered before replay; live owner keeps NOTE_WRITE_CO
     assert.deepEqual(await readFile(lockPath), locked);
   });
   assert.deepEqual(await Promise.all(Object.values(lifecycle).map((ref) => readFile(ref))), before);
+});
+
+test('note sealing crash replays an exact duplicate active segment once before appending', async (t) => {
+  const { repoRoot } = await fixture(t);
+  const first = await appendTodoNote(input(repoRoot));
+  const root = path.join(repoRoot, '.lattice/todo/notes/plan-a');
+  const committed = await readFile(path.join(root, 'active.jsonl'));
+  const digest = createHash('sha256').update(committed).digest('hex');
+  await mkdir(path.join(root, 'sealed'));
+  await writeFile(path.join(root, 'sealed', `${'1'.padStart(12, '0')}-${'1'.padStart(12, '0')}-${'0'.repeat(64)}-${digest}.jsonl`), committed);
+  assert.deepEqual((await readTodoNoteEvents({ repoRoot, planKey: 'plan-a' })).events, [first]);
+  const second = await appendTodoNote(input(repoRoot, { body: 'After sealing recovery.' }));
+  assert.equal(second.sequence, 2);
+  assert.deepEqual((await readTodoNoteEvents({ repoRoot, planKey: 'plan-a' })).events, [first, second]);
 });
