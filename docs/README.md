@@ -8,6 +8,8 @@ Latticeの文書は、現行契約、現在の計画・構想、履歴、証拠�
 
 ## 現行契約
 
+- [`architecture/function-map.md`](architecture/function-map.md): Canonical module/state ownership and preserved product loop
+- [`architecture/dfd-todo-start.md`](architecture/dfd-todo-start.md): Canonical lifecycle field flow, authored order and proposed recovery transitions
 - [`../README.md`](../README.md): 単独導入、利用、診断、更新、releaseの入口
 - [`../PLAN.md`](../PLAN.md): 製品思想と研究方向
 - [`00_product-contract.md`](00_product-contract.md): 公開製品契約
