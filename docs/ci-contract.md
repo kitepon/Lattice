@@ -16,6 +16,8 @@ CIは3環境で同じフル試験を同時実行し、製品契約がどの対�
 `npm run test:profile -- --profile=<name>`のOS別profileは、実装中のfocused確認用として維持する。
 通常の新規suiteは自動的に`core`へ入り、3環境すべてのCI対象になる。
 
+製品jobのNodeはホストのNodeと別に用意する。macOSは`scripts/ci-macos-node-runtime.sh`がNode v24.22.0を`$RUNNER_TOOL_CACHE/lattice-node/v24.22.0`（runner所有、版名固定、mode 700）へ置き、既存のdirectoryは版・uid・modeのassertを通した時だけ再利用し、通らなければstaging directoryで作り直してrenameで据える。pathを固定するのは、Mac runnerのESETが実行ファイルのpath単位でLANの受信を許可するためで、runごとに変わるpathでは許可が保てない。Linux/Windowsはjob専有の一時directoryのまま。
+
 3 matrix jobはOrganization self-hosted runnerで同時に開始する。1環境の失敗で残りを中止しない。
 外部forkのコードを自宅LAN内のrunnerへ
 自動投入しないため、triggerは全branchのpushと手動実行だけにする。同一branchの古いrunは
