@@ -53,15 +53,53 @@ claim that a prior view is the latest current state.
 Plan-scoped appends do not alter manifest_digest. A manifest-only cache hit cannot
 justify verified freshness; every successful current result must validate the
 complete strict raw view and its source heads. A checkpoint is persisted only
-after that validation, as one unit; never assemble it from individually cached
-current member snapshots.
+after that validation, as one unit, and only when its source differs from the
+source in the retained valid checkpoint (absence/invalidity counts as no matching
+source). Unchanged source preserves checkpoint bytes and its timestamp; the
+current verified response may carry the new observation timestamp. Never assemble
+a checkpoint from individually cached current member snapshots. Stamp verified_at
+at observation start, not completion: daemon/local readers can race, and an older
+source may publish last. The next strict success observes the source difference
+and republishes it; no stronger source-version ordering is claimed.
+
+## Cheap change-detection connection
+
+Store also exports proposed `readTodoStoreDisplaySource({repoRoot})`, returning
+the same source fields as the full result (repository/project identity, manifest
+digest, sorted member version/plan/topology digests and lifecycle/plan-scoped
+heads). It reads only source/head metadata, with path/format safety, without
+chain replay, hash verification, graph validation, snapshots or recovery. These
+values are unverified observations used only as invalidation hints. The display
+never publishes them, labels freshness from them or supplies them to a writer.
+If the source cannot be read/parsed, the probe fails and display obtains the
+actual typed result from the full display reader.
+
+The poller memoizes the token observed for the last full-read attempt separately
+from result.source: last_verified returns an older checkpoint source and
+unavailable returns null. Comparing polls to either would cause full reads every
+500 ms during degradation. An unchanged observed token reuses the typed result,
+including degraded results. Initial/change/probe-failure observations trigger a
+full read; persistent unchanged probe failure must not become a 500-ms full-read
+loop. A bounded full revalidation ceiling of about30 seconds applies even when
+heads do not change, providing exit for same-head repairs or missed hints. If the
+probe recovers, trigger the full read again. A change during a full-read attempt
+leaves the memo invalidated for the next poll. Share in-flight/memo work per
+project across clients.
+
+Checkpoint publication still depends on the fully validated result source, not
+on the probe. This cheap export ships in the same unit as the daemon switch;
+shipping a full graph read per daemon poll until a later optimization is not
+within this contract. Expected work is source/head metadata per active member
+rather than full history/graph verification; no benchmark is claimed by this
+design. Display's live head must bind verified source + state + inconsistency
+code; that rendering/notification digest remains display-owned.
 
 ## Function/data flow and recovery transitions
 
 | Step / owner | Input and decision | Output / failure and automatic exit |
 |---|---|---|
 | Store strict display read | Resolve requested repository; use a stable raw read with existing identity/hash/replay/full merged-graph checks and named publication-window retry bounds | No canonical writes, lock reclaim or recovery. A typed current failure goes to checkpoint selection; no validation is waived. |
-| Store checkpoint publication | Serialize the complete verified view and bound source metadata; validate the checkpoint; use atomic file publication | Return verified and inconsistency:null. No intermediate or partial checkpoint may replace the previous one. |
+| Store checkpoint publication | Serialize the complete verified view and bound source metadata; validate the checkpoint; atomically publish only if source differs from the retained valid checkpoint | Return verified and inconsistency:null. No intermediate or partial checkpoint may replace the previous one. |
 | Checkpoint write failure | Current view already passed strict validation | Preserve current verified result and prior checkpoint bytes; report a typed checkpoint-publication diagnostic through existing reporting. Do not turn a healthy current read into HTTP500. The next strict success retries derived publication. |
 | Typed current read failure | Read last-verified checkpoint, validate schema/self digest/repository+project identity | Valid checkpoint returns last_verified with its original verified_at/source plus the current typed inconsistency. Never label the fallback current. |
 | Missing/invalid/unsafe/wrong-target checkpoint | There is no attributable verified view | Return unavailable with store:null and typed current inconsistency. Protect wrong-target data and existing bytes; no checkpoint repair from unvalidated current data. |
@@ -74,11 +112,11 @@ Seed after the bounded recovery; do not fabricate one from per-plan snapshot.jso
 
 ## Changed-range verification (future implementation only)
 
-Cover complete verified publication; typed inconsistency + previous view;
+Cover complete verified publication and unchanged-source no-write; typed inconsistency + previous view;
 plan-scoped-only head change; checkpoint persistence across restart; absent,
 corrupt and wrong-target checkpoint; publication failure retaining current view
 and previous bytes; next strict success clearing the diagnostic; zero canonical
 mutations/recovery on this entry; and strict writer/reader behavior unchanged.
-Store tests cover this row, display tests cover the connected renderer row.
+Store tests cover this row and cheap token/no-recovery contract. Display tests cover the connected renderer row, including degraded+unchanged observed token memoization and bounded full revalidation.
 No tests or implementation are part of this design draft. DFD, function map,
 implementation and affected checks must ship in the same eventual diff.

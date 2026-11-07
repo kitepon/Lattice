@@ -111,7 +111,7 @@ The later split moves functions to their owner without changing the contract.
 
 | Public function / state | Single owner | Consumer / failure contract |
 |---|---|---|
-| Proposed `readTodoStoreForDisplay({repoRoot})`; derived `.lattice/generated/store-display/last-verified.json` | Store: strict raw read without recovery, complete view serialization, repository/project/source identity, atomic checkpoint and non-fatal checkpoint write failure | [Store display DFD](dfd-store-display-read.md) returns verified/last_verified/unavailable plus typed inconsistency. Snow White owns the connected display row/banner/empty state. Lifecycle writes, validation and recovery never consume the checkpoint. After PR55/56 recovery and connected Leviathan review, not implemented in this draft. |
+| Proposed `readTodoStoreForDisplay({repoRoot})` and cheap unverified `readTodoStoreDisplaySource({repoRoot})`; derived `.lattice/generated/store-display/last-verified.json` | Store: strict raw read without recovery, complete view serialization, repository/project/source identity, atomic checkpoint only on validated source change, source/head change hints and non-fatal checkpoint write failure | [Store display DFD](dfd-store-display-read.md) returns verified/last_verified/unavailable plus typed inconsistency. Snow White owns the connected display row/banner/empty state. Lifecycle writes, validation and recovery never consume the checkpoint. After PR55/56 recovery and connected Leviathan review, not implemented in this draft. |
 
 ## Dependency direction after the proposed split
 
