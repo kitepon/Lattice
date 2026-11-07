@@ -1646,7 +1646,10 @@ async function withLock(repoRoot, callback, {
         if (error?.code === 'ENOENT') fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
         throw error;
       });
-      const parent = await lstat(path.join(repoRoot, '.lattice'));
+      const parent = await lstat(path.join(repoRoot, '.lattice')).catch((error) => {
+        if (error?.code === 'ENOENT') fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
+        throw error;
+      });
       if (!root.isDirectory() || root.isSymbolicLink()
         || !parent.isDirectory() || parent.isSymbolicLink()) {
         fail('STORE_INCONSISTENT', 'unsafe_artifact_path', { ref: STORE_ROOT_REF });
@@ -3135,7 +3138,6 @@ export async function initializeAuthoredTodoStore(options = {}) {
             if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
           }
         }
-        if (!activated) await rm(stage, { recursive: true, force: true });
         const published = await lstat(storeRoot).catch((error) => {
           if (error?.code !== 'ENOENT') throw error;
           return null;
@@ -3152,7 +3154,15 @@ export async function initializeAuthoredTodoStore(options = {}) {
     if (error instanceof StoreLockError) fail('STORE_WRITE_CONFLICT', error.reason, error.detail);
     throw error;
   } finally {
-    if (!renamed) await rm(stage, { recursive: true, force: true });
+    if (!renamed) {
+      const currentStage = await lstat(stage).catch((error) => {
+        if (error?.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (sameIdentity(stageIdentity, currentStage) && currentStage.isDirectory() && !currentStage.isSymbolicLink()) {
+        await rm(stage, { recursive: true, force: true });
+      }
+    }
   }
 }
 

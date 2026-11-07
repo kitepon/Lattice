@@ -307,3 +307,28 @@ test('a new live lock after residue release refuses rmdir without deleting its o
   } })), reason('STORE_WRITE_CONFLICT', 'store_locked'));
   assert.deepEqual(await readFile(lockPath), owner);
 });
+
+test('a replaced private staging directory is preserved during failed initialization cleanup', async (t) => {
+  const root = await fixture(t, false);
+  const storeModule = new URL('../src/todo-store.mjs', import.meta.url).href;
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs/promises';
+    import path from 'node:path';
+    import {syncBuiltinESMExports} from 'node:module';
+    const rename=fs.rename.bind(fs);
+    let replaced;
+    fs.rename=async(from,to)=>{
+      if(path.dirname(from)===${JSON.stringify(root)} && path.basename(from).startsWith('.lattice-todo-authoring-')){
+        await rename(from,from+'-saved'); await fs.mkdir(from);
+        await fs.writeFile(path.join(from,'operator.txt'),'preserve'); replaced=from;
+        throw new Error('stage_replaced');
+      }
+      return rename(from,to);
+    };
+    syncBuiltinESMExports();
+    const {initializeAuthoredTodoStore}=await import(${JSON.stringify(storeModule)});
+    await assert.rejects(initializeAuthoredTodoStore(${JSON.stringify(initial(root))}),/stage_replaced/);
+    assert.equal(await fs.readFile(path.join(replaced,'operator.txt'),'utf8'),'preserve');
+  `], { timeout: 15_000 });
+});

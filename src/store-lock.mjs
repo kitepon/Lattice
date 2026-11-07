@@ -141,7 +141,8 @@ async function removeDeadClaims(claimsPath, hostDigest, lockPath) {
 }
 
 async function removeClaim(claimPath, claimsPath) {
-  await rmdir(claimPath);
+  try { await rmdir(claimPath); }
+  catch (error) { if (error?.code !== 'ENOENT') throw error; }
   try { await rmdir(claimsPath); }
   catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error; }
 }

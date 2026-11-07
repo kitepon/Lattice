@@ -207,7 +207,12 @@ async function atomicWrite(ref, bytes) {
 
 async function ensureNoteDirectory(root) {
   try { await mkdir(root); }
-  catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  catch (error) {
+    if (error?.code === 'ENOENT') fail('NOTE_WRITE_CONFLICT', 'note_store_locked', {
+      next_action: 'Retry after initialization or recovery finishes publishing the Todo Store.',
+    });
+    if (error?.code !== 'EEXIST') throw error;
+  }
   const state = await lstat(root);
   if (state.isSymbolicLink() || !state.isDirectory()) fail('NOTE_WRITE_CONFLICT', 'note_store_locked', {
     next_action: `Restore a real note directory at ${root}, then retry.`,
