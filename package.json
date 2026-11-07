@@ -85,7 +85,7 @@
     "test:profile": "npm --prefix sensor ci && npm --prefix sensor run build && node scripts/run-product-tests.mjs",
     "test:sensor": "npm --prefix sensor test",
     "check": "node scripts/check-syntax.mjs",
-    "ci": "npm run check:docs && npm run test && npm run test:sensor && npm run check && npm run check:cli-surface && npm run check:open-questions && npm run check:reachability && npm run verify:todo-store",
+    "ci": "node scripts/run-ci.mjs",
     "verify:todo-store": "node bin/lattice.mjs todo verify --json",
     "check:cli-surface": "node scripts/verify-cli-surface.mjs",
     "check:open-questions": "node scripts/verify-open-questions.mjs",
