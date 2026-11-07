@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# Only a superseded run on the same PR ref is cancelled; main pushes and dispatches get
+# their own group (run_id) so main keeps per-commit evidence.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ownership:
     runs-on: ubuntu-latest
