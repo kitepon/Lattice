@@ -18,8 +18,15 @@ CIは3環境で同じフル試験を同時実行し、製品契約がどの対�
 
 製品jobのNodeはホストのNodeと別に用意する。macOSは`scripts/ci-macos-node-runtime.sh`がNode v24.22.0を`$RUNNER_TOOL_CACHE/lattice-node/v24.22.0`（runner所有、版名固定、mode 700）へ置き、既存のdirectoryは版・uid・modeのassertを通した時だけ再利用し、通らなければstaging directoryで作り直してrenameで据える。pathを固定するのは、Mac runnerのESETが実行ファイルのpath単位でLANの受信を許可するためで、runごとに変わるpathでは許可が保てない。Linux/Windowsはjob専有の一時directoryのまま。
 
-3 matrix jobはOrganization self-hosted runnerで同時に開始する。1環境の失敗で残りを中止しない。
-外部forkのコードを自宅LAN内のrunnerへ
-自動投入しないため、triggerは全branchのpushと手動実行だけにする。同一branchの古いrunは
-新しいpushでcancelする。tag pushは同じcommitのbranch CIを再実行しない。timeoutは通常所要時間の
-約2倍に留め、hangを長時間の`in_progress`として保持しない。
+The three matrix jobs use the organization self-hosted runners with fail-fast
+disabled. The actual caller triggers on main pushes, pull requests targeting
+main, and explicit workflow dispatch. It declares neither workflow concurrency
+nor automatic cancellation of superseded runs; those cannot be used as a
+consumer-lifetime guarantee. The full job timeout is 30 minutes.
+
+The canonical [macOS runtime function/data/state contract](architecture/dfd-ci-macos-runtime.md)
+separates current PR53 behavior from the proposed non-overwriting generations.
+No exclusive cache allocation or prior-consumer exit handoff exists, so a tree
+another job may run is never replaced, renamed over or deleted: a failed tree is
+left in place and a new generation is reserved with `mkdir` and published by a
+marker. A verified complete generation is reused by later jobs.
