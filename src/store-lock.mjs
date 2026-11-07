@@ -1,16 +1,15 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { link, lstat, mkdir, open, readFile, readdir, rm, rmdir } from 'node:fs/promises';
-import { hostname } from 'node:os';
+import { link, lstat, mkdir, open, readFile, readdir, readlink, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
 import { observeStartIdentityRaw } from './runtime-os-observation.mjs';
+import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
 
-const HOST = hostname();
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-const HOST_DIGEST = hash(HOST);
 const CLAIM = /^([0-9a-f]{64})-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{16})$/u;
 let ownStart;
+let ownHost;
 
 export class StoreLockError extends Error {
   constructor(reason, lockPath, detail = {}) {
@@ -71,18 +70,18 @@ async function readOwner(lockPath) {
   }
 }
 
-async function ownerIsDead(owner) {
-  return owner.host === HOST && owner.process_start.platform === process.platform
+async function ownerIsDead(owner, host) {
+  return owner.host === host && owner.process_start.platform === process.platform
     && processIsDead(owner.pid,
       hash(`${owner.process_start.platform}:${owner.process_start.identity}`));
 }
 
-async function removeDeadTemporaries(lockPath) {
+async function removeDeadTemporaries(lockPath, hostDigest) {
   const prefix = `${path.basename(lockPath)}.`;
   for (const name of await readdir(path.dirname(lockPath))) {
     if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
     const parsed = name.slice(prefix.length, -4).match(CLAIM);
-    if (parsed && parsed[1] === HOST_DIGEST && Number.isSafeInteger(Number(parsed[2]))
+    if (parsed && parsed[1] === hostDigest && Number.isSafeInteger(Number(parsed[2]))
       && await processIsDead(Number(parsed[2]), parsed[3])) {
       const temporary = path.join(path.dirname(lockPath), name);
       const info = await lstat(temporary).catch((error) => {
@@ -95,7 +94,8 @@ async function removeDeadTemporaries(lockPath) {
 }
 
 async function recoveryClaim(claimsPath, owner, lockPath) {
-  const name = `${HOST_DIGEST}-${owner.pid}-${hash(`${owner.process_start.platform}:${owner.process_start.identity}`)}-${randomBytes(8).toString('hex')}`;
+  const hostDigest = hash(owner.host);
+  const name = `${hostDigest}-${owner.pid}-${hash(`${owner.process_start.platform}:${owner.process_start.identity}`)}-${randomBytes(8).toString('hex')}`;
   const claimPath = path.join(claimsPath, name);
   // A releasing claimant may remove the empty parent between these mkdir calls.
   for (;;) {
@@ -109,7 +109,7 @@ async function recoveryClaim(claimsPath, owner, lockPath) {
     for (const entry of await readdir(claimsPath, { withFileTypes: true })) {
       if (entry.name === name || !entry.isDirectory()) continue;
       const parsed = entry.name.match(CLAIM);
-      if (parsed && parsed[1] === HOST_DIGEST && Number.isSafeInteger(Number(parsed[2]))
+      if (parsed && parsed[1] === hostDigest && Number.isSafeInteger(Number(parsed[2]))
         && await processIsDead(Number(parsed[2]), parsed[3])) {
         await rm(path.join(claimsPath, entry.name), { recursive: true, force: true });
       }
@@ -138,24 +138,32 @@ async function removeClaim(claimPath, claimsPath) {
 export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath}.recovery`,
   onRecoveryClaim = null }, callback) {
   await mkdir(path.dirname(lockPath), { recursive: true });
-  await removeDeadTemporaries(lockPath);
   ownStart ??= observeStartIdentityRaw(process.pid).catch((error) => { ownStart = undefined; throw error; });
+  ownHost ??= (async () => {
+    const terminalId = readOrCreateTerminalIdSync();
+    if (terminalId === null) throw new Error('terminal identity unavailable');
+    const label = terminalPublicLabel(terminalId);
+    return process.platform === 'linux'
+      ? `${label}:${hash(await readlink('/proc/self/ns/pid'))}` : label;
+  })().catch((error) => { ownHost = undefined; throw error; });
   let identity;
-  try { identity = await ownStart; }
+  let host;
+  try { [identity, host] = await Promise.all([ownStart, ownHost]); }
   catch {
     throw new StoreLockError('store_locked', lockPath, {
       cause: 'lock_identity_unavailable',
-      next_action: `Restore platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
+      next_action: `Restore terminal/PID-namespace identity and platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
     });
   }
   const owner = { pid: process.pid,
-    process_start: { platform: process.platform, identity }, host: HOST };
+    process_start: { platform: process.platform, identity }, host };
   if (!identified(owner)) throw new StoreLockError('store_locked', lockPath, {
     cause: 'lock_identity_unavailable',
-    next_action: `Restore platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
+    next_action: `Restore terminal/PID-namespace identity and platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
   });
+  await removeDeadTemporaries(lockPath, hash(host));
   const ownerBytes = `${JSON.stringify(owner)}\n`;
-  const temporary = `${lockPath}.${HOST_DIGEST}-${owner.pid}-${hash(`${owner.process_start.platform}:${owner.process_start.identity}`)}-${randomBytes(8).toString('hex')}.tmp`;
+  const temporary = `${lockPath}.${hash(host)}-${owner.pid}-${hash(`${owner.process_start.platform}:${owner.process_start.identity}`)}-${randomBytes(8).toString('hex')}.tmp`;
   let claimPath = null;
   let acquired = false;
   try {
@@ -175,14 +183,14 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
       }
       const existing = await readOwner(lockPath);
       if (existing === null) continue;
-      if (!await ownerIsDead(existing)) throw new StoreLockError('store_locked', lockPath);
+      if (!await ownerIsDead(existing, host)) throw new StoreLockError('store_locked', lockPath);
       if (claimPath === null) {
         claimPath = await recoveryClaim(recoveryClaimsPath, owner, lockPath);
         if (onRecoveryClaim) await onRecoveryClaim();
       }
       const fresh = await readOwner(lockPath);
       if (fresh !== null) {
-        if (!await ownerIsDead(fresh)) throw new StoreLockError('store_locked', lockPath);
+        if (!await ownerIsDead(fresh, host)) throw new StoreLockError('store_locked', lockPath);
         await rm(lockPath);
       }
     }

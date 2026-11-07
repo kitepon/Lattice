@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
@@ -33,7 +33,7 @@ test('ownership is a complete record before the callback and releases on failure
   await assert.rejects(withStoreLock({ lockPath }, async () => {
     const owner = JSON.parse(await readFile(lockPath, 'utf8'));
     assert.equal(owner.pid, process.pid);
-    assert.equal(owner.host, hostname());
+    assert.match(owner.host, /^terminal-[0-9a-f]{12}(?::[0-9a-f]{64})?$/u);
     assert.equal(owner.process_start.platform, process.platform);
     assert.ok(owner.process_start.identity.length > 0);
     throw new Error('callback failure');
@@ -81,7 +81,7 @@ test('foreign host ownership is preserved even for a locally absent PID', async 
   const { lockPath } = await fixture(t);
   await crashOwner(lockPath);
   const owner = JSON.parse(await readFile(lockPath, 'utf8'));
-  owner.host = `${hostname()}-foreign`;
+  owner.host = `${owner.host}-foreign`;
   const bytes = JSON.stringify(owner);
   await writeFile(lockPath, bytes);
   await assert.rejects(withStoreLock({ lockPath }, () => assert.fail('foreign lock reclaimed')), busy('store_locked'));
@@ -126,7 +126,7 @@ for (const [name, specifier, replacement, cause] of [
     `export async function observeStartIdentityRaw(){throw new Error('observer unavailable')}`,
     'lock_identity_unavailable'],
   ['unsupported hard links', 'node:fs/promises',
-    `export {lstat,mkdir,open,readFile,readdir,rm,rmdir} from 'node:fs/promises';
+    `export {lstat,mkdir,open,readFile,readdir,readlink,rm,rmdir} from 'node:fs/promises';
      export async function link(){throw Object.assign(new Error('unsupported'),{code:'ENOTSUP'})}`,
     'lock_publication_unavailable'],
 ]) {

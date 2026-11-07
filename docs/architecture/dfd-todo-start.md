@@ -210,6 +210,10 @@ The shared Store lock module calls the platform process-start observer directly;
 it does not import runtime policy. Only todo/note integration is included here.
 The transient lock record has exact keys
 `{pid, process_start:{platform,identity}, host}`; missing/extra keys are unidentified.
+Host uses the existing persisted terminal public label. On Linux it additionally
+includes the PID-namespace digest, so containers sharing a terminal config cannot
+mistake another namespace's PID for a dead local owner. Unavailable terminal or
+namespace identity follows lock_identity_unavailable; there is no generic-host fallback.
 Publication writes and
 syncs a complete temporary record, hard-links it to `.write.lock` (EEXIST means
 busy), then unlinks the temporary. No reader can see a partially filled new lock.
@@ -241,6 +245,8 @@ Todo/note `.write.lock`, `.write.lock.*.tmp`, `.write.lock.recovery/**` and todo
 `.cross-plan-recovery/**` are host-local exclusion state, never durable artifacts.
 Repository ignore rules and store Git transaction path selection exclude them;
 an interrupted acquisition must not distribute lock state through a commit.
+Store uses the existing terminal identity infrastructure and never reads the OS
+hostname (ADR 0197). Lock identity never supplies journal actors or public results.
 
 The Plan callback receives `validateProspectiveEvent({store,member,event})` after
 lock acquisition and fresh read/recovery, before durable append. The complete
