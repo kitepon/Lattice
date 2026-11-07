@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -109,3 +109,47 @@ test('overlapping recovery preserves the first live claimant and re-reads owners
   } }, () => assert.fail('replacement live owner removed')), busy('store_locked'));
   assert.deepEqual(await readFile(lockPath), liveBytes);
 });
+
+test('unidentified recovery claims have a named manual exit and are never deleted', async (t) => {
+  const { lockPath } = await fixture(t);
+  await crashOwner(lockPath);
+  const claimsPath = `${lockPath}.recovery`;
+  await mkdir(path.join(claimsPath, 'legacy-unidentified'), { recursive: true });
+  await assert.rejects(withStoreLock({ lockPath }, () => assert.fail('unidentified claim deleted')),
+    (error) => busy('store_locked')(error) && error.detail.recovery_claims_path === claimsPath
+      && error.detail.next_action.includes(claimsPath));
+  assert.deepEqual(await readdir(claimsPath), ['legacy-unidentified']);
+});
+
+for (const [name, specifier, replacement, cause] of [
+  ['unavailable own identity', './runtime-os-observation.mjs',
+    `export async function observeStartIdentityRaw(){throw new Error('observer unavailable')}`,
+    'lock_identity_unavailable'],
+  ['unsupported hard links', 'node:fs/promises',
+    `export {lstat,mkdir,open,readFile,readdir,rm,rmdir} from 'node:fs/promises';
+     export async function link(){throw Object.assign(new Error('unsupported'),{code:'ENOTSUP'})}`,
+    'lock_publication_unavailable'],
+]) {
+  test(`${name} returns typed actionable conflict and publishes no owner`, async (t) => {
+    const { root, lockPath } = await fixture(t);
+    const replacementUrl = `data:text/javascript,${encodeURIComponent(replacement)}`;
+    const loader = `export async function resolve(specifier,context,next){
+      if(specifier===${JSON.stringify(specifier)}&&context.parentURL?.endsWith('/store-lock.mjs'))
+        return {url:${JSON.stringify(replacementUrl)},shortCircuit:true};
+      return next(specifier,context);
+    }`;
+    const result = await execFileAsync(process.execPath, ['--input-type=module', '-e', `
+      import {register} from 'node:module';
+      register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loader)}`)});
+      const {withStoreLock,StoreLockError}=await import(${JSON.stringify(moduleUrl)});
+      try {await withStoreLock({lockPath:${JSON.stringify(lockPath)}},()=>process.exit(2));process.exit(3)}
+      catch(error){if(!(error instanceof StoreLockError))throw error;
+        process.stdout.write(JSON.stringify({reason:error.reason,...error.detail}))}
+    `]);
+    const detail = JSON.parse(result.stdout);
+    assert.equal(detail.reason, 'store_locked');
+    assert.equal(detail.cause, cause);
+    assert.ok(detail.next_action.includes(lockPath));
+    assert.deepEqual(await readdir(root), []);
+  });
+}
