@@ -84,18 +84,19 @@ waiving these dependencies preserves the requested order. Keep these checks;
 separately evaluate any convenience automation without changing their predicates.
 Status/readiness and mutation must continue to agree.
 
-## Target flow for S3 (proposed, pending boundary review)
+## Target flow for S3 (proposed, revised under boundary review)
 
 | Stage / owner | Input and read | Transform and output | Persistence / failure handling |
 |---|---|---|---|
 | Surface | argv, cwd, actor environment | Parse identifiers and resolve project/plan/task; preserve target identity | Invalid input/wrong target remains typed error. Any acting seat may retract/accept; target digest and current version still bind the operation. |
 | Store open | manifest, immutable plan, journal, snapshot | Replay authoritative events, reconstruct derived snapshot | Rebuild a stale derived cache automatically. Preserve digest/identity failures as errors; crash recovery must not invent an event. |
 | Plan readiness | task status, hard dependencies, joins, phase state, explicit acceptance edges | Compute ready frontier with the current dependency/phase predicates | Keep authored order. Unknown independence evidence does not rewrite readiness. |
-| Independence | recorded artifact plus HEAD/diff and declared boundaries | Return existing advisory coverage/guidance; add typed advisories for observations that cannot be used | Proposed refusal conversion applies to observational missing/stale/unknown results only. Unknown stays visible, never becomes verified or conflict-free. |
-| Structure/backchain | version-bound observation artifacts | Return context and named unavailable/stale advisory where applicable | Do not silently waive authored dependency or required acceptance evidence. Wrong target or unsafe path retains validation. |
+| Independence | recorded artifact plus HEAD/diff and declared boundaries | Reuse advisory.coverage/guidance/self_unknowns for observations that cannot be used; no new top-level advisories array | Proposed refusal conversion applies to observational missing/stale/unknown results only. Unknown stays visible, never becomes verified or conflict-free. |
+| Structure/backchain | version-bound observation artifacts | Return existing context keys with typed unavailable forms where validated; backchain absence-compatible fallback is result v5 | Do not silently waive authored dependency or required acceptance evidence. Wrong target or unsafe path retains validation. |
 | Mutation attribution | resolved task + acting host/session/agent + override reason | Build unchanged event schema and attribution | Actor mismatch alone no longer prohibits owner-approved retract/accept; preserve binding to the specific authored start/request/result. |
-| Store transaction | expected plan/event state, event | Acquire recoverable lock, reread, revalidate lifecycle/order, append and project | Preserve single writer and data-loss checks. Define recoverable journal/snapshot/manifest commit ordering before implementation. |
-| Response | committed event/snapshot plus precomputed contexts | Same result identity/digests plus versioned advisory information | Exact-key result schemas and consumers must be adapted together before emitting new fields. Observational advisories exit 0; phase/order refusals retain their existing contract. |
+| Store transaction | expected plan/event state, event | Acquire recoverable lock, reread, run the pure Plan-supplied validator for lifecycle/order, append and project | Preserve single writer and data-loss checks. Define recoverable journal/snapshot/manifest commit ordering before implementation. |
+| Response | committed event/snapshot plus precomputed contexts | Same result schema and top-level keys, with existing advisory and typed context variants | No schema bump or new top-level fields in this pass; nested stub validation/consumer compatibility must still be checked together before emission. Observational advisories exit 0; phase/order refusals retain their existing contract. |
+| Dashboard delivery | committed mutation after manifest publication (current step 24) | Run best-effort ensure/delivery after the lifecycle decision | Move current step 5 after commit; a refused start must not autostart a dashboard. Reporting failure does not undo a committed event. |
 | Status | persisted event chain, phase states and notes | Project active_set, next_ready, audit_pending and context | Journal is source of truth. Status and mutation use the same order; reporting failure must not undo a committed event. |
 | Runtime integration | plan bindings, executor receipts, observed changes | Dispatch, observe conflict, hold/recompile/resume | Required in every host environment. Aiterm launch does not replace conflict management, scoped barriers, result binding or plan-version control. |
 
@@ -123,3 +124,42 @@ start fields, ordering, actor checks, persistence or runtime behavior. S3 must
 update this document, public schemas/contracts and focused tests together with
 any implemented behavior changes. A stale historical classification of phase
 checks as protection-free is not authority to remove them.
+
+## Reviewed conversion boundary (Leviathan, 2026-11-07 JST)
+
+Manual/AI `todo start` and runtime pull-intake deliberately have different roles:
+manual start may report stale/missing observations while allowing work; runtime
+entry keeps its hold → recompile → resume loop (C5/C6/C8/C13/C14/C43/C25). A
+runtime hold is not an observational refusal to remove. No runtime hold changes
+are included without its own DFD.
+
+| Start-path case | Proposed treatment | Condition retained |
+|---|---|---|
+| Five INDEPENDENCE_UNVERIFIED reasons | Keep coverage/guidance precedence and unknowns in existing advisory; exit 0 | Do not relabel stale, missing or superseded coverage verified. |
+| HEAD unavailable | Existing advisory describes unknown coverage and base-unresolved guidance | No fabricated Git state. |
+| Backchain unreadable/invalid_json/plan_digest mismatch/task_missing/validation failure | Unavailable context; use the absence-compatible v5 result if feature_context cannot be supplied | binding_unsafe (outside repo/symlink) remains refusal. Before S3 choose compatible context representation by inspecting existing validators/consumers; a v5 result cannot silently acquire v6-only fields. |
+| Structure read unavailable; start structure source digest failure | Existing structure_context typed unavailable form plus advisory | Acceptance finalization at phase_accept/close remains required. |
+| Invalid actor environment | Sanitize like unset; record resolved actor | Keep event/request/result identity. |
+| Stale snapshot | Rebuild under transaction lock from journal | Unknown digest corruption stays an error. |
+| Dead write-lock owner | Recover through shared identity-aware protocol | All five writers record PID plus process-start identity; no live owner reclaim. |
+
+Withdrawn from the earlier broad conversion list: A12 A13 A63 (order),
+A60 A61 A62 (review/accept evidence), A30 A52 for acceptance/close finalization,
+A56 A58 A64 H4 (evidence/migration completeness), C5 C6 C8 C13 C14 C43 C25
+(runtime loop). Leave A79/A80/A85 authoring/provenance alone this pass. Keep
+same-key overwrite checks A33/A35. Target resolution, all four current transition
+predicates, event identity, evidence verification and durable publication remain.
+
+Status and prospective event validation will share pure Plan-owned readiness
+predicates; use structured reason detail to identify task state, phase state,
+acceptance edge or unfinished predecessor, instead of a single ambiguous cause.
+Preserve public top-level error code until its compatibility is intentionally
+changed. Journal event schemas stay unchanged; observational uncertainty is a
+projection, and any requested human/AI provenance can use the existing note store.
+
+Recovery rolls forward a chain-valid authoritative journal to snapshot/manifest;
+never truncate committed events. Replay currently walks committed history as well
+as prospective events. Its transition checks must be assessed separately from
+append-time readiness before S3: a valid hash chain alone does not prove a valid
+lifecycle event. Do not remove historical integrity validation under a blanket
+'replay is derived' rule. No replay change is part of S2.
