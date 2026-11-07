@@ -6,9 +6,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { digestArtifact } from '../src/artifact-contracts.mjs';
+import { canonicalizeArtifact, digestArtifact } from '../src/artifact-contracts.mjs';
 import { selfDigest } from '../src/runtime-contracts.mjs';
-import { buildExecutorPackets } from '../src/runtime-engine.mjs';
+import { buildExecutorPackets, buildNextRunEvent } from '../src/runtime-engine.mjs';
+import { createRuntimeControlStore } from '../src/runtime-control-store.mjs';
 import {
   RuntimeEpochStoreError,
   activateEpochOneStore,
@@ -79,16 +80,15 @@ async function fixture() {
 
 async function activationEvidence(runDir) {
   const runEvents = JSON.parse(await readFile(path.join(runDir, 'events.json')));
-  const control = {
-    schema: 'lattice.runtime_control_event.v1', run_id: 'multi-epoch-fixture', sequence: 0,
-    previous_digest: null, kind: 'supervisor_activated', session_nonce_digest: 'c'.repeat(64),
-    payload: {}, recorded_at: '2026-07-21T00:00:00.000Z',
-  };
-  control.event_digest = digestArtifact(control);
-  await writeFile(path.join(runDir, 'control-events.json'), `${JSON.stringify([control])}\n`);
+  const control = createRuntimeControlStore({ runDir, runId: 'multi-epoch-fixture',
+    clock: () => '2026-07-21T00:00:00.000Z' });
+  const controlDigest = await control.append({ run_id: 'multi-epoch-fixture',
+    kind: 'supervisor_activated', session_nonce_digest: 'c'.repeat(64),
+    payload: { supervisor_descriptor_digest: 'd'.repeat(64),
+      controller_descriptor_digest: 'e'.repeat(64), registration_digest: 'f'.repeat(64) } });
   return {
     activationRunEventDigest: runEvents.at(-1).event_digest,
-    activationControlEventDigest: control.event_digest,
+    activationControlEventDigest: controlDigest,
   };
 }
 
@@ -116,6 +116,155 @@ function successorBundle(active) {
   bundle.bundle_digest = selfDigest(bundle, 'bundle_digest');
   return bundle;
 }
+
+async function stagedFixture(t) {
+  const value = await fixture();
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  const request = JSON.parse(await readFile(path.join(value.runDir, 'request.json')));
+  const compileArtifact = JSON.parse(await readFile(path.join(value.runDir, 'plan-compile-result.json')));
+  const legacyMeta = JSON.parse(await readFile(path.join(value.runDir, 'run-meta.json')));
+  const evidence = await activationEvidence(value.runDir);
+  const active = await activateEpochOneStore({ runDir: value.runDir, request,
+    compileArtifact, legacyMeta, ...evidence });
+  const bundle = successorBundle(active);
+  await stageSuccessorEpoch({ runDir: value.runDir, transactionId: 'successor-2',
+    bundle, validateSuccessor: () => true });
+  return { ...value, evidence, bundle };
+}
+
+test('heartbeat追加後もsnapshot activation digestは耐久prefixとしてcommitできる', async (t) => {
+  const value = await stagedFixture(t);
+  const control = createRuntimeControlStore({ runDir: value.runDir,
+    runId: value.bundle.run_id, clock: () => '2026-07-21T00:00:01.000Z' });
+  const committed = await commitStagedSuccessorEpoch({ runDir: value.runDir,
+    transactionId: 'successor-2', ...value.evidence,
+    readActivationControlEvents: async () => {
+      await control.append({ run_id: value.bundle.run_id, kind: 'controller_heartbeat',
+        session_nonce_digest: 'c'.repeat(64), payload: { controller_id: 'controller-a',
+          registration_digest: 'f'.repeat(64), sequence: 1, lease_set_digest: 'a'.repeat(64) } });
+      const events = await control.readEvents();
+      t.diagnostic(JSON.stringify({ control: {
+        expected_tail: value.evidence.activationControlEventDigest,
+        actual_tail: events.at(-1).event_digest,
+        expected_in_chain: events.some((e) => e.event_digest === value.evidence.activationControlEventDigest),
+      } }));
+      return events;
+    } });
+  assert.equal(committed.pointer.plan_epoch, 2);
+  assert.equal(committed.pointer.activation_control_event_digest,
+    value.evidence.activationControlEventDigest);
+  t.diagnostic(JSON.stringify(committed.activation_evidence));
+  assert.equal(committed.activation_evidence.run.expected_in_chain, true);
+  assert.equal(committed.activation_evidence.control.expected_in_chain, true);
+  assert.notEqual(committed.activation_evidence.control.expected_tail,
+    committed.activation_evidence.control.actual_tail);
+});
+
+test('run/controlの両tailが進んでも、同じactivation prefixをcommitする', async (t) => {
+  const value = await stagedFixture(t);
+  const runPath = path.join(value.runDir, 'events.json');
+  const runEvents = JSON.parse(await readFile(runPath));
+  runEvents.push(buildNextRunEvent({ events: runEvents, runId: value.bundle.run_id,
+    kind: 'checkpoint_observed', planEpoch: 1, subject: { kind: 'todo', ref: 'T1' },
+    payload: { checkpoint_digest: 'a'.repeat(64) }, recordedAt: '2026-07-21T00:00:01.000Z' }));
+  await writeFile(runPath, `${JSON.stringify(runEvents)}\n`);
+  const control = createRuntimeControlStore({ runDir: value.runDir,
+    runId: value.bundle.run_id, clock: () => '2026-07-21T00:00:01.000Z' });
+  const committed = await commitStagedSuccessorEpoch({ runDir: value.runDir,
+    transactionId: 'successor-2', ...value.evidence,
+    readActivationControlEvents: async () => {
+      await control.append({ run_id: value.bundle.run_id, kind: 'controller_heartbeat',
+        session_nonce_digest: 'c'.repeat(64), payload: { controller_id: 'controller-a',
+          registration_digest: 'f'.repeat(64), sequence: 1, lease_set_digest: 'a'.repeat(64) } });
+      return control.readEvents();
+    } });
+  t.diagnostic(JSON.stringify(committed.activation_evidence));
+  for (const evidence of Object.values(committed.activation_evidence)) {
+    assert.equal(evidence.expected_in_chain, true);
+    assert.equal(evidence.chain_valid, true);
+    assert.notEqual(evidence.expected_tail, evidence.actual_tail);
+  }
+  assert.equal(committed.pointer.plan_epoch, 2);
+});
+
+test('欠落・壊れたchain・後続の矛盾はpointerを変えず、証拠を直せば同transactionで回復する', async (t) => {
+  const value = await stagedFixture(t);
+  const runPath = path.join(value.runDir, 'events.json');
+  const controlPath = path.join(value.runDir, 'control-events.json');
+  const originalRun = JSON.parse(await readFile(runPath));
+  const originalControl = JSON.parse(await readFile(controlPath));
+  const commit = (evidence = value.evidence) => commitStagedSuccessorEpoch({
+    runDir: value.runDir, transactionId: 'successor-2', ...evidence });
+  const refused = (stream, predicate) => (error) => {
+    assert.equal(error.code, 'EPOCH_ACTIVATION_INCOMPLETE');
+    assert.equal(predicate(error.detail[stream]), true);
+    assert.ok(error.message.includes('expected_in_chain'));
+    return true;
+  };
+  for (const [stream, field] of [['run', 'activationRunEventDigest'], ['control', 'activationControlEventDigest']]) {
+    await assert.rejects(commit({ ...value.evidence, [field]: '0'.repeat(64) }),
+      refused(stream, (e) => !e.expected_in_chain));
+  }
+  const broken = structuredClone(originalControl);
+  broken[0].payload.registration_digest = '0'.repeat(64);
+  await writeFile(controlPath, JSON.stringify(broken));
+  await assert.rejects(commit(), refused('control', (e) => !e.chain_valid));
+  await writeFile(controlPath, `${canonicalizeArtifact(originalControl)}\n`);
+  const control = createRuntimeControlStore({ runDir: value.runDir, runId: value.bundle.run_id });
+  for (const [kind, payload] of [
+    ['epoch_activated', { plan_epoch: 2, gate_digest: 'b'.repeat(64) }],
+    ['intake_resumed', { plan_epoch: 2, gate_digest: 'b'.repeat(64) }],
+    ['write_gate_committed', { gate_generation: 2, gate_digest: 'b'.repeat(64) }],
+    ['supervisor_stopped', { signal: 'SIGTERM' }],
+    ['supervisor_recovery_barrier', { barrier_id: 'barrier-b' }],
+  ]) {
+    await control.append({ run_id: value.bundle.run_id, kind,
+      session_nonce_digest: 'c'.repeat(64), payload });
+    await assert.rejects(commit(), refused('control', (e) => e.conflicting_event_digest !== null));
+    await writeFile(controlPath, `${canonicalizeArtifact(originalControl)}\n`);
+  }
+  const foreign = buildNextRunEvent({ events: [], runId: 'different-run', kind: 'run_initialized',
+    planEpoch: 1, subject: { kind: 'run_request', ref: 'request.json' },
+    payload: {}, recordedAt: '2026-07-21T00:00:01.000Z' });
+  await writeFile(runPath, JSON.stringify([foreign]));
+  await assert.rejects(commit({ ...value.evidence, activationRunEventDigest: foreign.event_digest }),
+    refused('run', (e) => e.expected_in_chain && !e.chain_valid));
+  await writeFile(runPath, JSON.stringify(originalRun));
+  for (const [kind, planEpoch, payload] of [
+    ['plan_recompiled', 2, { new_plan_digest: '0'.repeat(64) }],
+    ['intake_frozen', 1, { reason_kind: 'observed_write_conflict' }],
+    ['intake_resumed', 2, { plan_diff_digest: '0'.repeat(64) }],
+    ['run_closed', 1, { outcome: 'completed' }],
+    ['checkpoint_observed', 3, { checkpoint_digest: '0'.repeat(64) }],
+  ]) {
+    const contradictoryRun = [...originalRun, buildNextRunEvent({ events: originalRun,
+      runId: value.bundle.run_id, kind, planEpoch,
+      subject: { kind: 'runtime_plan', ref: 'different-plan' },
+      payload, recordedAt: '2026-07-21T00:00:01.000Z' })];
+    await writeFile(runPath, JSON.stringify(contradictoryRun));
+    await assert.rejects(commit(), refused('run', (e) => e.conflicting_event_digest !== null));
+  }
+  assert.equal((await readCommittedEpochStore(value.runDir)).pointer.plan_epoch, 1);
+  await writeFile(runPath, JSON.stringify(originalRun));
+  assert.equal((await commit()).pointer.plan_epoch, 2);
+});
+
+test('初回activationも心拍後のtailではなくsupervisor activation prefixへbindする', async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  const request = JSON.parse(await readFile(path.join(value.runDir, 'request.json')));
+  const compileArtifact = JSON.parse(await readFile(path.join(value.runDir, 'plan-compile-result.json')));
+  const legacyMeta = JSON.parse(await readFile(path.join(value.runDir, 'run-meta.json')));
+  const evidence = await activationEvidence(value.runDir);
+  const control = createRuntimeControlStore({ runDir: value.runDir, runId: request.request_id });
+  await control.append({ run_id: request.request_id, kind: 'controller_heartbeat',
+    session_nonce_digest: 'c'.repeat(64), payload: { controller_id: 'controller-a',
+      registration_digest: 'f'.repeat(64), sequence: 1, lease_set_digest: 'a'.repeat(64) } });
+  const committed = await activateEpochOneStore({ runDir: value.runDir, request,
+    compileArtifact, legacyMeta, ...evidence });
+  assert.equal(committed.pointer.activation_control_event_digest, evidence.activationControlEventDigest);
+  assert.equal(committed.activation_evidence.control.expected_in_chain, true);
+});
 
 test('v1 alias bytesを変えずepoch 1 bundleとpointerを最後にcommitする', async (t) => {
   const value = await fixture();

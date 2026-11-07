@@ -127,6 +127,28 @@ so it does not create a missing store root before taking the lock. The
 [authoring flow](dfd-plan-create.md) owns uninitialized-layout classification and
 transient cleanup before initial directory-rename activation.
 
+## Runtime activation publication
+
+Runtime owns `activateEpochOneStore` / `commitStagedSuccessorEpoch`. The selected
+activation digest binds a durable prefix, not a requirement that unrelated
+heartbeat/observation events stop. The protected asset is the committed epoch's
+binding to persisted run/control evidence; the error exits by restoring the
+recorded valid prefix or resolving a conflicting activation, then retrying the
+same transaction. No Store or Plan meaning changes.
+
+| Step | Read / decision | Output and failure |
+|---|---|---|
+| Prepare | Validate predecessor, successor bundle and transaction as before; caller captures run/control activation digests | Keep the saved digests as the activation anchor. |
+| Fresh observation | Read durable run events and durable control events; control callback may append one heartbeat before returning | The actual tails can differ from the anchors without losing durability. |
+| Prefix proof | Validate each stream's chain and run identity; require each selected digest in its stream | Missing/broken/foreign prefix retains the existing typed activation failure. |
+| Subsequent events | Heartbeat/observation append is allowed; reject a later run close/freeze/premature resume, a future epoch or different plan, and a later control stop/recovery barrier/gate/epoch activation which contradicts the pending epoch | Do not overwrite a superseding activation or accept a merely matching digest in invalid bytes. |
+| Publication | Rename staged successor and publish pointer last, or complete initial activation in its existing order | Pointer retains the selected activation digests; no format change. Same-transaction recovery stays idempotent. |
+| Evidence | Return internal run/control `expected_tail`, `actual_tail`, `expected_in_chain`, `chain_valid`, conflicting event digest | Failure includes the same diagnostics. Unit callback appends a durable heartbeat; Mac hold-resume fixture records the two stream comparisons after activation. |
+
+This replaces exact-tail checks with durable-chain inclusion at the Runtime
+activation boundary. It grants no lease, resumes no worker and changes no
+claim-7–10 conflict or task-group decision.
+
 ## Changed scope
 
 S1 records the current implementation and proposed boundaries. S2 only retires
