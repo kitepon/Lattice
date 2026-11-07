@@ -1,4 +1,5 @@
 /* Pure projections shared by Store and Plan; no I/O or lifecycle mutation. */
+import { canonicalizeTodoArtifact } from './todo-contracts.mjs';
 
 export function isPhaseTodoPlanSchema(schema) {
   return ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(schema);
@@ -44,4 +45,61 @@ export function projectTodoCrossPlanDependencies(members) {
       + `\0${entry.to.project_id}\0${entry.to.plan_key}\0${entry.to.task_id}\0${entry.event_digest}`;
     return key(left) < key(right) ? -1 : key(left) > key(right) ? 1 : 0;
   });
+}
+
+function mappedNodeRef(ref, plan, idMap) {
+  if (ref.project_id !== plan.project_id || ref.plan_key !== plan.plan_key) return ref;
+  return { ...ref, task_id: idMap.get(ref.task_id) ?? ref.task_id };
+}
+
+export function localTaskRef(ref, plan, taskId) {
+  return ref.project_id === plan.project_id && ref.plan_key === plan.plan_key
+    && ref.task_id === taskId;
+}
+
+export function removedTaskRef(ref, plan, removedTaskIds) {
+  return ref.project_id === plan.project_id && ref.plan_key === plan.plan_key
+    && removedTaskIds.has(ref.task_id);
+}
+
+export function todoTaskCarrySemantics(plan, taskId, idMap, {
+  reconciliationMetadata = false, includeDesignMemo = false, removedTaskIds = new Set(),
+} = {}) {
+  const task = plan.tasks.find(({ task_id }) => task_id === taskId);
+  if (!task) return null;
+  const mapId = (id) => id === null ? null : idMap.get(id) ?? id;
+  const normalizedTask = reconciliationMetadata ? {
+    task_id: mapId(task.task_id), title: task.title, lane: task.lane,
+    compile_binding: task.compile_binding,
+  } : {
+    task_id: mapId(task.task_id), title: task.title, lane: task.lane,
+    ...(includeDesignMemo ? { design_memo: task.design_memo } : {}),
+    narrative_ref: task.narrative_ref, narrative_anchor: task.narrative_anchor ?? null,
+    compile_binding: task.compile_binding, parent_task_id: mapId(task.parent_task_id ?? null),
+  };
+  const edges = plan.hard_dependencies
+    .filter(({ from, to }) => !removedTaskRef(from, plan, removedTaskIds)
+      && !removedTaskRef(to, plan, removedTaskIds)
+      && (localTaskRef(from, plan, taskId) || localTaskRef(to, plan, taskId)))
+    .map(({ from, to }) => ({ from: mappedNodeRef(from, plan, idMap), to: mappedNodeRef(to, plan, idMap) }))
+    .sort((left, right) => canonicalizeTodoArtifact(left) < canonicalizeTodoArtifact(right) ? -1 : 1);
+  const joins = plan.joins
+    .flatMap((join) => {
+      if (removedTaskRef(join.before, plan, removedTaskIds)) return [];
+      const after = join.after.filter((ref) => !removedTaskRef(ref, plan, removedTaskIds));
+      if (after.length === 0 || (!localTaskRef(join.before, plan, taskId)
+        && !after.some((ref) => localTaskRef(ref, plan, taskId)))) return [];
+      return [{ ...join,
+        after: after.map((ref) => mappedNodeRef(ref, plan, idMap))
+        .sort((left, right) => canonicalizeTodoArtifact(left) < canonicalizeTodoArtifact(right) ? -1 : 1),
+        before: mappedNodeRef(join.before, plan, idMap),
+      }];
+    }).sort((left, right) => left.id < right.id ? -1 : 1);
+  const phaseAcceptDependencies = isDecoupledPhaseTodoPlanSchema(plan.schema)
+    ? plan.phase_accept_dependencies
+      .filter(({ to }) => localTaskRef(to, plan, taskId))
+      .map(({ from, to }) => ({ from, to: mappedNodeRef(to, plan, idMap) }))
+      .sort((left, right) => canonicalizeTodoArtifact(left) < canonicalizeTodoArtifact(right) ? -1 : 1)
+    : [];
+  return { task: normalizedTask, hard_dependencies: edges, joins, phase_accept_dependencies: phaseAcceptDependencies };
 }
