@@ -30,6 +30,12 @@ dependency connect. Every other command remains but is not part of seat guidance
 Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
 
+A seat may say who it is with `LATTICE_SEAT_ID` (letters, digits, `.`, `_`, `-`;
+up to 64). The machine derives `seat_id` into the top level of `status --json`
+and `session-context --json`, and keeps the seat's own display and delivery
+state under `~/.lattice/seats/<seat_id>` (`LATTICE_CONFIG_DIR` still wins when
+set). An unset or malformed id makes the seat anonymous; nothing refuses.
+
 ## Error shape
 
 `code` names the kind; `detail.pointer` names the field; `detail.rule` names the
