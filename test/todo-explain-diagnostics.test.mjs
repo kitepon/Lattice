@@ -116,7 +116,33 @@ test('todo migrate --inputはschema違反detailへviolation_reason/violation_pat
   assert.equal(typeof payload.detail.next_action, 'string');
 });
 
-// --- revise (todo_revision.v1/v2) ---
+test('migrateの派生plan違反は入力indexと混同せずtodo_plan空間を返す', async (context) => {
+  const root = await gitWorkspace(context);
+  const value = JSON.parse(await readFile(path.join(FIXTURE_ROOT, 'valid.json'), 'utf8'));
+  value.schema = 'lattice.todo_extraction.v3';
+  value.hard_dependencies = [];
+  for (const [index, task] of value.tasks.entries()) {
+    task.start = null;
+    task.completion = null;
+    task.disposition = 'register_pending';
+    task.design_memo = 'NO_PLAN';
+    task.source.checkbox_state = 'unchecked';
+    task.source.parent_task_id = value.tasks[1 - index].task_id;
+  }
+  value.extraction_digest = todoSelfDigest(value, 'extraction_digest');
+  assert.equal(validateTodoExtraction(value), true);
+  await writeFile(path.join(root, 'cycle.json'), JSON.stringify(value));
+  const { stdout, stderr, err } = stdio();
+  const exitCode = await runTodoCli({ argv: ['migrate', '--input', 'cycle.json'],
+    cwd: root, stdout, stderr, env: { ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0' } });
+  assert.equal(exitCode, 1);
+  const error = JSON.parse(err[0]);
+  assert.equal(error.code, 'INVALID_TODO_EXTRACTION');
+  assert.equal(error.detail.reason, 'schema_invalid');
+  assert.equal(error.detail.pointer_space, 'todo_plan');
+  assert.equal(error.detail.pointer, '/tasks');
+  assert.equal(error.detail.violation_kind, 'parent_graph_invalid');
+});
 
 test('todo migrateはhard dependencyの整列規則と入力indexを返す', async (context) => {
   const root = await gitWorkspace(context);
@@ -141,6 +167,8 @@ test('todo migrateはhard dependencyの整列規則と入力indexを返す', asy
   assert.equal(payload.detail.violation_kind, 'unsorted_or_duplicate_collection');
   assert.equal(payload.detail.expected.order, 'ascending_unique');
 });
+
+// --- revise (todo_revision.v1/v2) ---
 
 const taskV3 = (taskId, parentTaskId = null) => ({
   task_id: taskId, title: taskId, lane: 'main', narrative_ref: null,

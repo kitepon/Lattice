@@ -3,15 +3,15 @@
 Canonical w1/w5 contract for initial/additional authoring and validation.
 [Function map](function-map.md) owns the composed boundaries.
 
-Implementation status: this diff supplies the Store API/recovery boundary.
-Plan CLI/status dispatch remains Alice's following w1/w5 integration; the current
-main CLI still has the initial-only create restriction.
+Implementation status: Store API/recovery is supplied by PR39. This Plan diff
+connects plain create and backchain addition to that API, projects uninitialized
+layout and valid-store authoring capability, and exposes pointer/rule diagnostics.
 
 ## Store implementation boundary
 
-The Store API in this diff supplies the transaction below. Plan's additional
-create/status dispatch remains Alice's following integration. No v5 revision
-artifact is introduced by this change.
+The Store API supplies the transaction below; its accepted Store checks are
+reused. Plan owns the caller projection and diagnostics described afterward.
+No v5 revision artifact is introduced by this change.
 
 | Store function / state | Reads and transition | Publication / refusal and exit |
 |---|---|---|
