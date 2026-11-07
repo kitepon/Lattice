@@ -20,7 +20,7 @@ commit are four different operations. None substitutes for another.
 | Source commits and accepted transform artifact | Operating AI/worker through Git; seam service performs verified isolated transformation and its commit | Runtime consumes actual tree, checkpoint HEAD and bound transformation result. Runtime does not synthesize source changes or replace a commit with an acknowledgement. |
 | TODO plan revision and migration | Plan's `validatePhaseTodoRevision` validates; Store's `applyPhaseTodoRevision` / `createTodoStoreWriter` publish | Daemon bootstrap (composition root) imports those functions and injects `validatePhaseRevision` / `commitPhaseRevision` into `runManagedSupervisorDaemon`. Runtime invokes them with the existing actor record; it does not supply the implementations or edit journal/manifest bytes. |
 | Run/adapter exclusion locks | Runtime lock wrapper; shared lock/OS observation is infrastructure | No lock grants task readiness or source-write authorization. Store's todo/note locks are outside this scope. |
-| Runtime start-binding exclusion currently inside Store tree | Runtime owns `.lattice/todo/.start-binding.lock` and its transient recovery state | Store Git transaction currently does not exclude it. Relocation to `.lattice/runtime/locks/.start-binding.lock` and explicit host-local ignore are proposed, pending Store agreement and a cutover that cannot allow old/new writers to use independent locks. |
+| Runtime start-binding exclusion inside Store tree | Runtime owns the meaning of `.lattice/todo/.start-binding.lock` and its transient recovery state | Snow White ruling: retain this exact path in this version, so old/new binaries cannot acquire independent locks. Store owns durable Git path selection and any exclusion correction; retaining the path does not repair the current selection defect below. |
 | CLI JSON and shipped bins | Runtime supplies command results; surface formats them | Keep `lattice`, `lattice-mcp`, `lattice-scripted-adapter`, `lattice-work-order-adapter` and current result schemas. |
 
 ## Current managed flow and claim-preservation contract
@@ -53,7 +53,7 @@ of working baseline behavior or a legal conclusion.
 | Target ID | Input / detection | Stop, transformation and replan | Gate / exit and claim element |
 |---|---|---|---|
 | R2T **[9: detection, both alternatives]** | R1 actual range exceeds the task's impact range **OR** overlaps another running task's impact range | Both are named runtime-conflict detections. Keep actual resource ranges and task/attempt bindings in the finding. A singleton excess is not rejected for lacking a second task. | Route singleton excess to R3T/R6T; route actual pair conflict to R4/R5aT or R5b. Explicitly replaces current R2's record-only/pair-required split. |
-| R3T **[10: group of one or more]** | R2T singleton finding for task A, actual resources and current attempt | Target group is `{A}`. Stop only A, observe its final checkpoint and freeze its intake; unrelated attempts keep writing on their origin bindings. | Enter R6T. Do not use claim-7/8 pair treatments or invent another task. If subsequent observation discovers a real overlap, identify its actual affected group and use the pair path. |
+| R3T **[10: group of one or more]** | R2T singleton finding for task A, actual resources and current attempt | Target group is `{A}`. Stop only A and observe its final checkpoint. The existing run-level intake freeze temporarily delays new dispatch; it stops no unrelated running attempt, whose origin binding and writes continue. | Enter R6T. Do not use claim-7/8 pair treatments or invent another task. If subsequent observation discovers a real overlap, identify its actual affected group and use the pair path. |
 | R6T **[10: new plan for that group]** | R3T singleton checkpoint, revised task scope/work specification and observed excess resources | Generate a fresh plan for A and reconcile its manifest/context against the actual source; invalidate and redispatch only A. Use a dedicated singleton scope-reconciliation treatment contract, not an `intentional_serial`/`seam_split` request which requires two tasks. | Bound successor staging, pointer/gate commit and attempt-bound resume use R7–R10. Update the versioned treatment/request schema with this path in t12; do not silently add a mode to an old exact schema. |
 | R5aT **[7: stop → source commit → resolve → resume]** | Pair finding and selected loser A / winner B; source checkpoint and origin attempt bindings | Keep A stopped while B completes and commits its change to Git. Observe B's changed HEAD, its descendant relation and committed checkpoint against B's origin packet/worktree. Re-observe/reconcile the shared resource and generate the resolved affected successor. | The serial treatment must bind the observed committed checkpoint/HEAD, and Runtime must validate that evidence before authorizing A. Prepare/rebind acknowledgement plus gate commit cannot bypass this source-commit-and-resolution gate. Source commit remains the operating AI/worker's action. |
 | R5bT **[8: stop both → limited refactor → resume both]** | Pair finding whose conflict can be removed by a bounded seam transformation | R4 stops the related pair; R5b transforms only required source elements, verifies behavior and commits the real transform; R6 regenerates affected tasks. | R7–R10 require the accepted transformation in successor base before both affected successors resume. Preserve the baseline limited-transform path while repairing its connections. |
@@ -63,6 +63,14 @@ existing common barrier first quiesces both, only the winner may be reauthorized
 for that step; a shared gate must not accidentally release the loser. Commit
 observation must cover the source change being accepted, not merely an unrelated
 HEAD advance. t12 must demonstrate the complete ordering with a real Git commit.
+
+These are public behavior changes in t12: managed `conflict` narrows the existing
+`FINDING_NOT_A_CONFLICT` refusal by accepting singleton excess, so its release
+notes must name that change. Redirecting pull `acceptFindings` / `ownScopeGrowth`
+from record-only acceptance to R3T/R6T changes the relevant part of
+[ADR 0158](../adr/0158-planned-boundaries-are-predictions-and-runtime-recovery-is-target-scoped.md).
+t12 must ship an ADR 0158 addendum with the new behavior; preserve the historical
+decision and identify which rule is superseded.
 
 ### Claim paths and source-commit obligation
 
@@ -102,16 +110,20 @@ the real source-commit/held-worker trace in t12.
 | `<run>/.pull-intake.lock`, `.lattice/todo/.start-binding.lock`: pull mutations/start binding | Same lifecycle-lock implementation, explicit lock path | Same initialization limitation. Start-binding file protects Runtime's plan-start/attempt binding; it grants no ownership over TODO Store semantics. |
 | `<run>/.cli-lifecycle.lock`: unmanaged/launch CLI path | `withLifecycleLock`: empty exclusive-create file | Normal finally unlinks; a killed process leaves no identity for automatic recovery. Existing error is `RUN_BUSY`. |
 | `.lattice/runtime/adapter-registry/.registry.lock`: registry writer | Exclusive create, then PID line | Normal release removes; no process-start identity/dead-owner recovery. Existing error is `ADAPTER_REGISTRY_BUSY`. |
-| Common Git directory `lattice-todo-store-commit.lock`: `todo-store-git-transaction.mjs:commitTodoStoreMutation` | Store currently calls Runtime's `acquireRuntimeLifecycleLock` with `lockPath/sessionNonceDigest/operation/requestId/timeoutMs`; it catches `RuntimeLifecycleLockError` and later calls the returned `release()` | Store-owned caller of the same v1 publication protocol. Proposed wrapper compatibility keeps that call unchanged; Store agreement is pending. Runtime does not edit this Store file. |
+| Common Git directory `lattice-todo-store-commit.lock`: `todo-store-git-transaction.mjs:commitTodoStoreMutation` | Store calls Runtime's `acquireRuntimeLifecycleLock` with `lockPath/sessionNonceDigest/operation/requestId/timeoutMs`; it catches `RuntimeLifecycleLockError` and later awaits the returned `release()` | Store agrees in principle to unchanged arguments, awaited helper-finally completion and error code/string-detail compatibility. This explicit Git common-dir path stays fixed across worktrees. Runtime does not edit this Store caller. |
 
 `.lattice/todo/.start-binding.lock` and old lifecycle recovery `.stale` files
 currently match neither `.gitignore`'s `.write.lock*`/cross-plan entries nor
 `todo-store-git-transaction`'s explicit exclusion pathspecs. That is a source
 selection defect: Runtime transient state can enter a durable store commit.
-The target must cover the lock, temporary and recovery paths together. Proposed
-relocation/ignore and old/new-writer cutover need Store agreement; if the old
-path is retained, Store owns the transaction exclusion change. This is not fixed
-by documenting that the files are host-local.
+The target must cover the lock, temporary and recovery paths together. This
+version retains the old path (Snow White ruling); Store owns the separate Git
+selection/ignore correction, coordinated by the supervisor. A future relocation
+requires an explicitly approved fixed-order compatibility bridge: acquire old
+then new, release new then old, with old-path transients still excluded by Store.
+An old-path absence check cannot prevent split exclusion. Existing old-path
+ownership exits only by release, identified dead-owner recovery or the legacy
+manual-confirmation path; do not delete it as a migration step.
 
 ## Proposed lock recovery state transitions
 
@@ -119,7 +131,10 @@ This target table is the contract for later implementation, not a completed
 repair. The selected proposal uses `store-lock.mjs:withStoreLock` unchanged:
 exclusive atomically linked bytes have exactly `{pid, process_start, host}`.
 Runtime adapts the callback lifetime to its existing acquire/`release()` handle
-and error/wait contract. Operation, request ID, acquired time and nonce stay in
+and error/wait contract: the helper callback holds a promise until Runtime's
+`release()` resolves it, and `release()` awaits the helper's complete `finally`
+cleanup. Process death leaves the identified owner for existing helper recovery.
+Operation, request ID, acquired time and nonce stay in
 the Runtime handle's v1 metadata, never in shared lock bytes. No new sidecar is
 needed. Retain `validateRuntimeLifecycleLockArtifact` for that v1 metadata and
 legacy reader compatibility; it no longer validates newly published lock bytes.
@@ -128,13 +143,29 @@ artifacts, PID-only files and torn files are all unidentified to the new helper;
 they follow the explicit legacy/manual-confirmation transition below. No silent
 new-envelope validation by an old v1 validator is allowed.
 
-**Store agreement pending:** preserve the Store caller's acquire arguments,
-`RuntimeLifecycleLockError` mapping and returned `release()` contract, so
+**Agreed boundary (Store principles + Snow White ruling, 2026-11-07):** preserve
+the Store caller's acquire arguments, explicit common-dir lock path,
+`RuntimeLifecycleLockError` code/string `detail` and awaited `release()` contract, so
 `commitTodoStoreMutation` needs no Store-file edit for this integration. The
-wrapper retains bounded wait and rejects a mismatched release owner; shared
-helper remains responsible for atomic ownership and dead-owner recovery.
+wrapper retains bounded wait; no `StoreLockError` escapes. Shared helper remains
+responsible for atomic ownership and dead-owner recovery, including its raw OS
+identity/host/recovery-claim rules. Use the Store inode-release guarantee after
+its PR39 integration in the supervisor's order; no Runtime implementation/test
+result is implied by Store's agreement.
 Runtime owns any wrapper adaptation; Store owns its helper and durable Git
 selection. Do not change the helper API or Store caller unilaterally.
+
+`releaseRuntimeLifecycleLock({lockPath, ownerDigest})` remains exported. Runtime
+resolves the matching live acquire handle by canonical lock path and the v1
+metadata digest, and verifies the captured shared owner bytes plus file identity
+before asking the helper to release. A missing lock, missing/mismatched handle or
+replaced owner/file yields `RUN_LOCK_OWNER_MISMATCH`, including when the helper
+would otherwise silently preserve it. Unwind the callback/helper lifetime even
+on that error, await its `finally`, preserve a replacement owner and report the
+Runtime error. Successful handle `release()` remains idempotent; the exported
+release function retains its missing-owner refusal. The metadata validator does
+not parse the new shared lock bytes. t12 must test both entry points and their
+error transport; helper cleanup must not turn a refused release into success.
 
 | State / protected asset | Observation and action | Transition / self-exit |
 |---|---|---|
@@ -144,8 +175,8 @@ selection. Do not change the helper API or Store caller unilaterally.
 | Owner observation unavailable | Observer fails/returns absent while the PID exists, or identity/domain cannot be established | Preserve bytes, return typed busy/invalid reason. A retry observes again; successful owner release exits normally. Observation failure is not proof of death. |
 | Recoverable, proven-dead local owner | PID absent or complete process-start identity differs; exclusive identified recovery claim, then reread exact lock identity before any removal | Reclaim only that owner → free → fresh acquisition and state reread. A live replacement stays intact; multiple live recovery claimants preserve each other and exit busy, then a sole retry can recover. |
 | Recovery claimant died | Claim name/record identifies its PID/start/domain even before claim body initialization | Next contender proves the claimant dead, removes only its claim and retries. Recovery never creates a second anonymous permanent lock. |
-| Releasing own lock | Re-read owner identity/digest; remove only matching ownership | Matching owner → free. A missing lock counts as already released; another owner is preserved and reported through the Runtime wrapper's existing ownership contract. |
-| Legacy empty/PID-only/torn owner | Cannot prove a specific dead owner; protect concurrent state from overwrite | Keep bytes; typed reason and exact path/next action. Operator confirms no writer before clearing legacy state. All newly published locks avoid this legacy state; do not turn age into proof. |
+| Releasing own lock | Runtime checks live handle metadata digest and captured shared owner/file identity before delegating; helper cleanup is awaited | Matching owner → free. Missing/replaced ownership → `RUN_LOCK_OWNER_MISMATCH`, never silent success; preserve another owner. Only an already successful handle's repeated `release()` is idempotent. |
+| Legacy v1/empty/PID-only/torn owner | New helper cannot prove a complete local identified owner; protect concurrent state from overwrite | Keep bytes with the existing typed conflict plus public `detail.reason=lock_owner_unidentified` and manual `next_action`. Preserve Runtime's code/string-detail API and project additive structured CLI detail at its boundary. Operator confirms no writer before clearing. No automatic format conversion or assignment of the current host to legacy bytes. |
 | Foreign domain | Local OS cannot identify another host/namespace's owner | Preserve bytes and name recorded domain/path. Release on that domain, or operator confirmation there permits clearing only the abandoned artifact. |
 | Atomic publication unavailable | Filesystem cannot publish a complete ownership record atomically | Publish no empty substitute. Existing wrapper error plus path/cause; retry on a supported filesystem exits this state. |
 
@@ -183,7 +214,7 @@ Current upward connections which the service move must account for:
 | Plan `todo-cli` → Runtime `runtime-pull-intake.withStartRetractionGuard` | Composition root supplies Runtime's atomic guard callback to the Plan retraction entry. Runtime holds its binding lock across `action`; a stale read-only fact cannot replace this atomic contract. Plan still owns whether its event is semantically valid. |
 | `todo-independence` → `runtime-front-end` | Runtime passes observed/compiled facts through the public seam/Plan interface. Independence consumes those values, not Runtime state or a CLI implementation. |
 | `todo-independence-contracts` → `runtime-contracts` | Keep the versioned pure value validators as an explicit public contract dependency; do not pull orchestration/daemon I/O through them. A neutral-contract extraction is a separate coordinated change, not an incidental service-move deletion. |
-| Store `todo-store-git-transaction` → `runtime-lifecycle-lock` / `runtime-contracts.selfDigest` | Preserve the agreed Runtime lock wrapper and pure digest contract for the Store caller (agreement pending), or let Store perform its own later move. Runtime cannot change this caller's import by ownership inference. |
+| Store `todo-store-git-transaction` → `runtime-lifecycle-lock` / `runtime-contracts.selfDigest` | Preserve the agreed Runtime lock wrapper, explicit Git common-dir path and pure digest contract for the Store caller. Store owns any later caller move. Runtime cannot change this caller's import by ownership inference. |
 | `runtime-lifecycle-lock` → supervisor's `observeManagedProcessStartIdentity` | Target lock wrapper uses shared lock/platform infrastructure, which observes through `runtime-os-observation` only. Lock acquisition must not import the managed supervisor or CLI. |
 
 Target: CLI and daemon bootstrap both call a Runtime orchestration service;
