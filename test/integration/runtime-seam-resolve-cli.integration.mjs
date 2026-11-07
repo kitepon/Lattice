@@ -8,9 +8,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { digestArtifact } from '../../src/artifact-contracts.mjs';
 import { captureWorktreeDiff } from '../../src/runtime-diff-observer.mjs';
 import { buildNextRunEvent } from '../../src/runtime-engine.mjs';
+import { createRuntimeControlStore } from '../../src/runtime-control-store.mjs';
 import {
   activateEpochOneStore, recordRuntimeFinding,
 } from '../../src/runtime-multi-epoch-store.mjs';
@@ -152,20 +152,25 @@ async function resolveScenario(context, { t2Witness }) {
 
   // --- managed epochへactivateする（storeの正規経路）。
   const runEvents = JSON.parse(await readFile(path.join(runDir, 'events.json'), 'utf8'));
-  const control = {
-    schema: 'lattice.runtime_control_event.v1', run_id: RUN_ID, sequence: 0,
-    previous_digest: null, kind: 'supervisor_activated', session_nonce_digest: 'c'.repeat(64),
-    payload: {}, recorded_at: '2026-07-27T00:00:00.000Z',
-  };
-  control.event_digest = digestArtifact(control);
-  await writeFile(path.join(runDir, 'control-events.json'), `${JSON.stringify([control])}\n`);
+  const control = createRuntimeControlStore({ runDir, runId: RUN_ID,
+    clock: () => '2026-07-27T00:00:00.000Z' });
+  const activationControlEventDigest = await control.append({
+    run_id: RUN_ID,
+    kind: 'supervisor_activated',
+    session_nonce_digest: 'c'.repeat(64),
+    payload: {
+      supervisor_descriptor_digest: 'd'.repeat(64),
+      controller_descriptor_digest: 'e'.repeat(64),
+      registration_digest: 'f'.repeat(64),
+    },
+  });
   await activateEpochOneStore({
     runDir,
     request: JSON.parse(await readFile(path.join(runDir, 'request.json'), 'utf8')),
     compileArtifact: JSON.parse(await readFile(path.join(runDir, 'plan-compile-result.json'), 'utf8')),
     legacyMeta: JSON.parse(await readFile(path.join(runDir, 'run-meta.json'), 'utf8')),
     activationRunEventDigest: runEvents.at(-1).event_digest,
-    activationControlEventDigest: control.event_digest,
+    activationControlEventDigest,
   });
 
   // --- 実行時の観測: T2がT1のscope内であるpathへ書いた。
