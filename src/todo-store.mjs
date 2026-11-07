@@ -24,6 +24,7 @@ import {
   TODO_PLAN_SCOPED_EVENT_KINDS,
   canonicalizeTodoArtifact,
   digestTodoArtifact,
+  explainTodoPlan,
   exactRecord,
   isStrictTodoTimestamp,
   isTodoDigest,
@@ -1635,11 +1636,25 @@ async function atomicWriteMode(absolute, bytes, mode) {
 }
 
 
-async function withLock(repoRoot, callback, { onProtocolStage = null, lockCapability = null } = {}) {
+async function withLock(repoRoot, callback, {
+  onProtocolStage = null, lockCapability = null, initialize = false,
+} = {}) {
   if (lockCapability === STORE_LOCK_HELD) return callback();
   try {
+    if (!initialize) {
+      const root = await lstat(path.join(repoRoot, STORE_ROOT_REF)).catch((error) => {
+        if (error?.code === 'ENOENT') fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
+        throw error;
+      });
+      const parent = await lstat(path.join(repoRoot, '.lattice'));
+      if (!root.isDirectory() || root.isSymbolicLink()
+        || !parent.isDirectory() || parent.isSymbolicLink()) {
+        fail('STORE_INCONSISTENT', 'unsafe_artifact_path', { ref: STORE_ROOT_REF });
+      }
+    }
     return await withStoreLock({
       lockPath: path.join(repoRoot, STORE_ROOT_REF, '.write.lock'),
+      createParent: initialize,
       recoveryClaimsPath: path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF),
       onRecoveryClaim: typeof onProtocolStage === 'function'
         ? () => onProtocolStage('cross_plan_lock_recovery_mutex_acquired') : null,
@@ -2032,7 +2047,12 @@ export function buildTodoPlan(input) {
       ? { phase_accept_dependencies: plan.phase_accept_dependencies } : {}),
   });
   plan.plan_digest = todoSelfDigest(plan, 'plan_digest');
-  if (!validateTodoPlan(plan)) throw new TypeError('todo plan input violates its declared schema');
+  if (!validateTodoPlan(plan)) {
+    const { reason, path: pointer, ...values } = explainTodoPlan(plan);
+    throw Object.assign(new TypeError('todo plan input violates its declared schema'), {
+      detail: { violation_kind: reason, pointer, ...values },
+    });
+  }
   return plan;
 }
 
@@ -2586,12 +2606,79 @@ export async function appendImportedPlan(options = {}) {
       if (error?.code === 'ENOENT') return bootstrapImportedPlan(repoRoot, options);
       throw error;
     }
+    if (await isUninitializedTodoStore({ repoRoot })) {
+      fail('STORE_INCONSISTENT', 'artifact_missing', {
+        ref: MANIFEST_REF,
+        next_action: `Confirm no writer, then clear only abandoned lock/tmp residue from ${path.join(repoRoot, STORE_ROOT_REF)} and retry the same migration input; preserve any member or note data.`,
+      });
+    }
   }
-  const transactionDigest = importedPlanTransactionDigest(options);
+  return appendPlanMembership(repoRoot, options, false);
+}
+
+/** G5-only new membership; existing keys are never revisions or idempotent creates. */
+export async function appendAuthoredTodoPlan(options = {}) {
+  requireWriter(options.writer, 'g5-authoring');
+  const keys = ['repoRoot', 'writer', 'plan', 'genesis'];
+  if (options.featureChain !== undefined) keys.push('featureChain');
+  if (options.onProtocolStage !== undefined) keys.push('onProtocolStage');
+  if (!exactRecord(options, keys)
+    || (options.onProtocolStage !== undefined && typeof options.onProtocolStage !== 'function')
+    || !(exactRecord(options.genesis, ['actor', 'recorded_at'])
+      || exactRecord(options.genesis, ['actor', 'recorded_at', 'provenance']))) {
+    throw new TypeError('authored plan addition input invalid');
+  }
+  return appendPlanMembership(path.resolve(options.repoRoot), options, true);
+}
+
+function prepareAuthoredArtifacts(repoRoot, options, store) {
+  if (!validateTodoPlan(options.plan) || options.plan.predecessor_plan_digest !== null) {
+    throw new TypeError('authored plan must be a valid genesis plan');
+  }
+  const plan = options.plan;
+  if (plan.project_id !== store.project_id) fail('STORE_WRITE_CONFLICT', 'project_id_mismatch', {
+    expected: store.project_id, actual: plan.project_id,
+  });
+  verifyPlanNarrativeAnchors(repoRoot, plan);
+  const genesis = buildPlanGenesis(plan, options.genesis);
+  const events = [genesis];
+  const tasks = replay(plan, events);
+  validateMergedGraph([...store.members, { plan }]);
+  return { plan, genesis, events, tasks, snapshot: snapshotFor(plan, events, tasks) };
+}
+
+async function assertUnpublishedPlanFiles(directory, expected) {
+  const occupied = (ref) => fail('REVISION_CONFLICT', 'revision_bytes_conflict', {
+    ref,
+    next_action: `Restore the expected unpublished files at ${directory} or use another plan key/version; existing bytes were preserved.`,
+  });
+  async function visit(current, prefix = '') {
+    const state = await lstat(current).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+      return null;
+    });
+    if (state === null) return;
+    if (state.isSymbolicLink() || !state.isDirectory()) occupied(current);
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const relative = `${prefix}${entry.name}`;
+      if (entry.isDirectory() && [...expected.keys()].some((ref) => ref.startsWith(`${relative}/`))) {
+        await visit(path.join(current, entry.name), `${relative}/`);
+      } else if (!entry.isFile() || !expected.has(relative)
+        || !(await readFile(path.join(current, entry.name))).equals(expected.get(relative))) {
+        occupied(path.join(directory, relative));
+      }
+    }
+    if (!sameDirectoryIdentity(state, await lstat(current))) occupied(current);
+  }
+  await visit(directory);
+}
+
+async function appendPlanMembership(repoRoot, options, authored) {
+  const transactionDigest = authored ? null : importedPlanTransactionDigest(options);
   return withLock(repoRoot, async () => {
     const recovered = await recoverCrossPlanImports(repoRoot);
     const recoveredOwnTransaction = recovered.find((marker) => marker.transaction_digest === transactionDigest);
-    if (recoveredOwnTransaction !== undefined) {
+    if (!authored && recoveredOwnTransaction !== undefined) {
       return recoveredImportedPlanResult(repoRoot, recoveredOwnTransaction, options.now);
     }
     // 1. Validate canonical manifest bytes and every current member before preparing output.
@@ -2602,12 +2689,12 @@ export async function appendImportedPlan(options = {}) {
     // 2. A plan key is never overwritten, merged, or treated as an idempotent success.
     const existing = store.members.find(({ descriptor }) => descriptor.plan_key === options.plan?.plan_key);
     if (existing) {
-      const imported = existing.journal.events[0]?.payload.historical_import === true;
+      const imported = !authored && existing.journal.events[0]?.payload.historical_import === true;
       fail('STORE_WRITE_CONFLICT', imported ? 'plan_key_already_imported' : 'plan_key_already_exists');
     }
     await protocolStage(options, 'plan_key_absent');
 
-    const prepared = prepareImportedArtifacts(
+    const prepared = authored ? prepareAuthoredArtifacts(repoRoot, options, store) : prepareImportedArtifacts(
       repoRoot, options, store.project_id, store.members.map(({ plan: memberPlan }) => ({ plan: memberPlan })),
     );
     const { plan, genesis, events, snapshot, tasks } = prepared;
@@ -2617,7 +2704,7 @@ export async function appendImportedPlan(options = {}) {
     const planRef = `${base}/plan.json`;
     const journalRef = `${base}/journal/active.jsonl`;
     const snapshotRef = `${base}/snapshot.json`;
-    const importedCrossPlan = prepareImportedCrossPlanDependencies({
+    const importedCrossPlan = authored ? { artifacts: [], events: [] } : prepareImportedCrossPlanDependencies({
       store, plan, tasks, dependencies: options.crossPlanDependencies, genesis, journalRef,
     });
     const hasCrossPlanDependencies = importedCrossPlan.artifacts.length > 0;
@@ -2626,7 +2713,23 @@ export async function appendImportedPlan(options = {}) {
       : `${STORE_ROOT_REF}/transactions/${plan.plan_key}-${plan.plan_version}`;
     const transactionAbsolute = path.resolve(repoRoot, transactionRef);
     const finalBaseAbsolute = path.resolve(repoRoot, base);
-    // These paths can only be leftovers from a transaction whose plan key is still absent.
+    await ensureSafeStoreDirectory(repoRoot, path.dirname(transactionAbsolute));
+    await ensureSafeStoreDirectory(repoRoot, path.dirname(finalBaseAbsolute));
+    const expected = new Map([
+      ['plan.json', canonicalLine(plan)], ['journal/active.jsonl', Buffer.concat(events.map(canonicalLine))],
+      ['snapshot.json', canonicalLine(snapshot)],
+      ...(backchain === null ? [] : [['backchain.json', canonicalLine(backchain)]]),
+    ]);
+    const stagedExpected = new Map([...expected].map(([ref, bytes]) => [
+      hasCrossPlanDependencies ? `plan/${ref}` : ref === 'journal/active.jsonl' ? 'active.jsonl' : ref,
+      bytes,
+    ]));
+    for (const [index, artifact] of importedCrossPlan.artifacts.entries()) {
+      stagedExpected.set(`plan-scoped/${index}.jsonl`, artifact.finalBytes);
+    }
+    await assertUnpublishedPlanFiles(transactionAbsolute, stagedExpected);
+    await assertUnpublishedPlanFiles(finalBaseAbsolute, expected);
+    // Only enumerated, byte-identical unpublished artifacts can be replaced.
     await rm(transactionAbsolute, { recursive: true, force: true });
     await rm(finalBaseAbsolute, { recursive: true, force: true });
 
@@ -2706,6 +2809,7 @@ export async function appendImportedPlan(options = {}) {
         await protocolStage(options, 'cross_plan_dependencies_activated');
       }
       await rm(transactionAbsolute, { recursive: true, force: true });
+      if (authored) return readTodoStoreLocked({ repoRoot, forWrite: true });
       return {
         plan, genesis, events, snapshot, descriptor,
         crossPlanDependencies: importedCrossPlan.events,
@@ -2763,7 +2867,137 @@ export async function initializeTodoStore(options = {}) {
     // Activation is last: a crash before this point leaves the new store/version unpublished.
     await atomicWrite(path.resolve(repoRoot, MANIFEST_REF), canonicalLine(manifest));
     return readTodoStoreLocked({ repoRoot, now: options.now });
+  }, { initialize: true });
+}
+
+const sameDirectoryIdentity = (left, right) => left !== null && right !== null
+  && left.dev === right.dev && left.ino === right.ino;
+
+async function transientStoreDirectory(root, allowNotes = true) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.tmp$/u.test(entry.name))) continue;
+    if (!entry.isDirectory()) return false;
+    const child = path.join(root, entry.name);
+    if (allowNotes && entry.name === 'notes') {
+      if (!await transientStoreDirectory(child, false)) return false;
+    } else if (['.cross-plan-recovery', '.write.lock.recovery'].includes(entry.name)) {
+      for (const claim of await readdir(child, { withFileTypes: true })) {
+        if (!claim.isDirectory() || (await readdir(path.join(child, claim.name))).length !== 0) return false;
+      }
+    } else return false;
+  }
+  return true;
+}
+
+async function uninitializedStoreLayout(repoRoot) {
+  const parent = await lstat(path.join(repoRoot, '.lattice')).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
   });
+  if (parent === null) return { uninitialized: true, identity: null };
+  if (parent.isSymbolicLink() || !parent.isDirectory()) return { uninitialized: false, identity: null };
+  const root = path.join(repoRoot, STORE_ROOT_REF);
+  const identity = await lstat(root).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (identity === null) return { uninitialized: true, identity };
+  if (identity.isSymbolicLink() || !identity.isDirectory()) return { uninitialized: false, identity };
+  try { return { identity, uninitialized: await transientStoreDirectory(root) }; }
+  catch (error) {
+    if (error?.code === 'ENOENT' && await lstat(root).catch((missing) => {
+      if (missing?.code !== 'ENOENT') throw missing;
+      return null;
+    }) === null) return { uninitialized: true, identity: null };
+    throw error;
+  }
+}
+
+/** Discovery only; liveness and the final publication decision stay in the transaction. */
+export async function isUninitializedTodoStore({ repoRoot = process.cwd() } = {}) {
+  return (await uninitializedStoreLayout(path.resolve(repoRoot))).uninitialized;
+}
+
+async function prepareAuthoredStoreRoot(repoRoot, options) {
+  const observed = await uninitializedStoreLayout(repoRoot);
+  if (!observed.uninitialized) fail('STORE_WRITE_CONFLICT', 'store_already_exists');
+  if (observed.identity === null) return;
+  const root = path.join(repoRoot, STORE_ROOT_REF);
+  try { await withLock(repoRoot, async () => {
+    const fresh = await uninitializedStoreLayout(repoRoot);
+    if (!sameDirectoryIdentity(observed.identity, fresh.identity)) {
+      fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+    }
+    if (!fresh.uninitialized) fail('STORE_WRITE_CONFLICT', 'store_already_exists');
+    const notes = path.join(root, 'notes');
+    const notesIdentity = await lstat(notes).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+      return null;
+    });
+    if (notesIdentity !== null) {
+      await withStoreLock({ lockPath: path.join(notes, '.write.lock'), createParent: false }, async () => {
+        if (!sameDirectoryIdentity(notesIdentity, await lstat(notes))
+          || !await transientStoreDirectory(notes, false)) {
+          fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+        }
+      });
+      if (!sameDirectoryIdentity(notesIdentity, await lstat(notes))) {
+        fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+      }
+      try { await rmdir(notes); }
+      catch (error) {
+        if (!['ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error;
+        throw new StoreLockError('store_locked', path.join(notes, '.write.lock'), {
+          next_action: `Confirm no writer before clearing abandoned host-local note lock residue in ${notes}`,
+        });
+      }
+    }
+    await protocolStage(options, 'authoring_residue_locked');
+  }); } catch (error) {
+    const gone = (await uninitializedStoreLayout(repoRoot)).identity === null;
+    if (gone && error instanceof TodoStoreError
+      && ['store_locked', 'artifact_missing'].includes(error.detail.reason)) return;
+    throw error;
+  }
+  await protocolStage(options, 'authoring_residue_released');
+  const fresh = await uninitializedStoreLayout(repoRoot);
+  if (fresh.identity === null && fresh.uninitialized) return;
+  if (!sameDirectoryIdentity(observed.identity, fresh.identity)) {
+    if (!fresh.uninitialized) fail('STORE_WRITE_CONFLICT', 'store_bootstrap_raced');
+    fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+  }
+  const busy = () => fail('STORE_WRITE_CONFLICT', 'store_locked', {
+    lock_path: path.join(root, '.write.lock'),
+    next_action: `Retry after writers exit; confirm no writer before manually clearing unidentified host-local residue in ${root}`,
+  });
+  if (!fresh.uninitialized) fail('STORE_WRITE_CONFLICT', 'store_already_exists');
+  const entries = await readdir(root).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (entries === null) return;
+  if (entries.length !== 0) busy();
+  try { await rmdir(root); }
+  catch (error) {
+    if (['ENOTEMPTY', 'EEXIST'].includes(error?.code)) busy();
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  await fsyncDirectory(path.dirname(root));
+}
+
+async function withInitialStoreLocks(stage, currentRoot, callback) {
+  await mkdir(path.join(stage, 'notes'));
+  const lockOptions = (relative) => ({
+    lockPath: path.join(stage, relative), createParent: false,
+    releasePath: async () => {
+      const root = await currentRoot();
+      return root === null ? null : path.join(root, relative);
+    },
+  });
+  return withStoreLock(lockOptions('.write.lock'), () => (
+    withStoreLock(lockOptions('notes/.write.lock'), callback)
+  ));
 }
 
 /** G5-only initial authoring transaction. Store membership appears by one final directory rename. */
@@ -2812,94 +3046,110 @@ export async function initializeAuthoredTodoStore(options = {}) {
   let activated = false;
   let stageIdentity = null;
   let latticeIdentity = null;
-  const sameIdentity = (left, right) => left !== null && right !== null
-    && left.dev === right.dev && left.ino === right.ino;
+  const sameIdentity = sameDirectoryIdentity;
+  await prepareAuthoredStoreRoot(repoRoot, options);
+  await mkdir(stage, { mode: 0o700 });
+  stageIdentity = await lstat(stage);
   try {
-    try { await lstat(storeRoot); fail('STORE_WRITE_CONFLICT', 'store_already_exists'); }
-    catch (error) {
-      if (error instanceof TodoStoreError) throw error;
-      if (error?.code === 'ENOTDIR') fail('STORE_INCONSISTENT', 'unsafe_lattice_root');
-      if (error?.code !== 'ENOENT') throw error;
-    }
-    await mkdir(stage, { mode: 0o700 });
-    stageIdentity = await lstat(stage);
-    await atomicWrite(path.join(stage, base, 'plan.json'), canonicalLine(plan));
-    await atomicWrite(path.join(stage, base, 'journal', 'active.jsonl'), canonicalLine(genesis));
-    await atomicWrite(path.join(stage, base, 'snapshot.json'), canonicalLine(snapshot));
-    if (backchain !== null) await atomicWrite(path.join(stage, base, 'backchain.json'), canonicalLine(backchain));
-    await atomicWrite(path.join(stage, 'manifest.json'), canonicalLine(manifest));
-
-    try {
-      const state = await lstat(latticeRoot);
-      if (state.isSymbolicLink() || !state.isDirectory()) fail('STORE_INCONSISTENT', 'unsafe_lattice_root');
-    } catch (error) {
-      if (error instanceof TodoStoreError) throw error;
-      if (error?.code !== 'ENOENT') throw error;
-      await mkdir(latticeRoot, { mode: 0o700 });
-      createdLatticeRoot = true;
-      await fsyncDirectory(repoRoot);
-    }
-    await ensureLatticeEolProtection(latticeRoot);
-    latticeIdentity = await lstat(latticeRoot);
-    const stagedBeforeRename = await lstat(stage);
-    const parentBeforeRename = await lstat(latticeRoot);
-    if (!sameIdentity(stageIdentity, stagedBeforeRename)
-      || !sameIdentity(latticeIdentity, parentBeforeRename)
-      || stagedBeforeRename.isSymbolicLink() || !stagedBeforeRename.isDirectory()
-      || parentBeforeRename.isSymbolicLink() || !parentBeforeRename.isDirectory()) {
-      fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
-    }
-    try { await rename(stage, storeRoot); }
-    catch (error) {
-      if (['EEXIST', 'ENOTEMPTY'].includes(error?.code)) fail('STORE_WRITE_CONFLICT', 'store_bootstrap_raced');
-      throw error;
-    }
-    renamed = true;
-    await fsyncDirectory(latticeRoot);
-    if (typeof options.onProtocolStage === 'function') await options.onProtocolStage('authoring_renamed');
-    const activatedStore = await lstat(storeRoot);
-    const activatedParent = await lstat(latticeRoot);
-    if (!sameIdentity(stageIdentity, activatedStore)
-      || !sameIdentity(latticeIdentity, activatedParent)
-      || activatedStore.isSymbolicLink() || !activatedStore.isDirectory()
-      || activatedParent.isSymbolicLink() || !activatedParent.isDirectory()) {
-      fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
-    }
-    const store = await readTodoStoreView({ repoRoot });
-    const member = store.members[0];
-    if (store.project_id !== options.projectId || store.members.length !== 1
-      || store.snapshot_stale !== false || member?.journal?.events?.length !== 1
-      || canonicalizeTodoArtifact(store.manifest) !== canonicalizeTodoArtifact(manifest)
-      || canonicalizeTodoArtifact(member?.descriptor) !== canonicalizeTodoArtifact(descriptor)
-      || canonicalizeTodoArtifact(member?.plan) !== canonicalizeTodoArtifact(plan)
-      || canonicalizeTodoArtifact(member?.journal?.events?.[0]) !== canonicalizeTodoArtifact(genesis)
-      || canonicalizeTodoArtifact(member?.snapshot) !== canonicalizeTodoArtifact(snapshot)) {
-      fail('STORE_WRITE_CONFLICT', 'authoring_activation_verification_failed');
-    }
-    activated = true;
-    return store;
-  } finally {
-    if (renamed && !activated) {
+    return await withInitialStoreLocks(stage, async () => {
+        const current = renamed ? storeRoot : stage;
+        const identity = await lstat(current).catch((error) => {
+          if (error?.code !== 'ENOENT') throw error;
+          return null;
+        });
+        return sameIdentity(stageIdentity, identity) && identity.isDirectory() && !identity.isSymbolicLink()
+          ? current : null;
+    }, async () => {
       try {
-        const currentParent = await lstat(latticeRoot);
-        const currentStore = await lstat(storeRoot);
-        if (sameIdentity(latticeIdentity, currentParent) && sameIdentity(stageIdentity, currentStore)
-          && !currentParent.isSymbolicLink() && currentParent.isDirectory()
-          && !currentStore.isSymbolicLink() && currentStore.isDirectory()) {
-          await rm(storeRoot, { recursive: true, force: true });
-          await fsyncDirectory(latticeRoot);
+        stageIdentity = await lstat(stage);
+        await atomicWrite(path.join(stage, base, 'plan.json'), canonicalLine(plan));
+        await atomicWrite(path.join(stage, base, 'journal', 'active.jsonl'), canonicalLine(genesis));
+        await atomicWrite(path.join(stage, base, 'snapshot.json'), canonicalLine(snapshot));
+        if (backchain !== null) await atomicWrite(path.join(stage, base, 'backchain.json'), canonicalLine(backchain));
+        await atomicWrite(path.join(stage, 'manifest.json'), canonicalLine(manifest));
+
+        try {
+          const state = await lstat(latticeRoot);
+          if (state.isSymbolicLink() || !state.isDirectory()) fail('STORE_INCONSISTENT', 'unsafe_lattice_root');
+        } catch (error) {
+          if (error instanceof TodoStoreError) throw error;
+          if (error?.code !== 'ENOENT') throw error;
+          try { await mkdir(latticeRoot, { mode: 0o700 }); createdLatticeRoot = true; }
+          catch (race) { if (race?.code !== 'EEXIST') throw race; }
+          await fsyncDirectory(repoRoot);
         }
-      } catch (error) {
-        if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
+        await ensureLatticeEolProtection(latticeRoot);
+        latticeIdentity = await lstat(latticeRoot);
+        const stagedBeforeRename = await lstat(stage);
+        const parentBeforeRename = await lstat(latticeRoot);
+        if (!sameIdentity(stageIdentity, stagedBeforeRename)
+          || !sameIdentity(latticeIdentity, parentBeforeRename)
+          || stagedBeforeRename.isSymbolicLink() || !stagedBeforeRename.isDirectory()
+          || parentBeforeRename.isSymbolicLink() || !parentBeforeRename.isDirectory()) {
+          fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+        }
+        try { await rename(stage, storeRoot); }
+        catch (error) {
+          if (['EEXIST', 'ENOTEMPTY'].includes(error?.code)) fail('STORE_WRITE_CONFLICT', 'store_bootstrap_raced');
+          throw error;
+        }
+        renamed = true;
+        await fsyncDirectory(latticeRoot);
+        if (typeof options.onProtocolStage === 'function') await options.onProtocolStage('authoring_renamed');
+        const activatedStore = await lstat(storeRoot);
+        const activatedParent = await lstat(latticeRoot);
+        if (!sameIdentity(stageIdentity, activatedStore)
+          || !sameIdentity(latticeIdentity, activatedParent)
+          || activatedStore.isSymbolicLink() || !activatedStore.isDirectory()
+          || activatedParent.isSymbolicLink() || !activatedParent.isDirectory()) {
+          fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+        }
+        const store = await readTodoStoreView({ repoRoot });
+        const member = store.members[0];
+        if (store.project_id !== options.projectId || store.members.length !== 1
+          || store.snapshot_stale !== false || member?.journal?.events?.length !== 1
+          || canonicalizeTodoArtifact(store.manifest) !== canonicalizeTodoArtifact(manifest)
+          || canonicalizeTodoArtifact(member?.descriptor) !== canonicalizeTodoArtifact(descriptor)
+          || canonicalizeTodoArtifact(member?.plan) !== canonicalizeTodoArtifact(plan)
+          || canonicalizeTodoArtifact(member?.journal?.events?.[0]) !== canonicalizeTodoArtifact(genesis)
+          || canonicalizeTodoArtifact(member?.snapshot) !== canonicalizeTodoArtifact(snapshot)) {
+          fail('STORE_WRITE_CONFLICT', 'authoring_activation_verification_failed');
+        }
+        activated = true;
+        return store;
+      } finally {
+        if (renamed && !activated) {
+          try {
+            const currentParent = await lstat(latticeRoot);
+            const currentStore = await lstat(storeRoot);
+            if (sameIdentity(latticeIdentity, currentParent) && sameIdentity(stageIdentity, currentStore)
+              && !currentParent.isSymbolicLink() && currentParent.isDirectory()
+              && !currentStore.isSymbolicLink() && currentStore.isDirectory()) {
+              await rm(storeRoot, { recursive: true, force: true });
+              await fsyncDirectory(latticeRoot);
+            }
+          } catch (error) {
+            if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
+          }
+        }
+        if (!activated) await rm(stage, { recursive: true, force: true });
+        const published = await lstat(storeRoot).catch((error) => {
+          if (error?.code !== 'ENOENT') throw error;
+          return null;
+        });
+        if (!activated && createdLatticeRoot && published === null) {
+          // 自分で作ったroot直下の同梱.gitattributesを先に消さないとrmdirがENOTEMPTYで残る。
+          await rm(path.join(latticeRoot, '.gitattributes'), { force: true });
+          try { await rmdir(latticeRoot); }
+          catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error; }
+        }
       }
-    }
-    if (!activated) await rm(stage, { recursive: true, force: true });
-    if (!activated && createdLatticeRoot) {
-      // 自分で作ったroot直下の同梱.gitattributesを先に消さないとrmdirがENOTEMPTYで残る。
-      await rm(path.join(latticeRoot, '.gitattributes'), { force: true });
-      try { await rmdir(latticeRoot); }
-      catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error; }
-    }
+    });
+  } catch (error) {
+    if (error instanceof StoreLockError) fail('STORE_WRITE_CONFLICT', error.reason, error.detail);
+    throw error;
+  } finally {
+    if (!renamed) await rm(stage, { recursive: true, force: true });
   }
 }
 

@@ -105,14 +105,7 @@ async function recoveryClaim(claimsPath, owner, lockPath) {
     catch (error) { if (error?.code !== 'ENOENT') throw error; }
   }
   try {
-    for (const entry of await readdir(claimsPath, { withFileTypes: true })) {
-      if (entry.name === name || !entry.isDirectory()) continue;
-      const parsed = entry.name.match(CLAIM);
-      if (parsed && parsed[1] === hostDigest && Number.isSafeInteger(Number(parsed[2]))
-        && await processIsDead(Number(parsed[2]), parsed[3])) {
-        await rm(path.join(claimsPath, entry.name), { recursive: true, force: true });
-      }
-    }
+    await removeDeadClaims(claimsPath, hostDigest, lockPath);
     // All claimants publish before inspection; only a sole claimant may recover.
     // Timestamp ordering could let a delayed earlier publisher enter twice.
     const candidates = await readdir(claimsPath);
@@ -127,6 +120,26 @@ async function recoveryClaim(claimsPath, owner, lockPath) {
   }
 }
 
+async function removeDeadClaims(claimsPath, hostDigest, lockPath) {
+  const state = await lstat(claimsPath).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (state === null) return;
+  if (!state.isDirectory() || state.isSymbolicLink()) {
+    throw new StoreLockError('store_locked', lockPath, { recovery_claims_path: claimsPath });
+  }
+  for (const entry of await readdir(claimsPath, { withFileTypes: true })) {
+    const parsed = entry.name.match(CLAIM);
+    if (entry.isDirectory() && parsed && parsed[1] === hostDigest
+      && Number.isSafeInteger(Number(parsed[2]))
+      && await processIsDead(Number(parsed[2]), parsed[3])) {
+      try { await rmdir(path.join(claimsPath, entry.name)); }
+      catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error; }
+    }
+  }
+}
+
 async function removeClaim(claimPath, claimsPath) {
   await rmdir(claimPath);
   try { await rmdir(claimsPath); }
@@ -135,8 +148,8 @@ async function removeClaim(claimPath, claimsPath) {
 
 /** Complete ownership is linked atomically; recovery never removes a live owner. */
 export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath}.recovery`,
-  onRecoveryClaim = null }, callback) {
-  await mkdir(path.dirname(lockPath), { recursive: true });
+  onRecoveryClaim = null, createParent = true, releasePath = () => lockPath }, callback) {
+  if (createParent) await mkdir(path.dirname(lockPath), { recursive: true });
   ownStart ??= observeStartIdentityRaw(process.pid).catch((error) => { ownStart = undefined; throw error; });
   ownHost ??= observeProcessHostIdentityRaw().then((value) => {
     if (!value) throw new Error('process host domain unavailable');
@@ -157,14 +170,24 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
     cause: 'lock_identity_unavailable',
     next_action: `Restore platform host-domain and process-start observation, then retry ${lockPath}`,
   });
-  await removeDeadTemporaries(lockPath, hash(host));
   const ownerBytes = `${JSON.stringify(owner)}\n`;
   const temporary = `${lockPath}.${hash(host)}-${owner.pid}-${hash(`${owner.process_start.platform}:${owner.process_start.identity}`)}-${randomBytes(8).toString('hex')}.tmp`;
   let claimPath = null;
   let acquired = false;
+  let fileIdentity = null;
+  let callbackEntered = false;
   try {
+    await removeDeadTemporaries(lockPath, hash(host));
+    for (const claimsPath of new Set([recoveryClaimsPath, `${lockPath}.recovery`])) {
+      await removeDeadClaims(claimsPath, hash(host), lockPath);
+      try { await rmdir(claimsPath); }
+      catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error; }
+    }
     const handle = await open(temporary, 'wx', 0o600);
-    try { await handle.writeFile(ownerBytes); await syncPublishedFile(handle, lockPath); }
+    try {
+      await handle.writeFile(ownerBytes); await syncPublishedFile(handle, lockPath);
+      fileIdentity = await handle.stat();
+    }
     finally { await handle.close(); }
     for (;;) {
       try { await link(temporary, lockPath); acquired = true; break; }
@@ -192,15 +215,31 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
     }
     await rm(temporary);
     await fsyncDirectory(path.dirname(lockPath));
+    callbackEntered = true;
     return await callback();
+  } catch (error) {
+    if (!callbackEntered && error?.code === 'ENOENT') {
+      throw new StoreLockError('store_locked', lockPath, {
+        cause: 'lock_parent_missing',
+        next_action: `Retry after initialization or recovery finishes publishing ${path.dirname(lockPath)}`,
+      });
+    }
+    throw error;
   } finally {
     try {
-      if (acquired && await readFile(lockPath, 'utf8').catch((error) => {
+      const currentLockPath = await releasePath();
+      const currentIdentity = currentLockPath === null ? null : await lstat(currentLockPath).catch((error) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (acquired && currentIdentity?.isFile() && !currentIdentity.isSymbolicLink()
+        && currentIdentity.dev === fileIdentity.dev && currentIdentity.ino === fileIdentity.ino
+        && await readFile(currentLockPath, 'utf8').catch((error) => {
         if (error?.code === 'ENOENT') return null;
         throw error;
       }) === ownerBytes) {
-        await rm(lockPath);
-        await fsyncDirectory(path.dirname(lockPath));
+        await rm(currentLockPath);
+        await fsyncDirectory(path.dirname(currentLockPath));
       }
     } finally {
       await rm(temporary, { force: true });

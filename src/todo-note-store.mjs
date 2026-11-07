@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import {
-  mkdir, open, readFile, readdir, rename, rm, stat,
+  lstat, mkdir, open, readFile, readdir, rename, rm, stat,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { StoreLockError, withStoreLock } from './store-lock.mjs';
@@ -188,7 +188,6 @@ export async function readTodoNoteEvents(options = {}) {
 }
 
 async function atomicWrite(ref, bytes) {
-  await mkdir(path.dirname(ref), { recursive: true });
   const temporary = path.join(path.dirname(ref),
     `.${path.basename(ref)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   let handle;
@@ -206,9 +205,33 @@ async function atomicWrite(ref, bytes) {
   }
 }
 
+async function ensureNoteDirectory(root) {
+  try { await mkdir(root); }
+  catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  const state = await lstat(root);
+  if (state.isSymbolicLink() || !state.isDirectory()) fail('NOTE_WRITE_CONFLICT', 'note_store_locked', {
+    next_action: `Restore a real note directory at ${root}, then retry.`,
+  });
+}
+
 async function withNoteLock(repoRoot, callback) {
   const root = path.resolve(repoRoot, NOTE_ROOT_REF);
-  try { return await withStoreLock({ lockPath: path.join(root, '.write.lock') }, callback); }
+  try {
+    for (const ref of ['.lattice', '.lattice/todo', '.lattice/todo/manifest.json']) {
+      const state = await lstat(path.resolve(repoRoot, ref)).catch((error) => {
+        if (error?.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (state === null || state.isSymbolicLink()
+        || (ref.endsWith('.json') ? !state.isFile() : !state.isDirectory())) {
+        fail('NOTE_WRITE_CONFLICT', 'note_store_locked', {
+          next_action: 'Initialize a published Todo Store before writing notes, then retry.',
+        });
+      }
+    }
+    await ensureNoteDirectory(root);
+    return await withStoreLock({ lockPath: path.join(root, '.write.lock'), createParent: false }, callback);
+  }
   catch (error) {
     if (error instanceof StoreLockError) {
       fail('NOTE_WRITE_CONFLICT', error.reason === 'store_locked' ? 'note_store_locked' : error.reason,
@@ -269,6 +292,7 @@ export async function appendTodoNote(options = {}) {
     if (!validateTodoNoteEvent(event)) throw new TypeError('todo note event input invalid');
 
     const paths = chainRefs(repoRoot, options.planKey, scope);
+    await ensureNoteDirectory(path.dirname(paths.active));
     const eventBytes = canonicalLine(event);
     if (chain.active_bytes.length > 0
       && chain.active_bytes.length + eventBytes.length > TODO_LIMITS.journalSegmentBytes) {
@@ -277,6 +301,7 @@ export async function appendTodoNote(options = {}) {
       const name = `${String(activeEvents[0].sequence).padStart(12, '0')}`
         + `-${String(activeEvents.at(-1).sequence).padStart(12, '0')}`
         + `-${chain.previous_segment_digest}-${segmentDigest}.jsonl`;
+      await ensureNoteDirectory(paths.sealed);
       await atomicWrite(path.join(paths.sealed, name), chain.active_bytes);
       await atomicWrite(paths.active, eventBytes);
     } else {
