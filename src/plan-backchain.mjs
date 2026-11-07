@@ -7,7 +7,7 @@ import {
   digestTodoArtifact, todoSelfDigest,
 } from './todo-contracts.mjs';
 import {
-  applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+  appendAuthoredTodoPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
 import { gitSync } from './git-process.mjs';
@@ -590,7 +590,6 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     const plan = buildTodoPlan({
       ...planSeed(amended, null), plan_version: chain.plan_version,
     });
-    const { appendAuthoredTodoPlan } = await import('./todo-store.mjs');
     const addedStore = await appendAuthoredTodoPlan({
       repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
       plan, genesis: { actor: authoring.actor, recorded_at: authoring.recorded_at,

@@ -49,6 +49,12 @@ authored genesis, preserving its existing add-result/feature-context projection;
 G4 migration remains historical import only. Both create callers select the
 requested plan_key from returned members.
 
+Plain create routes by published manifest presence: absent/ENOTDIR goes to the
+initializer, present goes to append. This preserves the initializer's existing
+unsafe-parent error; a false discovery classification alone does not mean a
+valid Store. `isUninitializedTodoStore` remains the read-only discovery service.
+Both Store transactions perform the authoritative layout/identity/race checks.
+
 ## Compatibility and identity
 
 `lattice.project_status.v1` keeps its JSON fields and next_action key sets.
@@ -89,6 +95,9 @@ only on failure. Store buildTodoPlan retains TypeError/message and forwards the
 diagnostic in error.detail, mapping reason → violation_kind and path → pointer:
 `{violation_kind, pointer, expected?, actual?}`. expected/actual are omitted when
 absent and are JSON values when present. Create/migrate keep these public keys.
+Create's public detail retains its existing expected/actual fallback values
+(`{schema}` / `{message}`); optional omission above describes Store's TypeError
+detail and derived migration propagation.
 Create input graph paths match plan paths for tasks/hard_dependencies/joins/
 phases/phase_accept_dependencies. Computed predecessor/topology/plan digests are
 not author fields; failures there are reported as derived-plan diagnostics.

@@ -27,9 +27,11 @@ import { ensureTodoDashboardActivity } from './todo-dashboard-registry.mjs';
 import { reportProjectDashboardDelivery } from './dashboard-delivery.mjs';
 import { resolveProjectIdentity } from './project-identity.mjs';
 import {
+  appendAuthoredTodoPlan,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeAuthoredTodoStore,
+  isUninitializedTodoStore,
   isPhaselessTodoPlanSchema,
   readTodoIndependenceArtifact,
   readTodoStore,
@@ -252,7 +254,6 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
   try { manifestState = await lstat(manifestAbsolute); } catch (error) {
     if (error?.code !== 'ENOENT') return invalid('manifest_unreadable');
   }
-  const { isUninitializedTodoStore } = await import('./todo-store.mjs');
   let uninitialized;
   try { uninitialized = await isUninitializedTodoStore({ repoRoot }); }
   catch { return invalid('store_unreadable'); }
@@ -643,7 +644,6 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
     hardDependencies: input.hard_dependencies,
     joins: input.joins,
   });
-  const { appendAuthoredTodoPlan, isUninitializedTodoStore } = await import('./todo-store.mjs');
   const options = {
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
     plan: buildTodoPlan({
@@ -662,7 +662,11 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
     genesis: { actor: input.actor, recorded_at: input.recorded_at, provenance: null },
     ...(featureChain === null ? {} : { featureChain }),
   };
-  const store = await isUninitializedTodoStore({ repoRoot })
+  const manifest = await lstat(path.join(repoRoot, MANIFEST_REF)).catch((error) => {
+    if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
+    return null;
+  });
+  const store = manifest === null
     ? await initializeAuthoredTodoStore({ ...options,
       projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }] })
     : await appendAuthoredTodoPlan(options);
