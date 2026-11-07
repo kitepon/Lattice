@@ -296,15 +296,16 @@ export function validatePhaseTodoRevision(value) {
     const revisionV2 = value?.schema === 'lattice.phase_todo_revision.v2';
     const revisionV3 = value?.schema === 'lattice.phase_todo_revision.v3';
     const revisionV4 = value?.schema === 'lattice.phase_todo_revision.v4';
+    const revisionV5 = value?.schema === 'lattice.phase_todo_revision.v5';
     const keys = revisionV3 ? PHASE_REVISION_V3_KEYS
       : revisionV4 ? PHASE_REVISION_V4_KEYS : PHASE_REVISION_KEYS;
-    if (!exactRecord(value, keys) || (!revisionV1 && !revisionV2 && !revisionV3 && !revisionV4)) return false;
+    if (!exactRecord(value, keys) || (!revisionV1 && !revisionV2 && !revisionV3 && !revisionV4 && !revisionV5)) return false;
     if (!isTodoIdentifier(value.project_id) || !isTodoIdentifier(value.plan_key)) return false;
     if (!validPredecessor(value.predecessor) || !validateTodoPlan(value.desired_plan)
       || !(revisionV3
         ? ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value.desired_plan.schema)
         : value.desired_plan.schema === (revisionV2 ? 'lattice.todo_plan.v5'
-          : revisionV4 ? 'lattice.todo_plan.v7' : 'lattice.todo_plan.v4'))
+          : (revisionV4 || revisionV5) ? 'lattice.todo_plan.v7' : 'lattice.todo_plan.v4'))
       || value.desired_plan.project_id !== value.project_id
       || value.desired_plan.plan_key !== value.plan_key
       || value.desired_plan.predecessor_plan_digest !== value.predecessor.plan_digest
@@ -832,7 +833,7 @@ export function explainTodoRevision(value) {
 }
 
 /**
- * `lattice todo revise-phase`が受理する`lattice.phase_todo_revision.v1/v2/v3`を診断する。
+ * `lattice todo revise-phase`が受理する`lattice.phase_todo_revision.v1/v2/v3/v4/v5`を診断する。
  * 方針は`explainTodoRevision`と同じ——desired_planのgraph整合は単一reasonへ丸め、
  * v3で増える`runtime_task_migration`・`source_cutover_batch`・8-key reconciliationの
  * 各digestを個別に名指しする。
@@ -844,7 +845,8 @@ export function explainPhaseTodoRevision(value) {
     const revisionV2 = value.schema === 'lattice.phase_todo_revision.v2';
     const revisionV3 = value.schema === 'lattice.phase_todo_revision.v3';
     const revisionV4 = value.schema === 'lattice.phase_todo_revision.v4';
-    if (!revisionV1 && !revisionV2 && !revisionV3 && !revisionV4) return reject('schema_mismatch', '/schema');
+    const revisionV5 = value.schema === 'lattice.phase_todo_revision.v5';
+    if (!revisionV1 && !revisionV2 && !revisionV3 && !revisionV4 && !revisionV5) return reject('schema_mismatch', '/schema');
     const keyCheck = explainKeys(value, revisionV3 ? PHASE_REVISION_V3_KEYS
       : revisionV4 ? PHASE_REVISION_V4_KEYS : PHASE_REVISION_KEYS, '');
     if (!keyCheck.valid) return keyCheck;
@@ -855,7 +857,7 @@ export function explainPhaseTodoRevision(value) {
     if (!validateTodoPlan(value.desired_plan)) return reject('desired_plan_invalid', '/desired_plan');
     const expectedPlanSchemas = revisionV3 ? ['lattice.todo_plan.v5', 'lattice.todo_plan.v7']
       : [revisionV2 ? 'lattice.todo_plan.v5'
-        : revisionV4 ? 'lattice.todo_plan.v7' : 'lattice.todo_plan.v4'];
+        : (revisionV4 || revisionV5) ? 'lattice.todo_plan.v7' : 'lattice.todo_plan.v4'];
     if (!expectedPlanSchemas.includes(value.desired_plan.schema)) {
       return reject('desired_plan_schema_mismatch', '/desired_plan/schema');
     }
