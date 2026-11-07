@@ -1,3 +1,16 @@
+import {
+  isDecoupledPhaseTodoPlanSchema,
+  isPhaseTodoPlanSchema,
+  isPhaselessTodoPlanSchema,
+  projectTodoCrossPlanDependencies,
+} from './todo-store-view.mjs';
+export {
+  isDecoupledPhaseTodoPlanSchema,
+  isPhaseTodoPlanSchema,
+  isPhaselessTodoPlanSchema,
+  projectTodoCrossPlanDependencies,
+} from './todo-store-view.mjs';
+import { validateProspectiveEvent } from './todo-readiness.mjs';
 import { randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { renamePublishedFile } from './fs-publish.mjs';
@@ -342,20 +355,6 @@ function emptyPhaseState(phaseId) {
 // と衝突しない予約名として固定する。
 export const TERMINAL_AUDIT_PHASE_ID = 'terminal-audit';
 
-export function isPhaseTodoPlanSchema(schema) {
-  return ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(schema);
-}
-
-export function isDecoupledPhaseTodoPlanSchema(schema) {
-  return ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(schema);
-}
-
-// CLI側(migrate/plan create/最後のdone)が「終端重監査が要る」ことを通知するために
-// 同じ判定を再利用する。判定基準を二重管理しないよう、ここから公開する。
-export function isPhaselessTodoPlanSchema(schema) {
-  return !isPhaseTodoPlanSchema(schema);
-}
-
 function terminalAuditPhase() {
   return { phase_id: TERMINAL_AUDIT_PHASE_ID, title: '終端重監査', gate_policy: 'terminal-audit',
     predecessor_phase_ids: [], required_evidence_slots: ['terminal-audit'] };
@@ -398,38 +397,6 @@ export function projectTodoCoordination(events) {
     declared_at: declaration.recorded_at,
     event_digest: declaration.event_digest,
   };
-}
-
-/**
- * active plan群へ接続済みのplan跨ぎ依存線を投影する。
- *
- * eventはconsumer（to）planのplan-scoped chainへ積まれる。自動発見も暗黙補完もせず、
- * 記録された線だけを返す。順序はtask identityで固定し、status/Ganttが同じ入力を見る。
- */
-export function projectTodoCrossPlanDependencies(members) {
-  // 除去tombstoneを先に集め、指された接続を線として数えない（歴史は両eventとも残る）
-  const removed = new Set();
-  for (const member of members) for (const event of member.plan_scoped?.events ?? []) {
-    if (event.kind === 'cross_plan_dependency_removed') removed.add(event.payload.target_event_digest);
-  }
-  const dependencies = [];
-  for (const member of members) for (const event of member.plan_scoped?.events ?? []) {
-    if (event.kind !== 'cross_plan_dependency') continue;
-    if (removed.has(event.event_digest)) continue;
-    dependencies.push({
-      from: event.payload.from,
-      to: event.payload.to,
-      reason: event.payload.reason,
-      connected_by: event.actor,
-      connected_at: event.recorded_at,
-      event_digest: event.event_digest,
-    });
-  }
-  return dependencies.sort((left, right) => {
-    const key = (entry) => `${entry.from.project_id}\0${entry.from.plan_key}\0${entry.from.task_id}`
-      + `\0${entry.to.project_id}\0${entry.to.plan_key}\0${entry.to.task_id}\0${entry.event_digest}`;
-    return key(left) < key(right) ? -1 : key(left) > key(right) ? 1 : 0;
-  });
 }
 
 function derivedPhaseStatus(plan, taskStates, phaseStates, phaseId) {
@@ -1046,130 +1013,12 @@ function mergedTaskKey(refValue) {
   return `${refValue.project_id}\0${refValue.plan_key}\0${refValue.task_id}`;
 }
 
-function mergedTaskStates(store) {
-  return new Map(store.members.flatMap((member) => member.tasks.map((taskValue) => ([
-    mergedTaskKey({
-      project_id: member.plan.project_id, plan_key: member.plan.plan_key, task_id: taskValue.task_id,
-    }),
-    taskValue.status,
-  ]))));
-}
-
-function mergedTaskPhase(store, taskKey) {
-  for (const member of store.members) {
-    const task = member.plan.tasks.find((entry) => mergedTaskKey({
-      project_id: member.plan.project_id, plan_key: member.plan.plan_key, task_id: entry.task_id,
-    }) === taskKey);
-    if (task === undefined) continue;
-    if (!isPhaseTodoPlanSchema(member.plan.schema)) return null;
-    return { schema: member.plan.schema, plan_key: member.plan.plan_key, phase_id: task.phase_id,
-      status: member.snapshot.phases.find(({ phase_id }) => phase_id === task.phase_id)?.status };
-  }
-  return undefined;
-}
-
-function mergedDependencyPhaseReady(store, predecessorKey, targetKey) {
-  const predecessor = mergedTaskPhase(store, predecessorKey);
-  const target = mergedTaskPhase(store, targetKey);
-  if (predecessor === undefined) return false;
-  if (predecessor === null) return true;
-  if (isDecoupledPhaseTodoPlanSchema(predecessor.schema)) return true;
-  if (target !== null && target !== undefined && predecessor.plan_key === target.plan_key
-    && predecessor.phase_id === target.phase_id) return true;
-  return predecessor.status === 'accepted';
-}
-
-function mergedPhaseAcceptReady(store, targetKey) {
-  for (const member of store.members) {
-    if (!isDecoupledPhaseTodoPlanSchema(member.plan.schema)) continue;
-    for (const edge of member.plan.phase_accept_dependencies) {
-      if (mergedTaskKey(edge.to) !== targetKey) continue;
-      const source = store.members.find((candidate) => candidate.plan.project_id === edge.from.project_id
-        && candidate.plan.plan_key === edge.from.plan_key);
-      if (source?.snapshot.phases.find(({ phase_id }) => phase_id === edge.from.phase_id)?.status !== 'accepted') {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-function mergedPredecessorKeys(store, targetKey) {
-  const result = [];
-  for (const member of store.members) {
-    for (const edge of member.plan.hard_dependencies) {
-      if (mergedTaskKey(edge.to) === targetKey) result.push(mergedTaskKey(edge.from));
-    }
-    for (const join of member.plan.joins) {
-      if (mergedTaskKey(join.before) === targetKey) {
-        for (const after of join.after) result.push(mergedTaskKey(after));
-      }
-    }
-  }
-  for (const dependency of projectTodoCrossPlanDependencies(store.members)) {
-    if (mergedTaskKey(dependency.to) === targetKey) result.push(mergedTaskKey(dependency.from));
-  }
-  return [...new Set(result)];
-}
-
-function mergedSuccessorKeys(store, targetKey) {
-  const result = [];
-  for (const member of store.members) {
-    for (const edge of member.plan.hard_dependencies) {
-      if (mergedTaskKey(edge.from) === targetKey) result.push(mergedTaskKey(edge.to));
-    }
-    for (const join of member.plan.joins) {
-      if (join.after.some((after) => mergedTaskKey(after) === targetKey)) {
-        result.push(mergedTaskKey(join.before));
-      }
-    }
-  }
-  for (const dependency of projectTodoCrossPlanDependencies(store.members)) {
-    if (mergedTaskKey(dependency.from) === targetKey) result.push(mergedTaskKey(dependency.to));
-  }
-  return [...new Set(result)];
-}
-
+// Temporary adapter until Store receives the Plan callback from its caller.
 function validateMergedTransition(store, member, event) {
-  const targetKey = mergedTaskKey({
-    project_id: member.plan.project_id, plan_key: member.plan.plan_key, task_id: event.task_id,
-  });
-  const states = mergedTaskStates(store);
-  const taskDependenciesDone = mergedPredecessorKeys(store, targetKey)
-    .every((key) => states.get(key) === 'done' && mergedDependencyPhaseReady(store, key, targetKey));
-  const phaseAcceptReady = mergedPhaseAcceptReady(store, targetKey);
-  const dependenciesDone = taskDependenciesDone && phaseAcceptReady;
-  if (event.kind === 'start' && event.payload.start_mode !== 'historical_import'
-    && event.payload.start_mode !== 'rebind'
-    && (!phaseAcceptReady || (!taskDependenciesDone && event.payload.override_reason === null))) {
-    fail('STORE_INCONSISTENT', 'invalid_start_transition');
-  }
-  if (event.kind === 'done' && event.payload.done_mode === 'authored' && !dependenciesDone) {
-    fail('STORE_INCONSISTENT', 'invalid_done_transition');
-  }
-  if (event.kind === 'reopen' && event.payload.override_reason === null) {
-    const startedSuccessor = mergedSuccessorKeys(store, targetKey)
-      .some((key) => states.get(key) !== 'pending');
-    if (startedSuccessor) {
-      fail('STORE_INCONSISTENT', 'reopen_has_started_successor', {
-        next_action: `lattice todo split --plan ${member.plan.plan_key} --input <file>`,
-      });
-    }
-  }
-  if (event.kind === 'phase_reopen' && event.payload.override_reason === null) {
-    const startedSuccessor = member.plan.schema === 'lattice.todo_plan.v4'
-      ? member.plan.tasks.filter(({ phase_id }) => phase_id === event.phase_id)
-        .map(({ task_id }) => mergedTaskKey({ project_id: member.plan.project_id,
-          plan_key: member.plan.plan_key, task_id }))
-        .flatMap((key) => mergedSuccessorKeys(store, key))
-        .some((key) => states.get(key) !== 'pending')
-      : store.members.some((candidate) => isDecoupledPhaseTodoPlanSchema(candidate.plan.schema)
-        && candidate.plan.phase_accept_dependencies.some((edge) => (
-          edge.from.project_id === member.plan.project_id
-          && edge.from.plan_key === member.plan.plan_key && edge.from.phase_id === event.phase_id
-          && states.get(mergedTaskKey(edge.to)) !== 'pending'
-        )));
-    if (startedSuccessor) fail('STORE_INCONSISTENT', 'phase_reopen_has_started_successor');
+  const result = validateProspectiveEvent({ store, member, event });
+  if (!result.ok) {
+    const { reason, ...detail } = result.detail;
+    fail(result.code, reason, detail);
   }
 }
 

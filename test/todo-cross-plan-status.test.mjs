@@ -96,7 +96,8 @@ test('pending consumerは接続直後にready/frontierとstart gateから外れ�
   assert.deepEqual(computeReadyFrontier(await read()), after.next_ready);
   assert.equal(after.dispatch_frontier.recommended_parallelism, 1);
   await assert.rejects(() => mutate('consumer', 'C', 'start', { override_reason: null }),
-    (error) => error.code === 'STORE_INCONSISTENT' && error.detail.reason === 'invalid_start_transition');
+    (error) => error.code === 'STORE_INCONSISTENT' && error.detail.reason === 'invalid_start_transition'
+      && error.detail.cause === 'predecessor_unfinished');
 });
 
 test('着手後に発見したconsumerは履歴を保ち、unmetで席数入力から分離する', async (context) => {
