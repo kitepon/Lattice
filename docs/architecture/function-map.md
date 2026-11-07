@@ -139,3 +139,30 @@ entry; CI across supported OSes remains the PR's acceptance evidence.
   order while assessing which checks enforce task/acceptance prerequisites and
   which merely demand redundant observation. See the DFD for the shared predicates.
 - Runtime remains a standalone product capability. BellTeam integration is optional.
+
+## Patent claim map (特願2026-178950; implementation trace, not legal scope)
+
+Owner rule (2026-11-07 JST): never deviate from the claims; additions are allowed,
+the claimed logic is not broken. This table traces each claim's constituent
+elements to the modules that implement them today. A module listed here is
+"marked": a diff touching it carries a before/after external-behaviour
+comparison in its evidence, and its diagram review names the claim. Modules not
+listed (authoring inputs, gates, error shape, persistence, state location,
+surfaces) may change shape freely within the boundary table above.
+
+| Claim | Constituent elements | Marked modules (current) | Change rule |
+|---|---|---|---|
+| 1 / 11 / 12 | Analyse source structure + work specifications → estimate change-impact ranges; arrange parallel execution when ranges do not overlap; refactor resolvable overlaps first; always emit a work plan; run the works in parallel on multiple agents | `sensor/` (structure), `boundary-observation-compiler-v2.mjs`, `schedulability-compiler-v2.mjs`, `schedulability-verifier-v2.mjs`, `todo-independence*.mjs`, `seam-*.mjs`, plan compile (`project-cli.mjs` plan compile/verify), `runtime-cli.mjs` run activate | Keep the three parts and their order (estimate → arrange/refactor → execute); a plan is produced in both branches |
+| 2 / 3 | Natural-language work specs + structure graph (nodes = elements, edges = relations) given to AI → per-spec impact range including related elements | `sensor/` index and query, `todo-independence-contracts.mjs`, witness set (`todo-witness-scaffold.mjs`) | The AI judges; Lattice supplies the graph and records the judged range. Do not replace with heuristics that drop related elements |
+| 4 | Impact range names resources read/written; two works conflict when one writes what the other reads or writes | `todo-independence*.mjs` (independence compile/projection), `schedulability-verifier-v2.mjs` | Conflict predicate stays write-vs-read/write; never relax to write-vs-write only |
+| 5 | On conflict, refactor so the two works do not access the same resource directly | `seam-derivation`, `seam-rewrite`, `seam-apply`, isolation worktree runner | Transformation stays real (isolated worktree), not advisory |
+| 6 | Compare external behaviour before/after the refactor; re-estimate ranges; plan only when behaviour is within tolerance and overlap is gone | `seam-verification`, `structure compile/realize` (`todo-structure*.mjs`), plan revision (`todo-revision.mjs`) | Verification and re-estimation gate the new plan; do not plan on an unverified seam |
+| 7 | During parallel execution, on conflict between two works: hold one, commit the other to version control, resume after resolution | `runtime-cli.mjs` hold/resume, `runtime-work-order-controller.mjs`, `runtime-managed-supervisor.mjs`, scoped barriers | Hold → commit → resume order preserved; barriers scoped to the pair |
+| 8 | On a resolvable in-flight conflict: hold both, refactor only the elements needed, resume both | `runtime-cli.mjs` recompile path, `seam-*` invoked from runtime, isolation runner | Refactor scope stays limited to the conflict's elements |
+| 9 | Observe each work's actually changed resources; runtime conflict when they exceed the work's range or overlap another running work's range | `runtime-direct-os-observer.mjs`, `runtime-os-observation.mjs`, `runtime-pull-intake.mjs`, receipt validation | Observation is of actual changes (OS/diff), compared against ranges; keep both tests (exceed, overlap) |
+| 10 | Identify the target group affected by the runtime conflict; hold only those; have the planner generate a new plan for the group | `runtime-cli.mjs` recompile/reprocess, plan revision/epochs, `runtime-pull-intake.mjs` | Re-planning is targeted (the group), not whole-plan; epochs invalidate old contexts |
+
+Owner of this table: Lattice統括 (Snow White). Runtime rows are refined by the Runtime
+owner's hold/recompile/resume DFD when it lands; Independence rows by the seam
+weight review. Source of claim text: the owner's filing set (private to the
+supervisor's seat); this map quotes constituent elements in paraphrase only.
