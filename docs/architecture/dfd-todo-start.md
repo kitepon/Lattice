@@ -3,6 +3,9 @@
 Canonical lifecycle field trace at 0.79.5 (`047139e5`). The current-path tables
 below reuse the completed read-only Sonnet trace without repeating its verification.
 [Function map](function-map.md) owns module/state boundaries.
+The [Runtime DFD](dfd-runtime-hold-resume.md) owns hold/source-commit/recompile/
+resume and detailed Runtime lock recovery; manual start does not grant a Runtime
+write lease. Its proposed Runtime recovery rows are not implemented by this doc.
 Unchanged rows retain the baseline trace. Store recovery rows and the Store reopen
 contract below describe this S3 implementation; other target rows remain proposals.
 
@@ -110,12 +113,12 @@ proposals and are not integrated by this Store change.
 |---|---|---|---|
 | Todo store write lock / withLock | Normal start publishes an empty lock; cross-plan recovery publishes PID only | Implemented: free → complete owner record atomically linked → owned → free; identified dead owner → identity-aware recovery claim → locked reread/replay → owned → free. Recovery is default for all todo writes. | PID + process-start identity + host identify the owner. Never reclaim a live owner or by age. Legacy empty/pid-only locks stay untouched: STORE_WRITE_CONFLICT, reason lock_owner_unidentified, next_action naming the lock and operator confirmation before clearing. |
 | Note lock / note-store | Empty lock cannot identify a dead owner | Implemented: same shared identified lock protocol → reread/replay note chain under lock → append → free | Append-only note integrity and sole writer. Live/unidentified/foreign-host owners stay protected; legacy failure retains NOTE_WRITE_CONFLICT with lock_owner_unidentified detail and manual next_action. |
-| Run lifecycle lock / runtime-lifecycle-lock | Torn owner record can stay busy | free → initializing → owned → free; abandoned initialization → identity-aware reclamation → owned | Do not reclaim a concurrent live initializer by age alone. |
-| Adapter registry / runtime-adapter-registry | No PID recovery | free → owned → free; proven-dead owner → reclaim + reread registry → owned | Do not overwrite a live registry writer. |
+| Run/CLI/pull/start-binding locks / Runtime | Empty or torn owner publication can remain busy | Proposed identified publication/recovery; [canonical Runtime state table](dfd-runtime-hold-resume.md) owns current/target transitions | Do not reclaim a live initializer by age or resume writes merely because a lock was recovered. |
+| Adapter registry / Runtime | PID-only publication, no dead-owner recovery | Proposed identified publication/recovery and reread registry; [Runtime state table](dfd-runtime-hold-resume.md) | Do not overwrite a live registry writer; keep current public error mapping. |
 | Setup lock / setup | Crash leaves setup locked | free → owned → free; proven-dead owner → reclaim + reread host entries → owned | Preserve unrelated host entries and exclude concurrent configuration writes. |
 | Source-cutover/cross-plan recovery marker / Store | Marker currently rejects open in some paths | Implemented: clean → prepared → applying → committed → clean; reopen invokes the existing recorded revision recovery or resolves the cross-plan import transaction → clean | Never discard marker or bytes without resolving the recorded operation. |
 | Journal ahead of manifest/cache / appendTodoEvent | Crash at steps 22–24 yields manifest_journal_head_mismatch | Implemented: clean → appended → projected → manifest-published → clean; reopen validates the append and finishes publication → clean | A digest mismatch of unknown origin is not permission to accept arbitrary data. Repair under the shared transaction lock; old manifest head must be a validated journal ancestor. No on-disk format change. |
-| Runtime conflict hold / supervisor and pull-intake | Intentional scoped pause | running → conflict-held → conflict resolved → recompile/rebind when needed → running | Keep real overlap detection, process identity, scoped barriers and evidence checks. |
+| Runtime conflict hold / supervisor and pull-intake | Intentional scoped pause | [Runtime DFD R1–R10](dfd-runtime-hold-resume.md): observe → selected hold → source commit or limited refactor → affected recompile → epoch/gate commit → resume | Keep real overlap detection, process identity, scoped barriers and evidence checks; unrelated attempts retain origin bindings. |
 
 Store owner Rudmira's authoring follow-up after PR37 also changes ordinary append
 so it does not create a missing store root before taking the lock. The
