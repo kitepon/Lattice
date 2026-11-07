@@ -181,6 +181,11 @@ import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
 import { resolveSeatIdentity } from './seat-identity.mjs';
+import {
+  WORKFLOW_STATE_SCHEMA,
+  explainWorkflowState,
+  readTodoWorkflowStates,
+} from './todo-workflow.mjs';
 
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 const DEFAULT_GANTT_SCOPE = 'live';
@@ -1794,6 +1799,7 @@ async function status({ repoRoot }) {
   const store = await readTodoStore({ repoRoot });
   const result = projectTodoStatus(store, {
     planNotes: await readTodoPlanNotesForStatus({ repoRoot, store }),
+    workflowStates: await readTodoWorkflowStates({ repoRoot, store }),
     parallelCandidates: await readTodoParallelCandidatesForStatus({
       repoRoot, store, gitHead: currentHeadSha, changedPathsSince,
     }),
@@ -3877,23 +3883,75 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && (argv.length === 3 || argv[3] === '--json')) {
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: argv[2] });
   } else if (argv[0] === 'note' && argv[1] !== 'list') {
+    const workflowFlags = ['--workflow', '--pr-url', '--ci-url', '--ci-result', '--detail'];
+    const hasWorkflowFlag = argv.some((token) => workflowFlags.includes(token));
+    const workflowRequested = argv.includes('--workflow');
+    const invalidWorkflowInput = (pointer, rule, expected) => typedFailure(stderr,
+      new TodoStoreError('INPUT_INVALID', rule, undefined, {
+        pointer, rule, expected,
+        next_action: 'lattice todo note --help',
+      }));
+    if (hasWorkflowFlag && !workflowRequested) {
+      return invalidWorkflowInput('/workflow', 'workflow_flag_requires_workflow', '--workflow');
+    }
     const flags = matchFlagCommand(argv, ['note'], {
-      known: ['plan', 'task', 'message', 'input', 'supersedes'],
+      known: workflowRequested
+        ? ['plan', 'task', 'message', 'input', 'supersedes', 'workflow',
+          'pr-url', 'ci-url', 'ci-result', 'detail', 'json']
+        : ['plan', 'task', 'message', 'input', 'supersedes'],
       required: ['plan'],
+      booleans: workflowRequested ? ['json'] : [],
     });
-    const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
-    const hasInput = isAuthoringPathToken(flags?.input);
-    if (flags !== null && isTodoIdentifier(flags.plan)
-      && (flags.task === undefined || isTodoIdentifier(flags.task))
-      && (flags.supersedes === undefined || isTodoDigest(flags.supersedes))
-      && hasMessage !== hasInput) {
+    if (workflowRequested) {
+      if (flags === null) {
+        return invalidWorkflowInput('/', 'workflow_note_flags_invalid',
+          ['--plan', '--task', '--workflow', '--pr-url', '--ci-url', '--ci-result', '--detail', '--json']);
+      }
+      if (!isTodoIdentifier(flags.plan)) {
+        return invalidWorkflowInput('/plan', 'workflow_plan_invalid', 'TODO identifier');
+      }
+      if (flags.task === undefined) {
+        return invalidWorkflowInput('/task', 'workflow_task_required', 'TODO identifier');
+      }
+      if (!isTodoIdentifier(flags.task)) {
+        return invalidWorkflowInput('/task', 'workflow_task_invalid', 'TODO identifier');
+      }
+      if (flags.message !== undefined || flags.input !== undefined) {
+        return invalidWorkflowInput('/', 'workflow_note_is_exclusive',
+          ['--workflow', '--task', 'workflow fields']);
+      }
+      if (flags.supersedes !== undefined && !isTodoDigest(flags.supersedes)) {
+        return invalidWorkflowInput('/supersedes', 'workflow_supersedes_invalid', 'todo digest');
+      }
+      const body = { schema: WORKFLOW_STATE_SCHEMA, stage: flags.workflow };
+      for (const [flag, field] of [['pr-url', 'pr_url'], ['ci-url', 'ci_url'],
+        ['ci-result', 'ci_result'], ['detail', 'detail']]) {
+        if (flags[flag] !== undefined) body[field] = flags[flag];
+      }
+      const issue = explainWorkflowState(body);
+      if (issue !== null) {
+        return invalidWorkflowInput(issue.path, issue.reason, issue.expected);
+      }
+      const message = canonicalizeTodoArtifact(body);
       action = (repoRoot) => appendNote({
-        repoRoot, env, planKey: flags.plan,
-        taskId: flags.task ?? null,
-        message: hasMessage ? flags.message : null,
-        inputRef: hasInput ? flags.input : null,
-        supersedes: flags.supersedes ?? null,
+        repoRoot, env, planKey: flags.plan, taskId: flags.task,
+        message, inputRef: null, supersedes: flags.supersedes ?? null,
       });
+    } else {
+      const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
+      const hasInput = isAuthoringPathToken(flags?.input);
+      if (flags !== null && isTodoIdentifier(flags.plan)
+        && (flags.task === undefined || isTodoIdentifier(flags.task))
+        && (flags.supersedes === undefined || isTodoDigest(flags.supersedes))
+        && hasMessage !== hasInput) {
+        action = (repoRoot) => appendNote({
+          repoRoot, env, planKey: flags.plan,
+          taskId: flags.task ?? null,
+          message: hasMessage ? flags.message : null,
+          inputRef: hasInput ? flags.input : null,
+          supersedes: flags.supersedes ?? null,
+        });
+      }
     }
   } else if (argv.length === 5 && argv[0] === 'note' && argv[1] === 'list'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3]) && argv[4] === '--json') {

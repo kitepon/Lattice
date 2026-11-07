@@ -16,6 +16,7 @@ import {
 } from './todo-contracts.mjs';
 import { TODO_INDEPENDENCE_COVERAGE } from './todo-independence-contracts.mjs';
 import { todoLegacyReconciliationDigest } from './todo-revision.mjs';
+import { WORKFLOW_STATUS_KEYS, validWorkflowStatusFields } from './todo-workflow.mjs';
 import {
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
@@ -96,8 +97,10 @@ function enforceListLimit(name, value) {
 }
 
 function taskEntry(value) {
-  return exactRecord(value, ['plan_key', 'task_id', 'label'])
+  return exactRecord(value, ['plan_key', 'task_id', 'label',
+    ...WORKFLOW_STATUS_KEYS.filter((key) => Object.hasOwn(value, key))])
     && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
+    && validWorkflowStatusFields(value)
     && isTodoStatusBoundedText(value.label, TODO_STATUS_LABEL_LIMIT);
 }
 
@@ -107,15 +110,19 @@ function taskRefEntry(value) {
 }
 
 function activeTaskEntry(value) {
-  return exactRecord(value, ['plan_key', 'task_id', 'label', 'unmet_dependencies'])
+  return exactRecord(value, ['plan_key', 'task_id', 'label', 'unmet_dependencies',
+    ...WORKFLOW_STATUS_KEYS.filter((key) => Object.hasOwn(value, key))])
     && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
+    && validWorkflowStatusFields(value)
     && isTodoStatusBoundedText(value.label, TODO_STATUS_LABEL_LIMIT)
     && boundedList(value.unmet_dependencies, taskRefEntry);
 }
 
 function blockedEntry(value) {
-  return exactRecord(value, ['plan_key', 'task_id', 'reason'])
+  return exactRecord(value, ['plan_key', 'task_id', 'reason',
+    ...WORKFLOW_STATUS_KEYS.filter((key) => Object.hasOwn(value, key))])
     && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
+    && validWorkflowStatusFields(value)
     && isTodoStatusBoundedText(value.reason, TODO_STATUS_REASON_LIMIT);
 }
 
@@ -534,8 +541,8 @@ export const TODO_STATUS_DISPATCH_ONLY = Object.freeze({
  * 呼び出し元だけがそれを渡す。dispatch面しか見ない内部呼び出しは`TODO_STATUS_DISPATCH_ONLY`を使う。
  */
 export function projectTodoStatus(readModel, options = undefined) {
-  if (!(exactRecord(options, ['planNotes', 'parallelCandidates'])
-      || exactRecord(options, ['planNotes', 'parallelCandidates', 'structureFinalizations']))
+  if (!exactRecord(options, ['planNotes', 'parallelCandidates',
+      ...['structureFinalizations', 'workflowStates'].filter((key) => Object.hasOwn(options ?? {}, key))])
     || !Array.isArray(options.planNotes)) {
     fail('TODO_STATUS_INVALID_INPUT', 'todo_status_plan_notes_missing');
   }
@@ -546,17 +553,23 @@ export function projectTodoStatus(readModel, options = undefined) {
     && !Array.isArray(options.structureFinalizations)) {
     fail('TODO_STATUS_INVALID_INPUT', 'todo_status_structure_finalizations_invalid');
   }
+  if (options.workflowStates !== undefined && !Array.isArray(options.workflowStates)) {
+    fail('TODO_STATUS_INVALID_INPUT', 'todo_status_workflow_states_invalid');
+  }
   const graph = buildTodoGraph(readModel);
   const { nodes, incoming, memberHeads, auditPending, coordination } = graph;
   const planNotes = [...options.planNotes];
   const parallelCandidates = [...options.parallelCandidates];
   const structureFinalizations = [...(options.structureFinalizations ?? [])];
+  const workflows = new Map((options.workflowStates ?? []).map(({ plan_key, task_id, ...fields }) => (
+    [`${plan_key}\0${task_id}`, fields])));
 
   const activeSet = [];
   const nextReady = [];
   const blocked = [];
   for (const node of nodes.values()) {
-    const task = { plan_key: node.plan_key, task_id: node.task_id, label: node.label };
+    const flow = workflows.get(`${node.plan_key}\0${node.task_id}`) ?? {};
+    const task = { plan_key: node.plan_key, task_id: node.task_id, label: node.label, ...flow };
     if (node.status === 'in-progress') {
       const unmetDependencies = [...incoming.get(node.key)]
         .filter((key) => nodes.get(key).status !== 'done')
@@ -573,6 +586,7 @@ export function projectTodoStatus(readModel, options = undefined) {
       blocked.push({
         plan_key: node.plan_key,
         task_id: node.task_id,
+        ...flow,
         reason: displayText(node.blocked_reason, 'blocked', TODO_STATUS_REASON_LIMIT),
       });
     }

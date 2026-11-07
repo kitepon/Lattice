@@ -27,6 +27,7 @@ import { ensureTodoDashboardActivity } from './todo-dashboard-registry.mjs';
 import { reportProjectDashboardDelivery } from './dashboard-delivery.mjs';
 import { resolveProjectIdentity } from './project-identity.mjs';
 import { resolveSeatIdentity, seatIdentityFields } from './seat-identity.mjs';
+import { WORKFLOW_STATUS_KEYS, validWorkflowStatusFields, readTodoWorkflowStates } from './todo-workflow.mjs';
 import {
   appendAuthoredTodoPlan,
   buildTodoPlan,
@@ -96,7 +97,8 @@ export function validateProjectStatus(value) {
     ];
     if (Object.hasOwn(value, 'seat_id')) keys.push('seat_id');
     if (!exactRecord(value, keys) || (Object.hasOwn(value, 'seat_id')
-      && resolveSeatIdentity({ LATTICE_SEAT_ID: value.seat_id }).seat_id !== value.seat_id)
+      && (typeof value.seat_id !== 'string'
+        || resolveSeatIdentity({ LATTICE_SEAT_ID: value.seat_id }).seat_id !== value.seat_id))
       || value.schema !== STATUS_SCHEMA
       || !exactRecord(value.cli, ['available', 'version']) || value.cli.available !== true
       || typeof value.cli.version !== 'string' || value.cli.version.length > 64
@@ -107,8 +109,10 @@ export function validateProjectStatus(value) {
       || !value.active_plans.every((entry) => exactRecord(entry, ['plan_key', 'plan_version'])
         && isTodoIdentifier(entry.plan_key) && isTodoIdentifier(entry.plan_version))
       || !Array.isArray(value.active_runs) || value.active_runs.length > 2_000
-      || !value.active_runs.every((entry) => exactRecord(entry, ['plan_key', 'task_id', 'label'])
+      || !value.active_runs.every((entry) => exactRecord(entry, ['plan_key', 'task_id', 'label',
+        ...WORKFLOW_STATUS_KEYS.filter((key) => Object.hasOwn(entry, key))])
         && isTodoIdentifier(entry.plan_key) && isTodoIdentifier(entry.task_id)
+        && validWorkflowStatusFields(entry)
         && typeof entry.label === 'string' && [...entry.label].length > 0 && [...entry.label].length <= 160)
       || typeof value.can_create_plan !== 'boolean' || !plain(value.next_action)
       || typeof value.next_action.command !== 'string' || value.next_action.command.length === 0
@@ -293,13 +297,12 @@ async function resolveProjectState({ cwd, cliVersion, env = process.env, diagnos
       }
     }
     const todo = projectTodoStatus(store, {
+      workflowStates: await readTodoWorkflowStates({ repoRoot, store }),
       planNotes: await readTodoPlanNotesForStatus({ repoRoot, store }),
       parallelCandidates: await readTodoParallelCandidatesForStatus({ repoRoot, store, gitHead }),
       structureFinalizations: await readTodoStructureFinalizationsForStatus({ repoRoot, store }),
     });
-    const activeRuns = todo.active_set.map((entry) => ({
-      plan_key: entry.plan_key, task_id: entry.task_id, label: entry.label,
-    }));
+    const activeRuns = todo.active_set.map(({ unmet_dependencies, ...entry }) => entry);
     const state = activeRuns.length > 0 ? 'active_run' : 'ready';
     const next = activeRuns.length > 0
       ? { command: 'lattice todo status', reason: 'active_run_present' }

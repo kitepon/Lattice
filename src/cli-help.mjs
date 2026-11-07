@@ -96,6 +96,8 @@ Write commands:
   dashboard remove <project_id> --json  # 登録簿から1件外す（対象repoの外からも叩ける）
   note --plan <key> [--task <id>] (--message <text>|--input <file>)
       # ToDoへ作業継続に必要な方針・調査結果・注意をappend-onlyで追記する
+  note --plan <key> --task <id> --workflow <pr|ci|review|clear> [--pr-url <url>] [--ci-url <url> --ci-result <pass|fail|running>] [--detail <text>] [--supersedes <digest>] [--json]
+      # PR/CIの観測を lattice.workflow_state.v1 として同じnote journalへ追記する
   migrate --input <extraction.json> [--serialization-reviewed] [--json]
   migrate --input <extraction.json> --dry-run --json [--serialization-reviewed]
       # 既存storeへplanを追加する（plan createは空store初期化専用）。

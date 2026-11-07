@@ -228,6 +228,24 @@ ToDoの作業記憶はlifecycle journal／snapshotと分離したtask-scoped app
 `todo start`はlifecycle event追記前にfail closedする。revisionを跨ぐ投影は`task_migration`だけを根拠にし、
 removed taskのnoteはarchived束へ分離する。
 
+taskのPR/CI/レビューの観測事実は、`todo note --plan <key> --task <id> --workflow <pr|ci|review|clear>`
+から記録する。`--pr-url <url>`、CIがある時は`--ci-url <url> --ci-result <pass|fail|running>`、
+任意の`--detail <text>`を受け、版付き`lattice.workflow_state.v1`本文は機械が作る。workflowはtask必須で、
+通常のmessage/inputとは排他的である。既存task noteのStore APIだけで追記し、lifecycleのstart/doneと
+readinessは変えない。remote照会は増やさない。
+
+Storeの`includeHistory:true`によるbudget前の投影履歴から、task scopeかつ非supersededの有効なworkflowを
+先頭から選ぶ。plan scopeの本文をtaskへ配らず、旧task名のcarryはStore投影を使う。後続proseでbounded
+contextから落ちてもworkflowは失われない。clearは明示的な解除で、履歴は消さない。
+`todo status`の既存task欄とproject statusの`active_runs`、session-contextの同じ欄へ、存在する時だけ
+`flow_state/pr_url/ci_url/ci_result/detail/workflow_note_digest/workflow_recorded_at`を載せる。
+通常note本文の代わりに型付き観測欄だけを投影し、Ganttは同じstatus欄を読む。未記録taskの欄形は保つ。
+
+席の共通helperに従い、`LATTICE_SEAT_ID`が有効なら`status --json`と`session-context --json`の
+トップへ`seat_id`を出し、後者のnested statusにも同じ値を出す。未設定・不正なら省略し、拒否しない。
+journal actorのagentは明示`LATTICE_TODO_ACTOR_AGENT`、席id、従来USER/LOGNAME既定の順で選ぶ。
+host/sessionと明示actorの検証は変えない。追加欄も既存result digestで束縛する。
+
 **工程に属する義務はplan単位noteが持つ**（ADR 0160）。`todo note --plan <key>`（`--task`省略）で書き、
 そのplanの全taskの`note_context`へ`scope: 'plan'`として届く。plan単位noteはtask noteと**別のchain file**へ
 積むので、旧CLIはその存在に気づかずtask noteだけを従来どおり返す。まだ誰も着手していない工程の義務は
