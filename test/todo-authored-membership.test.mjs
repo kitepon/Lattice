@@ -362,3 +362,62 @@ test('a replaced private staging directory is preserved during failed initializa
     assert.equal(await fs.readFile(path.join(replaced,'operator.txt'),'utf8'),'preserve');
   `], { timeout: 15_000 });
 });
+
+for (const destinationState of ['complete', 'empty', 'unknown', 'symlink', 'absent', 'stage-replaced']) {
+  test(`directory EPERM retains its cause and preserves ${destinationState} destination`, async (t) => {
+    const root = await fixture(t, false);
+    const storeModule = new URL('../src/todo-store.mjs', import.meta.url).href;
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs/promises';
+      import path from 'node:path';
+      import {syncBuiltinESMExports} from 'node:module';
+      const root=${JSON.stringify(root)}, state=${JSON.stringify(destinationState)};
+      const input=${JSON.stringify(initial(root))}, rename=fs.rename.bind(fs);
+      let injected=false, sentinel, replacedStage;
+      fs.rename=async(from,to)=>{
+        if(!injected && path.dirname(from)===root && to===path.join(root,'.lattice/todo')){
+          injected=true;
+          sentinel=Object.assign(new Error('native EPERM sentinel'),{code:'EPERM',syscall:'rename',path:from,dest:to});
+          if(state==='complete' || state==='stage-replaced'){
+            if(state==='stage-replaced'){
+              await rename(from,from+'-saved'); await fs.mkdir(from);
+              await fs.writeFile(path.join(from,'operator.txt'),'keep'); replacedStage=from;
+            }
+            await store.initializeAuthoredTodoStore(input);
+          } else if(state==='empty' || state==='unknown'){
+            await fs.mkdir(to);
+            if(state==='unknown') await fs.writeFile(path.join(to,'operator.txt'),'keep');
+          } else if(state==='symlink'){
+            const foreign=path.join(root,'foreign'); await fs.mkdir(foreign);
+            await fs.writeFile(path.join(foreign,'operator.txt'),'keep');
+            await fs.symlink(foreign,to,'junction');
+          }
+          throw sentinel;
+        }
+        return rename(from,to);
+      };
+      syncBuiltinESMExports();
+      const store=await import(${JSON.stringify(storeModule)});
+      await assert.rejects(store.initializeAuthoredTodoStore(input),error=>{
+        if(state==='absent' || state==='stage-replaced'){assert.equal(error,sentinel);return true}
+        assert.equal(error.code,'STORE_WRITE_CONFLICT'); assert.equal(error.cause,sentinel);
+        assert.equal(error.detail.cause,'EPERM');
+        assert.equal(error.detail.reason,state==='complete'?'store_bootstrap_raced':'bootstrap_destination_incomplete');
+        assert.ok(error.detail.next_action.includes(path.join(root,'.lattice/todo')));
+        return true;
+      });
+      if(state==='complete' || state==='stage-replaced'){
+        assert.equal((await store.readTodoStore({repoRoot:root})).members.length,1);
+        if(replacedStage) assert.equal(await fs.readFile(path.join(replacedStage,'operator.txt'),'utf8'),'keep');
+      } else if(state==='empty'){
+        assert.equal((await store.initializeAuthoredTodoStore(input)).members.length,1);
+      } else if(state==='unknown'){
+        assert.equal(await fs.readFile(path.join(root,'.lattice/todo/operator.txt'),'utf8'),'keep');
+        await assert.rejects(store.initializeAuthoredTodoStore(input),error=>error.detail.reason==='store_already_exists');
+      } else if(state==='symlink'){
+        assert.equal(await fs.readFile(path.join(root,'foreign/operator.txt'),'utf8'),'keep');
+      } else await assert.rejects(fs.lstat(path.join(root,'.lattice/todo')),{code:'ENOENT'});
+    `], { timeout: 15_000 });
+  });
+}

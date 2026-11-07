@@ -3097,6 +3097,35 @@ export async function initializeAuthoredTodoStore(options = {}) {
         try { await rename(stage, storeRoot); }
         catch (error) {
           if (['EEXIST', 'ENOTEMPTY'].includes(error?.code)) fail('STORE_WRITE_CONFLICT', 'store_bootstrap_raced');
+          if (error?.code === 'EPERM') {
+            const remainingStage = await lstat(stage).catch(() => null);
+            if (sameIdentity(stageIdentity, remainingStage)
+              && remainingStage.isDirectory() && !remainingStage.isSymbolicLink()) {
+              const destination = await lstat(storeRoot).catch(() => null);
+              if (destination !== null) {
+                let complete = false;
+                if (destination.isDirectory() && !destination.isSymbolicLink()) {
+                  try {
+                    await readArtifact(repoRoot, MANIFEST_REF, {
+                      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes,
+                      validate: validateTodoManifest,
+                    });
+                    complete = sameIdentity(destination, await lstat(storeRoot));
+                  } catch { /* An unreadable manifest cannot prove a completed publisher. */ }
+                }
+                const reason = complete ? 'store_bootstrap_raced' : 'bootstrap_destination_incomplete';
+                const layout = complete ? null : await uninitializedStoreLayout(repoRoot).catch(() => null);
+                const nextAction = complete
+                  ? `Read the published Store at ${storeRoot}; add further membership with a new plan key.`
+                  : layout?.uninitialized
+                    ? `Retry the same initial operation after the writer exits; transient residue at ${storeRoot} recovers automatically.`
+                    : `Finish or restore the original bootstrap at ${storeRoot}, preserving existing data, then retry.`;
+                throw Object.assign(new TodoStoreError('STORE_WRITE_CONFLICT', reason, reason, {
+                  ref: STORE_ROOT_REF, cause: error.code, next_action: nextAction,
+                }), { cause: error });
+              }
+            }
+          }
           throw error;
         }
         renamed = true;
