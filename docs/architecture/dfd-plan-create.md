@@ -43,6 +43,12 @@ tables and implementation together, with Leviathan review and exact-commit
 three-OS CI. Historical replay, readiness predicates and storage format stay in
 their existing contracts.
 
+`runPlanBackchain` also routes its existing additional-plan creation through
+`appendAuthoredTodoPlan` with a g5 writer and featureChain. It uses ordinary
+authored genesis, preserving its existing add-result/feature-context projection;
+G4 migration remains historical import only. Both create callers select the
+requested plan_key from returned members.
+
 ## Compatibility and identity
 
 `lattice.project_status.v1` keeps its JSON fields and next_action key sets.

@@ -252,7 +252,11 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
   try { manifestState = await lstat(manifestAbsolute); } catch (error) {
     if (error?.code !== 'ENOENT') return invalid('manifest_unreadable');
   }
-  if (storeState === undefined && manifestState === undefined) {
+  const { isUninitializedTodoStore } = await import('./todo-store.mjs');
+  let uninitialized;
+  try { uninitialized = await isUninitializedTodoStore({ repoRoot }); }
+  catch { return invalid('store_unreadable'); }
+  if (uninitialized) {
     return { exitCode: 0, repoRoot, store: null, todo: null, result: statusResult({
       cli: { available: true, version: cliVersion },
       project: { root: repoRoot, git_head: gitHead(repoRoot), project_id: null },
@@ -639,10 +643,10 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
     hardDependencies: input.hard_dependencies,
     joins: input.joins,
   });
-  const store = await initializeAuthoredTodoStore({
+  const { appendAuthoredTodoPlan, isUninitializedTodoStore } = await import('./todo-store.mjs');
+  const options = {
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
-    projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }],
-    plan: {
+    plan: buildTodoPlan({
       schema: input.schema === MEMO_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v7'
         : input.schema === DECOUPLED_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v5'
         : input.schema === PHASE_CREATE_INPUT_SCHEMA
@@ -654,11 +658,15 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
         MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(input.schema) ? { phases: input.phases } : {}),
       ...([DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(input.schema)
         ? { phase_accept_dependencies: input.phase_accept_dependencies } : {}),
-    },
+    }),
     genesis: { actor: input.actor, recorded_at: input.recorded_at, provenance: null },
     ...(featureChain === null ? {} : { featureChain }),
-  });
-  const member = store.members[0];
+  };
+  const store = await isUninitializedTodoStore({ repoRoot })
+    ? await initializeAuthoredTodoStore({ ...options,
+      projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }] })
+    : await appendAuthoredTodoPlan(options);
+  const member = store.members.find(({ plan }) => plan.plan_key === input.plan_key);
   const result = {
     schema: CREATE_RESULT_SCHEMA, project_id: store.project_id,
     plan_key: member.plan.plan_key, plan_version: member.plan.plan_version,
