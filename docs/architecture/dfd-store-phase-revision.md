@@ -49,3 +49,27 @@ version/digest boundaries. Existing v4 writer coverage guards the unchanged
 backchain branch. Ship this DFD, the Store function-map rows, code and tests in
 one diff; record exact-head CI and diagram review under the current acceptance
 rules. No actual shared-Store v5 artifact is produced as part of these tests.
+
+## Journal-backed prospective validation and identity-preserving repair
+
+All successor writers (`applyPhaseTodoRevision`, its v3 source path,
+`applyTodoRevision`, `applyTodoRevisionSet`, `createSuccessorTodoPlan`) validate
+the complete prospective merged graph, including projected live plan-scoped
+connections, before publishing a marker, source change, successor artifact or
+manifest. Replaced members have the successor's initially empty plan-scoped
+chain; their predecessor chains remain immutable history. Untouched members keep
+their live connections. A stale incoming binding refuses before publication; the
+author resolves it explicitly through existing coordination, never an implicit
+cascade or stale-tolerant ordinary write.
+
+| Step / owner | Input and decision | Publication / failure and exit |
+|---|---|---|
+| Plan carry decision | Mandatory `validateBindingCarry({store,source,dependencies})` callback supplies explicit same-task carry proof from the recorded source topology to the active successor; read-only inputs, returns `{ok:true}` or `{ok:false,code,detail:{reason,...}}` | Store owns no continuity policy; correct refused proof/input before retry. This never admits a new dependency into a completed target. |
+| Store `rebindTodoCrossPlanDependencies` public recovery | g5 writer; owner `planKey`, `sourcePlanKey`, exact nonempty unique `eventDigests`, `expectedManifestDigest`, `expectedPlanScopedHeadDigest`, actor/time/reason and supplied Plan callback. Under shared lock, privately tolerate only digest-stale bindings while reading; all identity/hash/missing/dangling checks remain. Require both CAS values and authenticate every selected live original connection on the same owner chain, with a stale source binding and unchanged project/plan/task endpoints. | CAS or original identity mismatch returns a typed conflict with no publication. Obtain current authenticated bindings and explicit intent before retry. No ordinary writer gains stale tolerance. |
+| Store staged repair | Keep original events; stage a tombstone for each original plus an existing-schema replacement connection. Change only its source expected_topology_digest to the manifest-bound source topology; retain endpoints/direction and original connection reason. Invoke Plan carry callback, then strictly validate the complete resulting merged graph. | Any missing carry proof, unselected stale binding, cycle or malformed event refuses before any chain write. Correct selected proof/bindings; bytes stay unchanged. |
+| Store single-chain publication | Atomically publish all staged pairs to that one owner plan-scoped journal under lock; return original/replacement event identities and the new chain head. | `stale → locked/CAS → validated in memory → atomic published → clean`. A crash before rename leaves original chain; after rename leaves the complete repair, recoverable through existing dead-owner cleanup. No intermediate disconnect-only state, transaction marker, lifecycle/snapshot/manifest/version write, or historical rewrite. Ordinary strict read confirms closure. |
+
+The bounded shared recovery preserves the already committed successor and both
+live edges, including a completed consumer. It is distinct from new-connect
+validation and ADR0190 disconnect/reconnect. Existing source barriers may resume
+only their recorded validated transaction; no repair fabricates a cascade.

@@ -871,12 +871,9 @@ function snapshotFor(plan, events, tasks) {
   return snapshot;
 }
 
-function validateMergedGraph(members, crossPlanDependencies = [], options = {}) {
-  // tolerateStaleBindings は dependency disconnect 専用の修理扉。plan revise が越境依存の
-  // 固定digestを陳腐化させると、通常loadは binding_stale で fail closed するが、その修理
-  // コマンド自身も load を要するため、扉が無いと修理経路が存在しない（実被弾 2026-08-29:
-  // evidence-2 改訂で store 全体が読めなくなり、disconnect も同エラーで詰んだ）。
-  // 許容するのは digest 不一致だけで、dangling / missing は修理扉でも fail する。
+function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPlanDependencies(members), options = {}) {
+  // Only disconnect and the locked identity-preserving repair tolerate stale digests.
+  // Missing endpoints and bindings remain invalid on both repair paths.
   const tolerateStale = options.tolerateStaleBindings === true;
   const tasks = new Map();
   for (const member of members) for (const task of member.plan.tasks) {
@@ -2043,6 +2040,81 @@ async function appendPlanScopedEvent({ repoRoot, member, input }) {
     plan_scoped_head_digest: event.event_digest,
     coordination: projectTodoCoordination(events),
   };
+}
+
+/** Rebind existing connections to a carried source without changing their endpoints. */
+export async function rebindTodoCrossPlanDependencies(options = {}) {
+  requireWriter(options.writer, 'g5-authoring');
+  if (typeof options.validateBindingCarry !== 'function'
+    || !isTodoIdentifier(options.planKey) || !isTodoIdentifier(options.sourcePlanKey)
+    || !isTodoDigest(options.expectedManifestDigest)
+    || !isTodoDigest(options.expectedPlanScopedHeadDigest)
+    || !Array.isArray(options.eventDigests) || options.eventDigests.length === 0
+    || !options.eventDigests.every(isTodoDigest)
+    || new Set(options.eventDigests).size !== options.eventDigests.length
+    || typeof options.reason !== 'string' || options.reason.length === 0) {
+    throw new TypeError('dependency rebind requires exact bindings and a Plan carry validator');
+  }
+  const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+  return withLock(repoRoot, async () => {
+    // The repair read must not publish derived state before the complete strict graph check.
+    const store = await readTodoStoreView({ repoRoot, forWrite: true, now: options.now,
+      tolerateStaleBindings: true });
+    const owner = store.members.find(({ plan }) => plan.plan_key === options.planKey);
+    const source = store.members.find(({ plan }) => plan.plan_key === options.sourcePlanKey);
+    if (store.manifest.manifest_digest !== options.expectedManifestDigest
+      || owner?.plan_scoped.events.at(-1)?.event_digest !== options.expectedPlanScopedHeadDigest) {
+      fail('STORE_WRITE_CONFLICT', 'dependency_rebind_binding_changed');
+    }
+    if (!source || source === owner) fail('DEPENDENCY_INVALID', 'dependency_rebind_source_invalid');
+    const dependencies = projectTodoCrossPlanDependencies(store.members)
+      .filter(({ event_digest: digest }) => options.eventDigests.includes(digest));
+    if (dependencies.length !== options.eventDigests.length || dependencies.some(({ from, to, event_digest: digest }) => (
+      from.project_id !== source.plan.project_id || from.plan_key !== source.plan.plan_key
+      || from.expected_topology_digest === source.plan.topology_digest
+      || to.project_id !== owner.plan.project_id || to.plan_key !== owner.plan.plan_key
+      || !owner.plan_scoped.events.some((event) => event.event_digest === digest)
+    ))) fail('DEPENDENCY_INVALID', 'dependency_rebind_original_mismatch');
+    const validation = await options.validateBindingCarry({ store, source, dependencies });
+    if (validation?.ok === false) {
+      if (typeof validation.code !== 'string' || typeof validation.detail?.reason !== 'string') {
+        throw new TypeError('binding carry validator must return a typed refusal');
+      }
+      const { reason, ...detail } = validation.detail;
+      fail(validation.code, reason, detail);
+    }
+    if (validation?.ok !== true) throw new TypeError('binding carry validator must return an ok result');
+    const staged = { ...owner, plan_scoped: { ...owner.plan_scoped,
+      events: [...owner.plan_scoped.events] } };
+    const replacements = [];
+    for (const dependency of dependencies) {
+      for (const input of [
+        { kind: 'cross_plan_dependency_removed', payload: {
+          target_event_digest: dependency.event_digest, reason: options.reason,
+        } },
+        { kind: 'cross_plan_dependency', payload: {
+          from: { ...dependency.from, expected_topology_digest: source.plan.topology_digest },
+          to: dependency.to, reason: dependency.reason,
+        } },
+      ]) {
+        const event = buildPlanScopedEvent(staged, { ...input, actor: options.actor,
+          recorded_at: options.recordedAt ?? new Date().toISOString() });
+        const bytes = planScopedEventBytes(staged, event);
+        staged.plan_scoped.events.push(event);
+        staged.plan_scoped.activeBytes = Buffer.concat([staged.plan_scoped.activeBytes, bytes]);
+      }
+      replacements.push({ original_event_digest: dependency.event_digest,
+        replacement_event_digest: staged.plan_scoped.events.at(-1).event_digest });
+    }
+    validateMergedGraph(store.members.map((member) => member === owner ? staged : member));
+    await protocolStage(options, 'dependency_rebind_validated');
+    await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), staged.plan_scoped.activeBytes);
+    await protocolStage(options, 'dependency_rebind_published');
+    return { schema: 'lattice.todo_dependency_rebind_result.v1', project_id: store.project_id,
+      plan_key: owner.plan.plan_key, source_plan_key: source.plan.plan_key,
+      source_topology_digest: source.plan.topology_digest, replacements,
+      plan_scoped_head_digest: staged.plan_scoped.events.at(-1).event_digest };
+  });
 }
 
 export function buildTodoPlan(input) {
@@ -4464,7 +4536,7 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     const stateMigration = stateMigrationFor(previous, revision);
     const phaseStateMigration = phaseStateMigrationFor(previous, revision);
     validateMergedGraph(store.members.map((member) => member === previous
-      ? { ...member, plan: revision.desired_plan } : member));
+      ? { ...member, plan: revision.desired_plan, plan_scoped: null } : member));
     const candidateGenesis = buildPhaseRevisionGenesis(revision.desired_plan, {
       previous_digest: revision.predecessor.journal_head_digest, actor: options.actor,
       recorded_at: options.recordedAt, provenance: options.provenance ?? null,
@@ -4635,7 +4707,7 @@ export async function applyPhaseTodoRevision(options = {}) {
     const stateMigration = stateMigrationFor(previous, revision);
     const phaseStateMigration = phaseStateMigrationFor(previous, revision);
     const prospective = store.members.map((member) => member === previous
-      ? { ...member, plan: revision.desired_plan } : member);
+      ? { ...member, plan: revision.desired_plan, plan_scoped: null } : member);
     validateMergedGraph(prospective);
     const candidateGenesis = buildPhaseRevisionGenesis(revision.desired_plan, {
       previous_digest: revision.predecessor.journal_head_digest,
@@ -4782,7 +4854,7 @@ export async function applyTodoRevision(options = {}) {
     verifyPlanNarrativeAnchors(repoRoot, revision.desired_plan, previous.plan);
     const stateMigration = stateMigrationFor(previous, revision);
     const prospective = store.members.map((member) => member === previous
-      ? { ...member, plan: revision.desired_plan } : member);
+      ? { ...member, plan: revision.desired_plan, plan_scoped: null } : member);
     validateMergedGraph(prospective);
 
     const candidateGenesis = buildRevisionGenesis(revision.desired_plan, {
@@ -5055,7 +5127,7 @@ export async function applyTodoRevisionSet(options = {}) {
     const desiredByPlan = new Map(prepared.map((entry) => [entry.revision.plan_key,
       entry.revision.desired_plan]));
     validateMergedGraph(store.members.map((member) => desiredByPlan.has(member.descriptor.plan_key)
-      ? { ...member, plan: desiredByPlan.get(member.descriptor.plan_key) } : member));
+      ? { ...member, plan: desiredByPlan.get(member.descriptor.plan_key), plan_scoped: null } : member));
 
     await ensureSafeStoreDirectory(repoRoot, transaction);
     const mixedPhaseSet = prepared.some(({ revision }) => ([
@@ -5248,7 +5320,7 @@ export async function createSuccessorTodoPlan(options = {}) {
     const genesis = buildPlanGenesis(plan, {
       ...options.genesis, previous_digest: previous.journal.events.at(-1).event_digest,
     });
-    const prospective = store.members.map((member) => member === previous ? { ...member, plan } : member);
+    const prospective = store.members.map((member) => member === previous ? { ...member, plan, plan_scoped: null } : member);
     validateMergedGraph(prospective);
     const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}/${plan.plan_version}`;
     const planRef = `${base}/plan.json`; const journalRef = `${base}/journal/active.jsonl`; const snapshotRef = `${base}/snapshot.json`;
