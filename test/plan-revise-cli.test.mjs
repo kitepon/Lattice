@@ -19,11 +19,12 @@ function desired(ids) {
 const decision = (task_id, policy) => ({ task_id, policy, reason: `explicit ${policy}` });
 const intent = () => ({ schema: 'lattice.plan_revise_input.v1', desired: desired(['a', 'b', 'd']),
   continuity: [decision('a', 'carry'), decision('b', 'carry'), decision('c', 'retire')] });
-function run(root, args) {
+function run(root, args, envOverrides = {}) {
   return spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8',
     env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0',
       LATTICE_RUNTIME_ERROR_REPORTING: '0', LATTICE_TODO_ACTOR_HOST: 'fixture',
-      LATTICE_TODO_ACTOR_SESSION: 'fixture', LATTICE_TODO_ACTOR_AGENT: 'fixture' } });
+      LATTICE_TODO_ACTOR_SESSION: 'fixture', LATTICE_TODO_ACTOR_AGENT: 'fixture',
+      ...envOverrides } });
 }
 function success(root, args) {
   const result = run(root, args);
@@ -100,6 +101,26 @@ test('light CLI refuses dangling references before publishing a successor', asyn
 });
 
 
+test('light CLI reports an applied revision when carried work rebind fails, then repairs it', async (context) => {
+  const { root } = await fixture(context);
+  success(root, ['todo', 'start', '--plan', 'work', '--task', 'b']);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  const failed = run(root, ['plan', 'revise', '--input', 'revise.json', '--json'], {
+    LATTICE_TODO_ACTOR_AGENT: 'invalid agent!',
+  });
+  assert.notEqual(failed.status, 0);
+  const error = JSON.parse(failed.stderr);
+  assert.equal(error.code, 'PLAN_REBIND_PENDING');
+  assert.equal(error.detail.task_id, 'b');
+  assert.equal(error.detail.revision_applied, true);
+  assert.match(error.detail.revision_digest, /^[a-f0-9]{64}$/);
+  assert.equal(error.detail.next_action,
+    'lattice todo start --plan work --task b --rebind --reason <text>');
+  const repaired = success(root, ['todo', 'start', '--plan', 'work', '--task', 'b',
+    '--rebind', '--reason', 'fixture']);
+  assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
+});
+
 test('artifact CLI applies v5 through revise-phase and verifies its reconciliation projection', async (context) => {
   const { root } = await fixture(context);
   await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
@@ -107,7 +128,7 @@ test('artifact CLI applies v5 through revise-phase and verifies its reconciliati
   const revisionInput = { ...preview.revision };
   delete revisionInput.revision_digest;
   await writeFile(path.join(root, 'revision.json'), JSON.stringify(revisionInput));
-  success(root, ['todo', 'revise-phase', '--plan', 'work', '--input', 'revision.json', '--json']);
+  success(root, ['todo', 'revise-phase', '--plan', 'work', '--input', 'revision.json']);
   const result = success(root, ['todo', 'verify', '--plan', 'work', '--json']);
   const member = result.verified_members.find(({ plan_key }) => plan_key === 'work');
   assert.equal(member.reconciliation_state, 'reconciled');
