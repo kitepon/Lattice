@@ -21,15 +21,16 @@ function store({ policy = 'carry_reconciled_metadata', ownerTopology = OWNER_TOP
       tasks: [{ task_id: 't03' }, { task_id: 't05' }] }, revision: null },
   ] };
 }
-const source = { project_id: 'p', plan_key: 'source',
-  predecessor: { plan_version: 'v1', plan_digest: 'd1', topology_digest: OLD } };
+const predecessor = { plan_version: 'v1', plan_digest: 'd1', topology_digest: OLD };
+const args = (members, overrides = {}) => ({ store: members, source: members.members[0],
+  dependencies, predecessor, ...overrides });
 const dependencies = [
   { from: ref('source', 'w1', OLD), to: ref('owner', 't03', OWNER_TOPOLOGY), reason: 'r1', event_digest: 'e1' },
   { from: ref('source', 'w5', OLD), to: ref('owner', 't05', OWNER_TOPOLOGY), reason: 'r2', event_digest: 'e2' },
 ];
 
 test('identity carry of both live connections is accepted and only the source digest moves', () => {
-  const result = validateBindingCarry({ store: store(), source, dependencies });
+  const result = validateBindingCarry(args(store()));
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.detail.successor_topology_digest, NEW);
   assert.deepEqual(result.detail.rebound.map(({ event_digest }) => event_digest), ['e1', 'e2']);
@@ -39,14 +40,15 @@ test('identity carry of both live connections is accepted and only the source di
 });
 
 test('reset, renamed or missing source tasks, changed targets and unlinked hops are refused', () => {
-  const code = (args) => validateBindingCarry(args).code;
-  assert.equal(code({ store: store({ policy: 'reset_pending' }), source, dependencies }), 'binding_carry_task_not_carried');
-  assert.equal(code({ store: store({ ownerTopology: '0'.repeat(64) }), source, dependencies }), 'binding_carry_target_changed');
-  assert.equal(code({ store: store(), source: { ...source, predecessor: { ...source.predecessor, plan_digest: 'other' } },
-    dependencies }), 'binding_carry_hop_unlinked');
-  assert.equal(code({ store: store(), source,
-    dependencies: [{ ...dependencies[0], from: ref('source', 'w1', NEW) }] }), 'binding_carry_predecessor_mismatch');
-  assert.equal(code({ store: store(), source, dependencies: [dependencies[0], dependencies[0]] }), 'binding_carry_duplicate');
-  assert.equal(code({ store: store(), source,
-    dependencies: [{ ...dependencies[0], to: ref('owner', 'nope', OWNER_TOPOLOGY) }] }), 'binding_carry_target_missing');
+  const refusal = (value) => { const r = validateBindingCarry(value); return [r.code, r.detail.reason]; };
+  assert.deepEqual(refusal(args(store({ policy: 'reset_pending' }))), ['DEPENDENCY_INVALID', 'binding_carry_task_not_carried']);
+  assert.deepEqual(refusal(args(store({ ownerTopology: '0'.repeat(64) }))), ['DEPENDENCY_STALE', 'binding_carry_target_changed']);
+  assert.deepEqual(refusal(args(store(), { predecessor: { ...predecessor, plan_digest: 'other' } })),
+    ['DEPENDENCY_STALE', 'binding_carry_hop_unlinked']);
+  assert.deepEqual(refusal(args(store(), { dependencies: [{ ...dependencies[0], from: ref('source', 'w1', NEW) }] })),
+    ['DEPENDENCY_STALE', 'binding_carry_predecessor_mismatch']);
+  assert.deepEqual(refusal(args(store(), { dependencies: [dependencies[0], dependencies[0]] })),
+    ['DEPENDENCY_INVALID', 'binding_carry_duplicate']);
+  assert.deepEqual(refusal(args(store(), { dependencies: [{ ...dependencies[0], to: ref('owner', 'nope', OWNER_TOPOLOGY) }] })),
+    ['DEPENDENCY_INVALID', 'binding_carry_target_missing']);
 });
