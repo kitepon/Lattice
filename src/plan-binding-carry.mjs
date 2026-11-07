@@ -53,13 +53,8 @@ export function validateBindingCarry({ store, source, dependencies, predecessor 
     if (seen.has(key)) return refuse('DEPENDENCY_INVALID', 'binding_carry_duplicate', edge);
     seen.add(key);
     rebound.push({ event_digest: dependency.event_digest ?? null, ...edge,
-      from_topology_digest: from.expected_topology_digest, to_topology_digest: plan.topology_digest });
+      predecessor_topology_digest: from.expected_topology_digest, successor_topology_digest: plan.topology_digest });
   }
   return { ok: true, detail: { plan_version: plan.plan_version,
     successor_topology_digest: plan.topology_digest, rebound } };
-}
-
-export function carriedDependencyPayload(dependency, successorTopologyDigest) {
-  return { from: { ...dependency.from, expected_topology_digest: successorTopologyDigest },
-    to: { ...dependency.to }, reason: dependency.reason };
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { carriedDependencyPayload, validateBindingCarry } from '../src/plan-binding-carry.mjs';
+import { validateBindingCarry } from '../src/plan-binding-carry.mjs';
 
 const OLD = 'b'.repeat(64);
 const NEW = 'a'.repeat(64);
@@ -34,8 +34,8 @@ test('identity carry of both live connections is accepted and only the source di
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.detail.successor_topology_digest, NEW);
   assert.deepEqual(result.detail.rebound.map(({ event_digest }) => event_digest), ['e1', 'e2']);
-  const payload = carriedDependencyPayload(dependencies[0], NEW);
-  assert.deepEqual(payload, { from: ref('source', 'w1', NEW), to: ref('owner', 't03', OWNER_TOPOLOGY), reason: 'r1' });
+  assert.deepEqual(result.detail.rebound.map(({ predecessor_topology_digest, successor_topology_digest }) =>
+    [predecessor_topology_digest, successor_topology_digest]), [[OLD, NEW], [OLD, NEW]]);
   assert.equal(dependencies[0].from.expected_topology_digest, OLD, 'input is not mutated');
 });
 
