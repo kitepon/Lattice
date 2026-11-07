@@ -614,3 +614,22 @@ for (const stage of ['plan_directory_renamed', 'manifest_activated']) {
       stage === 'manifest_activated' ? 1 : 0);
   });
 }
+
+test('visible import recovery preserves unknown destination bytes and resumes from its recorded preimage', async (context) => {
+  const root = await workspace(context);
+  const input = await extraction(root);
+  await writeFile(path.join(root, 'companion.json'), `${JSON.stringify(input)}\n`);
+  const crashed = childCrash(root, 'manifest_activated');
+  assert.equal(crashed.status, 91, crashed.stderr);
+  const destination = path.join(root, '.lattice/todo/plans/main/v1/journal/plan-scoped.jsonl');
+  const unknown = 'unknown destination bytes\n';
+  await writeFile(destination, unknown);
+  const manifest = await readFile(path.join(root, '.lattice/todo/manifest.json'));
+  await assert.rejects(readTodoStore({ repoRoot: root, now: NOW }), (error) =>
+    error.code === 'STORE_INCONSISTENT' && error.detail.reason === 'cross_plan_transaction_staging_digest_mismatch');
+  assert.equal(await readFile(destination, 'utf8'), unknown);
+  assert.deepEqual(await readFile(path.join(root, '.lattice/todo/manifest.json')), manifest);
+  await rm(destination);
+  const recovered = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.equal(recovered.members.find(({ plan }) => plan.plan_key === 'main').plan_scoped.events.length, 1);
+});

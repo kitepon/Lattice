@@ -2451,7 +2451,17 @@ async function finalizeVisibleCrossPlanImport(repoRoot, transaction, { removeTra
         ref: artifact.staged_ref,
       });
     }
-    await atomicWrite(path.resolve(repoRoot, artifact.ref), bytes);
+    const eventBytes = canonicalLine(transaction.marker.events[0]);
+    if (!bytes.subarray(-eventBytes.length).equals(eventBytes)) {
+      fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.staged_ref });
+    }
+    const target = await pathState(repoRoot, artifact.ref, 'STORE_INCONSISTENT', { missing: true });
+    const current = target === null ? Buffer.alloc(0) : await readFile(target.absolute);
+    const before = bytes.subarray(0, bytes.length - eventBytes.length);
+    if (!current.equals(before) && !current.equals(bytes)) {
+      fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.ref });
+    }
+    if (!current.equals(bytes)) await atomicWrite(path.resolve(repoRoot, artifact.ref), bytes);
   }
   if (removeTransaction) {
     await rm(path.resolve(repoRoot, transaction.transactionRef), { recursive: true, force: true });
