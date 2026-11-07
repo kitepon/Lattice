@@ -107,6 +107,12 @@ The later split moves functions to their owner without changing the contract.
 | fs-publish: syncPublishedFile | Filesystem publication helper | Todo atomicWrite/atomicWriteMode, note atomicWrite and shared Store lock; owns the existing WSL2 /mnt EIO allowance |
 | todo-store-git-transaction: detached store commit path selection | Store | Only durable store artifacts enter Git; todo/note .write.lock, .write.lock.*.tmp, .write.lock.recovery/** and .cross-plan-recovery/** are host-local and excluded |
 
+## Accepted next-unit Store display read (design only)
+
+| Public function / state | Single owner | Consumer / failure contract |
+|---|---|---|
+| Proposed `readTodoStoreForDisplay({repoRoot})`; derived `.lattice/generated/store-display/last-verified.json` | Store: strict raw read without recovery, complete view serialization, repository/project/source identity, atomic checkpoint and non-fatal checkpoint write failure | [Store display DFD](dfd-store-display-read.md) returns verified/last_verified/unavailable plus typed inconsistency. Snow White owns the connected display row/banner/empty state. Lifecycle writes, validation and recovery never consume the checkpoint. After PR55/56 recovery and connected Leviathan review, not implemented in this draft. |
+
 ## Dependency direction after the proposed split
 
 `surfaces → plan/lifecycle → store`; independence/seam consumes Store and Sensor
