@@ -26,7 +26,7 @@ and exited non-zero although the lifecycle write had already succeeded.
 | `runBridgeCli setup/reconfigure` → `configureBridge` | argv listen/hub/dashboard; `bridge.json` | new config (`updated_at`), operation lock | bridge-config |
 | `launchAgent.snapshot({env})` | adapter state files (plist / launcher+descriptor / descriptor) | `{installed, split, …Content}`; fs errors typed | adapter (read only) |
 | `launchAgent.install({config, previousListen, env})` | config, resolved node/bridge/supervisor executables, registrar env | starts the bridge under supervision; waits for `bridge-daemon.json` + `/__lattice/bridge-health` carrying the new `instanceToken`; timeout → `BRIDGE_*_START_FAILED`; rollback via `restore(snapshot)` | adapter writes its entry; bridge daemon writes `bridge-daemon.json` |
-| `runBridgeCli disable` → `launchAgent.disable({snapshot, listen})` | snapshot, witnessed listen | stops supervision + bridge, removes entry; `{removed, stopped}`; rollback via `restore` | adapter |
+| `runBridgeCli disable` → `launchAgent.disable({snapshot, listen})` | snapshot, witnessed listen | attempts authenticated supervision + bridge stop, removes entry; `{removed, stopped}` separates entry removal from confirmed termination (Linux: skipped/unconfirmed stop → `stopped:false`); rollback via `restore` | adapter |
 | `runBridgeCli status` / `bridgeDiagnostics` → `bridgePersistence` | `snapshot` + `describe` | `{state: installed/not_installed/unreadable, node_path, node_exists, bridge_path, bridge_exists, loaded}`; any string-coded error → `unreadable`, never thrown | none |
 | `todo dashboard ensure` → `ensureProjectDashboardDelivery` → `recoverConfiguredBridge` → `bridgeDiagnostics`; missing/broken persistence or runtime → `runBridgeCli reconfigure` → `configureBridge` → `launchAgent.install`; then `verifyBridgeHubDelivery` | `bridge.json`, adapter snapshot, runtime identity, hub heartbeat | `lattice.dashboard_delivery.v1` receipt: `hub_delivered` / `local_only` / `failed(reason)`; CLI exit follows the receipt | bridge-config rewrites `bridge.json`; adapter rewrites its entry and starts supervision; dashboard-delivery writes the receipt on stderr |
 
@@ -36,9 +36,9 @@ and exited non-zero although the lifecycle write had already succeeded.
 |---|---|---|
 | snapshot | mkdir 0700; read `descriptor.json` as UTF-8 (`optionalFile`: ENOENT → null; other fs errors propagate; no strict-file or size validation) | read |
 | describe | parse descriptor → `{node_path, node_exists, bridge_path, bridge_exists}` | read |
-| install | resolve node/bridge/supervisor executables → read pidfile identity → observe process birth → SIGTERM only on exact identity match → wait for that identity to exit ≤10 s → write descriptor atomically (0600; schema `lattice.bridge_supervisor_descriptor.v1` + `nodePath`) → await launch (`spawn(node, [supervisor, descriptor], {detached, stdio: ignore})`, then `unref`) → `waitForBridgeStartupReady` | write `descriptor.json`; supervisor writes `supervisor.pid` (Linux: JSON `{pid,birth}`, birth = `linux:<boot_id>:<starttime>`; Windows keeps its numeric pidfile) |
-| disable | stop running supervisor → rm descriptor + pidfile → `{removed, stopped}` | remove |
-| restore | stop identified supervisor → if snapshot installed: rewrite descriptor, await launch again, optionally await readiness for rollback config | rewrite |
+| install | resolve node/bridge/supervisor executables → read pidfile identity → observe process birth → SIGTERM only on exact identity match → observe exit/changed birth or an unobservable outcome ≤10 s → write descriptor atomically (0600; schema `lattice.bridge_supervisor_descriptor.v1` + `nodePath`) → await launch (`spawn(node, [supervisor, descriptor], {detached, stdio: ignore})`, then `unref`) → `waitForBridgeStartupReady` | write `descriptor.json`; supervisor writes `supervisor.pid` (Linux: JSON `{pid,birth}`, birth = `linux:<boot_id>:<starttime>`; Windows keeps its numeric pidfile) |
+| disable | attempt authenticated supervisor stop → rm descriptor + pidfile → `{removed: snapshot.installed, stopped: confirmedTermination}`; no signal or unobservable outcome → `stopped:false` | remove |
+| restore | attempt identified supervisor stop → if snapshot installed: rewrite descriptor, await launch again, optionally await readiness for rollback config | rewrite |
 
 Shared helper ownership: `bridge-startup-folder.mjs` is the canonical owner of
 `supervisorDescriptor` (descriptor schema, forwarded registrar/config environment)
@@ -50,9 +50,15 @@ uses `BRIDGE_DETACHED_SUPERVISOR_ROLLBACK_FAILED`.
 
 Identity protection prevents a stale pidfile from signaling a reused PID. Stop-state
 transitions: valid saved identity + same observed birth → signal → observed identity
-exits/changes → remove pidfile → continue install/disable/restore; missing, malformed,
+is absent or has a known different birth → confirm termination, await socket stop → remove pidfile → continue install/disable/restore; missing, malformed,
 legacy numeric, unknown-birth or mismatched identity → no signal → remove pidfile →
-continue. An unavailable process observation also takes the no-signal transition.
+continue with stop outcome false. An unavailable process observation before signaling
+also takes the no-signal transition. After signaling, a null observation means known
+absence and a nonempty different birth means the authenticated process has exited;
+only these confirmed outcomes return true. A null birth or observer error means
+unobservable, clears the pidfile and continues with stop outcome false, without
+asserting termination. `disable` propagates that outcome as `stopped`; `removed`
+continues to describe entry removal.
 A matching supervisor that does not exit within 10 s produces
 `BRIDGE_DETACHED_SUPERVISOR_STOP_FAILED`; install/CLI rollback retains its existing
 error handling. The writer records identity before spawning the bridge. Non-Windows

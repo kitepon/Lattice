@@ -97,28 +97,37 @@ async function defaultWaitStopped({ listen, timeoutMs = SOCKET_TIMEOUT_MS }) {
   throw fail('BRIDGE_DETACHED_SUPERVISOR_STOP_FAILED', 'bridge socket did not stop');
 }
 
-async function stopRunning({ refs, listen, waitStopped }) {
+async function stopRunning({ refs, listen, waitStopped, observeProcess = observeDashboardProcess }) {
   // shortcut: live numeric-only supervisors require owner-authenticated retirement before upgrading.
   const content = await optionalFile(refs.pidfile);
   let identity;
+  let stopped = false;
   try { identity = JSON.parse(content); } catch {}
   if (Number.isSafeInteger(identity?.pid) && identity.pid > 0
     && typeof identity.birth === 'string' && identity.birth.length > 0) {
-    const matches = async () => {
-      try { return (await observeDashboardProcess(identity.pid))?.birth === identity.birth; }
-      catch { return false; } // An unavailable observation never licenses a signal.
+    const observe = async () => {
+      try { return await observeProcess(identity.pid); }
+      catch { return { pid: identity.pid, birth: null }; }
     };
-    if (await matches()) {
+    if ((await observe())?.birth === identity.birth) {
       try { process.kill(identity.pid, 'SIGTERM'); } catch (error) {
         if (error?.code !== 'ESRCH') throw error;
       }
       const deadline = Date.now() + STOP_TIMEOUT_MS;
-      while (await matches() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-      if (await matches()) throw fail('BRIDGE_DETACHED_SUPERVISOR_STOP_FAILED', 'bridge supervisor did not stop');
-      await waitStopped({ listen });
+      let observed = await observe();
+      while (observed?.birth === identity.birth && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        observed = await observe();
+      }
+      if (observed?.birth === identity.birth) {
+        throw fail('BRIDGE_DETACHED_SUPERVISOR_STOP_FAILED', 'bridge supervisor did not stop');
+      }
+      stopped = observed === null || (typeof observed?.birth === 'string' && observed.birth.length > 0);
+      if (stopped) await waitStopped({ listen });
     }
   }
   await rm(refs.pidfile, { force: true });
+  return stopped;
 }
 
 export function defaultDetachedLaunch({ nodePath, supervisorPath, descriptorPath, env }) {
@@ -163,15 +172,15 @@ export async function installBridgeDetachedSupervisor({ config, env = process.en
 }
 
 export async function disableBridgeDetachedSupervisor({ snapshot, listen, env = process.env,
-  waitStopped = defaultWaitStopped } = {}) {
+  waitStopped = defaultWaitStopped, observeProcess = observeDashboardProcess } = {}) {
   if (!snapshot || typeof snapshot.installed !== 'boolean') {
     throw new TypeError('bridge detached supervisor snapshot required');
   }
   const refs = bridgeDetachedSupervisorPaths(env);
-  if (snapshot.installed) await stopRunning({ refs, listen, waitStopped });
+  const stopped = snapshot.installed ? await stopRunning({ refs, listen, waitStopped, observeProcess }) : false;
   await rm(refs.descriptor, { force: true });
   await rm(refs.pidfile, { force: true });
-  return { removed: snapshot.installed, stopped: snapshot.installed };
+  return { removed: snapshot.installed, stopped };
 }
 
 export async function restoreBridgeDetachedSupervisor({ snapshot, listen = null, env = process.env,

@@ -122,11 +122,46 @@ for (const kind of ['birth mismatch', 'unknown birth', 'legacy numeric', 'malfor
         : kind === 'unknown birth' ? JSON.stringify({ ...identity, birth: null })
           : kind === 'legacy numeric' ? String(child.pid) : '{invalid';
       await writeFile(refs.pidfile, content);
-      await disableBridgeDetachedSupervisor({ snapshot: await snapshotBridgeDetachedSupervisor({ env }), env,
-        waitStopped: async () => assert.fail('unowned process must not be waited on') });
+      assert.deepEqual(await disableBridgeDetachedSupervisor({
+        snapshot: await snapshotBridgeDetachedSupervisor({ env }), env,
+        waitStopped: async () => assert.fail('unowned process must not be waited on'),
+      }), { removed: true, stopped: false });
       assert.deepEqual(await observeDashboardProcess(child.pid), identity);
       await assert.rejects(readFile(refs.pidfile), { code: 'ENOENT' });
       assert.equal((await snapshotBridgeDetachedSupervisor({ env })).installed, false);
+    });
+}
+
+for (const outcome of ['absent', 'different birth', 'unknown birth', 'observer error']) {
+  test(`Linux stop reports post-signal ${outcome} accurately`,
+    { skip: process.platform !== 'linux' }, async (context) => {
+      const { env, bridgePath, launch } = await fixture(context);
+      await installBridgeDetachedSupervisor({ config, env, launch, waitReady: noWait });
+      const refs = bridgeDetachedSupervisorPaths(env);
+      const child = spawn(process.execPath, [bridgePath], { stdio: 'ignore' });
+      await once(child, 'spawn');
+      const exited = once(child, 'exit');
+      const identity = await observeDashboardProcess(child.pid);
+      await writeFile(refs.pidfile, JSON.stringify(identity));
+      let observations = 0;
+      let socketWaits = 0;
+      const confirmed = outcome === 'absent' || outcome === 'different birth';
+      const result = await disableBridgeDetachedSupervisor({
+        snapshot: await snapshotBridgeDetachedSupervisor({ env }), env,
+        observeProcess: async (pid) => {
+          assert.equal(pid, child.pid);
+          if (observations++ === 0) return identity;
+          if (outcome === 'observer error') throw Object.assign(new Error('unobservable'), { code: 'EACCES' });
+          if (outcome === 'unknown birth') return { pid, birth: null, observation: 'unavailable' };
+          await exited;
+          return outcome === 'absent' ? null : { pid, birth: `${identity.birth}-new` };
+        },
+        waitStopped: async () => { socketWaits++; },
+      });
+      assert.deepEqual(result, { removed: true, stopped: confirmed });
+      assert.equal(socketWaits, confirmed ? 1 : 0);
+      assert.equal((await exited)[1], 'SIGTERM');
+      await assert.rejects(readFile(refs.pidfile), { code: 'ENOENT' });
     });
 }
 
