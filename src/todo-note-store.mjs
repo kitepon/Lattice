@@ -621,9 +621,11 @@ export async function readTodoPlanNotesForStatus(options = {}) {
   return summaries;
 }
 
-/** Gantt用に1 planのchain/historyを一度だけ読み、全task contextへ投影する。 */
+/** 1 planを一度だけ読み全taskへ投影する。includeHistoryはbudget前の履歴も返す。 */
 export async function readTodoNoteContextsForPlan(options = {}) {
-  if (!exactRecord(options, ['repoRoot', 'store', 'planKey'])
+  const keys = ['repoRoot', 'store', 'planKey'];
+  if (!(exactRecord(options, keys) || exactRecord(options, [...keys, 'includeHistory']))
+    || ('includeHistory' in options && typeof options.includeHistory !== 'boolean')
     || !isTodoIdentifier(options.planKey)
     || options.store === null || typeof options.store !== 'object') {
     throw new TypeError('todo note contexts read options invalid');
@@ -654,5 +656,8 @@ export async function readTodoNoteContextsForPlan(options = {}) {
     contexts: projected.map(({ context }) => context),
     archived: projected[0]?.archived ?? [],
     note_head_digest: chain.head_digest,
+    ...(options.includeHistory ? { histories: projected.map(({ context, history }) => ({
+      task_id: context.task_id, history,
+    })) } : {}),
   };
 }
