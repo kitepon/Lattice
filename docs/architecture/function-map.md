@@ -74,8 +74,8 @@ The later split moves functions to their owner without changing the contract.
 | Current functions / service | Single owner | Consumers |
 |---|---|---|
 | todo-cli: startTask, mutate, startAdvisory, startStructureContext, mutationActor | Plan/lifecycle | CLI dispatch and runtime callers via plan public index |
-| project-cli: plan creation/activation orchestration | Plan/lifecycle | Project command dispatch |
-| project-cli: `runPlanCreate`, create-input diagnosis; todo-contracts: `validateTodoPlan`, `explainTodoPlan`, shared strict-order diagnosis | Plan/lifecycle; no direct persistence | Project command dispatch; create/status/session and migration use the [authoring flow](dfd-plan-create.md). Create selects the requested plan_key from Store members. |
+| project-cli: `runPlanCreate`, `resolveProjectState`, `validateProjectStatus`; plan-backchain: existing additional-plan branch | Plan/lifecycle | Create/backchain call the Store authored API with a g5 writer and select the requested plan_key; status/session use Store's read-only layout classifier. See the [authoring flow](dfd-plan-create.md). |
+| project-cli: create-input diagnosis; todo-contracts: `validateTodoPlan`, `explainTodoPlan`, shared strict-order diagnosis | Plan/lifecycle; no direct persistence | Create and migration retain existing error codes, report pointer/rule, and distinguish extraction input from derived-plan pointer space in the [authoring flow](dfd-plan-create.md). |
 | todo-cli: runTodoCli, flag matching, typedFailure and result printing; project CLI argument dispatch | Surfaces | bin/lattice and host clients |
 | isolation-runner: disposable worktree execution/verification service | Independence + seam | Seam transformation primary consumer; runtime through independence/seam public index |
 | todo-cli: resolveDoneEvidence/writeEvidenceBlob, also used by phase decisions | Plan/lifecycle evidence service | done and phase decision commands; sole writer of `.lattice/todo/evidence/<plan>/<task>/<digest>.md` and its Git blob descriptors |

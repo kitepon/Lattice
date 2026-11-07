@@ -27,9 +27,11 @@ import { ensureTodoDashboardActivity } from './todo-dashboard-registry.mjs';
 import { reportProjectDashboardDelivery } from './dashboard-delivery.mjs';
 import { resolveProjectIdentity } from './project-identity.mjs';
 import {
+  appendAuthoredTodoPlan,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeAuthoredTodoStore,
+  isUninitializedTodoStore,
   isPhaselessTodoPlanSchema,
   readTodoIndependenceArtifact,
   readTodoStore,
@@ -121,7 +123,7 @@ export function validateProjectStatus(value) {
         && typeof value.next_action.reason === 'string' && value.next_action.reason.length > 0;
     }
     return value.project !== null && isTodoIdentifier(value.project.project_id)
-      && value.can_create_plan === false && exactRecord(value.next_action, ['command', 'reason'])
+      && value.can_create_plan === true && exactRecord(value.next_action, ['command', 'reason'])
       && typeof value.next_action.reason === 'string' && value.next_action.reason.length > 0
       && (value.state !== 'active_run' || value.active_runs.length > 0)
       && (value.state !== 'ready' || value.active_runs.length === 0);
@@ -252,7 +254,10 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
   try { manifestState = await lstat(manifestAbsolute); } catch (error) {
     if (error?.code !== 'ENOENT') return invalid('manifest_unreadable');
   }
-  if (storeState === undefined && manifestState === undefined) {
+  let uninitialized;
+  try { uninitialized = await isUninitializedTodoStore({ repoRoot }); }
+  catch { return invalid('store_unreadable'); }
+  if (uninitialized) {
     return { exitCode: 0, repoRoot, store: null, todo: null, result: statusResult({
       cli: { available: true, version: cliVersion },
       project: { root: repoRoot, git_head: gitHead(repoRoot), project_id: null },
@@ -318,7 +323,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
         plan_key: entry.plan_key, plan_version: entry.plan_version,
       })),
       active_runs: activeRuns,
-      can_create_plan: false,
+      can_create_plan: true,
       next_action: next,
     });
     return { exitCode: 0, repoRoot, store, todo, result };
@@ -639,10 +644,9 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
     hardDependencies: input.hard_dependencies,
     joins: input.joins,
   });
-  const store = await initializeAuthoredTodoStore({
+  const options = {
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
-    projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }],
-    plan: {
+    plan: buildTodoPlan({
       schema: input.schema === MEMO_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v7'
         : input.schema === DECOUPLED_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v5'
         : input.schema === PHASE_CREATE_INPUT_SCHEMA
@@ -654,11 +658,19 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
         MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(input.schema) ? { phases: input.phases } : {}),
       ...([DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(input.schema)
         ? { phase_accept_dependencies: input.phase_accept_dependencies } : {}),
-    },
+    }),
     genesis: { actor: input.actor, recorded_at: input.recorded_at, provenance: null },
     ...(featureChain === null ? {} : { featureChain }),
+  };
+  const manifest = await lstat(path.join(repoRoot, MANIFEST_REF)).catch((error) => {
+    if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
+    return null;
   });
-  const member = store.members[0];
+  const store = manifest === null
+    ? await initializeAuthoredTodoStore({ ...options,
+      projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }] })
+    : await appendAuthoredTodoPlan(options);
+  const member = store.members.find(({ plan }) => plan.plan_key === input.plan_key);
   const result = {
     schema: CREATE_RESULT_SCHEMA, project_id: store.project_id,
     plan_key: member.plan.plan_key, plan_version: member.plan.plan_version,

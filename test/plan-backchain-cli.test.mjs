@@ -174,6 +174,10 @@ test('既存storeへのplan追加も同じ逆算入口で行う', async (context
   const created = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
   assert.equal(created.status, 0, created.stderr);
   assert.equal(JSON.parse(created.stdout).authoring_result.schema, 'lattice.plan_backchain_add_result.v1');
+  const manifest = JSON.parse(await readFile(path.join(root, '.lattice/todo/manifest.json'), 'utf8'));
+  const added = manifest.members.find(({ plan_key }) => plan_key === 'archive');
+  const genesis = JSON.parse((await readFile(path.join(root, added.journal_ref), 'utf8')).trim());
+  assert.equal(genesis.payload.historical_import, undefined);
   const detail = JSON.parse(run(root, ['todo', 'show', '--plan', 'archive', '--task', 'save', '--json']).stdout);
   assert.equal(detail.feature_context.provides[0].feature_id, 'archive');
 });

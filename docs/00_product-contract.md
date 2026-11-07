@@ -154,12 +154,27 @@ canonical store ref、active plan、active run、`uninitialized | ready | active
 正常状態であり、`.lattice/`の存在を接続判定へ使わない。`invalid`はexit 1のtyped状態とし、
 Markdownへ暗黙fallbackしない。
 
-未初期化projectの初期authoring入口は
+未初期化projectと、既存Storeへ別の新planを登録するauthoring入口は
 `lattice plan create --input <lattice.plan_create_input.v4>`である。入力はrepo内のJSON
 （pretty-print・digest未計算・repo内絶対pathを含む）を機械がcanonicalizeして受理し、
 `lattice.todo_plan.v7`と同じPhase／task／topology制約を満たすfull desired stateを
 一回のtransactionでstoreへ登録する。空の設計メモは拒否する（`NO_PLAN`は明示申告だけ）。
 移行専用の`todo migrate`を新規authoringへ流用しない。
+既存Storeへの追加は同じproject_idの新しいplan_keyだけを受ける。既存planの上書きや
+暗黙のrevisionは行わない。Storeがlock下で全memberを再読し、通常のgenesis、phase、
+任意のbackchainを保存し、最後のmanifest公開で追加を確定する。旧memberとrepositoriesは保持する。
+`lattice.project_status.v1`のfield形を維持し、`can_create_plan`は`uninitialized`だけでなく
+`ready`と`active_run`でもtrue、`invalid`ではfalseを返す。`next_action`の優先順とkey集合は
+維持する。hooksやPeertable等の消費者は、このflagを初回初期化専用と解釈しない。
+manifestもplan memberも無く、既知のhost-local transientだけが残ったdirectoryは未初期化に含める。
+Storeのread-only判定をdiscoveryが使い、初期作成時にStoreが証明済みdead transientだけを
+回収し、同じ空directoryのrmdir後に既存のdirectory renameで公開する。live ownerが居る時は
+STORE_WRITE_CONFLICT/store_lockedを返し、終了後の次操作で再試行できる。未知dataは削除しない。
+
+入力の整列違反はfield/indexと昇順・重複なしの規則を返す。createでは既存の
+INPUT_INVALID/plan_create_schema_invalidを保ち、migrateではINVALID_TODO_EXTRACTION/schema_invalidを
+保つ。migrateの派生planで生じる違反にはpointer_space=todo_planと、該当時はtask_idを付け、
+元のextraction indexとの混同を避ける。入力正規化は配列の並び替えを行わない。
 旧v1〜v3は`--schema-version`で取得できるだけの歴史契約であり、create入力としては
 `plan_create_schema_retired`で拒否する。
 

@@ -7,7 +7,7 @@ import {
   digestTodoArtifact, todoSelfDigest,
 } from './todo-contracts.mjs';
 import {
-  appendImportedPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+  appendAuthoredTodoPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
 import { gitSync } from './git-process.mjs';
@@ -590,11 +590,12 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     const plan = buildTodoPlan({
       ...planSeed(amended, null), plan_version: chain.plan_version,
     });
-    const added = await appendImportedPlan({
-      repoRoot, writer: createTodoStoreWriter({ caller: 'g4-migration' }),
+    const addedStore = await appendAuthoredTodoPlan({
+      repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
       plan, genesis: { actor: authoring.actor, recorded_at: authoring.recorded_at,
         provenance: null }, featureChain: chain,
     });
+    const added = addedStore.members.find(({ plan: candidate }) => candidate.plan_key === plan.plan_key);
     created = {
       schema: 'lattice.plan_backchain_add_result.v1',
       plan_key: added.plan.plan_key, plan_version: added.plan.plan_version,

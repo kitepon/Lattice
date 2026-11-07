@@ -3,15 +3,15 @@
 Canonical w1/w5 contract for initial/additional authoring and validation.
 [Function map](function-map.md) owns the composed boundaries.
 
-Implementation status: this diff supplies the Store API/recovery boundary.
-Plan CLI/status dispatch remains Alice's following w1/w5 integration; the current
-main CLI still has the initial-only create restriction.
+Implementation status: Store API/recovery is supplied by PR39. This Plan diff
+connects plain create and backchain addition to that API, projects uninitialized
+layout and valid-store authoring capability, and exposes pointer/rule diagnostics.
 
 ## Store implementation boundary
 
-The Store API in this diff supplies the transaction below. Plan's additional
-create/status dispatch remains Alice's following integration. No v5 revision
-artifact is introduced by this change.
+The Store API supplies the transaction below; its accepted Store checks are
+reused. Plan owns the caller projection and diagnostics described afterward.
+No v5 revision artifact is introduced by this change.
 
 | Store function / state | Reads and transition | Publication / refusal and exit |
 |---|---|---|
@@ -42,6 +42,18 @@ consistency, and malformed/unsorted graph pointers on create/migrate. Ship these
 tables and implementation together, with Leviathan review and exact-commit
 three-OS CI. Historical replay, readiness predicates and storage format stay in
 their existing contracts.
+
+`runPlanBackchain` also routes its existing additional-plan creation through
+`appendAuthoredTodoPlan` with a g5 writer and featureChain. It uses ordinary
+authored genesis, preserving its existing add-result/feature-context projection;
+G4 migration remains historical import only. Both create callers select the
+requested plan_key from returned members.
+
+Plain create routes by published manifest presence: absent/ENOTDIR goes to the
+initializer, present goes to append. This preserves the initializer's existing
+unsafe-parent error; a false discovery classification alone does not mean a
+valid Store. `isUninitializedTodoStore` remains the read-only discovery service.
+Both Store transactions perform the authoritative layout/identity/race checks.
 
 ## Compatibility and identity
 
@@ -83,6 +95,9 @@ only on failure. Store buildTodoPlan retains TypeError/message and forwards the
 diagnostic in error.detail, mapping reason → violation_kind and path → pointer:
 `{violation_kind, pointer, expected?, actual?}`. expected/actual are omitted when
 absent and are JSON values when present. Create/migrate keep these public keys.
+Create's public detail retains its existing expected/actual fallback values
+(`{schema}` / `{message}`); optional omission above describes Store's TypeError
+detail and derived migration propagation.
 Create input graph paths match plan paths for tasks/hard_dependencies/joins/
 phases/phase_accept_dependencies. Computed predecessor/topology/plan digests are
 not author fields; failures there are reported as derived-plan diagnostics.

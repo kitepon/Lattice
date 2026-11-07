@@ -35,3 +35,20 @@ stageや`.lattice`を意図的に交換し続ける攻撃は脅威model外とし
 - 未初期化は故障でなく、実行可能な次commandを伴う正常状態になる。
 - 初回planはschema、canonical bytes、digest、graph制約を満たす必要がある。
 - 既存storeへのtopology変更は従来どおり`todo revise`を使い、`plan create`は初期化時だけ許す。
+
+## Supplement — 2026-11-07 (w1/w5)
+
+`plan create`は同じv4 authoring入力で、初期作成に加えて有効な既存Storeへの新plan追加を
+受け付ける。既存keyの置換・revisionは行わない。Storeのg5追加入口が通常genesisと
+phase/backchainを保存し、lock下のfresh rereadとmanifest最後の公開を所有する。
+G4のhistorical import、Markdown移行、過去状態の持越しは流用しない。
+
+`lattice.project_status.v1`のJSON field形は維持し、can_create_planの能力をready/active_runにも
+拡張する（invalidはfalse）。next_actionの優先順とkey集合は変えず、この意味変更を公開契約と
+release noteへ記録する。manifestとplan memberが無い既知host-local transient-onlyのlayoutは
+uninitializedへ写す。Storeが判定・dead transient回収・同一空dirのrmdirを所有し、決定6の
+directory rename activationを維持する。live ownerの終了後は次の初期操作が自力で再試行する。
+
+共通plan検証は成功null、失敗時だけreason/pathを返し、boolean APIの可否を維持する。
+create/migrateは既存error codeと、入力または派生planのどのfieldのどの規則が失敗したかを
+返す。並び替えはADR0181の入力正規化には含めない。

@@ -225,7 +225,7 @@ test('plan createはcanonical inputから初期storeを作りstatusをreadyへ�
   assert.equal(result.state, 'ready');
   assert.equal(result.project.project_id, 'sample-project');
   assert.deepEqual(result.active_plans, [{ plan_key: 'main', plan_version: 'v1' }]);
-  assert.equal(result.can_create_plan, false);
+  assert.equal(result.can_create_plan, true);
   assert.equal(result.next_action.command, 'lattice todo start --plan main --task T1');
 
   const started = run(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'], {
@@ -236,6 +236,7 @@ test('plan createはcanonical inputから初期storeを作りstatusをreadyへ�
   assert.equal(started.status, 0, started.stderr);
   const active = JSON.parse(run(root, ['status', '--json']).stdout);
   assert.equal(active.state, 'active_run');
+  assert.equal(active.can_create_plan, true);
   assert.deepEqual(active.active_runs, [{ plan_key: 'main', task_id: 'T1', label: '最初の仕事' }]);
   assert.equal(active.next_action.command, 'lattice todo status');
   assert.equal(validateProjectStatus(active), true);
@@ -360,6 +361,7 @@ test('plan create v4は設計メモを保持しPhase監査順とToDo実行順を
 test('壊れたstore配置はMarkdown fallbackせずtyped invalidを返す', async (context) => {
   const root = await workspace(context);
   await mkdir(path.join(root, '.lattice', 'todo'), { recursive: true });
+  await writeFile(path.join(root, '.lattice', 'todo', 'unknown-data'), 'preserve');
   const execution = run(root, ['status', '--json']);
   assert.equal(execution.status, 1);
   assert.equal(execution.stderr, '');
@@ -368,6 +370,60 @@ test('壊れたstore配置はMarkdown fallbackせずtyped invalidを返す', asy
   assert.equal(result.can_create_plan, false);
   assert.equal(result.next_action.reason, 'store_layout_invalid');
   assert.equal(result.next_action.command, 'lattice todo verify');
+});
+
+test('空のstore directoryは未初期化と案内し、初期authoringへ戻れる', async (context) => {
+  const root = await workspace(context);
+  await mkdir(path.join(root, '.lattice', 'todo'), { recursive: true });
+  const status = run(root, ['status', '--json']);
+  assert.equal(status.status, 0, status.stderr);
+  const result = JSON.parse(status.stdout);
+  assert.equal(result.state, 'uninitialized');
+  assert.equal(result.can_create_plan, true);
+  assert.equal(result.next_action.input_schema, 'lattice.plan_create_input.v4');
+  await writeFile(path.join(root, 'plan.json'), JSON.stringify(createInput()));
+  const created = run(root, ['plan', 'create', '--input', 'plan.json']);
+  assert.equal(created.status, 0, created.stderr);
+});
+
+test('v4追加planは要求したmemberを返し、既存の作業中状態とjournalを保つ', async (context) => {
+  const root = await workspace(context);
+  await writeFile(path.join(root, 'first.json'), JSON.stringify(createInput()));
+  const created = run(root, ['plan', 'create', '--input', 'first.json']);
+  assert.equal(created.status, 0, created.stderr);
+  const first = JSON.parse(created.stdout);
+  const started = run(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']);
+  assert.equal(started.status, 0, started.stderr);
+  const oldRefs = [first.plan_ref, first.journal_ref, first.snapshot_ref];
+  const oldBytes = await Promise.all(oldRefs.map((ref) => readFile(path.join(root, ref), 'utf8')));
+
+  const input = createInput();
+  input.plan_key = 'a-before-main';
+  await writeFile(path.join(root, 'additional.json'), JSON.stringify(input));
+  const added = run(root, ['plan', 'create', '--input', 'additional.json']);
+  assert.equal(added.status, 0, added.stderr);
+  const result = JSON.parse(added.stdout);
+  assert.equal(result.plan_key, input.plan_key);
+  const addedPlan = JSON.parse(await readFile(path.join(root, result.plan_ref), 'utf8'));
+  assert.equal(addedPlan.schema, 'lattice.todo_plan.v7');
+  assert.deepEqual(addedPlan.phases, input.phases);
+  const genesis = JSON.parse((await readFile(path.join(root, result.journal_ref), 'utf8')).trim());
+  assert.equal(genesis.payload.historical_import, undefined);
+  assert.deepEqual(await Promise.all(oldRefs.map((ref) => readFile(path.join(root, ref), 'utf8'))), oldBytes);
+  const manifestRef = path.join(root, '.lattice', 'todo', 'manifest.json');
+  const manifest = await readFile(manifestRef, 'utf8');
+  assert.deepEqual(JSON.parse(manifest).members.map(({ plan_key }) => plan_key), ['a-before-main', 'main']);
+
+  const duplicate = run(root, ['plan', 'create', '--input', 'additional.json']);
+  assert.notEqual(duplicate.status, 0);
+  assert.equal(JSON.parse(duplicate.stderr).code, 'STORE_WRITE_CONFLICT');
+  assert.equal(await readFile(manifestRef, 'utf8'), manifest);
+  input.project_id = 'wrong-project';
+  input.plan_key = 'wrong-project-plan';
+  await writeFile(path.join(root, 'mismatch.json'), JSON.stringify(input));
+  const mismatch = run(root, ['plan', 'create', '--input', 'mismatch.json']);
+  assert.notEqual(mismatch.status, 0);
+  assert.equal(await readFile(manifestRef, 'utf8'), manifest);
 });
 
 test('Windows checkoutでCRLF化された旧storeは原因pathを案内し正規repairで復旧する', async (context) => {
