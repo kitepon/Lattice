@@ -34,6 +34,21 @@ test('flag parserは順不同を受理し、未知flagと位置引数を拒否�
   ), null);
 });
 
+test('flag parser accepts bare json independently and preserves json-like prose values', () => {
+  const matched = matchFlagCommand(
+    ['note', '--message', 'literal --json prose', '--json'],
+    ['note'],
+    { known: ['message'] },
+  );
+  assert.equal(matched.message, 'literal --json prose');
+  assert.equal(matched.json, true);
+  assert.equal(matchFlagCommand(
+    ['note', '--message', 'text', '--json', 'false'],
+    ['note'],
+    { known: ['message'] },
+  ), null);
+});
+
 test('pretty-print JSONとdigest欠落を直し、設計メモは空のままにする', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-authoring-input-'));
   context.after(() => rm(root, { recursive: true, force: true }));

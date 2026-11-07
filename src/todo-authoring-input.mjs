@@ -204,11 +204,11 @@ export function matchFlagCommand(argv, head, { known, required = [], booleans = 
   }
   const { flags, rest } = parseFlagMap(argv.slice(head.length));
   if (rest.length > 0) return null;
-  if (Object.keys(flags).some((key) => !known.includes(key))) return null;
+  if (Object.keys(flags).some((key) => key !== 'json' && !known.includes(key))) return null;
   for (const key of required) {
     if (typeof flags[key] !== 'string' || flags[key].length === 0) return null;
   }
-  for (const key of booleans) {
+  for (const key of [...booleans, 'json']) {
     if (flags[key] !== undefined && flags[key] !== true) return null;
   }
   return flags;

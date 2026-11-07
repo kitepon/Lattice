@@ -228,6 +228,9 @@ ToDoの作業記憶はlifecycle journal／snapshotと分離したtask-scoped app
 `todo start`はlifecycle event追記前にfail closedする。revisionを跨ぐ投影は`task_migration`だけを根拠にし、
 removed taskのnoteはarchived束へ分離する。
 
+Flag-style todo write commands accept a bare boolean `--json` through the shared argument parser.
+They keep their existing JSON results without the flag; its presence changes no recorded payload, lifecycle transition or evidence handling. A value-bearing `--json` remains invalid.
+
 taskのPR/CI/レビューの観測事実は、`todo note --plan <key> --task <id> --workflow <pr|ci|review|clear>`
 から記録する。`--pr-url <url>`、CIがある時は`--ci-url <url> --ci-result <pass|fail|running>`、
 任意の`--detail <text>`を受け、版付き`lattice.workflow_state.v1`本文は機械が作る。workflowはtask必須で、
