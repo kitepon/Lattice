@@ -95,7 +95,7 @@ def('t13', {
   owns: [
     p('src/boundary-observation-compiler-v2.mjs'), p('src/runtime-front-end.mjs'),
     p('src/seam-proposal-queries.mjs'), p('src/todo-independence-contracts.mjs'),
-    p('src/todo-independence.mjs'), p('test/rc2-artifact-contracts-v2.test.mjs'),
+    p('src/todo-independence.mjs'),
     p('test/rc3-front-end.test.mjs'), p('test/seam-proposal-queries.test.mjs'),
     p('test/todo-independence-compile.test.mjs'),
     p('test/todo-independence-contracts.test.mjs'), pc(EV('t13')),
@@ -104,44 +104,44 @@ def('t13', {
   writes: [
     'src/boundary-observation-compiler-v2.mjs', 'src/runtime-front-end.mjs',
     'src/seam-proposal-queries.mjs', 'src/todo-independence-contracts.mjs',
-    'src/todo-independence.mjs', 'test/rc2-artifact-contracts-v2.test.mjs',
+    'src/todo-independence.mjs',
     'test/rc3-front-end.test.mjs', 'test/seam-proposal-queries.test.mjs',
     'test/todo-independence-compile.test.mjs',
     'test/todo-independence-contracts.test.mjs', EV('t13'),
   ],
   affected_tests: [
-    'test/rc2-artifact-contracts-v2.test.mjs', 'test/rc3-front-end.test.mjs',
+    'test/rc3-front-end.test.mjs',
     'test/seam-proposal-queries.test.mjs', 'test/todo-independence-compile.test.mjs',
     'test/todo-independence-contracts.test.mjs',
   ],
 })
 def('t14', {
   owns: [
-    p('src/rc3-actual-dogfood.mjs'), p('src/rc3-scripted-campaign.mjs'),
-    p('src/rc4-stage1-dogfood.mjs'), p('src/runtime-cli.mjs'),
+
+    p('src/runtime-cli.mjs'),
     p('src/runtime-contracts.mjs'), p('src/runtime-decision-verifier.mjs'),
     p('src/runtime-diff-observer.mjs'), p('src/runtime-engine.mjs'),
     p('test/rc3-hold-recompile.test.mjs'), p('test/rc3-runtime-engine.test.mjs'),
     p('test/runtime-io-sentinel.test.mjs'),
-    p('test/integration/rc3-worktree-executor.integration.mjs'),
+
     p('test/integration/runtime-seam-transform.integration.mjs'),
     pc('test/runtime-line-observation.test.mjs'), pc(EV('t14')),
   ],
   reads: ['src/runtime-front-end.mjs', 'src/runtime-hold-recompile.mjs'],
   writes: [
-    'src/rc3-actual-dogfood.mjs', 'src/rc3-scripted-campaign.mjs',
-    'src/rc4-stage1-dogfood.mjs', 'src/runtime-cli.mjs', 'src/runtime-contracts.mjs',
+
+    'src/runtime-cli.mjs', 'src/runtime-contracts.mjs',
     'src/runtime-decision-verifier.mjs', 'src/runtime-diff-observer.mjs',
     'src/runtime-engine.mjs', 'test/rc3-hold-recompile.test.mjs',
     'test/rc3-runtime-engine.test.mjs', 'test/runtime-io-sentinel.test.mjs',
-    'test/integration/rc3-worktree-executor.integration.mjs',
+
     'test/integration/runtime-seam-transform.integration.mjs',
     'test/runtime-line-observation.test.mjs', EV('t14'),
   ],
   affected_tests: [
     'test/rc3-hold-recompile.test.mjs', 'test/rc3-runtime-engine.test.mjs',
     'test/runtime-io-sentinel.test.mjs',
-    'test/integration/rc3-worktree-executor.integration.mjs',
+
     'test/integration/runtime-seam-transform.integration.mjs',
     'test/runtime-line-observation.test.mjs',
   ],

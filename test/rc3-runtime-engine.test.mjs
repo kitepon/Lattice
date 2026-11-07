@@ -11,7 +11,7 @@ import {
   initializeRunEvents,
   observeExecutor,
 } from '../src/runtime-engine.mjs';
-import { createScriptedExecutorAdapter } from '../src/runtime-scripted-executor.mjs';
+import { createScriptedExecutorAdapter } from './helpers/scripted-executor.mjs';
 import {
   computeReadyFrontier,
   recomputeReceiptDecisions,

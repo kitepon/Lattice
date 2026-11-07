@@ -91,6 +91,9 @@ of those live connections.
 
 ## S2 change boundary and verification
 
+The [retirement manifest](research-retirement.md) lists exact source/test paths,
+historical replay refs and the live runtime verification retained in this change.
+
 Delete only the baseline reachability script's 33 declared research modules and
 tests whose subject is those modules. Adapt the reachability declarations and
 test runner selection in the same diff; inspect other script/fixture references.

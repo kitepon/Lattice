@@ -8,44 +8,7 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const testRoot = path.join(repoRoot, 'test');
 
-// These suites replay immutable RC1/RC2 research artifacts. They remain available
-// for historical forensics, but cannot decide the current Lattice product gate.
-const retiredArtifactReplaySuites = new Set([
-  // RC1期のcontrol compilerはproduct経路から到達しない（check:reachabilityが宣言済み）。
-  // これらは固定commitのtreeを再生する記録であり、shallow cloneではそのrefが無いので
-  // 環境によっては再生できない。製品の判定に使わない。
-  'integration/control-compiler.integration.mjs',
-  'integration/control-portability.integration.mjs',
-  'control-compiler.test.mjs',
-  'integration/rc1-v4-campaign.integration.mjs',
-  'integration/rc2-sensor-artifact-scope.integration.mjs',
-  'integration/rc3-actual-dogfood.integration.mjs',
-  'integration/rc3-event-store-scope.integration.mjs',
-  'integration/seam-transform.integration.mjs',
-  'integration/treatment-recompile.integration.mjs',
-  'rc1-black-box-oracle.test.mjs',
-  'rc1-comparison.test.mjs',
-  'rc1-evidence-bundle.test.mjs',
-  'rc1-v4-campaign.test.mjs',
-  'rc1-v4-characterization.test.mjs',
-  'rc1-v5-behavior-evidence.test.mjs',
-  'rc1-v5-campaign.test.mjs',
-  'rc1-v6-behavior-evidence.test.mjs',
-  'rc1-v6-campaign.test.mjs',
-  'rc1-v6-causal-binding.test.mjs',
-  'rc1-v6-measurement.test.mjs',
-  'rc2-artifact-version-witness.test.mjs',
-  'rc2-campaign.test.mjs',
-  'rc2-rc1-transfer-front-end.test.mjs',
-  'rc2-v6-compatibility.test.mjs',
-  'rc3-compatibility.test.mjs',
-  'seam-transform.test.mjs',
-  'treatment-compiler.test.mjs',
-  'treatment-runner.test.mjs',
-]);
-
-// CIはcoreを全対象OSへ同時投入する。個別profileは、特定OSのfocused再現を
-// ローカルで短く回すためだけに残す。
+// CI runs core on every supported OS. Profiles remain for short local reproductions.
 export const nativeTestProfiles = Object.freeze({
   linux: Object.freeze([
     'bridge-daemon.test.mjs',
@@ -116,11 +79,10 @@ export function productTestConcurrency(parallelism = availableParallelism()) {
 }
 
 export function selectProductTests(allTests, profile = 'core') {
-  const productTests = allTests.filter((relative) => !retiredArtifactReplaySuites.has(relative));
-  if (profile === 'core') return productTests;
+  if (profile === 'core') return allTests;
   const selected = nativeTestProfiles[profile];
   if (selected === undefined) throw new Error(`unknown product test profile: ${profile}`);
-  const missing = selected.filter((relative) => !productTests.includes(relative));
+  const missing = selected.filter((relative) => !allTests.includes(relative));
   if (missing.length > 0) {
     throw new Error(`product test profile ${profile} references missing suites: ${missing.join(', ')}`);
   }
@@ -137,21 +99,9 @@ function requestedProfile(argv = process.argv.slice(2)) {
 
 async function runProductTests() {
   const allTests = (await collectTests(testRoot)).sort();
-  const missingRetired = [...retiredArtifactReplaySuites]
-    .filter((relative) => !allTests.includes(relative));
-  if (missingRetired.length > 0) {
-    throw new Error(`retired artifact replay suite list drifted: ${missingRetired.join(', ')}`);
-  }
-
   const profile = requestedProfile();
   const productTests = selectProductTests(allTests, profile);
-  process.stdout.write([
-    `Current product gate (${profile}): ${productTests.length} suites`,
-    `Retired immutable artifact replay (not used for product verdict): ${retiredArtifactReplaySuites.size} suites`,
-    ...[...retiredArtifactReplaySuites].sort().map((relative) => `  - test/${relative}`),
-    '',
-  ].join('\n'));
-
+  process.stdout.write(`Current product gate (${profile}): ${productTests.length} suites\n\n`);
   const configDir = await mkdtemp(path.join(tmpdir(), 'lattice-product-tests-config-'));
   let result;
   try {
