@@ -104,7 +104,9 @@ test('artifact CLI applies v5 through revise-phase and verifies its reconciliati
   const { root } = await fixture(context);
   await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
   const preview = success(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
-  await writeFile(path.join(root, 'revision.json'), JSON.stringify(preview.revision));
+  const revisionInput = { ...preview.revision };
+  delete revisionInput.revision_digest;
+  await writeFile(path.join(root, 'revision.json'), JSON.stringify(revisionInput));
   success(root, ['todo', 'revise-phase', '--plan', 'work', '--input', 'revision.json', '--json']);
   const result = success(root, ['todo', 'verify', '--plan', 'work', '--json']);
   const member = result.verified_members.find(({ plan_key }) => plan_key === 'work');
