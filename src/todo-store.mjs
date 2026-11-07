@@ -10,7 +10,6 @@ export {
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
 } from './todo-store-view.mjs';
-import { validateProspectiveEvent } from './todo-readiness.mjs';
 import { randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
@@ -1019,13 +1018,6 @@ function mergedTaskKey(refValue) {
 }
 
 // Temporary adapter until Store receives the Plan callback from its caller.
-function validateMergedTransition(store, member, event) {
-  const result = validateProspectiveEvent({ store, member, event });
-  if (!result.ok) {
-    const { reason, ...detail } = result.detail;
-    fail(result.code, reason, detail);
-  }
-}
 
 /**
  * refsから辿れるobject idの集合。repositoryごとに1度だけ数え、以後は使い回す。
@@ -1864,6 +1856,9 @@ async function enforceTodoStructureLifecycleGate(repoRoot, member, eventInput) {
 
 export async function appendTodoEvent(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
+  if (typeof options.validateProspectiveEvent !== 'function') {
+    throw new TypeError('appendTodoEvent requires a Plan-supplied validateProspectiveEvent');
+  }
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
     const store = await readTodoStoreLocked({
@@ -1912,7 +1907,12 @@ export async function appendTodoEvent(options = {}) {
       fail('STORE_WRITE_CONFLICT', 'historical_import_writer_required');
     }
     // Validate the prospective history, including hard evidence and transitions, before any write.
-    validateMergedTransition(store, member, event);
+    const validation = options.validateProspectiveEvent({ store, member, event });
+    if (validation?.ok === false) {
+      const { reason, ...detail } = validation.detail;
+      fail(validation.code, reason, detail);
+    }
+    if (validation?.ok !== true) throw new TypeError('prospective validator must return an ok result');
     const appendSourceCache = { commits: new Set(), blobs: new Map() };
     prefetchVerificationObjects(store.manifest, repoRoot,
       [...member.journal.events, event], appendSourceCache);

@@ -25,8 +25,9 @@ import test from 'node:test';
 import { renderTodoGanttForProject } from '../src/todo-cli.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
 import {
-  appendTodoEvent, buildTodoPlan, createTodoStoreWriter, initializeTodoStore, readTodoStoreStable,
+   buildTodoPlan, createTodoStoreWriter, initializeTodoStore, readTodoStoreStable,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-07-18T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });

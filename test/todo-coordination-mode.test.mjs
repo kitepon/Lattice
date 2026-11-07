@@ -20,8 +20,9 @@ import test from 'node:test';
 
 import { TODO_COORDINATION_MODES } from '../src/todo-contracts.mjs';
 import {
-  appendTodoEvent, createTodoStoreWriter, initializeTodoStore, projectTodoCoordination, readTodoStore,
+   createTodoStoreWriter, initializeTodoStore, projectTodoCoordination, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import {
   pullIntakeReadinessGuidance,
   selectIndependenceGuidance,

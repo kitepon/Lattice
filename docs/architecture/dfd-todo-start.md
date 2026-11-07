@@ -253,8 +253,25 @@ Store uses platform identity observation and never reads the OS hostname
 The Plan callback receives `validateProspectiveEvent({store,member,event})` after
 lock acquisition and fresh read/recovery, before durable append. The complete
 store includes every active member and cross-plan edge. It is read-only for Plan.
-Existing transition code/reason stay unchanged; `cause` is additive. The existing
-validateMergedTransition call is retained until Alice's extraction lands.
+Existing transition code/reason stay unchanged; `cause` is additive.
+
+### Store supplied-callback wiring (S3 stage 2)
+
+This completes Table 1 step 20's stage-1 compatibility seam; the current call
+is the mandatory supplied function below, with no wrapper/upward import.
+
+The stage-1 extraction above remains the Plan contract. Store now removes its
+temporary validateMergedTransition wrapper and upward Plan import. All five
+todo-cli append sites pass validateProspectiveEvent explicitly. The append option
+is mandatory (a missing/non-function option is a contract TypeError before lock
+or writes). After lock + recovery + fresh reread and canonical event construction,
+Store calls it exactly once with `{store,member,event}`; the view is read-only for
+Plan. `{ok:false,code,detail}` maps to the existing refusal path, preserving reason
+and additive cause. Malformed callback results are contract TypeErrors before
+append. Historical replay, evidence and event identity checks are unchanged.
+Tests use one authoring fixture adapter which supplies the same Plan service;
+focused boundary tests call the raw Store entry to cover missing callback,
+fresh-state observation under the held lock and refusal without journal mutation.
 
 ## Store reopen publication (S3 implementation contract)
 

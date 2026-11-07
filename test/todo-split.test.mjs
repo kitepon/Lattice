@@ -13,13 +13,13 @@ import { TodoIndependenceError } from '../src/todo-independence.mjs';
 import { renderCliHelp } from '../src/cli-help.mjs';
 import { runTodoCli } from '../src/todo-cli.mjs';
 import {
-  appendTodoEvent,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
   writeTodoWitnessSet,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import {
   compileTodoSplit,
   prepareTodoSplitWitnessMigration,

@@ -12,10 +12,11 @@ import {
   TODO_LIMITS, canonicalizeTodoArtifact, isStrictTodoTimestamp, todoSelfDigest,
 } from '../src/todo-contracts.mjs';
 import {
-  TodoStoreError, appendImportedPlan, appendTodoEvent, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+  TodoStoreError, appendImportedPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   createSuccessorTodoPlan, initializeAuthoredTodoStore, initializeTodoStore, readTodoStore, readTodoStoreStable,
   rebuildTodoSnapshot,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { projectTodoChainV1 } from '../src/todo-chain.mjs';
 import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { phaseTodoRevisionPlanVersion } from '../src/todo-revision.mjs';
@@ -742,7 +743,8 @@ for (const stage of ['event_journal_published', 'event_snapshot_published', 'eve
     const moduleUrl = new URL('../src/todo-store.mjs', import.meta.url).href;
     const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', `
       import {appendTodoEvent,createTodoStoreWriter} from ${JSON.stringify(moduleUrl)};
-      await appendTodoEvent({repoRoot:${JSON.stringify(root)},
+      import {validateProspectiveEvent} from ${JSON.stringify(new URL('../src/todo-readiness.mjs', import.meta.url).href)};
+      await appendTodoEvent({validateProspectiveEvent,repoRoot:${JSON.stringify(root)},
         writer:createTodoStoreWriter({caller:'g5-authoring'}),planKey:'main',now:${JSON.stringify(NOW)},
         event:{kind:'start',task_id:'T1',actor:${JSON.stringify(ACTOR)},recorded_at:${JSON.stringify(NOW)},
           payload:{override_reason:null}},onProtocolStage:stage=>{if(stage===${JSON.stringify(stage)})process.exit(91)}});

@@ -14,9 +14,10 @@ import { detectCheckpointFindings } from '../src/runtime-diff-observer.mjs';
 import { TODO_INDEPENDENCE_SCHEMA } from '../src/todo-independence-contracts.mjs';
 import { todoSelfDigest } from '../src/todo-contracts.mjs';
 import {
-  appendTodoEvent, createTodoStoreWriter, initializeTodoStore, readTodoStore,
+   createTodoStoreWriter, initializeTodoStore, readTodoStore,
   writeTodoIndependenceArtifact, writeTodoWitnessSet,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'bin', 'lattice.mjs');

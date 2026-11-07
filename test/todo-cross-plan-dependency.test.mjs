@@ -9,12 +9,12 @@ import { fileURLToPath } from 'node:url';
 
 import { runTodoCli } from '../src/todo-cli.mjs';
 import {
-  appendTodoEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   projectTodoCrossPlanDependencies,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-08-09T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });

@@ -12,11 +12,11 @@ import { appendTodoExtraction, compileTodoExtraction } from '../src/todo-migrati
 import { computeReadyFrontier } from '../src/todo-status.mjs';
 import {
   appendImportedPlan,
-  appendTodoEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-08-13T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });

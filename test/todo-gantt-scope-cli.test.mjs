@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  appendTodoEvent, createTodoStoreWriter, initializeTodoStore,
+   createTodoStoreWriter, initializeTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { renderTodoGanttForProject } from '../src/todo-cli.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

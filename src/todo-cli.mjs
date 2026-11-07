@@ -1,3 +1,4 @@
+import { validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
@@ -666,6 +667,7 @@ async function mutate({
     eventPayload = { done_mode: 'evidence_promotion', evidence };
   }
   const { event, snapshot, plan, phases } = await appendTodoEvent({
+    validateProspectiveEvent,
     repoRoot,
     writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
     planKey,
@@ -1078,6 +1080,7 @@ async function phaseDecisionFromEvidence({ repoRoot, env, planKey, phaseId, outc
 
 async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload }) {
   const { event, snapshot, phases } = await appendTodoEvent({
+    validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey,
     event: { kind, phase_id: phaseId, actor: mutationActor(env), payload },
   });
@@ -1105,6 +1108,7 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
  */
 async function independenceMode({ repoRoot, env, planKey, mode, reason }) {
   const { event } = await appendTodoEvent({
+    validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey,
     event: { kind: 'coordination_mode', actor: mutationActor(env), payload: { mode, reason } },
   });
@@ -1158,6 +1162,7 @@ async function dependencyConnect({
     expected_topology_digest: target.plan.topology_digest,
   };
   const { event } = await appendTodoEvent({
+    validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: toPlanKey,
     event: {
       kind: 'cross_plan_dependency', actor: mutationActor(env), payload: { from, to, reason },
@@ -1195,6 +1200,7 @@ async function dependencyDisconnect({
   const owner = store.members.find((member) => (member.plan_scoped?.events ?? [])
     .some((event) => event.event_digest === target.event_digest));
   const { event } = await appendTodoEvent({
+    validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: owner.plan.plan_key,
     tolerateStaleBindings: true,
     event: {

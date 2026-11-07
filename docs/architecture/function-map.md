@@ -69,6 +69,7 @@ The later split moves functions to their owner without changing the contract.
 | `todo-store-view.mjs`: schema classification and `projectTodoCrossPlanDependencies` | Store (pure view; no I/O or feature import) | Readiness, status, Store; CLI and existing clients via Store compatibility re-exports |
 | `todo-readiness.mjs`: `createTodoReadiness(store)`, `validateProspectiveEvent({store, member, event})` | Plan/lifecycle; no state writes. Canonical task/phase view is `member.tasks` / journal-derived `member.phases`, including synthetic fixtures; `snapshot.phases` is never read by readiness. | Status and prospective validation use one prerequisite predicate set. Store invokes the supplied validator after lock/re-read. During this extraction only, its existing private wrapper delegates to the validator; Store recovery removes that temporary upward import. Replay historical integrity remains unchanged. |
 | Shared identified lock and recovery claims (store-lock.mjs); todo-store withLock and note-store withNoteLock | Store | All todo/note writers; runtime/adapter/setup integration deferred |
+| appendTodoEvent supplied-callback invocation | Store | Five todo-cli append sites supply Plan's validateProspectiveEvent; the option is mandatory and runs once after locked reread. No default validator or Store → Plan import remains in S3 stage 2. |
 | runtime-os-observation: observeStartIdentityRaw/observeProcessHostIdentityRaw | Platform helper, no runtime policy | Store lock and runtime process/lifecycle observation; Store host domain uses OS identity + Linux PID namespace, independent of actor configuration. Start digests in the two lock protocols are internal and never compared |
 | fs-publish: syncPublishedFile | Filesystem publication helper | Todo atomicWrite/atomicWriteMode, note atomicWrite and shared Store lock; owns the existing WSL2 /mnt EIO allowance |
 | todo-store-git-transaction: detached store commit path selection | Store | Only durable store artifacts enter Git; todo/note .write.lock, .write.lock.*.tmp, .write.lock.recovery/** and .cross-plan-recovery/** are host-local and excluded |
@@ -84,6 +85,8 @@ Store → platform OS observer is an infrastructure dependency; the observer's
 current runtime-os-observation filename does not make it runtime policy. Store
 and runtime lock start digests use different internal encodings and are never
 compared. Store → filesystem publication helper shares one file-sync policy.
+
+Stage 1 extraction note (the Store stage-2 supplied-callback row above is current):
 
 The single temporary Store → Plan import is `validateProspectiveEvent` at the
 `todo-store.mjs` private `validateMergedTransition` wrapper. Rudmira removes it
@@ -101,8 +104,10 @@ The prospective callback is `validateProspectiveEvent({store, member, event})`.
 edges and states remain available. Plan returns `{ok:true}` or
 `{ok:false,code,detail:{reason,cause,...}}`; existing per-kind code/reason are
 preserved, with additive task/phase/acceptance/predecessor cause detail. It covers
-start, done, reopen and phase_reopen. Until extraction lands, the existing
-`validateMergedTransition(store, member, event)` remains at the same call site.
+start, done, reopen and phase_reopen. S3 stage 2 completes the stage-1 seam
+described above: callers now supply the mandatory function; the temporary
+validateMergedTransition wrapper and upward import are removed. Failure maps
+the validator's existing code/reason and additive detail to the same refusal.
 
 Replace independence→runtime-front-end with runtime passing observed-change facts
 as data through lifecycle; independence consumes the facts, never runtime state

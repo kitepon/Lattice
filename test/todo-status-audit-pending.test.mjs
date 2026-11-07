@@ -16,8 +16,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  appendTodoEvent, createTodoStoreWriter, initializeTodoStore, readTodoStore,
+   createTodoStoreWriter, initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { TODO_STATUS_SCHEMA, projectTodoStatus } from '../src/todo-status.mjs';
 
 const NOW = '2026-07-18T00:00:00.000Z';

@@ -18,9 +18,10 @@ import {
 } from '../src/todo-revision.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
 import {
-  appendTodoEvent, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   initializeTodoStore, readTodoStore, verifyPhaseTodoRevisionSources,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(REPO_ROOT, 'bin', 'lattice.mjs');

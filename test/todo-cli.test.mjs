@@ -17,12 +17,12 @@ import {
 } from '../src/todo-contracts.mjs';
 import {
   appendImportedPlan,
-  appendTodoEvent,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import {
   phaseTodoRevisionPlanVersion, todoLegacyReconciliationDigest,
   todoReconciliationDigest,

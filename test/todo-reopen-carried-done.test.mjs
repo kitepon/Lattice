@@ -9,9 +9,10 @@ import test from 'node:test';
 import { todoSelfDigest } from '../src/todo-contracts.mjs';
 import { phaseTodoRevisionPlanVersion } from '../src/todo-revision.mjs';
 import {
-  TodoStoreError, appendTodoEvent, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+  TodoStoreError, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-07-18T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });

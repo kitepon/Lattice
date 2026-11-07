@@ -11,8 +11,9 @@ import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { renderTodoGanttHtml } from '../src/todo-gantt-html.mjs';
 import { renderTodoGanttForProject } from '../src/todo-cli.mjs';
 import {
-  appendTodoEvent, buildTodoPlan, createTodoStoreWriter, initializeTodoStore,
+   buildTodoPlan, createTodoStoreWriter, initializeTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const ref = (task_id, plan_key) => ({ project_id: 'project-1', plan_key, task_id });
 

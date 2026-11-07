@@ -7,11 +7,11 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  appendTodoEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import {
   computeReadyFrontier,
   projectTodoStatus,
