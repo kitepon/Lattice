@@ -62,21 +62,24 @@
       "maxItems": 2048,
       "items": {
         "$ref": "#/$defs/edge"
-      }
+      },
+      "description": "from、toの順に、各参照を(project_id, plan_key, task_id)の組として辞書順に並べる。同じfrom/toの組は重複できない。expected_topology_digestは並び順に含めない。"
     },
     "joins": {
       "type": "array",
       "maxItems": 128,
       "items": {
         "$ref": "#/$defs/join"
-      }
+      },
+      "description": "joinをidの昇順・重複なしで並べる。各joinのafterは(project_id, plan_key, task_id)の組の辞書順・重複なしで並べ、expected_topology_digestは並び順に含めない。"
     },
     "phase_accept_dependencies": {
       "type": "array",
       "maxItems": 2048,
       "items": {
         "$ref": "#/$defs/phaseAcceptDependency"
-      }
+      },
+      "description": "from phase参照を(project_id, plan_key, phase_id)、to task参照を(project_id, plan_key, task_id)の組として、from、toの順に辞書順で並べる。同じfrom/toの組は重複できない。expected_topology_digestは並び順に含めない。"
     },
     "input_digest": {
       "$ref": "#/$defs/authoringDigest"
@@ -341,7 +344,8 @@
           "maxItems": 512,
           "items": {
             "$ref": "#/$defs/nodeRef"
-          }
+          },
+          "description": "参照を(project_id, plan_key, task_id)の組の辞書順・重複なしで並べる。expected_topology_digestは並び順に含めない。"
         },
         "before": {
           "$ref": "#/$defs/nodeRef"

@@ -17,7 +17,7 @@
     "plan_version": { "$ref": "#/$defs/identifier" },
     "actor": { "$ref": "#/$defs/actor" },
     "recorded_at": { "$ref": "#/$defs/strictTimestamp" },
-    "tasks": { "type": "array", "minItems": 1, "maxItems": 512, "items": { "$ref": "#/$defs/task" } },
+    "tasks": { "type": "array", "minItems": 1, "maxItems": 512, "items": { "$ref": "#/$defs/task" }, "description": "Sort by task_id ascending; task_id values must be unique." },
     "hard_dependencies": {
       "type": "array", "maxItems": 2048,
       "items": {
@@ -27,7 +27,8 @@
           "to": { "$ref": "#/$defs/nodeRef" },
           "reason": { "$ref": "#/$defs/text" }
         }
-      }
+      },
+      "description": "Sort by from then to ascending, comparing each reference as the tuple (project_id, plan_key, task_id). Duplicate from/to pairs are not allowed. expected_topology_digest is excluded from the sort key."
     },
     "joins": {
       "type": "array", "maxItems": 128,
@@ -38,7 +39,8 @@
           "after": { "type": "array", "minItems": 1, "maxItems": 512, "items": { "$ref": "#/$defs/nodeRef" } },
           "before": { "$ref": "#/$defs/nodeRef" }
         }
-      }
+      },
+      "description": "Sort joins by id ascending with no duplicate ids. In each join, sort after references by the tuple (project_id, plan_key, task_id) ascending with no duplicates; expected_topology_digest is excluded from the sort key."
     },
     "extraction_digest": { "$ref": "#/$defs/digest" }
   },

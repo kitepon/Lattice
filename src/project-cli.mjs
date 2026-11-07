@@ -583,11 +583,11 @@ function describeCreateInputViolation(value) {
       ...(decoupledPhaseInput ? { phase_accept_dependencies: value.phase_accept_dependencies } : {}),
     });
   } catch (error) {
-    // buildTodoPlanは通否しか返さない。authorが書いた形を自分で診てpointerを出す。
+    // Author-specific fields keep their existing diagnostic priority.
     const shape = describePlanShapeViolation(value, { phaseInput });
     if (shape !== null) return shape;
     return {
-      violation_kind: error?.reason ?? error?.code ?? 'topology_invalid',
+      violation_kind: error?.detail?.violation_kind ?? error?.reason ?? error?.code ?? 'topology_invalid',
       pointer: error?.detail?.pointer ?? '/',
       expected: error?.detail?.expected ?? { schema: value.schema },
       actual: error?.detail?.actual ?? { message: String(error?.message ?? error) },

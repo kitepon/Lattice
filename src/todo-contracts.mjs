@@ -425,7 +425,20 @@ function validParentGraph(tasks) {
   return true;
 }
 
-export function validateTodoPlan(value) {
+export function explainTodoOrder(values, key, pointer) {
+  for (let index = 1; index < values.length; index += 1) {
+    const previous = key(values[index - 1]);
+    const actual = key(values[index]);
+    if (compareText(previous, actual) >= 0) {
+      return { reason: 'unsorted_or_duplicate_collection', path: `${pointer}/${index}`,
+        expected: { order: 'ascending_unique', greater_than: previous }, actual };
+    }
+  }
+  return null;
+}
+
+export function explainTodoPlan(value) {
+  const reject = (reason, pointer) => ({ reason, path: pointer });
   try {
     const taskValidator = value?.schema === 'lattice.todo_plan.v1' ? taskV1
       : value?.schema === 'lattice.todo_plan.v2' ? taskV2
@@ -437,60 +450,92 @@ export function validateTodoPlan(value) {
       'schema', 'project_id', 'plan_key', 'plan_version', 'predecessor_plan_digest',
       'tasks', 'hard_dependencies', 'joins', 'topology_digest', 'plan_digest',
     ];
-    if (['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7']
-      .includes(value?.schema)) planKeys.push('phases');
-    if (['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value?.schema)) {
-      planKeys.push('phase_accept_dependencies');
+    const phased = ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7']
+      .includes(value?.schema);
+    const decoupled = ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value?.schema);
+    if (phased) planKeys.push('phases');
+    if (decoupled) planKeys.push('phase_accept_dependencies');
+    if (!exactRecord(value, planKeys)) return reject('unexpected_or_missing_keys', '/');
+    if (taskValidator === null) return reject('schema_mismatch', '/schema');
+    for (const field of ['project_id', 'plan_key', 'plan_version']) {
+      if (!isTodoIdentifier(value[field])) return reject('identifier_invalid', `/${field}`);
     }
-    if (!exactRecord(value, planKeys) || taskValidator === null || !isTodoIdentifier(value.project_id)
-      || !isTodoIdentifier(value.plan_key) || !isTodoIdentifier(value.plan_version)
-      || !nullableDigest(value.predecessor_plan_digest) || !Array.isArray(value.tasks)
-      || value.tasks.length === 0 || value.tasks.length > TODO_LIMITS.tasksPerPlan
-      || !value.tasks.every(taskValidator) || new Set(value.tasks.map(({ task_id }) => task_id)).size !== value.tasks.length
-      || !Array.isArray(value.hard_dependencies) || value.hard_dependencies.length > TODO_LIMITS.edgesPerPlan
-      || !value.hard_dependencies.every((edge) => exactRecord(edge, ['from', 'to']) && nodeRef(edge.from) && nodeRef(edge.to))
-      || !Array.isArray(value.joins) || value.joins.length > TODO_LIMITS.joinsPerPlan
-      || !value.joins.every((join) => exactRecord(join, ['id', 'after', 'before']) && isTodoIdentifier(join.id)
-        && Array.isArray(join.after) && join.after.length > 0 && join.after.length <= TODO_LIMITS.tasksPerPlan
-        && join.after.every(nodeRef) && nodeRef(join.before))
-      || !isTodoDigest(value.topology_digest) || !isTodoDigest(value.plan_digest)
-      || (['lattice.todo_plan.v3', 'lattice.todo_plan.v4', 'lattice.todo_plan.v5',
-        'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(value.schema)
-        && !validParentGraph(value.tasks))) return false;
-    if (['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value.schema)
-      && (!Array.isArray(value.phases) || value.phases.length === 0
-        || value.phases.length > TODO_LIMITS.tasksPerPlan || !value.phases.every(phaseV1)
-        || value.phases.some((entry, index) => index > 0
-          && compareText(value.phases[index - 1].phase_id, entry.phase_id) >= 0)
-        || new Set(value.phases.map(({ phase_id }) => phase_id)).size !== value.phases.length
-        || value.tasks.some(({ phase_id }) => !value.phases.some((phase) => phase.phase_id === phase_id))
-        || !validPhaseGraph(value.phases))) return false;
-    if (['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value.schema)
-      && (!Array.isArray(value.phase_accept_dependencies)
-        || value.phase_accept_dependencies.length > TODO_LIMITS.edgesPerPlan
-        || !value.phase_accept_dependencies.every((edge) => exactRecord(edge, ['from', 'to'])
-          && phaseRef(edge.from) && nodeRef(edge.to))
-        || value.phase_accept_dependencies.some((edge, index) => index > 0
-          && compareText(`${phaseRefKey(value.phase_accept_dependencies[index - 1].from)}\0${refKey(value.phase_accept_dependencies[index - 1].to)}`,
-            `${phaseRefKey(edge.from)}\0${refKey(edge.to)}`) >= 0))) return false;
-    if (value.tasks.some((entry, index) => index > 0 && compareText(value.tasks[index - 1].task_id, entry.task_id) >= 0)
-      || value.hard_dependencies.some((edge, index) => index > 0
-        && compareText(`${refKey(value.hard_dependencies[index - 1].from)}\0${refKey(value.hard_dependencies[index - 1].to)}`,
-          `${refKey(edge.from)}\0${refKey(edge.to)}`) >= 0)
-      || value.joins.some((join, index) => index > 0 && compareText(value.joins[index - 1].id, join.id) >= 0)
-      || value.joins.some((join) => join.after.some((entry, index) => index > 0
-        && compareText(refKey(join.after[index - 1]), refKey(entry)) >= 0))) return false;
+    if (!nullableDigest(value.predecessor_plan_digest)) return reject('digest_invalid', '/predecessor_plan_digest');
+    if (!Array.isArray(value.tasks) || value.tasks.length === 0
+      || value.tasks.length > TODO_LIMITS.tasksPerPlan) return reject('bounded_collection_violation', '/tasks');
+    const invalidTask = value.tasks.findIndex((task) => !taskValidator(task));
+    if (invalidTask >= 0) return reject('task_shape_invalid', `/tasks/${invalidTask}`);
+    if (new Set(value.tasks.map(({ task_id }) => task_id)).size !== value.tasks.length) {
+      return reject('duplicate_task_id', '/tasks');
+    }
+    if (!Array.isArray(value.hard_dependencies) || value.hard_dependencies.length > TODO_LIMITS.edgesPerPlan) {
+      return reject('bounded_collection_violation', '/hard_dependencies');
+    }
+    const invalidEdge = value.hard_dependencies.findIndex((edge) => !exactRecord(edge, ['from', 'to'])
+      || !nodeRef(edge.from) || !nodeRef(edge.to));
+    if (invalidEdge >= 0) return reject('edge_shape_invalid', `/hard_dependencies/${invalidEdge}`);
+    if (!Array.isArray(value.joins) || value.joins.length > TODO_LIMITS.joinsPerPlan) {
+      return reject('bounded_collection_violation', '/joins');
+    }
+    const invalidJoin = value.joins.findIndex((join) => !exactRecord(join, ['id', 'after', 'before'])
+      || !isTodoIdentifier(join.id) || !Array.isArray(join.after) || join.after.length === 0
+      || join.after.length > TODO_LIMITS.tasksPerPlan || !join.after.every(nodeRef) || !nodeRef(join.before));
+    if (invalidJoin >= 0) return reject('join_shape_invalid', `/joins/${invalidJoin}`);
+    for (const field of ['topology_digest', 'plan_digest']) {
+      if (!isTodoDigest(value[field])) return reject('digest_invalid', `/${field}`);
+    }
+    if (['lattice.todo_plan.v3', 'lattice.todo_plan.v4', 'lattice.todo_plan.v5',
+      'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(value.schema)
+      && !validParentGraph(value.tasks)) return reject('parent_graph_invalid', '/tasks');
+    if (phased) {
+      if (!Array.isArray(value.phases) || value.phases.length === 0
+        || value.phases.length > TODO_LIMITS.tasksPerPlan) return reject('bounded_collection_violation', '/phases');
+      const invalidPhase = value.phases.findIndex((phase) => !phaseV1(phase));
+      if (invalidPhase >= 0) return reject('phase_shape_invalid', `/phases/${invalidPhase}`);
+      const order = explainTodoOrder(value.phases, (phase) => phase.phase_id, '/phases');
+      if (order !== null) return order;
+      const orphanTask = value.tasks.findIndex(({ phase_id }) => !value.phases.some((phase) => phase.phase_id === phase_id));
+      if (orphanTask >= 0) return reject('unknown_phase_reference', `/tasks/${orphanTask}/phase_id`);
+      if (!validPhaseGraph(value.phases)) return reject('phase_graph_invalid', '/phases');
+    }
+    if (decoupled) {
+      if (!Array.isArray(value.phase_accept_dependencies)
+        || value.phase_accept_dependencies.length > TODO_LIMITS.edgesPerPlan) {
+        return reject('bounded_collection_violation', '/phase_accept_dependencies');
+      }
+      const invalid = value.phase_accept_dependencies.findIndex((edge) => !exactRecord(edge, ['from', 'to'])
+        || !phaseRef(edge.from) || !nodeRef(edge.to));
+      if (invalid >= 0) return reject('edge_shape_invalid', `/phase_accept_dependencies/${invalid}`);
+      const order = explainTodoOrder(value.phase_accept_dependencies,
+        (edge) => `${phaseRefKey(edge.from)}\0${refKey(edge.to)}`, '/phase_accept_dependencies');
+      if (order !== null) return order;
+    }
+    for (const [values, key, pointer] of [
+      [value.tasks, (task) => task.task_id, '/tasks'],
+      [value.hard_dependencies, (edge) => `${refKey(edge.from)}\0${refKey(edge.to)}`, '/hard_dependencies'],
+      [value.joins, (join) => join.id, '/joins'],
+    ]) {
+      const order = explainTodoOrder(values, key, pointer);
+      if (order !== null) return order;
+    }
+    for (const [index, join] of value.joins.entries()) {
+      const order = explainTodoOrder(join.after, refKey, `/joins/${index}/after`);
+      if (order !== null) return order;
+    }
     const topology = {
       project_id: value.project_id, plan_key: value.plan_key, plan_version: value.plan_version,
       tasks: value.tasks, hard_dependencies: value.hard_dependencies, joins: value.joins,
-      ...(['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value.schema)
-        ? { phases: value.phases } : {}),
-      ...(['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value.schema)
-        ? { phase_accept_dependencies: value.phase_accept_dependencies } : {}),
+      ...(phased ? { phases: value.phases } : {}),
+      ...(decoupled ? { phase_accept_dependencies: value.phase_accept_dependencies } : {}),
     };
-    return value.topology_digest === digestTodoArtifact(topology)
-      && value.plan_digest === todoSelfDigest(value, 'plan_digest');
-  } catch { return false; }
+    if (value.topology_digest !== digestTodoArtifact(topology)) return reject('topology_digest_mismatch', '/topology_digest');
+    if (value.plan_digest !== todoSelfDigest(value, 'plan_digest')) return reject('plan_digest_mismatch', '/plan_digest');
+    return null;
+  } catch { return reject('diagnosis_failed', '/'); }
+}
+
+export function validateTodoPlan(value) {
+  return explainTodoPlan(value) === null;
 }
 
 export function validateEvidenceDescriptor(value) { return evidence(value); }
