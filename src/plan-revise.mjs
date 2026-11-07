@@ -117,7 +117,7 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
       === canonicalizeTodoArtifact(planSeed(member.plan, null));
   if (!unchanged && !validatePhaseTodoRevision(revision)) fail('plan_revise_artifact_invalid', '/');
   if (!unchanged) {
-    const { todoTaskCarrySemantics } = await import('./todo-store.mjs');
+    const { todoTaskCarrySemantics } = await import('./todo-store-view.mjs');
     const idMap = new Map(revision.task_migration.map(({ from_task_id, to_task_id }) => [from_task_id, to_task_id]));
     const removedTaskIds = new Set(revision.task_migration.filter(({ state_policy }) => state_policy === 'removed')
       .map(({ from_task_id }) => from_task_id));

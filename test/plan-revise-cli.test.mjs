@@ -98,3 +98,17 @@ test('light CLI refuses dangling references before publishing a successor', asyn
   assert.notEqual(refused.status, 0);
   assert.equal(await readFile(manifestRef, 'utf8'), before);
 });
+
+
+test('artifact CLI applies v5 through revise-phase and verifies its reconciliation projection', async (context) => {
+  const { root } = await fixture(context);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  const preview = success(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
+  await writeFile(path.join(root, 'revision.json'), JSON.stringify(preview.revision));
+  success(root, ['todo', 'revise-phase', '--plan', 'work', '--input', 'revision.json', '--json']);
+  const result = success(root, ['todo', 'verify', '--plan', 'work', '--json']);
+  const member = result.verified_members.find(({ plan_key }) => plan_key === 'work');
+  assert.equal(member.reconciliation_state, 'reconciled');
+  assert.equal(member.revision_digest, preview.revision.revision_digest);
+  assert.equal(member.reconciliation_digest, preview.revision.revision_digest);
+});
