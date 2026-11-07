@@ -77,7 +77,8 @@ async function fixture(t, mode, { prepare, writeFailure = false, recordingFailur
   child.stdin.on('error', () => {});
   const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal }))).then(async result => {
     // Detached candidates may still be starting when the launcher has exited.
-    try { tracked.push(...(await readFile(spawnLog, 'utf8')).split('\n').map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0)); }
+    try { tracked.push(...(await readFile(spawnLog, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))
+      .filter(event => event.kind === 'spawn').map(event => event.pid).filter(pid => Number.isSafeInteger(pid) && pid > 0)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     return result;
   });

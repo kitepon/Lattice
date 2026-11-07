@@ -25,6 +25,11 @@ The complete affected surface is:
 - `sensor/__tests__/mcp-writer-lock.test.ts`: retain authenticated winner stop;
   check original candidates rather than a possibly reused numeric writer PID.
   Direct-mode children retain their original ChildProcess exit waits.
+- Product `test/mcp-startup-receipt.test.mjs` (wrapper/proxy fixture) is a third
+  reader of the same log through `CG_TEST_SPAWN_LOG`: it collects the `spawn`
+  events' PIDs as `tracked` for the managed-daemon teardown. Missing this reader
+  left the detached daemon untracked on Windows (PR57 job 128445370145, EBUSY on
+  rmdir of the fixture root).
 - One small deterministic helper suite for the cases below. Preserve paired
   locks, database integrity, single election/binder and concurrency assertions.
 
