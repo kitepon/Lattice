@@ -1,7 +1,8 @@
 # macOS CI runtime identity and non-overwriting generations
 
-Current source: PR53 `c13f92d38d4cf5edac00e6c4899b041f8f28cfd8`.
-The generation rows below are the proposed delta, not implemented behavior.
+Implemented in PR53 on top of `c13f92d38d4cf5edac00e6c4899b041f8f28cfd8`, whose
+fixed-path installer it replaces. Location `/Users/Shared` approved by the Owner
+(2026-11-08 00:58 JST); Brid's read-only check found it root:wheel 1777 sticky, no ACL.
 Owner: Snow White, product CI runtime and acceptance. CI environment allocation
 belongs to Shiratsuru/Dorothy. Snow White, as CI/consumer owner, positively
 accounts for consumer exit and removes its own retired trees; Brid/Owner save
@@ -15,11 +16,11 @@ replaces, renames over or deletes a tree another job may be running.
 |---|---|---|---|
 | Product caller, `.github/workflows/ci.yml` | main push, main-targeting PR, explicit workflow dispatch | Calls product-full-ci with `npm ci`, `npm run ci` | No concurrency or automatic superseded-run cancellation is declared. |
 | Product matrix, `product-full-ci.yml` | Eligible self-hosted factory/macOS runner | `steps.macos_runtime.outputs.directory` feeds three Node-consuming steps | Labels do not prove a dedicated runner or exclusive physical cache. |
-| `ci-macos-node-runtime.sh` (c13) | Absolute version directory `lattice-node/v24.22.0` | Verified Node 24.22.0 at that fixed path | A directory failing verification is `rm -rf`'d and rebuilt at the same path: not old-consumer preserving. Accepted only within c13's original scope. |
+| `ci-macos-node-runtime.sh` | Base `/Users/Shared` | Verified Node 24.22.0 in a selected or newly published generation; receipt JSON line; `directory` output | Replaces c13, which `rm -rf`'d a failing fixed-path tree. |
 | Foreground test orchestrator | `npm run ci`, Node test runner, Sensor tests | Waits for foreground result | Detached bridge/dashboard/fixture children can outlive the foreground parent. |
 | Runner finalization | Inherited job process tracking | Best-effort orphan termination | Not evidence of confirmed exit before a later job. |
 
-## Identity and generation layout (proposed)
+## Identity and generation layout
 
 Requested version `24.22.0`; pinned official darwin-arm64 archive SHA256
 `6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5`.
@@ -30,7 +31,6 @@ found the ESET chooser cannot reach any file under `/Users/factory-runner`
 root moves to `/Users/Shared`, the standard macOS 1777 sticky directory: UID 600
 creates its own subtree without admin or host change, other users cannot rename
 or delete its entries, and the console can traverse it to the exact file.
-The location itself is pending Owner approval and Brid's read-only host check.
 
 ```
 /Users/Shared/
@@ -50,7 +50,7 @@ Predicted first new executable on the current runner:
 The marker `.lattice-complete` holds one line: `version=<v> sha256=<full 64 hex> uid=<uid>`.
 The path prefix is a namespace; the marker binds the full identity.
 
-## Data flow (proposed)
+## Data flow
 
 | Stage | Producer → consumer | Transform/state | Failure behavior |
 |---|---|---|---|
@@ -99,21 +99,22 @@ not acceptance) and prints the exact identity receipt; Brid selects that exact
 `g1/bin/node` in the chooser; the Owner decides production scope; the rule is
 added; then ONE acceptance job through Snow White. Old/new rules and trees stay
 until consumer and rollback retirement is positively accounted (consumer exit
-by Snow White, rule removal by Brid/Owner). Code/push waits until Shiratsuru
-relays Owner approval of the location.
+by Snow White, rule removal by Brid/Owner).
 
-## Changed-boundary checks (after implementation)
+## Changed-boundary checks
 
-One darwin-arm64-only test (skipped elsewhere), seeded directories, a fake
-`bin/node` that execs the real Node, and a failing `curl` stub on PATH:
-1. legacy tree present and valid → never selected, untouched; `g1` is built in the safe root;
-2. squatted root (symlink, and group/other-writable dir; another-UID owner cannot be
-   created without privilege in a test) → skipped, untouched; `lattice-node.2` used;
-3. legacy present, `g1` unpublished, `g2` complete → `g2` selected; legacy and `g1` untouched;
-4. `g1` complete but failing marker identity → skipped, untouched;
-5. nothing complete + failing `curl` → job fails, own new `gN` removed, every pre-existing tree untouched;
-6. `g1` reserved by another writer → next reservation is `g2` (EEXIST path).
-Existing contract-test assertions stay, except `mkdir -m 700` becomes
-`mkdir -m 755` (console traversal) and the caller path assertion follows the new base (shasum, --no-same-owner, no
-sudo/brew/npm -g, three consumers) stay. Normal automatic PR CI supplies the
-real download and execPath evidence; no manual CI.
+`test/ci-macos-node-runtime.test.mjs` runs on darwin-arm64 with Node 24.22.0 only
+(skipped elsewhere). It uses seeded directories, a fake `bin/node` that execs the CI
+Node, and a failing `curl` stub on PATH:
+1. legacy `$RUNNER_TOOL_CACHE/lattice-node/v24.22.0` present → never selected, untouched;
+2. squatted roots (a symlink and a group/other-writable dir) → skipped, untouched;
+   `lattice-node.3` is created. An other-UID owner cannot be created without privilege;
+3. unpublished `g1` + complete `g2` → `g2` reused, nothing changed;
+4. mismatched-marker `g1`, failing-verify `g2`, good `g3` → `g3`, all untouched;
+5. existing unpublished `g1` + build failure → `g2` reserved, removed, `g1` untouched.
+Contract-test assertions keep shasum, `--no-same-owner`, no sudo/brew/npm -g and three
+consumers. `mkdir -m 700` becomes `mkdir -m 755` (console traversal), the caller must
+pass `/Users/Shared`, and the `rm -rf "$runtime_dir"` of c13 must be absent. A
+concurrent-writer EEXIST race is not reproduced deterministically; the loop is
+`until mkdir … do next number`. Normal automatic PR CI supplies the real download,
+publish and execPath evidence; no manual CI.

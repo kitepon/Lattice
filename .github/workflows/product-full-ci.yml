@@ -117,7 +117,7 @@ jobs:
         if: matrix.environment == 'macos-native'
         id: macos_runtime
         shell: bash
-        run: bash scripts/ci-macos-node-runtime.sh "$RUNNER_TOOL_CACHE/lattice-node/v24.22.0"
+        run: bash scripts/ci-macos-node-runtime.sh /Users/Shared
       - name: logical CPU parallelism
         if: matrix.environment != 'windows-native'
         shell: bash
