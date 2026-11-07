@@ -9,6 +9,12 @@ The [authoring flow](dfd-plan-create.md) owns initial/additional plan creation,
 status compatibility and input diagnostic pointer spaces.
 Directory moves are proposed boundaries, not claims that those directories exist.
 
+Runtime activation publication: `runtime-multi-epoch-store` protects durable
+membership of the selected run/control activation prefix, not equality with a
+moving journal tail. See the [activation flow](dfd-todo-start.md#runtime-activation-publication).
+Heartbeats may append after the selected control head; contradictory activation
+transitions still reject publication. Runtime alone owns this correction.
+
 ## Product boundary
 
 Lattice runs independently of BellTeam. Runtime execution management is required
