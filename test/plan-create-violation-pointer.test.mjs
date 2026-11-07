@@ -97,3 +97,19 @@ test('入力に無関係なkeyが混ざれば、期待するkey一覧を返す',
   assert.equal(detail.violation_kind, 'unexpected_or_missing_keys');
   assert.ok(detail.actual.keys.includes('stray'));
 });
+
+test('hard dependenciesの順序違反はfieldと規則を返す', async (context) => {
+  const detail = await reject(context, (value) => {
+    const [task] = value.tasks;
+    value.tasks = ['a', 'b', 'c'].map((task_id) => ({ ...task, task_id }));
+    const ref = (task_id) => ({ project_id: value.project_id, plan_key: value.plan_key, task_id });
+    value.hard_dependencies = [
+      { from: ref('b'), to: ref('c') }, { from: ref('a'), to: ref('c') },
+    ];
+    return value;
+  });
+  assert.equal(detail.reason, 'plan_create_schema_invalid');
+  assert.equal(detail.pointer, '/hard_dependencies/1');
+  assert.equal(detail.violation_kind, 'unsorted_or_duplicate_collection');
+  assert.equal(detail.expected.order, 'ascending_unique');
+});

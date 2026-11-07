@@ -121,7 +121,7 @@ export function validateProjectStatus(value) {
         && typeof value.next_action.reason === 'string' && value.next_action.reason.length > 0;
     }
     return value.project !== null && isTodoIdentifier(value.project.project_id)
-      && value.can_create_plan === false && exactRecord(value.next_action, ['command', 'reason'])
+      && value.can_create_plan === true && exactRecord(value.next_action, ['command', 'reason'])
       && typeof value.next_action.reason === 'string' && value.next_action.reason.length > 0
       && (value.state !== 'active_run' || value.active_runs.length > 0)
       && (value.state !== 'ready' || value.active_runs.length === 0);
@@ -318,7 +318,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
         plan_key: entry.plan_key, plan_version: entry.plan_version,
       })),
       active_runs: activeRuns,
-      can_create_plan: false,
+      can_create_plan: true,
       next_action: next,
     });
     return { exitCode: 0, repoRoot, store, todo, result };

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `plan create`は現在のv4入力で、既存Storeにも同じprojectの新planを追加できる。
+  既存keyの上書きや暗黙revisionは行わず、phaseと任意backchainを保持する。
+- `lattice.project_status.v1`のfield形を維持し、`can_create_plan`はready/active_runでもtrueを返す。
+  hooks/Peertable等の消費者は初回初期化専用のflagとして扱わない。next_actionの優先順とkeyは維持する。
+- 入力の依存・join等の並び順違反に、失敗したfield/indexと規則を表示する。
+  `plan create`/`todo migrate`の既存error codeは維持し、配列の自動並び替えは行わない。
+
 ## 0.80.0 — 2026-11-07
 
 全体改修の途中版。終わるまで待たず、席の挙動が変わるたびに小さく版上げして実際の使い心地を測る方針に切り替えた最初の版。runtime層（run/adapter/supervisor）のコードに変更はない。

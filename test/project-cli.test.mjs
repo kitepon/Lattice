@@ -225,7 +225,7 @@ test('plan createはcanonical inputから初期storeを作りstatusをreadyへ�
   assert.equal(result.state, 'ready');
   assert.equal(result.project.project_id, 'sample-project');
   assert.deepEqual(result.active_plans, [{ plan_key: 'main', plan_version: 'v1' }]);
-  assert.equal(result.can_create_plan, false);
+  assert.equal(result.can_create_plan, true);
   assert.equal(result.next_action.command, 'lattice todo start --plan main --task T1');
 
   const started = run(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'], {
@@ -236,6 +236,7 @@ test('plan createはcanonical inputから初期storeを作りstatusをreadyへ�
   assert.equal(started.status, 0, started.stderr);
   const active = JSON.parse(run(root, ['status', '--json']).stdout);
   assert.equal(active.state, 'active_run');
+  assert.equal(active.can_create_plan, true);
   assert.deepEqual(active.active_runs, [{ plan_key: 'main', task_id: 'T1', label: '最初の仕事' }]);
   assert.equal(active.next_action.command, 'lattice todo status');
   assert.equal(validateProjectStatus(active), true);

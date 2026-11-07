@@ -118,6 +118,30 @@ test('todo migrate --inputはschema違反detailへviolation_reason/violation_pat
 
 // --- revise (todo_revision.v1/v2) ---
 
+test('todo migrateはhard dependencyの整列規則と入力indexを返す', async (context) => {
+  const root = await gitWorkspace(context);
+  const value = JSON.parse(await readFile(path.join(FIXTURE_ROOT, 'valid.json'), 'utf8'));
+  value.schema = 'lattice.todo_extraction.v3';
+  for (const task of value.tasks) {
+    task.start = null;
+    task.design_memo = 'NO_PLAN';
+  }
+  value.hard_dependencies.push(structuredClone(value.hard_dependencies[0]));
+  value.extraction_digest = todoSelfDigest(value, 'extraction_digest');
+  await writeFile(path.join(root, 'unsorted.json'), `${JSON.stringify(value)}\n`);
+  const { stdout, stderr, err } = stdio();
+  const exitCode = await runTodoCli({
+    argv: ['migrate', '--input', 'unsorted.json'], cwd: root, stdout, stderr,
+    env: { ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0' },
+  });
+  assert.equal(exitCode, 1);
+  const payload = JSON.parse(err[0]);
+  assert.equal(payload.code, 'INVALID_TODO_EXTRACTION');
+  assert.equal(payload.detail.pointer, '/hard_dependencies/1');
+  assert.equal(payload.detail.violation_kind, 'unsorted_or_duplicate_collection');
+  assert.equal(payload.detail.expected.order, 'ascending_unique');
+});
+
 const taskV3 = (taskId, parentTaskId = null) => ({
   task_id: taskId, title: taskId, lane: 'main', narrative_ref: null,
   narrative_anchor: null, compile_binding: null, parent_task_id: parentTaskId,
