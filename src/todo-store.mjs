@@ -2895,7 +2895,9 @@ async function uninitializedStoreLayout(repoRoot) {
     return null;
   });
   if (parent === null) return { uninitialized: true, identity: null };
-  if (parent.isSymbolicLink() || !parent.isDirectory()) return { uninitialized: false, identity: null };
+  if (parent.isSymbolicLink() || !parent.isDirectory()) {
+    return { uninitialized: false, identity: null, unsafeParent: true };
+  }
   const root = path.join(repoRoot, STORE_ROOT_REF);
   const identity = await lstat(root).catch((error) => {
     if (error?.code !== 'ENOENT') throw error;
@@ -2920,6 +2922,7 @@ export async function isUninitializedTodoStore({ repoRoot = process.cwd() } = {}
 
 async function prepareAuthoredStoreRoot(repoRoot, options) {
   const observed = await uninitializedStoreLayout(repoRoot);
+  if (observed.unsafeParent) fail('STORE_INCONSISTENT', 'unsafe_lattice_root');
   if (!observed.uninitialized) fail('STORE_WRITE_CONFLICT', 'store_already_exists');
   if (observed.identity === null) return;
   const root = path.join(repoRoot, STORE_ROOT_REF);
