@@ -18,11 +18,12 @@ commit are four different operations. None substitutes for another.
 | Run requests, executor packets, findings, run event chain and epoch bundles under `.lattice/runs/<id>/` | Runtime: front-end/engine, diff observer, multi-epoch store and daemon orchestration | Controllers and CLI consume bound values. TODO Store format and Plan lifecycle meaning stay with their owners. |
 | Control events, controller registrations, process/attempt bindings, staged/armed leases and central write gate | Runtime supervisor through control/gate stores | A controller acknowledges its own process state; supervisor independently observes it before granting writes. CLI projections grant no lease. |
 | Source commits and accepted transform artifact | Operating AI/worker through Git; seam service performs verified isolated transformation and its commit | Runtime consumes actual tree, checkpoint HEAD and bound transformation result. Runtime does not synthesize source changes or replace a commit with an acknowledgement. |
-| TODO plan revision and migration | Plan validates desired revision; Store alone publishes it | Runtime supplies `validatePhaseRevision` / `commitPhaseRevision` callbacks with the existing actor record; it does not edit journal/manifest bytes. |
+| TODO plan revision and migration | Plan's `validatePhaseTodoRevision` validates; Store's `applyPhaseTodoRevision` / `createTodoStoreWriter` publish | Daemon bootstrap (composition root) imports those functions and injects `validatePhaseRevision` / `commitPhaseRevision` into `runManagedSupervisorDaemon`. Runtime invokes them with the existing actor record; it does not supply the implementations or edit journal/manifest bytes. |
 | Run/adapter exclusion locks | Runtime lock wrapper; shared lock/OS observation is infrastructure | No lock grants task readiness or source-write authorization. Store's todo/note locks are outside this scope. |
+| Runtime start-binding exclusion currently inside Store tree | Runtime owns `.lattice/todo/.start-binding.lock` and its transient recovery state | Store Git transaction currently does not exclude it. Relocation to `.lattice/runtime/locks/.start-binding.lock` and explicit host-local ignore are proposed, pending Store agreement and a cutover that cannot allow old/new writers to use independent locks. |
 | CLI JSON and shipped bins | Runtime supplies command results; surface formats them | Keep `lattice`, `lattice-mcp`, `lattice-scripted-adapter`, `lattice-work-order-adapter` and current result schemas. |
 
-## Observed flow and claim-preservation contract
+## Current managed flow and claim-preservation contract
 
 The numbered rows are the runtime data-flow diagram. Claims 7–10 refer to the
 owner-supplied excerpt of JP 2026-178950, received 2026-11-07; this is an
@@ -32,32 +33,52 @@ claim map. Evidence below names source paths, not newly passed tests.
 | ID / owner | Input and read | Decision / output | Persistence and failure / exit |
 |---|---|---|---|
 | R1 Observe / Runtime | Actual worktree, base SHA, task manifests and current attempt bindings; `captureWorktreeDiff`, `detectCheckpointFindings`, `classifyObservedDiff` | Checkpoint with changed resources, HEAD and digest; compare actual range with predicted own range and other running tasks' ranges **[9]** | Include committed `base..HEAD`, tracked modifications and untracked non-ignored files. A descendant commit is allowed; reset/branch/rebase outside base ancestry is rejected. Worker self-report does not replace observation. |
-| R2 Classify / Runtime | R1 checkpoint and current relevant tasks | Own-range excess is recorded as `undeclared_write`; overlap with another task becomes a pair finding. Resource/state/effect/line witnesses can also produce findings. **[9]** | A lone prediction excess remains observed evidence and input to the next compile. Managed `conflict` requires two tasks before freeze; pull intake similarly separates own-scope growth from blocking findings (ADR 0158). Do not turn detection of an excess into an irreversible single-task hold. |
+| R2 Current classification / Runtime | R1 checkpoint and current relevant tasks | Own-range excess is recorded as `undeclared_write` / `prediction_excess`; overlap with another task becomes a pair finding. Resource/state/effect/line witnesses can also produce findings. | Current managed `conflict` rejects fewer than two tasks with `FINDING_NOT_A_CONFLICT`. Single excess is recorded without the singleton hold/replan path. This current behavior does not meet the claim-9/10 target below (Snow White ruling, 2026-11-07). |
 | R3 Bind finding and freeze intake / Runtime | Valid finding bound to current run/epoch | Persist `conflict_found` and `intake_frozen` with frozen prefix. Select affected closure from finding task IDs, plan and manifests. **[7,8,10]** | `run conflict` / daemon control validates finding digest and epoch. New dispatch pauses; unrelated running attempts keep their binding and writes. Stale finding does not authorize a new stop. |
 | R4 Quiesce selected attempts / Runtime supervisor + controllers | R3 closure, controller registration, packet/lease and frozen event digest | `holdConflict` → `barrierSelected`; direct process observation plus quiescence acknowledgements; append final checkpoints, `hold_decided` and carry witnesses. **[7,8,10]** | Hold receipt is emitted only after requested quiescence. Closure-external running work continues only with witnessed carry-over; unproved carry goes to hold. Restart/startup/shutdown and unreconstructable process recovery retain their explicit whole-run barrier. |
-| R5a Serial treatment / operating AI + Runtime | R4 finding, `intentional_serial` treatment, selected winner/loser and current source | Keep the losing work stopped; authorize the selected other work under serialized conflicts; that worker commits its source change to Git. Observe the committed HEAD/checkpoint and resolve the overlap before resuming the stopped work. **[7]** | `routeConflictTreatment`, runtime serial resource binding and ready-frontier/receipt decisions supply the execution control. Git commit is the worker/host's action. Its SHA/checkpoint is the source evidence; epoch/gate publication is not that evidence. Existing fixtures must be extended if they do not demonstrate this complete ordering. |
+| R5a Current serial treatment / operating AI + Runtime | R4 finding, `intentional_serial` treatment and current source | `routeConflictTreatment`, serial resource/finding binding and frontier decisions select serialized execution. Current resume uses complete prepare/rebind acknowledgements and central gate commit. | Current `finalizeRecompileActivation` / `isActiveSupervisorGateCommitted` do not require observing the winner's source Git commit before resuming the stopped work. Finding/epoch checks are not source-commit evidence. This is an implementation gap against target R5aT **[7]**, not verified claim-7 completion. |
 | R5b Limited seam treatment / seam service, invoked by Runtime | R4 finding, AI-authored concern symbols/path names, task migration and treatment | Stop the related pair; `resolveRuntimeSeam` → `applySeamConflict` → isolated transformation, behavior verification and `commitSeamTransform`; re-observe the transformed source. Limit transformation to elements needed to remove the conflict. **[8]** | Bound accepted transformation and successor base must contain the real change. `verifySeamSplitSuccessor` checks ownership/edge deltas and transformed source, not declarations alone. Failed verification leaves the affected work held for corrected treatment; it is not reported as resumed. |
 | R6 Compile affected successor / Runtime consumes Plan + seam public services | Frozen prefix, hold decision, R5 treatment, successor request/base, accepted checkpoints and task migration | Fresh compile; new plan reference/epoch and packets for affected successor work; invalidate held contexts/partial patches/boundary evidence. Continue-set retains origin context/packet/process. **[8,10]** | `recompileNextEpochPlan` calculates invalidation/diff; daemon validates the fresh compiled successor, treatment and migration before staging. Whole plan envelope/version may be republished; only the affected work is stopped/replanned/redispatched. |
-| R7 Stage / Runtime with Plan callback | R6 validated bundle, revision, queue prefix and transaction identity | `stageSuccessorEpoch`; bound pending transaction; publish receipt-bound recompile event batch | Events cannot claim activation yet. Plan callback owns lifecycle validation and Store publication. Replayed event batches must match their saved base prefix and transaction, not create a second branch. |
+| R7 Stage / Runtime with injected Plan/Store callbacks | R6 validated bundle, revision, queue prefix and transaction identity | `stageSuccessorEpoch`; bound pending transaction; publish receipt-bound recompile event batch | Events cannot claim activation yet. Injected `validatePhaseRevision` calls Plan's `validatePhaseTodoRevision`; injected `commitPhaseRevision` calls Store's `applyPhaseTodoRevision` with `createTodoStoreWriter`. Bootstrap supplies both; Runtime invokes them. Replayed event batches match their saved base prefix and transaction. |
 | R8 Commit epoch / Runtime | All required successor controller prepare/rebind acknowledgements and validated stage | `commitStagedSuccessorEpoch` publishes successor pointer; controllers observe pointer and return ready acknowledgements | Staged lease is write-disabled. Pointer publication alone cannot resume writes. Persist `epoch-activation-transaction.json` at prepared/pointer-committed boundaries. |
 | R9 Commit write authorization / Runtime supervisor | R8 pointer, activation digest, registrations, all ready/release acknowledgements | Persist release barrier, arm staged leases, independently verify all release evidence, atomically commit central gate + control events | `commitWriteGate` is the write-authorization point. Before it, no staged worker may write. Bound recovery completes the same transaction rather than accepting partial release. |
 | R10 Resume and accept / Runtime | R9 gate evidence, plan diff and attempt-bound receipt | Append run `intake_resumed`; dispatch affected successor packets; accept source results against their authorized attempt. **[7,8,10]** | Unrelated running attempts keep origin binding; their valid origin receipts can be accepted in a later epoch. Invalidated affected attempts cannot submit stale results. `run resume` reads/project status and does not reauthorize managed writes. |
+
+### Required target paths: t12 implementation handoff
+
+Snow White's technical ruling (2026-11-07) requires these changes in
+`t12-runtime-recovery`. This is an implementation obligation, not a description
+of working baseline behavior or a legal conclusion.
+
+| Target ID | Input / detection | Stop, transformation and replan | Gate / exit and claim element |
+|---|---|---|---|
+| R2T **[9: detection, both alternatives]** | R1 actual range exceeds the task's impact range **OR** overlaps another running task's impact range | Both are named runtime-conflict detections. Keep actual resource ranges and task/attempt bindings in the finding. A singleton excess is not rejected for lacking a second task. | Route singleton excess to R3T/R6T; route actual pair conflict to R4/R5aT or R5b. Explicitly replaces current R2's record-only/pair-required split. |
+| R3T **[10: group of one or more]** | R2T singleton finding for task A, actual resources and current attempt | Target group is `{A}`. Stop only A, observe its final checkpoint and freeze its intake; unrelated attempts keep writing on their origin bindings. | Enter R6T. Do not use claim-7/8 pair treatments or invent another task. If subsequent observation discovers a real overlap, identify its actual affected group and use the pair path. |
+| R6T **[10: new plan for that group]** | R3T singleton checkpoint, revised task scope/work specification and observed excess resources | Generate a fresh plan for A and reconcile its manifest/context against the actual source; invalidate and redispatch only A. Use a dedicated singleton scope-reconciliation treatment contract, not an `intentional_serial`/`seam_split` request which requires two tasks. | Bound successor staging, pointer/gate commit and attempt-bound resume use R7–R10. Update the versioned treatment/request schema with this path in t12; do not silently add a mode to an old exact schema. |
+| R5aT **[7: stop → source commit → resolve → resume]** | Pair finding and selected loser A / winner B; source checkpoint and origin attempt bindings | Keep A stopped while B completes and commits its change to Git. Observe B's changed HEAD, its descendant relation and committed checkpoint against B's origin packet/worktree. Re-observe/reconcile the shared resource and generate the resolved affected successor. | The serial treatment must bind the observed committed checkpoint/HEAD, and Runtime must validate that evidence before authorizing A. Prepare/rebind acknowledgement plus gate commit cannot bypass this source-commit-and-resolution gate. Source commit remains the operating AI/worker's action. |
+| R5bT **[8: stop both → limited refactor → resume both]** | Pair finding whose conflict can be removed by a bounded seam transformation | R4 stops the related pair; R5b transforms only required source elements, verifies behavior and commits the real transform; R6 regenerates affected tasks. | R7–R10 require the accepted transformation in successor base before both affected successors resume. Preserve the baseline limited-transform path while repairing its connections. |
+
+R5aT's winner must be able to commit while the loser remains stopped. If the
+existing common barrier first quiesces both, only the winner may be reauthorized
+for that step; a shared gate must not accidentally release the loser. Commit
+observation must cover the source change being accepted, not merely an unrelated
+HEAD advance. t12 must demonstrate the complete ordering with a real Git commit.
 
 ### Claim paths and source-commit obligation
 
 | Excerpt requirement | Named path in the DFD | Required before/after observation for a later code change |
 |---|---|---|
-| 7: detect pair conflict → stop one → other commits to VCS → resolve → restart one | R1–R4 → R5a → R6–R10 | Losing attempt stays stopped while the winner produces a real Git commit; recorded checkpoint identifies that commit; losing attempt starts only after resolution. The common hold protocol may first quiesce the affected pair, then serialize it. |
+| 7: detect pair conflict → stop one → other commits to VCS → resolve → restart one | Current R5a lacks the source-commit gate; target R1/R2T → R4 → R5aT → R6–R10 | t12 must add commit-observation-and-resolution before loser resume. Complete prepare/rebind + gate evidence alone does not satisfy this target. |
 | 8: stop both → refactor only necessary source elements → resolve → restart both | R1–R4 → R5b → R6–R10 | Both affected bindings stop, changed elements and behavior comparison belong to the accepted transformation, successor base contains it, both successors resume. |
-| 9: actual resource range exceeds own predicted impact OR overlaps another running impact | R1 → R2 | Both forms remain observable. Excess alone is recorded and reconciled, actual overlap follows the hold path. Keep unknown witnesses explicit. |
-| 10: identify affected task group → stop only that group → new plan for group | R3 → R4 → R6 → R10 | Unrelated worker process/context/origin packet stays the same, progresses during treatment and can submit its bound receipt. Global plan numbering does not widen the stopped group. |
+| 9: actual range exceeds own impact OR overlaps another running impact; excerpt: 「実行時競合を検出する」 | Current R1/R2 differs; target R1 → R2T | Snow White rules both alternatives are runtime-conflict detection. Record-only singleton excess with a pair-required refusal is not the target. This ruling changes no code in t11. |
+| 10: affected group consists of 「一以上の作業」; stop only that group and generate its new plan | Pair: R3/R4/R6/R10; singleton target: R3T/R6T/R7–R10 | Group `{A}` is allowed and required for singleton excess. Unrelated process/context/origin packet stays unchanged and its receipt remains acceptable. Global numbering does not widen the stopped group. |
 
-R5a describes the device-level worker obligation. The baseline does not contain
-a Runtime-owned Git-commit command or prove, merely from `receipt_accepted`, that
-all source bytes are committed. This diagram must not be used as evidence that
-the complete claim-7 ordering was tested. An actual source-commit/held-worker
-trace is required with any change to that path; the lock/service refactor must
-not silently remove the existing ability to commit and observe `base..HEAD`.
+R5a records the current gap; R5aT is a required implementation change. The
+baseline does not contain a Runtime-owned Git-commit command, a source-commit
+resume gate or a fixture demonstrating the complete claim-7 ordering. Existing
+`receipt_accepted` alone does not prove all source bytes are committed. Preserve
+the ability to commit and observe `base..HEAD`, then add the explicit gate and
+the real source-commit/held-worker trace in t12.
 
 ### Run state transitions
 
@@ -65,6 +86,9 @@ not silently remove the existing ability to commit and observe `base..HEAD`.
 |---|---|---|
 | Running | Observed pair conflict protects concurrent source/state writes: R1–R3 → frozen intake | Selected hold and R5 treatment; unrelated running work continues. |
 | Affected attempts held | Prevent conflicting writes and stale result acceptance: R4 → serial R5a or limited refactor R5b | Corrected treatment + freshly compiled affected successor, R6. No request to remove the conflict check. |
+| Singleton excess held (target) | R2T/R3T detects own-range excess **[9]** and stops only `{A}` **[10]** | R6T generates a new plan for A; R7–R10 resume A after matching source/plan/attempt evidence. Other running tasks continue. |
+| Serial loser held (target) | A remains stopped while B commits its source change **[7]** | R5aT verifies B's committed checkpoint and conflict resolution before A's write gate can open. |
+| Replanning non-convergent | Current `detectNonConvergentConflicts` / `NON_CONVERGENT_EPOCH_THRESHOLD=3` throws when the same conflict recurs across three epochs | Return the typed failure with the repeated finding/group; operating AI changes the treatment, then reprocesses/recompiles. Do not retry the identical treatment indefinitely or widen the group. |
 | Successor staged | Prevent premature source writes and mismatched plan results: R7 → R8 | Complete matching controller prepare/rebind evidence; saved stage resumes after interruption. |
 | Pointer committed, gate disabled | Prevent partial-controller activation: R8 → R9 | Gather bound ready/release evidence and commit the same gate; recover from activation transaction and event receipts. |
 | Gate committed | R9 → R10 | Publish missing run resume evidence idempotently and redispatch affected successors. |
@@ -78,14 +102,39 @@ not silently remove the existing ability to commit and observe `base..HEAD`.
 | `<run>/.pull-intake.lock`, `.lattice/todo/.start-binding.lock`: pull mutations/start binding | Same lifecycle-lock implementation, explicit lock path | Same initialization limitation. Start-binding file protects Runtime's plan-start/attempt binding; it grants no ownership over TODO Store semantics. |
 | `<run>/.cli-lifecycle.lock`: unmanaged/launch CLI path | `withLifecycleLock`: empty exclusive-create file | Normal finally unlinks; a killed process leaves no identity for automatic recovery. Existing error is `RUN_BUSY`. |
 | `.lattice/runtime/adapter-registry/.registry.lock`: registry writer | Exclusive create, then PID line | Normal release removes; no process-start identity/dead-owner recovery. Existing error is `ADAPTER_REGISTRY_BUSY`. |
+| Common Git directory `lattice-todo-store-commit.lock`: `todo-store-git-transaction.mjs:commitTodoStoreMutation` | Store currently calls Runtime's `acquireRuntimeLifecycleLock` with `lockPath/sessionNonceDigest/operation/requestId/timeoutMs`; it catches `RuntimeLifecycleLockError` and later calls the returned `release()` | Store-owned caller of the same v1 publication protocol. Proposed wrapper compatibility keeps that call unchanged; Store agreement is pending. Runtime does not edit this Store file. |
+
+`.lattice/todo/.start-binding.lock` and old lifecycle recovery `.stale` files
+currently match neither `.gitignore`'s `.write.lock*`/cross-plan entries nor
+`todo-store-git-transaction`'s explicit exclusion pathspecs. That is a source
+selection defect: Runtime transient state can enter a durable store commit.
+The target must cover the lock, temporary and recovery paths together. Proposed
+relocation/ignore and old/new-writer cutover need Store agreement; if the old
+path is retained, Store owns the transaction exclusion change. This is not fixed
+by documenting that the files are host-local.
 
 ## Proposed lock recovery state transitions
 
 This target table is the contract for later implementation, not a completed
-repair. Use existing shared identified-lock infrastructure where its public
-interface fits; keep Runtime's operation/error mapping in Runtime. Store owns
-its helper and todo/note integrations. A helper API change needs Store agreement.
-Do not rewrite Store files while implementing Runtime callers.
+repair. The selected proposal uses `store-lock.mjs:withStoreLock` unchanged:
+exclusive atomically linked bytes have exactly `{pid, process_start, host}`.
+Runtime adapts the callback lifetime to its existing acquire/`release()` handle
+and error/wait contract. Operation, request ID, acquired time and nonce stay in
+the Runtime handle's v1 metadata, never in shared lock bytes. No new sidecar is
+needed. Retain `validateRuntimeLifecycleLockArtifact` for that v1 metadata and
+legacy reader compatibility; it no longer validates newly published lock bytes.
+Remove Runtime's rename-to-`.stale` recovery implementation. Complete on-disk v1
+artifacts, PID-only files and torn files are all unidentified to the new helper;
+they follow the explicit legacy/manual-confirmation transition below. No silent
+new-envelope validation by an old v1 validator is allowed.
+
+**Store agreement pending:** preserve the Store caller's acquire arguments,
+`RuntimeLifecycleLockError` mapping and returned `release()` contract, so
+`commitTodoStoreMutation` needs no Store-file edit for this integration. The
+wrapper retains bounded wait and rejects a mismatched release owner; shared
+helper remains responsible for atomic ownership and dead-owner recovery.
+Runtime owns any wrapper adaptation; Store owns its helper and durable Git
+selection. Do not change the helper API or Store caller unilaterally.
 
 | State / protected asset | Observation and action | Transition / self-exit |
 |---|---|---|
@@ -102,16 +151,40 @@ Do not rewrite Store files while implementing Runtime callers.
 
 The protected asset is exclusive mutation of a named run/registry/start binding.
 Reacquiring a dead lock is not sufficient to resume a worker: reread the run and
-complete R7–R10 from authoritative transaction evidence first. Public Runtime
-lock result/artifact compatibility must be decided before replacing its v1
-envelope with a shared helper's internal owner record; no implicit schema swap.
+complete R7–R10 from authoritative transaction evidence first. Tests which
+previously assumed v1 metadata was identical to on-disk lock bytes must instead
+check the two explicit contracts and legacy behavior separately in t12.
+
+## Pull execution mode
+
+R1–R10 above describe the managed daemon path. Pull execution is another current
+implementation of runtime observation/hold/resume, not an exemption from claims
+7–10. Its state is not a managed write gate or an epoch-activation transaction.
+
+| Pull step / current source | Current data and state transition | Target obligation / separate recovery |
+|---|---|---|
+| P1 `boundaryVerdict` / intake | Current Plan version, independence artifact and start binding → readiness/version-drift hold | A version-drift hold requires a fresh valid Plan/start binding. It is not evidence that a source conflict was resolved. Preserve this distinction. |
+| P2 observation and `acceptPullTask` | Actual checkpoints + manifests → findings; blocking findings → `intervention_changed` with hold and attached worker `SIGSTOP` | Apply R2T's two detection alternatives. Singleton own-scope growth currently passes through `acceptFindings`; target singleton stop/replan is R3T/R6T, with group `{A}`. |
+| P3 `remainingRuntimeConflictFindings` / acceptance | Accepted source task removes its related findings; empty remaining findings → intervention cleared and attached worker `SIGCONT` | Empty remaining findings alone must not bypass R5aT's committed-source/resolution evidence on a serial pair. Share the target decision contract with managed execution, retaining pull's own event/signal transport. |
+| P4 resume observation | PID/start/worker binding and intervention changes are Runtime state | Keep process identity and own-origin receipt binding; t12 compares pull and managed behavior at the shared target contracts without pretending their durable state formats are identical. |
 
 ## Proposed supervisor service boundary
 
 Current cycle: `runtime-cli → runtime-managed-supervisor → (daemon bootstrap
 dynamic import) runtime-cli.runManagedSupervisorDaemon`; lifecycle lock's default
 observer also imports the supervisor. The daemon bootstrap currently wires Plan
-validation and Store commit callbacks.
+validation (`validatePhaseTodoRevision`) and Store commit
+(`applyPhaseTodoRevision` / `createTodoStoreWriter`) callbacks.
+
+Current upward connections which the service move must account for:
+
+| Current import | Target direction / owner |
+|---|---|
+| Plan `todo-cli` → Runtime `runtime-pull-intake.withStartRetractionGuard` | Composition root supplies Runtime's atomic guard callback to the Plan retraction entry. Runtime holds its binding lock across `action`; a stale read-only fact cannot replace this atomic contract. Plan still owns whether its event is semantically valid. |
+| `todo-independence` → `runtime-front-end` | Runtime passes observed/compiled facts through the public seam/Plan interface. Independence consumes those values, not Runtime state or a CLI implementation. |
+| `todo-independence-contracts` → `runtime-contracts` | Keep the versioned pure value validators as an explicit public contract dependency; do not pull orchestration/daemon I/O through them. A neutral-contract extraction is a separate coordinated change, not an incidental service-move deletion. |
+| Store `todo-store-git-transaction` → `runtime-lifecycle-lock` / `runtime-contracts.selfDigest` | Preserve the agreed Runtime lock wrapper and pure digest contract for the Store caller (agreement pending), or let Store perform its own later move. Runtime cannot change this caller's import by ownership inference. |
+| `runtime-lifecycle-lock` → supervisor's `observeManagedProcessStartIdentity` | Target lock wrapper uses shared lock/platform infrastructure, which observes through `runtime-os-observation` only. Lock acquisition must not import the managed supervisor or CLI. |
 
 Target: CLI and daemon bootstrap both call a Runtime orchestration service;
 that service calls supervisor/controllers, event/epoch stores and pure runtime

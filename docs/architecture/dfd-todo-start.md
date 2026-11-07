@@ -6,6 +6,8 @@ below reuse the completed read-only Sonnet trace without repeating its verificat
 The [Runtime DFD](dfd-runtime-hold-resume.md) owns hold/source-commit/recompile/
 resume and detailed Runtime lock recovery; manual start does not grant a Runtime
 write lease. Its proposed Runtime recovery rows are not implemented by this doc.
+Its R2T/R3T/R6T and R5aT target rows also record t12's required singleton
+excess-detection/replan and source-commit-before-resume corrections.
 Unchanged rows retain the baseline trace. Store recovery rows and the Store reopen
 contract below describe this S3 implementation; other target rows remain proposals.
 

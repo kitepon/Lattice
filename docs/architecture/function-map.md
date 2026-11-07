@@ -11,6 +11,10 @@ The [runtime flow](dfd-runtime-hold-resume.md) owns hold/source-commit/limited
 refactor/affected recompile/resume, claim-7–10 traces, Runtime lock recovery
 transitions and the proposed supervisor service boundary. Current behavior and
 proposed repair are marked separately there.
+Snow White's 2026-11-07 technical ruling requires t12 to repair two current gaps:
+claim 9 detects both own-range excess and overlap, and claim 10 stops/replans even
+a singleton excess group; claim 7 requires observed source commit and resolution
+before loser resume. These target rows are not claims of baseline conformance.
 Directory moves are proposed boundaries, not claims that those directories exist.
 
 ## Product boundary
