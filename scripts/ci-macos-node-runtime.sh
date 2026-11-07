@@ -22,8 +22,9 @@ if [[ -d $runtime_dir ]] && ! verify "$runtime_dir" 2>/dev/null; then
 fi
 if [[ ! -d $runtime_dir ]]; then
   mkdir -p -m 700 "$(dirname "$runtime_dir")"
-  staging=$(mktemp -d "$runtime_dir.XXXXXX")
-  chmod 700 "$staging"
+  staging="$runtime_dir.staging.$$"
+  rm -rf "$staging"
+  mkdir -m 700 "$staging"
   trap 'rm -rf "$staging"' EXIT
   archive="$staging/node.tar.gz"
   curl --fail --location --silent --show-error --output "$archive" "https://nodejs.org/dist/v$version/node-v$version-darwin-arm64.tar.gz"
