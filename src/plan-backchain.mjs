@@ -342,7 +342,7 @@ async function verifyExistingFeatureReferences(repoRoot, chain) {
   }
 }
 
-function planSeed(authoring, predecessorPlanDigest) {
+export function planSeed(authoring, predecessorPlanDigest) {
   return {
     schema: 'lattice.todo_plan.v7', project_id: authoring.project_id,
     plan_key: authoring.plan_key, predecessor_plan_digest: predecessorPlanDigest,
@@ -408,7 +408,7 @@ function compileTaskMigration(previousPlan, oldChain, desiredSeed, newChain) {
   }).sort((left, right) => left.from_task_id.localeCompare(right.from_task_id));
 }
 
-function compilePhaseMigration(previousPlan, desiredSeed, taskMigration) {
+export function compilePhaseMigration(previousPlan, desiredSeed, taskMigration) {
   const nextPhases = new Map(desiredSeed.phases.map((phase) => [phase.phase_id, phase]));
   const oldPhases = new Set(previousPlan.phases.map(({ phase_id: id }) => id));
   const affected = new Set(taskMigration.filter(({ state_policy }) =>
@@ -492,7 +492,9 @@ async function activeIntentUnchanged({ repoRoot, member, chain, authoring }) {
   });
 }
 
-async function rebindCarriedWork({ repoRoot, planKey, env }) {
+export async function rebindCarriedWork({ repoRoot, planKey, env,
+  reason = 'ゴール変更後のplan versionへ作業中ToDoを結び直す',
+  failureCode = 'BACKCHAIN_REBIND_PENDING' }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
   const rebound = [];
@@ -503,9 +505,9 @@ async function rebindCarriedWork({ repoRoot, planKey, env }) {
     const { rebindStart } = await import('./todo-cli.mjs');
     try {
       await rebindStart({ repoRoot, env, planKey, taskId: state.task_id,
-        reason: 'ゴール変更後のplan versionへ作業中ToDoを結び直す' });
+        reason });
     } catch (error) {
-      throw new TodoStoreError('BACKCHAIN_REBIND_PENDING', 'carried_task_rebind_failed', undefined, {
+      throw new TodoStoreError(failureCode, 'carried_task_rebind_failed', undefined, {
         task_id: state.task_id, plan_version: member.plan.plan_version,
         cause_code: error?.code ?? 'unknown',
         next_action: `lattice todo start --plan ${planKey} --task ${state.task_id} --rebind --reason <text>`,

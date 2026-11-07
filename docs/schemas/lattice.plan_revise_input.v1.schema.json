@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_revise_input.v1.schema.json",
+  "title": "lattice.plan_revise_input.v1",
+  "description": "工程全体のdesired stateと、全ての旧taskの明示的な状態移行。predecessor/CAS/digest/後継versionは機械が算出する。旧版は保持し、作業の意味が同じかを暗黙に推定しない。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "desired", "continuity"],
+  "properties": {
+    "schema": { "const": "lattice.plan_revise_input.v1" },
+    "desired": {
+      "$ref": "lattice.plan_create_input.v4.schema.json",
+      "description": "同じproject_idとplan_keyのcreate-v4入力。input_digestは通常のauthoring正規化で補う。plan_versionは入力形を保つために記載し、後継versionは機械算出値に置き換える。新taskはpending。消すtaskへの参照も明示的に取り除く。"
+    },
+    "continuity": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "description": "旧task全件をtask_idごとに一度ずつ選ぶ。新taskへのentryは書かない。配列の順序は問わない。carryは既存Storeの意味・依存整合チェックを保ち、resetはpendingへ戻し、retireはdesiredに存在しないtaskだけに使う。各判断の理由をreasonに記録する。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "policy", "reason"],
+        "properties": {
+          "task_id": { "type": "string", "pattern": "^[0-9A-Za-z](?:[0-9A-Za-z._-]{0,127})$" },
+          "policy": { "enum": ["carry", "reset", "retire"] },
+          "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }
+        }
+      }
+    }
+  }
+}

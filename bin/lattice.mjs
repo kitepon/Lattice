@@ -112,6 +112,34 @@ if (help !== null) {
   } catch (error) {
     process.exitCode = projectCliFailure(process.stderr, error);
   }
+} else if (args.length === 4 && args[0] === 'plan' && args[1] === 'revise'
+  && args[2] === '--schema' && args[3] === '--json') {
+  const { planReviseSchema } = await import('../src/plan-revise.mjs');
+  const { projectCliFailure } = await import('../src/project-cli.mjs');
+  try {
+    process.stdout.write(`${JSON.stringify(await planReviseSchema())}\n`);
+    process.exitCode = 0;
+  } catch (error) {
+    process.exitCode = projectCliFailure(process.stderr, error);
+  }
+} else if (args[0] === 'plan' && args[1] === 'revise') {
+  const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
+  const flags = matchFlagCommand(args, ['plan', 'revise'], {
+    known: ['input', 'dry-run', 'json'], required: ['input'], booleans: ['dry-run', 'json'],
+  });
+  if (flags === null || flags.json !== true) {
+    process.stderr.write(`lattice: unsupported command or arguments: ${args.join(' ')}\n`);
+    process.exitCode = 2;
+  } else {
+    const { runPlanRevise } = await import('../src/plan-revise.mjs');
+    const { projectCliFailure } = await import('../src/project-cli.mjs');
+    try {
+      process.exitCode = await runPlanRevise({ cwd: process.cwd(), inputRef: flags.input,
+        dryRun: flags['dry-run'] === true, stdout: process.stdout, env: process.env });
+    } catch (error) {
+      process.exitCode = projectCliFailure(process.stderr, error);
+    }
+  }
 } else if (args.length === 4 && args[0] === 'plan' && args[1] === 'backchain'
   && args[2] === '--schema' && args[3] === '--json') {
   const { backchainSchema } = await import('../src/plan-backchain.mjs');

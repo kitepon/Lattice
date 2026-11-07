@@ -74,6 +74,9 @@ Authoring inputs, the seat command surface and the error shape follow the
 
 ## Function ownership in shared source files
 
+The [light revision flow](dfd-plan-revise.md) owns w1b's authored full-state input,
+explicit continuity and the v5 Store connection; this is separate from w1/w5.
+
 Ownership is by responsibility/function while files are still mixed. A shared
 filename is not permission for two boundaries to own the same function or state.
 The later split moves functions to their owner without changing the contract.
@@ -83,6 +86,7 @@ The later split moves functions to their owner without changing the contract.
 | todo-cli: startTask, mutate, startAdvisory, startStructureContext, mutationActor | Plan/lifecycle | CLI dispatch and runtime callers via plan public index |
 | project-cli: `runPlanCreate`, `resolveProjectState`, `validateProjectStatus`; plan-backchain: existing additional-plan branch | Plan/lifecycle | Create/backchain call the Store authored API with a g5 writer and select the requested plan_key; status/session use Store's read-only layout classifier. See the [authoring flow](dfd-plan-create.md). |
 | project-cli: create-input diagnosis; todo-contracts: `validateTodoPlan`, `explainTodoPlan`, shared strict-order diagnosis | Plan/lifecycle; no direct persistence | Create and migration retain existing error codes, report pointer/rule, and distinguish extraction input from derived-plan pointer space in the [authoring flow](dfd-plan-create.md). |
+| project-cli: `validatePlanCreateInput`; plan-backchain: exported planSeed/compilePhaseMigration (same inputs), carried-work rebind with existing defaults; plan-revise: light input/compiler/command with explicit carry/reset/retire + reason (no backchain inference) | Plan/lifecycle; no direct persistence | `plan revise`; Store's generic phase transaction and v5 validator/reader registration owned by Rudmira; [light revision flow](dfd-plan-revise.md) |
 | todo-cli: runTodoCli, flag matching, typedFailure and result printing; project CLI argument dispatch | Surfaces | bin/lattice and host clients |
 | isolation-runner: disposable worktree execution/verification service | Independence + seam | Seam transformation primary consumer; runtime through independence/seam public index |
 | todo-cli: resolveDoneEvidence/writeEvidenceBlob, also used by phase decisions | Plan/lifecycle evidence service | done and phase decision commands; sole writer of `.lattice/todo/evidence/<plan>/<task>/<digest>.md` and its Git blob descriptors |
