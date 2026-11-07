@@ -163,3 +163,42 @@ as prospective events. Its transition checks must be assessed separately from
 append-time readiness before S3: a valid hash chain alone does not prove a valid
 lifecycle event. Do not remove historical integrity validation under a blanket
 'replay is derived' rule. No replay change is part of S2.
+
+
+## Plan readiness extraction (S3 stage 1)
+
+The pure `todo-readiness.mjs` service consumes only its caller's store view.
+`member.tasks` and journal-derived `member.phases` are canonical for status and
+prospective validation. Snapshot phase fields are a cache, absent in v1 snapshots;
+the predicates neither read nor repair them. Store guarantees `member.tasks`
+and journal-derived `member.phases` for every member (ADR 0147); under the
+locked `forWrite` read, snapshot phases equal that projection. This equivalence
+makes replacing the merged validator's snapshot-phase reads behavior-preserving.
+Snapshot phase reads in revision migration are outside this extraction. No filesystem, Git, clock or writes
+are allowed in this service. Existing Store schema/phase and cross-plan-edge
+projection helpers move unchanged to `todo-store-view.mjs` and keep Store re-exports.
+
+| Step / function | Input and reader | Output / failure | Persistence owner |
+|---|---|---|---|
+| `createTodoReadiness(store)` | Active members, task and phase projections; hard, join, plan-scoped cross-plan and explicit phase-accept edges | Per-task state, own-phase-active, predecessor completion/acceptance, explicit acceptance predicates; successor queries | None; caller-owned read-only view |
+| `todo-status` graph validation → shared readiness | The same read model used for status labels, head metadata and schema validation | Existing sorted ready frontier and result schema; pending + active own phase + satisfied prerequisites | None |
+| `validateProspectiveEvent({store,member,event})` merged checks first | Fresh locked Store view; start/done/reopen/phase_reopen including existing mode/override exceptions | Same accepted/refused outcomes and existing per-kind reason; additive cause identifies the failed predicate. Explicit acceptance edge takes priority over unfinished predecessor. Start override retains the existing combined task-predecessor exception, including v4 predecessor-phase readiness. | None |
+| Prospective own-task checks after merged rejection priority | Authored start requires pending and v4 own phase active; authored done requires in-progress | Existing invalid_start_transition / invalid_done_transition plus task_state or phase_state | None |
+| Existing replay integrity | Journal history plus prospective event, actor/target bindings and evidence | Existing historical checks retained unchanged; full event validity remains a replay responsibility | None |
+| Store publication | Successful callback and replay | Existing journal → snapshot → manifest sequence | Store alone |
+
+`reopen` and `phase_reopen` refusal reasons stay
+`reopen_has_started_successor` / `phase_reopen_has_started_successor`; their
+additive cause is `task_state`, describing the successor state which prevents
+invalidating its prerequisite. Reopen keeps the existing next_action.
+
+The extraction temporarily keeps `validateMergedTransition` as a compatibility
+wrapper and a direct import from Plan in Store. Rudmira's subsequent Store change
+replaces that wrapper with the supplied callback under lock + fresh reread, then
+removes the temporary upward import. This intermediate seam introduces no new
+store option or public event schema.
+
+Verification is limited to readiness truth tables and read-only behavior, existing
+status/store/cross-plan/start/phase suites, changed syntax/document links, and the
+normal three-OS candidate CI. Historical replay cases remain regression checks;
+unrelated product and sensor behavior is outside the focused local range.

@@ -1,3 +1,4 @@
+import { createTodoReadiness } from './todo-readiness.mjs';
 import {
   AUDIT_PENDING_PHASE_STATUSES,
   auditPendingNextCommands,
@@ -381,13 +382,6 @@ function buildTodoGraph(readModel) {
   const memberHeads = [];
   const auditPending = [];
   const coordination = [];
-  // snapshot artifactの形式(v1にはphasesキーが無い)には縛られない導出ビューを読む
-  // (readTodoStoreが常にmember.phasesとして埋める。ADR 0147)。
-  const phaseStatuses = new Map(readModel.members.flatMap((member) => (
-    (member.phases ?? []).map((phase) => [
-      `${member.plan.project_id}\0${member.plan.plan_key}\0${phase.phase_id}`, phase.status,
-    ])
-  )));
   const members = [...readModel.members].sort((left, right) => {
     const leftKey = left?.descriptor?.plan_key ?? '';
     const rightKey = right?.descriptor?.plan_key ?? '';
@@ -425,8 +419,6 @@ function buildTodoGraph(readModel) {
         }),
     });
     const states = new Map(member.tasks.map((state) => [state.task_id, state]));
-    // snapshot artifactの形式には縛られない導出ビュー(member.phases)を読む(ADR 0147)。
-    const phases = new Map((member.phases ?? []).map((state) => [state.phase_id, state]));
     collectAuditPending(member, auditPending);
     // 調整方式の宣言(ob03)。member.coordinationはstoreがplan-scoped chainから投影した
     // 導出ビューで、未宣言はnull。宣言済みだけをここへ載せる。
@@ -457,13 +449,6 @@ function buildTodoGraph(readModel) {
         label: displayText(task.title, task.task_id, TODO_STATUS_LABEL_LIMIT),
         status: state.status,
         blocked_reason: state.blocked_reason,
-        plan_schema: member.plan.schema,
-        phase_id: ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(member.plan.schema)
-          ? task.phase_id : null,
-        phase_status: ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(member.plan.schema)
-          ? phases.get(task.phase_id)?.status : null,
-        phase_ready: member.plan.schema !== 'lattice.todo_plan.v4'
-          || phases.get(task.phase_id)?.status === 'active',
       });
       incoming.set(key, new Set());
     }
@@ -477,7 +462,6 @@ function buildTodoGraph(readModel) {
     }
     incoming.get(toKey).add(fromKey);
   };
-  const phaseAcceptIncoming = new Map([...nodes.keys()].map((key) => [key, new Set()]));
   for (const member of members) {
     for (const edge of member.plan.hard_dependencies) addPredecessor(edge.from, edge.to);
     for (const join of member.plan.joins) {
@@ -487,9 +471,6 @@ function buildTodoGraph(readModel) {
       for (const edge of member.plan.phase_accept_dependencies) {
         const target = refKey(edge.to);
         if (!nodes.has(target)) fail('TODO_STATUS_INVALID_INPUT', 'todo_status_dependency_dangling');
-        phaseAcceptIncoming.get(target).add(
-          `${edge.from.project_id}\0${edge.from.plan_key}\0${edge.from.phase_id}`,
-        );
       }
     }
   }
@@ -506,22 +487,12 @@ function buildTodoGraph(readModel) {
   coordination.sort((left, right) => (
     left.plan_key < right.plan_key ? -1 : left.plan_key > right.plan_key ? 1 : 0));
 
-  return { nodes, incoming, phaseAcceptIncoming, phaseStatuses, memberHeads, auditPending, coordination };
+  return { nodes, incoming, memberHeads, auditPending, coordination, readiness: createTodoReadiness(readModel) };
 }
 
 /** 先行完了とphase gateを満たしたpending taskだけがreadyになる。 */
-function isNodeReady(node, { nodes, incoming, phaseAcceptIncoming, phaseStatuses }) {
-  return node.status === 'pending' && node.phase_ready
-    && [...incoming.get(node.key)].every((key) => {
-      const predecessor = nodes.get(key);
-      return predecessor.status === 'done'
-        && (predecessor.plan_schema !== 'lattice.todo_plan.v4'
-          || predecessor.phase_id === null
-          || (predecessor.plan_key === node.plan_key && predecessor.phase_id === node.phase_id)
-          || predecessor.phase_status === 'accepted');
-    })
-    && [...phaseAcceptIncoming.get(node.key)]
-      .every((key) => phaseStatuses.get(key) === 'accepted');
+function isNodeReady(node, { readiness }) {
+  return readiness.isReady(node.key);
 }
 
 /**

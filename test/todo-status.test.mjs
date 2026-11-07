@@ -239,6 +239,7 @@ function syntheticReadModel(activeCount) {
     const tasks = Array.from({ length: count }, (_, index) => task(`t${String(index).padStart(3, '0')}`, 'x'));
     members.push({
       descriptor: { plan_key: planKey },
+      phases: [], // Canonical projected view; synthetic fixtures need no snapshot cache.
       plan: {
         project_id: 'scale-project', plan_key: planKey, plan_version: 'v1',
         plan_digest: 'c'.repeat(64), tasks,
