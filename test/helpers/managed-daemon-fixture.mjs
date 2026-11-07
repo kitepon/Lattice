@@ -86,13 +86,26 @@ export async function reapDaemonsUnder(temporary, tracked = []) {
   return survivors();
 }
 
+// Windowsは子processの終了直後でもhandle解放が遅れ、rmがEBUSY/ENOTEMPTY/EPERMで一時的に
+// 拒否される。fixture rootにだけ、短い期限内で再試行する。他のerrorは即座に投げる。
+async function removeFixtureTree(temporary, { deadlineMs = 5_000 } = {}) {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    try { await rm(temporary, { recursive: true, force: true }); return; }
+    catch (error) {
+      if (!['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error?.code) || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 const liveFixtures = new Set();
 
 /** Wait for fixture-owned processes before removing files their exit receipts need. */
 export async function removeManagedDaemonFixture(temporary, tracked = []) {
   const survivors = await reapDaemonsUnder(temporary, tracked);
   assert.deepEqual(survivors, [], `fixtureのdaemonが停まらずに残った: ${survivors.join(', ')}`);
-  await rm(temporary, { recursive: true, force: true });
+  await removeFixtureTree(temporary);
 }
 
 // timeout等でafter hook自体が走らなかった時の同期的な最後の受け皿。
@@ -114,7 +127,7 @@ export function registerManagedDaemonFixture(t, temporary, { tracked = [] } = {}
   t.after(async () => {
     const survivors = await reapDaemonsUnder(temporary, tracked);
     liveFixtures.delete(temporary);
-    await rm(temporary, { recursive: true, force: true });
+    await removeFixtureTree(temporary);
     assert.deepEqual(survivors, [], `fixtureのdaemonが停まらずに残った: ${survivors.join(', ')}`);
   });
 }
