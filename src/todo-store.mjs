@@ -2058,7 +2058,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
     // The repair read must not publish derived state before the complete strict graph check.
-    const store = await readTodoStoreView({ repoRoot, forWrite: true, now: options.now,
+    const store = await readTodoStoreView({ repoRoot, now: options.now,
       tolerateStaleBindings: true });
     const owner = store.members.find(({ plan }) => plan.plan_key === options.planKey);
     const source = store.members.find(({ plan }) => plan.plan_key === options.sourcePlanKey);
@@ -2075,7 +2075,20 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
       || to.project_id !== owner.plan.project_id || to.plan_key !== owner.plan.plan_key
       || !owner.plan_scoped.events.some((event) => event.event_digest === digest)
     ))) fail('DEPENDENCY_INVALID', 'dependency_rebind_original_mismatch');
-    const validation = await options.validateBindingCarry({ store, source, dependencies });
+    const predecessorBinding = source.revision?.predecessor;
+    if (!predecessorBinding) fail('DEPENDENCY_INVALID', 'dependency_rebind_predecessor_missing');
+    const predecessor = await readArtifact(repoRoot,
+      `${STORE_ROOT_REF}/plans/${source.plan.plan_key}/${predecessorBinding.plan_version}/plan.json`, {
+        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan,
+      });
+    if (predecessor.project_id !== source.plan.project_id || predecessor.plan_key !== source.plan.plan_key
+      || predecessor.plan_version !== predecessorBinding.plan_version
+      || predecessor.plan_digest !== predecessorBinding.plan_digest) {
+      fail('STORE_INCONSISTENT', 'dependency_rebind_predecessor_mismatch');
+    }
+    const validation = await options.validateBindingCarry({ store, source, dependencies,
+      predecessor: { plan_version: predecessor.plan_version, plan_digest: predecessor.plan_digest,
+        topology_digest: predecessor.topology_digest } });
     if (validation?.ok === false) {
       if (typeof validation.code !== 'string' || typeof validation.detail?.reason !== 'string') {
         throw new TypeError('binding carry validator must return a typed refusal');
@@ -2106,7 +2119,13 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
       replacements.push({ original_event_digest: dependency.event_digest,
         replacement_event_digest: staged.plan_scoped.events.at(-1).event_digest });
     }
-    validateMergedGraph(store.members.map((member) => member === owner ? staged : member));
+    const prospective = store.members.map((member) => member === owner ? staged : member);
+    const projected = projectTodoCrossPlanDependencies(prospective);
+    const edgeKeys = projected.map(({ from, to }) => `${mergedTaskKey(from)}\0${mergedTaskKey(to)}`);
+    if (new Set(edgeKeys).size !== edgeKeys.length) {
+      fail('DEPENDENCY_EXISTS', 'cross_plan_dependency_duplicate');
+    }
+    validateMergedGraph(prospective, projected);
     await protocolStage(options, 'dependency_rebind_validated');
     await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), staged.plan_scoped.activeBytes);
     await protocolStage(options, 'dependency_rebind_published');
