@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { readFile, readlink, realpath } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -15,6 +15,23 @@ const WINDOWS_TICKS_PER_MILLISECOND = 10_000n;
 // 同じ`?`になるので、locale不一致によるdigest分裂は防げる）。darwinの`ps`はvisエスケープで
 // 非ASCIIを可逆に表現するため、この劣化は起きない。
 export function osObservationEnvironment() { return { ...process.env, LC_ALL: 'C' }; }
+
+/** Host/PID domain for local ownership checks; never a hostname or public actor. */
+export async function observeProcessHostIdentityRaw() {
+  if (process.platform === 'linux') {
+    const [boot, namespace] = await Promise.all([
+      readFile('/proc/sys/kernel/random/boot_id', 'utf8'), readlink('/proc/self/ns/pid'),
+    ]);
+    return `${boot.trim()}:${namespace}`;
+  }
+  const executable = process.platform === 'win32' ? 'pwsh.exe' : '/usr/sbin/sysctl';
+  const args = process.platform === 'win32'
+    ? ['-NoProfile', '-NonInteractive', '-Command',
+      "[Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography','MachineGuid',$null)"]
+    : ['-n', 'kern.bootsessionuuid'];
+  const { stdout } = await execFileAsync(executable, args, { encoding: 'utf8', env: osObservationEnvironment() });
+  return stdout.trim();
+}
 
 /** processのstart identity（darwin/linuxはps lstart、win32はPowerShell StartTime Ticks）の生文字列を返す。 */
 export async function observeStartIdentityRaw(pid) {

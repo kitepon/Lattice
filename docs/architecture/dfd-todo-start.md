@@ -210,10 +210,12 @@ The shared Store lock module calls the platform process-start observer directly;
 it does not import runtime policy. Only todo/note integration is included here.
 The transient lock record has exact keys
 `{pid, process_start:{platform,identity}, host}`; missing/extra keys are unidentified.
-Host uses the existing persisted terminal public label. On Linux it additionally
-includes the PID-namespace digest, so containers sharing a terminal config cannot
-mistake another namespace's PID for a dead local owner. Unavailable terminal or
-namespace identity follows lock_identity_unavailable; there is no generic-host fallback.
+Host is a hash of an OS-observed identity domain: Linux boot UUID + PID namespace,
+macOS boot-session UUID, Windows MachineGuid. No terminal configuration is needed,
+so ADR 0197's missing-config actor fallback still works. Containers sharing config
+cannot conflate local PID namespaces. Unavailable domain observation follows
+lock_identity_unavailable; there is no generic-host fallback. A boot-domain change
+is a foreign domain and follows the documented manual confirmation path.
 Publication writes and
 syncs a complete temporary record, hard-links it to `.write.lock` (EEXIST means
 busy), then unlinks the temporary. No reader can see a partially filled new lock.
@@ -221,7 +223,7 @@ busy), then unlinks the temporary. No reader can see a partially filled new lock
 | State | Entry and protected data | Self-exit / next operation |
 |---|---|---|
 | Preparing ownership | Temporary complete record, no lock ownership yet; temporary name includes host/PID/start digest | Link publishes ownership atomically; failed acquisition removes its own temporary. Next acquisition removes abandoned temporaries only after proving their encoded owner dead. |
-| Live identified owner | Complete lock bound to local PID + process start, or foreign host | Keep the lock; existing conflict code/reason for a live contender. Owner releases after callback. |
+| Live identified owner | Complete lock bound to local PID + process start, or foreign host | Keep the lock; existing conflict code/reason for a live contender. Owner releases after callback; an already-removed lock counts as released, and a different replacement owner is preserved. |
 | Identified dead owner | Local PID absent, or observed start identity differs from recorded identity | Publish unique recovery-claim directory with host/PID/start digest in its name. Clean only proven-dead claims; recover only as sole remaining claimant. Reread lock before removing it, then link new complete ownership. EEXIST preserves any competing owner. |
 | Abandoned recovery claim | Claim creator died before/during initialization or recovery | Next contender proves claim owner's death from the complete identity in its directory name and removes only that unique claim. No age-only reclaim. |
 | Multiple live claimants | Two recovery attempts overlap | Each preserves other live claims and exits with existing conflict; owner/claim release permits subsequent acquisition. Claim remains for the whole recovery operation. |
@@ -245,8 +247,8 @@ Todo/note `.write.lock`, `.write.lock.*.tmp`, `.write.lock.recovery/**` and todo
 `.cross-plan-recovery/**` are host-local exclusion state, never durable artifacts.
 Repository ignore rules and store Git transaction path selection exclude them;
 an interrupted acquisition must not distribute lock state through a commit.
-Store uses the existing terminal identity infrastructure and never reads the OS
-hostname (ADR 0197). Lock identity never supplies journal actors or public results.
+Store uses platform identity observation and never reads the OS hostname
+(ADR 0197). Lock identity never supplies journal actors or public results.
 
 The Plan callback receives `validateProspectiveEvent({store,member,event})` after
 lock acquisition and fresh read/recovery, before durable append. The complete
@@ -271,7 +273,7 @@ typed read failure for stable-read retry; no recovery touches its bytes.
 | Journal ahead of manifest | Existing manifest head must occur in the validated hash chain. Replay all existing semantic/identity/evidence checks and validate merged topology before any repair. Write derived snapshots first, then publish manifest heads and digest. | clean → appended → projected → manifest-published → clean. No journal truncation or invented event; an absent manifest head remains manifest_journal_head_mismatch. |
 | Stale/missing derived snapshot | Recompute from the authoritative validated journal, under lock. Validate every member before rewriting any cache. | Return snapshot_stale=false after canonical replacement. Existing unsafe path, EOL and authoritative digest failures remain typed errors. |
 | Segment sealed before active replacement | Verify sealed name/range/digest and exact byte equality of the redundant active segment with the final sealed segment. Treat that exact duplicate as one logical segment. | Next append replaces active with the new event; preserve every committed event. Differing or partial overlaps remain hash-chain errors. Same rule applies to the independent note chain. |
-| Cross-plan import transaction marker | Reuse recorded validated transaction: if manifest already published its descriptor, finish its staged bound artifacts; otherwise roll back only its unpublished directory. | Remove resolved marker; no caller must replay the original migrate input. Unknown digest/conflicting manifest remains typed error. |
+| Cross-plan import transaction marker | Reuse recorded validated transaction: if manifest already published its descriptor, finish its staged bound artifacts; otherwise roll back only its unpublished directory. | Remove resolved marker; no caller must replay the original migrate input; import writers also resolve foreign recorded transactions before preparing a new import. Unknown digest/conflicting manifest remains typed error. |
 | Source-cutover barrier | Find the canonical marker matching the barrier digest in fixed transaction roots. Reconstruct only the recorded validated revision or revision-set input, actor/time/provenance from its genesis; invoke the existing recovery implementation under the already-held lock. | Finish its recorded source/artifact/manifest publication and cleanup. Private lock capability prevents nested acquisition; only recovery dispatch can supply it. Invalid/missing/conflicting marker/stage stays the existing typed recovery error. |
 
 Fault-injection stages after journal publication, snapshot publication and manifest

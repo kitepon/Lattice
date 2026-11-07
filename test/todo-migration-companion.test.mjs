@@ -595,3 +595,22 @@ for (const stage of [
     await assert.rejects(stat(path.join(root, '.lattice', 'todo', '.write.lock')), { code: 'ENOENT' });
   });
 }
+
+for (const stage of ['plan_directory_renamed', 'manifest_activated']) {
+  test(`a different import resolves the abandoned ${stage} transaction before writing`, async (context) => {
+    const root = await workspace(context);
+    const input = await extraction(root);
+    await writeFile(path.join(root, 'companion.json'), `${JSON.stringify(input)}\n`);
+    const crashed = childCrash(root, stage);
+    assert.equal(crashed.status, 91, crashed.stderr);
+    await appendImportedPlan({ repoRoot: root, writer: WRITER, now: NOW,
+      plan: { schema: 'lattice.todo_plan.v1', project_id: 'project-1', plan_key: 'different',
+        plan_version: 'v1', predecessor_plan_digest: null, tasks: [task('D')],
+        hard_dependencies: [], joins: [] }, genesis: { actor: ACTOR, recorded_at: NOW } });
+    const store = await readTodoStore({ repoRoot: root, now: NOW });
+    assert.deepEqual(store.members.map(({ plan }) => plan.plan_key), stage === 'manifest_activated'
+      ? ['companion', 'different', 'main'] : ['different', 'main']);
+    assert.equal(store.members.find(({ plan }) => plan.plan_key === 'main').plan_scoped.events.length,
+      stage === 'manifest_activated' ? 1 : 0);
+  });
+}

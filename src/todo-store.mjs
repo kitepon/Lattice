@@ -2477,17 +2477,13 @@ async function assertNoCrossPlanImportRecoveryNeeded(repoRoot) {
     plan_key: transaction.marker.descriptor.plan_key,
     transaction_digest: transaction.marker.transaction_digest,
     state: visible ? 'manifest_activated' : 'pre_activation',
-    next_action: 'rerun_the_same_todo_migrate_input',
+    next_action: 'lattice todo status --json',
   });
 }
 
-async function recoverCrossPlanImports(repoRoot, { expectedTransactionDigest = null } = {}) {
+async function recoverCrossPlanImports(repoRoot) {
   const transactions = await crossPlanImportTransactions(repoRoot);
   if (transactions.length === 0) return [];
-  if (expectedTransactionDigest !== null
-    && !transactions.every(({ marker }) => marker.transaction_digest === expectedTransactionDigest)) {
-    await assertNoCrossPlanImportRecoveryNeeded(repoRoot);
-  }
   let manifest;
   try {
     manifest = await readArtifact(repoRoot, MANIFEST_REF, {
@@ -2563,7 +2559,7 @@ async function appendExistingCrossPlanDependency(options) {
       snapshot: source.snapshot, descriptor: source.descriptor,
       crossPlanDependencies: prepared.events, connectionOnly: true,
     };
-  }, { recoverDeadLock: true, onProtocolStage: options.onProtocolStage });
+  }, { onProtocolStage: options.onProtocolStage });
 }
 
 /** G4-only atomic import, with optional all-or-nothing store bootstrap. */
@@ -2583,7 +2579,7 @@ export async function appendImportedPlan(options = {}) {
   }
   const transactionDigest = importedPlanTransactionDigest(options);
   return withLock(repoRoot, async () => {
-    const recovered = await recoverCrossPlanImports(repoRoot, { expectedTransactionDigest: transactionDigest });
+    const recovered = await recoverCrossPlanImports(repoRoot);
     const recoveredOwnTransaction = recovered.find((marker) => marker.transaction_digest === transactionDigest);
     if (recoveredOwnTransaction !== undefined) {
       return recoveredImportedPlanResult(repoRoot, recoveredOwnTransaction, options.now);
@@ -2724,8 +2720,7 @@ export async function appendImportedPlan(options = {}) {
       }
       throw error;
     }
-  }, { recoverDeadLock: Array.isArray(options.crossPlanDependencies)
-    && options.crossPlanDependencies.length > 0, onProtocolStage: options.onProtocolStage });
+  }, { onProtocolStage: options.onProtocolStage });
 }
 
 export async function initializeTodoStore(options = {}) {

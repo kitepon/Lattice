@@ -1,10 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { link, lstat, mkdir, open, readFile, readdir, readlink, rm, rmdir } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, readdir, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
-import { observeStartIdentityRaw } from './runtime-os-observation.mjs';
-import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
+import { observeStartIdentityRaw, observeProcessHostIdentityRaw } from './runtime-os-observation.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const CLAIM = /^([0-9a-f]{64})-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{16})$/u;
@@ -139,27 +138,24 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
   onRecoveryClaim = null }, callback) {
   await mkdir(path.dirname(lockPath), { recursive: true });
   ownStart ??= observeStartIdentityRaw(process.pid).catch((error) => { ownStart = undefined; throw error; });
-  ownHost ??= (async () => {
-    const terminalId = readOrCreateTerminalIdSync();
-    if (terminalId === null) throw new Error('terminal identity unavailable');
-    const label = terminalPublicLabel(terminalId);
-    return process.platform === 'linux'
-      ? `${label}:${hash(await readlink('/proc/self/ns/pid'))}` : label;
-  })().catch((error) => { ownHost = undefined; throw error; });
+  ownHost ??= observeProcessHostIdentityRaw().then((value) => {
+    if (!value) throw new Error('process host domain unavailable');
+    return `${process.platform}:${hash(value)}`;
+  }).catch((error) => { ownHost = undefined; throw error; });
   let identity;
   let host;
   try { [identity, host] = await Promise.all([ownStart, ownHost]); }
   catch {
     throw new StoreLockError('store_locked', lockPath, {
       cause: 'lock_identity_unavailable',
-      next_action: `Restore terminal/PID-namespace identity and platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
+      next_action: `Restore platform host-domain and process-start observation, then retry ${lockPath}`,
     });
   }
   const owner = { pid: process.pid,
     process_start: { platform: process.platform, identity }, host };
   if (!identified(owner)) throw new StoreLockError('store_locked', lockPath, {
     cause: 'lock_identity_unavailable',
-    next_action: `Restore terminal/PID-namespace identity and platform process-start observation (/bin/ps or pwsh.exe), then retry ${lockPath}`,
+    next_action: `Restore platform host-domain and process-start observation, then retry ${lockPath}`,
   });
   await removeDeadTemporaries(lockPath, hash(host));
   const ownerBytes = `${JSON.stringify(owner)}\n`;
@@ -199,7 +195,10 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
     return await callback();
   } finally {
     try {
-      if (acquired && await readFile(lockPath, 'utf8') === ownerBytes) {
+      if (acquired && await readFile(lockPath, 'utf8').catch((error) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      }) === ownerBytes) {
         await rm(lockPath);
         await fsyncDirectory(path.dirname(lockPath));
       }

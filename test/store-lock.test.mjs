@@ -33,12 +33,22 @@ test('ownership is a complete record before the callback and releases on failure
   await assert.rejects(withStoreLock({ lockPath }, async () => {
     const owner = JSON.parse(await readFile(lockPath, 'utf8'));
     assert.equal(owner.pid, process.pid);
-    assert.match(owner.host, /^terminal-[0-9a-f]{12}(?::[0-9a-f]{64})?$/u);
+    assert.match(owner.host, /^(linux|darwin|win32):[0-9a-f]{64}$/u);
     assert.equal(owner.process_start.platform, process.platform);
     assert.ok(owner.process_start.identity.length > 0);
     throw new Error('callback failure');
   }), /callback failure/u);
   await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
+});
+
+test('an operator-removed lock counts as released without changing a committed result', async (t) => {
+  const { root, lockPath } = await fixture(t);
+  const result = await withStoreLock({ lockPath }, async () => {
+    await rm(lockPath);
+    return 'committed';
+  });
+  assert.equal(result, 'committed');
+  assert.deepEqual(await readdir(root), []);
 });
 
 test('dead owner is reclaimed without opt-in and a live owner is preserved byte for byte', async (t) => {
@@ -123,7 +133,8 @@ test('unidentified recovery claims have a named manual exit and are never delete
 
 for (const [name, specifier, replacement, cause] of [
   ['unavailable own identity', './runtime-os-observation.mjs',
-    `export async function observeStartIdentityRaw(){throw new Error('observer unavailable')}`,
+    `export async function observeStartIdentityRaw(){throw new Error('observer unavailable')}
+     export async function observeProcessHostIdentityRaw(){return 'host-domain'}`,
     'lock_identity_unavailable'],
   ['unsupported hard links', 'node:fs/promises',
     `export {lstat,mkdir,open,readFile,readdir,readlink,rm,rmdir} from 'node:fs/promises';
