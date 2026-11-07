@@ -1,6 +1,5 @@
 import { createServer } from 'node:http';
 import { randomBytes, randomInt } from 'node:crypto';
-import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 import {
   chmod, lstat, mkdir, open, readFile, rename, rm, writeFile,
@@ -8,6 +7,8 @@ import {
 import path from 'node:path';
 import { domainToASCII } from 'node:url';
 import { parseTree } from 'jsonc-parser';
+
+import { resolveSeatIdentity } from './seat-identity.mjs';
 
 export const BRIDGE_CONFIG_SCHEMA = 'lattice.bridge_config.v1';
 export const BRIDGE_PORT_MIN = 49_152;
@@ -36,13 +37,11 @@ function exact(value, keys) {
 
 function configRoot(env) {
   const configured = env.LATTICE_CONFIG_DIR;
-  if (configured !== undefined) {
-    if (typeof configured !== 'string' || !path.isAbsolute(configured)) {
-      throw new BridgeConfigError('BRIDGE_CONFIG_DIR_INVALID', 'LATTICE_CONFIG_DIR must be absolute');
-    }
-    return configured;
+  if (configured !== undefined && (typeof configured !== 'string' || !path.isAbsolute(configured))) {
+    throw new BridgeConfigError('BRIDGE_CONFIG_DIR_INVALID', 'LATTICE_CONFIG_DIR must be absolute');
   }
-  return path.join(homedir(), '.lattice');
+  // 席ごとの置き場は seat-identity が導く（LATTICE_CONFIG_DIR > LATTICE_SEAT_ID > ~/.lattice）。
+  return resolveSeatIdentity(env).state_dir;
 }
 
 export function bridgeConfigPaths(env = process.env) {

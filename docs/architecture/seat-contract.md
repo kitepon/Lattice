@@ -30,6 +30,17 @@ dependency connect. Every other command remains but is not part of seat guidance
 Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
 
+A seat may say who it is with `LATTICE_SEAT_ID` (letters, digits, `.`, `_`, `-`;
+up to 64). The machine derives `seat_id`; Plan connects it to the top level of
+`status --json` and `session-context --json`, and the default actor `agent`
+becomes the seat id (`LATTICE_TODO_ACTOR_AGENT` still wins). The seat's own
+display and delivery state moves under `~/.lattice/seats/<seat_id>`
+(`LATTICE_CONFIG_DIR` still wins when set), so the terminal identity and the
+default actor `host` become per-seat as well. This is a one-time transition:
+a start recorded before the seat first set `LATTICE_SEAT_ID` is retracted in
+the old environment, or finished first. An unset or malformed id makes the
+seat anonymous; nothing refuses.
+
 ## Error shape
 
 `code` names the kind; `detail.pointer` names the field; `detail.rule` names the
