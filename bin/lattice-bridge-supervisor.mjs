@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Windows bridge supervisor (bh6 prep). Startup-folder items only run once at
+ * Windows/Linux bridge supervisor (bh6 prep). Startup-folder items only run once at
  * logon — nothing like launchd's KeepAlive exists to restart a crashed
  * process. This script is that supervision, written in JS instead of a batch
  * GOTO loop because a loop's own process (and therefore its killability) is
@@ -10,13 +10,16 @@
  * The descriptor supplies the environment `lattice-bridge.mjs` needs (it is
  * never inherited from the Startup-folder launch context) and the path to
  * write this supervisor's own pid to, so `bridge-startup-folder.mjs` can find
- * and stop the whole tree later via `taskkill /T /F`.
+ * and stop the whole tree later via `taskkill /T /F`. Linux records process
+ * birth alongside the PID so its detached adapter can reject PID reuse.
  */
 
 import { spawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+
+import { observeDashboardProcess } from '../src/dashboard-process-control.mjs';
 
 const RESTART_DELAY_MS = 3_000;
 
@@ -33,7 +36,9 @@ if (descriptor?.schema !== 'lattice.bridge_supervisor_descriptor.v1'
   process.exit(2);
 }
 
-await writeFile(descriptor.pidPath, String(process.pid), { encoding: 'utf8', flag: 'w' });
+const identity = process.platform === 'win32' ? String(process.pid)
+  : JSON.stringify(await observeDashboardProcess(process.pid) ?? { pid: process.pid, birth: null });
+await writeFile(descriptor.pidPath, identity, { encoding: 'utf8', flag: 'w', mode: 0o600 });
 
 let stopping = false;
 let child = null;

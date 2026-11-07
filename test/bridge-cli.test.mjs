@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { BRIDGE_CONFIG_SCHEMA, configureBridge, readBridgeConfig, restoreBridgeConfig } from '../src/bridge-config.mjs';
 import { recoverConfiguredBridge, runBridgeCli } from '../src/bridge-cli.mjs';
+import { installBridgeDetachedSupervisor } from '../src/bridge-detached-supervisor.mjs';
 import { writeBridgeDaemonDescriptor } from '../src/bridge-daemon.mjs';
 
 function output(isTTY = false) {
@@ -37,6 +38,24 @@ function runtimeIdentityDouble(identity = { state: 'not_running', pid: null, ver
   node_path: null, node_version: null, bridge_path: null }) {
   return async () => ({ ...identity });
 }
+
+test('Linux CLI selects detached persistence without a launchctl probe',
+  { skip: process.platform !== 'linux' }, async (context) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-linux-selection-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const env = { LATTICE_CONFIG_DIR: root };
+    const config = await configureBridge({ address: '127.0.0.1', env });
+    await installBridgeDetachedSupervisor({ config, env, launch: async () => {}, waitReady: async () => {} });
+    const stdout = output(); const stderr = output();
+    const code = await runBridgeCli({ argv: ['status', '--json'], env,
+      stdout: stdout.stream, stderr: stderr.stream, runtimeIdentity: runtimeIdentityDouble(),
+      probe: async () => false });
+    assert.equal(code, 0, stderr.read());
+    const result = JSON.parse(stdout.read());
+    assert.equal(result.persistence.state, 'installed');
+    assert.equal(result.persistence.error, null);
+    assert.equal(result.persistence.node_path, process.execPath);
+  });
 
 test('設定済みbridgeの常駐欠落は工程入口から正規reconfigureで復旧する', async () => {
   let received = null;

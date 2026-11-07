@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,40 +10,53 @@ import {
   bridgeDetachedSupervisorPaths, describeBridgeDetachedSupervisor, disableBridgeDetachedSupervisor,
   installBridgeDetachedSupervisor, restoreBridgeDetachedSupervisor, snapshotBridgeDetachedSupervisor,
 } from '../src/bridge-detached-supervisor.mjs';
+import { observeDashboardProcess } from '../src/dashboard-process-control.mjs';
+import { registerManagedDaemonFixture } from './helpers/managed-daemon-fixture.mjs';
 
-// The real supervisor is exercised on this seat by `lattice bridge reconfigure`;
-// here a stand-in child plays its one observable role: it lives until SIGTERM
-// and its pid is in the pidfile, so stop/replace/remove can be asserted.
 async function fixture(context) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-detached-'));
-  const children = [];
-  context.after(async () => {
-    for (const child of children) { try { child.kill('SIGKILL'); } catch {} }
-    await rm(root, { recursive: true, force: true });
-  });
+  registerManagedDaemonFixture(context, root);
+  const bridgePath = path.join(root, 'bridge.mjs');
+  await writeFile(bridgePath, 'setInterval(() => {}, 1000);\n');
   const calls = [];
-  const launch = ({ nodePath, supervisorPath, descriptorPath }) => {
-    calls.push({ nodePath, supervisorPath, descriptorPath });
-    const child = spawn(process.execPath,
-      ['-e', 'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);'], { stdio: 'ignore' });
-    children.push(child);
-    const descriptor = JSON.parse(require_sync(descriptorPath));
-    return writeFile(descriptor.pidPath, String(child.pid));
+  const children = [];
+  const launch = async (options) => {
+    await new Promise((resolve) => setImmediate(resolve));
+    calls.push(options);
   };
-  return { env: { LATTICE_CONFIG_DIR: path.join(root, 'config') }, calls, children, launch };
+  const launchSupervisor = async (options) => {
+    const child = spawn(options.nodePath, [options.supervisorPath, options.descriptorPath], { stdio: 'ignore' });
+    children.push(child);
+    await once(child, 'spawn');
+    const descriptor = JSON.parse(await readFile(options.descriptorPath, 'utf8'));
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        const saved = JSON.parse(await readFile(descriptor.pidPath, 'utf8'));
+        if (saved?.pid === child.pid || saved === child.pid) return saved;
+      } catch (error) {
+        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+      }
+      assert.equal(child.exitCode, null, 'supervisor exited before recording its identity');
+      assert.ok(Date.now() < deadline, 'supervisor did not write its identity');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  return { root, bridgePath, env: { LATTICE_CONFIG_DIR: path.join(root, 'config') },
+    calls, children, launch, launchSupervisor };
 }
-import { readFileSync } from 'node:fs';
-function require_sync(ref) { return readFileSync(ref, 'utf8'); }
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const settled = () => new Promise((resolve) => setTimeout(resolve, 100));
+
 const config = { enabled: true, listen: { address: '127.0.0.1', port: 58_771 }, updated_at: '2026-11-07T00:00:00.000Z' };
 const noWait = async () => {};
 
-test('installはdescriptorを書いてsupervisorをdetached起動し、describeが実行対象と実在を返す', async (context) => {
+test('install writes its descriptor, awaits launch, and describe reports executable paths', async (context) => {
   const { env, calls, launch } = await fixture(context);
   let ready;
   await installBridgeDetachedSupervisor({ config, env, launch, waitStopped: noWait,
-    waitReady: async (value) => { ready = value; return { pid: 1 }; } });
+    waitReady: async (value) => {
+      assert.equal(calls.length, 1, 'readiness must follow the async launcher');
+      ready = value; return { pid: 1 };
+    } });
   const refs = bridgeDetachedSupervisorPaths(env);
   assert.equal(refs.directory, path.join(env.LATTICE_CONFIG_DIR, 'bridge-linux'));
   const descriptor = JSON.parse(await readFile(refs.descriptor, 'utf8'));
@@ -60,34 +74,71 @@ test('installはdescriptorを書いてsupervisorをdetached起動し、describe�
     { node_path: process.execPath, node_exists: true, bridge_path: descriptor.bridgePath, bridge_exists: true });
 });
 
-test('再installは旧supervisorをSIGTERMで止めてから差し替え、disableは止めてfileを除き、restoreが戻す', async (context) => {
-  const { env, children, launch } = await fixture(context);
-  const waitReady = async () => ({ pid: 1 });
-  await installBridgeDetachedSupervisor({ config, env, launch, waitReady, waitStopped: noWait });
-  await settled();
-  const first = children[0].pid;
-  assert.equal(alive(first), true);
-  await installBridgeDetachedSupervisor({ config, env, launch, waitReady, waitStopped: noWait });
-  await settled();
-  assert.equal(alive(first), false);
-  assert.equal(alive(children[1].pid), true);
-  const snapshot = await snapshotBridgeDetachedSupervisor({ env });
-  const refs = bridgeDetachedSupervisorPaths(env);
-  assert.deepEqual(await disableBridgeDetachedSupervisor({ snapshot, listen: null, env, waitStopped: noWait }),
-    { removed: true, stopped: true });
-  await settled();
-  assert.equal(alive(children[1].pid), false);
-  assert.equal((await snapshotBridgeDetachedSupervisor({ env })).installed, false);
-  assert.equal(await describeBridgeDetachedSupervisor({ snapshot: await snapshotBridgeDetachedSupervisor({ env }) }), null);
-  await restoreBridgeDetachedSupervisor({ snapshot, env, launch, waitStopped: noWait });
-  await settled();
-  assert.equal(await readFile(refs.descriptor, 'utf8'), snapshot.descriptorContent);
-  assert.equal(alive(children[2].pid), true);
-  assert.deepEqual(await disableBridgeDetachedSupervisor({ snapshot: await snapshotBridgeDetachedSupervisor({ env }),
-    listen: null, env, waitStopped: noWait }), { removed: true, stopped: true });
-});
+test('Linux real supervisor identity supports reinstall, disable, and restore',
+  { skip: process.platform !== 'linux' }, async (context) => {
+    const { env, children, bridgePath, launchSupervisor: launch } = await fixture(context);
+    const refs = bridgeDetachedSupervisorPaths(env);
+    const waitReady = async () => ({ pid: 1 });
+    const options = { config, env, bridgePath, launch, waitReady, waitStopped: noWait };
+    const legacy = spawn(process.execPath, ['-e', '', bridgePath], { stdio: 'ignore' });
+    await once(legacy, 'exit');
+    await mkdir(refs.directory, { recursive: true });
+    await writeFile(refs.pidfile, String(legacy.pid));
+    await installBridgeDetachedSupervisor(options);
+    const first = JSON.parse(await readFile(refs.pidfile, 'utf8'));
+    assert.deepEqual(first, await observeDashboardProcess(children[0].pid));
+    assert.match(first.birth, /^linux:[^:]+:[0-9]+$/u);
+    await installBridgeDetachedSupervisor(options);
+    assert.equal(await observeDashboardProcess(first.pid), null);
+    const second = JSON.parse(await readFile(refs.pidfile, 'utf8'));
+    assert.deepEqual(second, await observeDashboardProcess(children[1].pid));
+    const snapshot = await snapshotBridgeDetachedSupervisor({ env });
+    assert.deepEqual(await disableBridgeDetachedSupervisor({ snapshot, listen: null, env, waitStopped: noWait }),
+      { removed: true, stopped: true });
+    assert.equal(await observeDashboardProcess(second.pid), null);
+    assert.equal((await snapshotBridgeDetachedSupervisor({ env })).installed, false);
+    await restoreBridgeDetachedSupervisor({ snapshot, env, launch, waitStopped: noWait, config,
+      waitReady: async ({ instanceToken }) => {
+        assert.equal(children.length, 3, 'restore must await the async launcher');
+        const restored = JSON.parse(await readFile(refs.pidfile, 'utf8'));
+        assert.deepEqual(restored, await observeDashboardProcess(children[2].pid));
+        assert.equal(instanceToken, JSON.parse(snapshot.descriptorContent).env.LATTICE_BRIDGE_INSTANCE_TOKEN);
+      } });
+    assert.equal(await readFile(refs.descriptor, 'utf8'), snapshot.descriptorContent);
+    await disableBridgeDetachedSupervisor({ snapshot, listen: null, env, waitStopped: noWait });
+    assert.equal(await observeDashboardProcess(children[2].pid), null);
+  });
 
-test('未installのsnapshotはdescribeでnull、disableは何も止めずremoved=false', async (context) => {
+for (const kind of ['birth mismatch', 'unknown birth', 'legacy numeric', 'malformed']) {
+  test(`Linux stop discards ${kind} without signaling the live process`,
+    { skip: process.platform !== 'linux' }, async (context) => {
+      const { env, bridgePath, launch } = await fixture(context);
+      await installBridgeDetachedSupervisor({ config, env, launch, waitReady: noWait });
+      const refs = bridgeDetachedSupervisorPaths(env);
+      const child = spawn(process.execPath, [bridgePath], { stdio: 'ignore' });
+      await once(child, 'spawn');
+      const identity = await observeDashboardProcess(child.pid);
+      const content = kind === 'birth mismatch' ? JSON.stringify({ ...identity, birth: `${identity.birth}-old` })
+        : kind === 'unknown birth' ? JSON.stringify({ ...identity, birth: null })
+          : kind === 'legacy numeric' ? String(child.pid) : '{invalid';
+      await writeFile(refs.pidfile, content);
+      await disableBridgeDetachedSupervisor({ snapshot: await snapshotBridgeDetachedSupervisor({ env }), env,
+        waitStopped: async () => assert.fail('unowned process must not be waited on') });
+      assert.deepEqual(await observeDashboardProcess(child.pid), identity);
+      await assert.rejects(readFile(refs.pidfile), { code: 'ENOENT' });
+      assert.equal((await snapshotBridgeDetachedSupervisor({ env })).installed, false);
+    });
+}
+
+test('supervisor writer preserves the Windows numeric pidfile contract',
+  { skip: process.platform !== 'win32' }, async (context) => {
+    const { env, bridgePath, launchSupervisor } = await fixture(context);
+    await installBridgeDetachedSupervisor({ config, env, bridgePath, launch: launchSupervisor, waitReady: noWait });
+    const saved = await readFile(bridgeDetachedSupervisorPaths(env).pidfile, 'utf8');
+    assert.match(saved, /^[0-9]+$/u);
+  });
+
+test('uninstalled snapshot describes null and disable removes nothing', async (context) => {
   const { env } = await fixture(context);
   const snapshot = await snapshotBridgeDetachedSupervisor({ env });
   assert.equal(snapshot.installed, false);

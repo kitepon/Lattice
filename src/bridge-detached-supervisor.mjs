@@ -22,6 +22,7 @@ import path from 'node:path';
 
 import { BridgeConfigError, bridgeConfigPaths } from './bridge-config.mjs';
 import { DEFAULT_BRIDGE_PATH, DEFAULT_SUPERVISOR_PATH } from './bridge-executable.mjs';
+import { observeDashboardProcess } from './dashboard-process-control.mjs';
 import { supervisorDescriptor, waitForBridgeStartupReady } from './bridge-startup-folder.mjs';
 
 const START_FAILED = 'BRIDGE_DETACHED_SUPERVISOR_START_FAILED';
@@ -76,10 +77,6 @@ async function executablePath(ref, label) {
   }
 }
 
-function alive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
 function healthHost(address) {
   if (address === '0.0.0.0') return '127.0.0.1';
   if (address === '::') return '[::1]';
@@ -101,13 +98,25 @@ async function defaultWaitStopped({ listen, timeoutMs = SOCKET_TIMEOUT_MS }) {
 }
 
 async function stopRunning({ refs, listen, waitStopped }) {
-  const pid = Number(await optionalFile(refs.pidfile));
-  if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) {
-    process.kill(pid, 'SIGTERM');
-    const deadline = Date.now() + STOP_TIMEOUT_MS;
-    while (alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-    if (alive(pid)) throw fail('BRIDGE_DETACHED_SUPERVISOR_STOP_FAILED', 'bridge supervisor did not stop');
-    await waitStopped({ listen });
+  // shortcut: live numeric-only supervisors require owner-authenticated retirement before upgrading.
+  const content = await optionalFile(refs.pidfile);
+  let identity;
+  try { identity = JSON.parse(content); } catch {}
+  if (Number.isSafeInteger(identity?.pid) && identity.pid > 0
+    && typeof identity.birth === 'string' && identity.birth.length > 0) {
+    const matches = async () => {
+      try { return (await observeDashboardProcess(identity.pid))?.birth === identity.birth; }
+      catch { return false; } // An unavailable observation never licenses a signal.
+    };
+    if (await matches()) {
+      try { process.kill(identity.pid, 'SIGTERM'); } catch (error) {
+        if (error?.code !== 'ESRCH') throw error;
+      }
+      const deadline = Date.now() + STOP_TIMEOUT_MS;
+      while (await matches() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+      if (await matches()) throw fail('BRIDGE_DETACHED_SUPERVISOR_STOP_FAILED', 'bridge supervisor did not stop');
+      await waitStopped({ listen });
+    }
   }
   await rm(refs.pidfile, { force: true });
 }
@@ -149,7 +158,7 @@ export async function installBridgeDetachedSupervisor({ config, env = process.en
   });
   await stopRunning({ refs, listen: previousListen, waitStopped });
   await atomicFile(refs.descriptor, descriptorContent);
-  launch({ nodePath: resolvedNode, supervisorPath: resolvedSupervisor, descriptorPath: refs.descriptor, env });
+  await launch({ nodePath: resolvedNode, supervisorPath: resolvedSupervisor, descriptorPath: refs.descriptor, env });
   return waitReady({ config, instanceToken, env, failureCode: START_FAILED });
 }
 
@@ -178,7 +187,7 @@ export async function restoreBridgeDetachedSupervisor({ snapshot, listen = null,
   if (!snapshot.installed) return;
   await atomicFile(refs.descriptor, snapshot.descriptorContent);
   const descriptor = JSON.parse(snapshot.descriptorContent);
-  launch({ nodePath: descriptor.nodePath ?? process.execPath, supervisorPath, descriptorPath: refs.descriptor, env });
+  await launch({ nodePath: descriptor.nodePath ?? process.execPath, supervisorPath, descriptorPath: refs.descriptor, env });
   if (config !== undefined) {
     await waitReady({ config, instanceToken: descriptor.env?.LATTICE_BRIDGE_INSTANCE_TOKEN, env,
       failureCode: 'BRIDGE_DETACHED_SUPERVISOR_ROLLBACK_FAILED' });
