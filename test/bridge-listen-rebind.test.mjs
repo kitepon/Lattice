@@ -57,11 +57,15 @@ test('設定アドレスがホストから消えるとstatusがrebindableと到�
   const status = await statusOf(env, { interfaces: MOVED, probe: async () => false });
 
   assert.equal(status.schema, 'lattice.bridge_cli_result.v4');
-  // HOMEを持たないこのfixtureではLaunchAgentを読めない。読めないことを
-  // 「常駐設定は正常」へ丸めず、typed codeのまま報告する。
-  assert.equal(status.persistence.state, 'unreadable');
-  assert.equal(status.persistence.error, process.platform === 'win32'
-    ? 'BRIDGE_STARTUP_FOLDER_APPDATA_INVALID' : 'BRIDGE_LAUNCH_AGENT_HOME_INVALID');
+  // HOME/APPDATAを持たないこのfixtureではmacOS/WindowsのOS常駐entryを読めない。
+  // 読めないことを「常駐設定は正常」へ丸めず、typed codeのまま報告する。
+  // Linuxほかのdetached supervisorはLATTICE_CONFIG_DIR配下だけを見るので、
+  // 読めて「未install」になる（launchctlは探さない）。
+  const expectedPersistence = process.platform === 'win32'
+    ? ['unreadable', 'BRIDGE_STARTUP_FOLDER_APPDATA_INVALID']
+    : process.platform === 'darwin' ? ['unreadable', 'BRIDGE_LAUNCH_AGENT_HOME_INVALID']
+      : ['not_installed', null];
+  assert.deepEqual([status.persistence.state, status.persistence.error], expectedPersistence);
   assert.equal(status.enabled, true, '設定は有効なまま');
   assert.equal(status.listen.address, LIVE, '設定の意図は保持する');
   assert.equal(status.listen_state, 'rebindable');
