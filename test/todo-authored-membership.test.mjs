@@ -257,13 +257,43 @@ test('initial publication holds both locks until verification/rollback; concurre
     throw new Error('rollback');
   } })), /rollback/u);
   await assert.rejects(lstat(path.join(root, '.lattice/todo')), { code: 'ENOENT' });
-  const results = await Promise.allSettled([
-    initializeAuthoredTodoStore(initial(root)), initializeAuthoredTodoStore(initial(root)),
-  ]);
-  assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
-  const loser = results.find(({ status }) => status === 'rejected').reason;
-  assert.equal(loser.code, 'STORE_WRITE_CONFLICT');
-  assert.equal(loser.detail.reason, 'store_bootstrap_raced');
+  const storeModule = new URL('../src/todo-store.mjs', import.meta.url).href;
+  const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs/promises';
+    import path from 'node:path';
+    import {syncBuiltinESMExports} from 'node:module';
+    const rename=fs.rename.bind(fs), root=${JSON.stringify(root)};
+    let arrivals=0, releaseSecond, releaseFirst, nativeCollision;
+    const secondArrived=new Promise(resolve=>{releaseSecond=resolve});
+    const firstRenamed=new Promise(resolve=>{releaseFirst=resolve});
+    fs.rename=async(from,to)=>{
+      if(path.dirname(from)===root && to===path.join(root,'.lattice/todo')){
+        if(++arrivals===1){
+          await secondArrived; await rename(from,to); releaseFirst(); return;
+        }
+        releaseSecond(); await firstRenamed;
+        try{return await rename(from,to)}catch(error){
+          nativeCollision={code:error.code,syscall:error.syscall,path:error.path,dest:error.dest};
+          throw error;
+        }
+      }
+      return rename(from,to);
+    };
+    syncBuiltinESMExports();
+    const {initializeAuthoredTodoStore}=await import(${JSON.stringify(storeModule)});
+    const input=${JSON.stringify(initial(root))};
+    const results=await Promise.allSettled([initializeAuthoredTodoStore(input),initializeAuthoredTodoStore(input)]);
+    const loser=results.find(result=>result.status==='rejected')?.reason;
+    console.log(JSON.stringify({winners:results.filter(result=>result.status==='fulfilled').length,
+      loser:loser&&{code:loser.code,detail:loser.detail,stack:loser.stack,syscall:loser.syscall,
+        path:loser.path,dest:loser.dest},nativeCollision}));
+  `], { timeout: 15_000, encoding: 'utf8' }));
+  const diagnostic = JSON.stringify(result, null, 2);
+  assert.equal(result.winners, 1, diagnostic);
+  assert.equal(result.loser.code, 'STORE_WRITE_CONFLICT', diagnostic);
+  assert.equal(result.loser.detail.reason, 'store_bootstrap_raced', diagnostic);
+  assert.equal(result.nativeCollision.syscall, 'rename', diagnostic);
+  t.diagnostic(`native directory collision: ${result.nativeCollision.code} via ${result.nativeCollision.syscall}`);
   assert.equal((await readTodoStore({ repoRoot: root })).members.length, 1);
 });
 
