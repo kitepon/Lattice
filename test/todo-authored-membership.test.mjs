@@ -163,7 +163,7 @@ for (const imported of [false, true]) {
       const unknown = path.join(root, '.lattice/todo', directory, 'operator-data.txt');
       await writeFile(unknown, 'keep');
       await assert.rejects(append(input), (error) => reason('REVISION_CONFLICT', 'revision_bytes_conflict')(error)
-        && error.detail.next_action.includes(directory));
+        && error.detail.next_action.includes(path.dirname(unknown)));
       assert.equal(await readFile(unknown, 'utf8'), 'keep');
       assert.equal((await readTodoStore({ repoRoot: root })).members.length, 1);
     });
