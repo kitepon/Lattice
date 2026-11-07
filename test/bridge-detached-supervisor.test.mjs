@@ -15,7 +15,9 @@ import { registerManagedDaemonFixture } from './helpers/managed-daemon-fixture.m
 
 async function fixture(context) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-detached-'));
-  registerManagedDaemonFixture(context, root);
+  // Track spawned supervisors so cleanup stops them directly, not only via command-line discovery.
+  const tracked = [];
+  registerManagedDaemonFixture(context, root, { tracked });
   const bridgePath = path.join(root, 'bridge.mjs');
   await writeFile(bridgePath, 'setInterval(() => {}, 1000);\n');
   const calls = [];
@@ -28,6 +30,7 @@ async function fixture(context) {
     const child = spawn(options.nodePath, [options.supervisorPath, options.descriptorPath], { stdio: 'ignore' });
     children.push(child);
     await once(child, 'spawn');
+    tracked.push(child.pid);
     const descriptor = JSON.parse(await readFile(options.descriptorPath, 'utf8'));
     const deadline = Date.now() + 5_000;
     for (;;) {
