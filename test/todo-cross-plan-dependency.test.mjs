@@ -11,17 +11,21 @@ import { runTodoCli } from '../src/todo-cli.mjs';
 import {
   createTodoStoreWriter,
   initializeTodoStore,
+  rebindTodoCrossPlanDependencies,
+  applyPhaseTodoRevision, buildTodoPlan,
   projectTodoCrossPlanDependencies,
   readTodoStore,
 } from '../src/todo-store.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
+import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
+import { phaseTodoRevisionPlanVersion } from '../src/todo-revision.mjs';
 
 const NOW = '2026-08-09T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });
 const task = (taskId) => ({ task_id: taskId, title: taskId, lane: 'main',
   narrative_ref: null, compile_binding: null });
 
-async function workspace(context) {
+async function workspace(context, { consumerTasks = ['C'], phaseProducer = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-cross-plan-dependency-'));
   context.after(() => rm(root, { recursive: true, force: true }));
   execFileSync('git', ['init', '--quiet'], { cwd: root });
@@ -34,14 +38,18 @@ async function workspace(context) {
   const plan = (planKey, taskId) => ({
     schema: 'lattice.todo_plan.v1', project_id: 'project-1', plan_key: planKey,
     plan_version: 'v1', predecessor_plan_digest: null,
-    tasks: [task(taskId)], hard_dependencies: [], joins: [],
+    tasks: (Array.isArray(taskId) ? taskId : [taskId]).map(task), hard_dependencies: [], joins: [],
   });
   await initializeTodoStore({
     repoRoot: root, writer: createTodoStoreWriter({ caller: 'g4-migration' }),
     projectId: 'project-1', repositories: [{ repo_id: 'self', path: '.' }],
     plans: [
-      { plan: plan('producer', 'P'), genesis: { actor: ACTOR, recorded_at: NOW } },
-      { plan: plan('consumer', 'C'), genesis: { actor: ACTOR, recorded_at: NOW } },
+      { plan: phaseProducer ? { ...plan('producer', 'P'), schema: 'lattice.todo_plan.v7',
+        tasks: [{ ...task('P'), narrative_anchor: null, parent_task_id: null, design_memo: 'NO_PLAN', phase_id: 'phase' }],
+        phases: [{ phase_id: 'phase', title: 'Phase', gate_policy: 'heavy',
+          predecessor_phase_ids: [], required_evidence_slots: ['gate'] }], phase_accept_dependencies: [],
+      } : plan('producer', 'P'), genesis: { actor: ACTOR, recorded_at: NOW } },
+      { plan: plan('consumer', consumerTasks), genesis: { actor: ACTOR, recorded_at: NOW } },
     ],
     now: NOW,
   });
@@ -295,4 +303,187 @@ test('dependency disconnectは誤接続をtombstoneで消し、二重除去と�
   assert.equal(reconnect.code, 0, '除去後の張り直しは重複でない');
   store = await readTodoStore({ repoRoot: root });
   assert.equal(projectTodoCrossPlanDependencies(store.members).length, 1);
+});
+
+
+async function bindingRecoveryFixture(context) {
+  const fixture = await workspace(context, { consumerTasks: ['C', 'D'], phaseProducer: true });
+  const { root, connect, evidence } = fixture;
+  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  const mutate = (planKey, taskId, kind, payload) => appendTodoEvent({ repoRoot: root, writer,
+    planKey, now: NOW, event: { kind, task_id: taskId, actor: ACTOR, recorded_at: NOW, payload } });
+  await mutate('producer', 'P', 'start', { override_reason: null });
+  await mutate('producer', 'P', 'done', { done_mode: 'authored', imported: false, evidence });
+  await connect();
+  await connect({ toTask: 'D' });
+  await mutate('consumer', 'C', 'start', { override_reason: null });
+  await mutate('consumer', 'C', 'done', { done_mode: 'authored', imported: false, evidence });
+  const connected = await fixture.read();
+  const consumer = connected.members.find(({ plan }) => plan.plan_key === 'consumer');
+  const chainPath = path.join(root, consumer.plan_scoped.ref);
+  const events = consumer.plan_scoped.events;
+  const originalBytes = await readFile(chainPath);
+  const previous = connected.members.find(({ plan }) => plan.plan_key === 'producer');
+  const predecessor = { plan_version: previous.plan.plan_version, plan_digest: previous.plan.plan_digest,
+    journal_head_digest: previous.journal.events.at(-1).event_digest };
+  const task_migration = [{ from_task_id: 'P', to_task_id: 'P', state_policy: 'carry' }];
+  const phase_migration = [{ from_phase_id: 'phase', to_phase_id: 'phase', state_policy: 'reset' }];
+  const desired = { ...previous.plan, plan_version: 'pending', predecessor_plan_digest: previous.plan.plan_digest,
+    tasks: [...previous.plan.tasks, { ...previous.plan.tasks[0], task_id: 'Q', title: 'Q' }] };
+  desired.plan_version = phaseTodoRevisionPlanVersion({ projectId: 'project-1', planKey: 'producer',
+    predecessor, desiredPlan: desired, taskMigration: task_migration, phaseMigration: phase_migration });
+  const revision = { schema: 'lattice.phase_todo_revision.v5', project_id: 'project-1', plan_key: 'producer',
+    predecessor, desired_plan: buildTodoPlan(desired), task_migration, phase_migration, revision_digest: '' };
+  revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
+  // Restore the old live chain after publication to emulate the previous writer's omission.
+  await rm(chainPath);
+  await applyPhaseTodoRevision({ repoRoot: root, writer, revision, actor: ACTOR, recordedAt: NOW, now: NOW });
+  const clean = await fixture.read();
+  await writeFile(chainPath, originalBytes);
+  const options = { repoRoot: root, writer, planKey: 'consumer', sourcePlanKey: 'producer',
+    expectedManifestDigest: clean.manifest.manifest_digest,
+    expectedPlanScopedHeadDigest: events.at(-1).event_digest,
+    eventDigests: events.map(({ event_digest: digest }) => digest),
+    actor: ACTOR, recordedAt: NOW, now: NOW, reason: 'Preserve carried source bindings',
+    validateBindingCarry: () => ({ ok: true }) };
+  return { ...fixture, chainPath, originalBytes, options, events, clean };
+}
+
+test('binding recovery atomically preserves both connections including a done target', async (context) => {
+  const fixture = await bindingRecoveryFixture(context);
+  const { root, options, clean, events, chainPath, originalBytes } = fixture;
+  const preserved = new Map();
+  for (const member of clean.members) for (const ref of [member.descriptor.plan_ref,
+    member.descriptor.journal_ref, member.descriptor.snapshot_ref]) {
+    preserved.set(ref, await readFile(path.join(root, ref)));
+  }
+  preserved.set('.lattice/todo/manifest.json', await readFile(path.join(root, '.lattice/todo/manifest.json')));
+  let calls = 0;
+  const result = await rebindTodoCrossPlanDependencies({ ...options,
+    validateBindingCarry: async ({ store, source, dependencies, predecessor }) => {
+      calls += 1;
+      assert.equal(source.plan.plan_key, 'producer');
+      assert.equal(predecessor.plan_version, 'v1');
+      assert.equal(predecessor.topology_digest, events[0].payload.from.expected_topology_digest);
+      assert.equal(dependencies.length, 2);
+      assert.equal(store.members.find(({ plan }) => plan.plan_key === 'consumer').tasks[0].status, 'done');
+      await assert.rejects(appendTodoEvent({ repoRoot: root, writer: options.writer,
+        planKey: 'consumer', event: {} }), (error) => error.detail.reason === 'store_locked');
+      return { ok: true };
+    } });
+  assert.equal(calls, 1);
+  assert.equal(result.replacements.length, 2);
+  const after = await fixture.read();
+  const connections = projectTodoCrossPlanDependencies(after.members);
+  assert.equal(connections.length, 2);
+  const endpoints = (members) => projectTodoCrossPlanDependencies(members)
+    .map(({ from, to, reason }) => ({ from, to, reason }));
+  assert.deepEqual(endpoints(after.members), events.map(({ payload }) => ({ ...payload,
+    from: { ...payload.from, expected_topology_digest: result.source_topology_digest } })));
+  const consumer = after.members.find(({ plan }) => plan.plan_key === 'consumer');
+  assert.deepEqual(consumer.tasks.map(({ status }) => status), ['done', 'pending']);
+  assert.deepEqual(consumer.plan_scoped.events.slice(0, 2), events);
+  assert.deepEqual((await readFile(chainPath)).subarray(0, originalBytes.length), originalBytes);
+  for (const [ref, bytes] of preserved) assert.deepEqual(await readFile(path.join(root, ref)), bytes);
+});
+
+test('binding recovery refuses CAS changes, wrong originals and missing carry without publication', async (context) => {
+  const { options, chainPath, originalBytes } = await bindingRecoveryFixture(context);
+  for (const [override, reason] of [
+    [{ expectedManifestDigest: 'f'.repeat(64) }, 'dependency_rebind_binding_changed'],
+    [{ expectedPlanScopedHeadDigest: 'f'.repeat(64) }, 'dependency_rebind_binding_changed'],
+    [{ eventDigests: ['f'.repeat(64)] }, 'dependency_rebind_original_mismatch'],
+    [{ validateBindingCarry: () => ({ ok: false, code: 'REVISION_INVALID', detail: { reason: 'carry_not_proven', task_id: 'P' } }) }, 'carry_not_proven'],
+    [{ eventDigests: options.eventDigests.slice(0, 1) }, 'binding_stale'],
+  ]) {
+    await assert.rejects(rebindTodoCrossPlanDependencies({ ...options, ...override }),
+      (error) => error.detail.reason === reason);
+    assert.deepEqual(await readFile(chainPath), originalBytes);
+  }
+  for (const override of [{ validateBindingCarry: undefined },
+    { validateBindingCarry: () => ({ ok: false }) }, { validateBindingCarry: () => null },
+    { eventDigests: [options.eventDigests[0], options.eventDigests[0]] }]) {
+    await assert.rejects(rebindTodoCrossPlanDependencies({ ...options, ...override }), TypeError);
+    assert.deepEqual(await readFile(chainPath), originalBytes);
+  }
+});
+
+test('binding recovery publication has no disconnect-only crash state', async (context) => {
+  const fixture = await bindingRecoveryFixture(context);
+  const { options, chainPath, originalBytes } = fixture;
+  await assert.rejects(rebindTodoCrossPlanDependencies({ ...options,
+    onProtocolStage(stage) { if (stage === 'dependency_rebind_validated') throw new Error('before'); },
+  }), /before/u);
+  assert.deepEqual(await readFile(chainPath), originalBytes);
+  await assert.rejects(fixture.read(), (error) => error.detail.reason === 'binding_stale');
+  await assert.rejects(rebindTodoCrossPlanDependencies({ ...options,
+    onProtocolStage(stage) { if (stage === 'dependency_rebind_published') throw new Error('after'); },
+  }), /after/u);
+  assert.equal(projectTodoCrossPlanDependencies((await fixture.read()).members).length, 2);
+  const published = await readFile(chainPath);
+  await assert.rejects(rebindTodoCrossPlanDependencies(options),
+    (error) => error.detail.reason === 'dependency_rebind_binding_changed');
+  assert.deepEqual(await readFile(chainPath), published);
+});
+
+
+test('binding recovery closes stale bindings before ordinary snapshot recovery', async (context) => {
+  const fixture = await bindingRecoveryFixture(context);
+  const consumer = fixture.clean.members.find(({ plan }) => plan.plan_key === 'consumer');
+  const snapshot = path.join(fixture.root, consumer.descriptor.snapshot_ref);
+  await rm(snapshot);
+  await rebindTodoCrossPlanDependencies(fixture.options);
+  const after = await fixture.read();
+  assert.equal(after.snapshot_stale, false);
+  assert.equal(projectTodoCrossPlanDependencies(after.members).length, 2);
+  assert.equal(JSON.parse(await readFile(snapshot, 'utf8')).tasks[0].status, 'done');
+});
+
+
+test('binding recovery keeps duplicate-edge validation inside Store', async (context) => {
+  const fixture = await bindingRecoveryFixture(context);
+  const events = structuredClone(fixture.events);
+  const duplicate = structuredClone(events[0]);
+  duplicate.sequence = events.at(-1).sequence + 1;
+  duplicate.previous_digest = events.at(-1).event_digest;
+  duplicate.event_digest = todoSelfDigest(duplicate, 'event_digest');
+  events.push(duplicate);
+  const bytes = Buffer.from(events.map((event) => `${canonicalizeTodoArtifact(event)}\n`).join(''));
+  await writeFile(fixture.chainPath, bytes);
+  await assert.rejects(rebindTodoCrossPlanDependencies({ ...fixture.options,
+    expectedPlanScopedHeadDigest: duplicate.event_digest,
+    eventDigests: events.map(({ event_digest: digest }) => digest),
+  }), (error) => error.detail.reason === 'cross_plan_dependency_duplicate');
+  assert.deepEqual(await readFile(fixture.chainPath), bytes);
+});
+
+test('binding recovery refuses a non-stale original and a wrong owner', async (context) => {
+  const fixture = await bindingRecoveryFixture(context);
+  await assert.rejects(rebindTodoCrossPlanDependencies({ ...fixture.options,
+    planKey: 'producer', sourcePlanKey: 'consumer',
+  }), (error) => error.detail.reason === 'dependency_rebind_binding_changed');
+  const events = structuredClone(fixture.events);
+  events[0].payload.from.expected_topology_digest = fixture.clean.members
+    .find(({ plan }) => plan.plan_key === 'producer').plan.topology_digest;
+  for (const [index, event] of events.entries()) {
+    event.previous_digest = index === 0 ? null : events[index - 1].event_digest;
+    event.event_digest = todoSelfDigest(event, 'event_digest');
+  }
+  const bytes = Buffer.from(events.map((event) => `${canonicalizeTodoArtifact(event)}\n`).join(''));
+  await writeFile(fixture.chainPath, bytes);
+  await assert.rejects(rebindTodoCrossPlanDependencies({ ...fixture.options,
+    eventDigests: events.map(({ event_digest: digest }) => digest),
+    expectedPlanScopedHeadDigest: events.at(-1).event_digest,
+  }), (error) => error.detail.reason === 'dependency_rebind_original_mismatch');
+  assert.deepEqual(await readFile(fixture.chainPath), bytes);
+});
+
+test('binding recovery authenticates retained predecessor artifact identity', async (context) => {
+  const fixture = await bindingRecoveryFixture(context);
+  const consumer = fixture.clean.members.find(({ plan }) => plan.plan_key === 'consumer');
+  await writeFile(path.join(fixture.root, '.lattice/todo/plans/producer/v1/plan.json'),
+    await readFile(path.join(fixture.root, consumer.descriptor.plan_ref)));
+  await assert.rejects(rebindTodoCrossPlanDependencies(fixture.options),
+    (error) => error.detail.reason === 'dependency_rebind_predecessor_mismatch');
+  assert.deepEqual(await readFile(fixture.chainPath), fixture.originalBytes);
 });

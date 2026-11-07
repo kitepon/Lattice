@@ -64,17 +64,25 @@ async function workspace(context, overrides = {}) {
   return root;
 }
 
-async function phaseRevisionFixture(context) {
+async function phaseRevisionFixture(context, { consumer = false } = {}) {
   const root = await bareWorkspace(context);
   const phase = { phase_id: 'phase-1', title: 'Phase 1', gate_policy: 'heavy',
     predecessor_phase_ids: [], required_evidence_slots: ['heavy'] };
   const plan = buildTodoPlan({ schema: 'lattice.todo_plan.v4', project_id: 'project-1',
     plan_key: 'main', plan_version: 'v1', predecessor_plan_digest: null,
     tasks: [taskV4('T1', 'phase-1')], phases: [phase], hard_dependencies: [], joins: [] });
+  const plans = [{ plan, genesis: { actor: ACTOR, recorded_at: NOW } }];
+  if (consumer) {
+    plans.push({ plan: buildTodoPlan({ schema: 'lattice.todo_plan.v1', project_id: 'project-1',
+      plan_key: 'consumer', plan_version: 'v1', predecessor_plan_digest: null,
+      tasks: [task('C1')], hard_dependencies: [], joins: [] }),
+    genesis: { actor: ACTOR, recorded_at: NOW } });
+  }
   await initializeTodoStore({ repoRoot: root, writer: createTodoStoreWriter({ caller: 'g4-migration' }),
     projectId: 'project-1', repositories: [{ repo_id: 'self', path: '.' }],
-    plans: [{ plan, genesis: { actor: ACTOR, recorded_at: NOW } }], now: NOW });
-  const member = (await readTodoStore({ repoRoot: root, now: NOW })).members[0];
+    plans, now: NOW });
+  const member = (await readTodoStore({ repoRoot: root, now: NOW })).members
+    .find(({ plan: value }) => value.plan_key === 'main');
   const predecessor = { plan_digest: member.plan.plan_digest,
     journal_head_digest: member.journal.events.at(-1).event_digest,
     plan_version: member.plan.plan_version };
@@ -409,6 +417,55 @@ test('phase_todo_revision.v2はv4 planを分離型v5へ原子的に昇格する'
   assert.equal(revised.plan.schema, 'lattice.todo_plan.v5');
   assert.deepEqual(revised.plan.phase_accept_dependencies, []);
   assert.equal(revised.journal.events[0].schema, 'lattice.todo_event.v4');
+});
+
+test('phase revisionは変更したproducerへのunchanged consumer接続がstaleならpublish前に拒否する', async (context) => {
+  const { root } = await phaseRevisionFixture(context, { consumer: true });
+  let store = await readTodoStore({ repoRoot: root, now: NOW });
+  const producer = store.members.find(({ plan }) => plan.plan_key === 'main');
+  const consumer = store.members.find(({ plan }) => plan.plan_key === 'consumer');
+  await appendTodoEvent({ repoRoot: root, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+    planKey: 'consumer', now: NOW,
+    event: { kind: 'cross_plan_dependency', actor: ACTOR, recorded_at: NOW, payload: {
+      from: ref('T1', 'main', 'project-1', producer.plan.topology_digest),
+      to: ref('C1', 'consumer', 'project-1', consumer.plan.topology_digest),
+      reason: 'producer topology binding',
+    } } });
+
+  store = await readTodoStore({ repoRoot: root, now: NOW });
+  const currentProducer = store.members.find(({ plan }) => plan.plan_key === 'main');
+  const predecessor = { plan_digest: currentProducer.plan.plan_digest,
+    journal_head_digest: currentProducer.journal.events.at(-1).event_digest,
+    plan_version: currentProducer.plan.plan_version };
+  const taskMigration = [{ from_task_id: 'T1', to_task_id: 'T1', state_policy: 'reset_pending' }];
+  const phaseMigration = [{ from_phase_id: 'phase-1', to_phase_id: 'phase-1', state_policy: 'reset' }];
+  const desiredInput = structuredClone(currentProducer.plan);
+  delete desiredInput.topology_digest; delete desiredInput.plan_digest;
+  desiredInput.schema = 'lattice.todo_plan.v5';
+  desiredInput.phase_accept_dependencies = [];
+  desiredInput.tasks[0].title = 'T1 successor';
+  desiredInput.predecessor_plan_digest = predecessor.plan_digest;
+  desiredInput.plan_version = phaseTodoRevisionPlanVersion({ projectId: 'project-1', planKey: 'main',
+    predecessor, desiredPlan: desiredInput, taskMigration, phaseMigration });
+  const desiredPlan = buildTodoPlan(desiredInput);
+  assert.notEqual(desiredPlan.topology_digest, currentProducer.plan.topology_digest);
+  const revision = { schema: 'lattice.phase_todo_revision.v2', project_id: 'project-1',
+    plan_key: 'main', predecessor, desired_plan: desiredPlan, task_migration: taskMigration,
+    phase_migration: phaseMigration, revision_digest: '' };
+  revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
+
+  const manifestBefore = await bytes(root, manifestRef);
+  const consumerChainBefore = await bytes(root, consumer.plan_scoped.ref);
+  const successorBase = path.join(root, '.lattice/todo/plans/main', desiredPlan.plan_version);
+  const marker = path.join(root, '.lattice/todo/transactions/phase-revisions/main',
+    desiredPlan.plan_version, 'marker.json');
+  await expectCode(applyPhaseTodoRevision({ repoRoot: root,
+    writer: createTodoStoreWriter({ caller: 'g5-authoring' }), revision, actor: ACTOR,
+    recordedAt: NOW, now: NOW }), 'STORE_INCONSISTENT', 'binding_stale');
+  assert.deepEqual(await bytes(root, manifestRef), manifestBefore);
+  assert.deepEqual(await bytes(root, consumer.plan_scoped.ref), consumerChainBefore);
+  await assert.rejects(lstat(successorBase), { code: 'ENOENT' });
+  await assert.rejects(lstat(marker), { code: 'ENOENT' });
 });
 
 for (const stage of [

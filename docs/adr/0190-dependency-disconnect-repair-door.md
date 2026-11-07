@@ -28,3 +28,14 @@ tombstoneを積める（修理扉）。
 - v0.67.4で出荷。実storeで端到端実測済み（status失敗→扉経由disconnect成功→
   connect張り直し→status復活）
 - 合成の再現fixture（revise一式）は費用対効果で見送り。実被弾storeでの実測を検証の正とした
+
+## 2026-11-07 amendment: preserve existing completed-target connections
+
+A committed successor can leave existing journal-backed source bindings stale.
+Disconnect/reconnect cannot preserve a completed target because new connect
+correctly refuses that target. The Store-only identity-preserving rebind API
+therefore uses a private stale-digest-only read under lock, exact manifest/chain
+CAS and a mandatory Plan carry validator. It stages paired removal/replacement
+events preserving both endpoints and publishes one owner chain atomically only
+after strict full-graph validation. Ordinary reads/writers retain strict binding
+checks. See the canonical [Store recovery contract](../architecture/dfd-store-phase-revision.md).
