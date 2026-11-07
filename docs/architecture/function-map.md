@@ -72,6 +72,10 @@ Authoring inputs, the seat command surface and the error shape follow the
 | Error reporting + infrastructure | `runtime-errors*.mjs`, `cli-stdio.mjs`, terminal/project identity, node/runtime helpers | XDG config/state error files: reporting modules; project identity: project setup; terminal identity: terminal module | All public surfaces | Opt-in reporting; preserve secret redaction and wrong-target/runtime compatibility checks. |
 | Retired research | 33 source modules explicitly declared by `scripts/verify-product-reachability.mjs` at baseline; RC1–RC4 compilers/campaigns and experimental executors | No active product state; historical experiments remain in Git history and RAG/ADR records | No import path from product bins; historical tests and witness-generation path strings only | S2 removes these source modules and their exclusive tests, removes stale allowlists and obsolete generation references. Live compilers, seam transforms, adapters, runtime and sensor are retained. |
 
+The [seat workflow flow](dfd-seat-workflow.md) connects the shared seat helper,
+Plan workflow notes/status and the existing Store note journal; Gantt consumes
+the same status fields.
+
 ## Function ownership in shared source files
 
 Ownership is by responsibility/function while files are still mixed. A shared
@@ -80,6 +84,8 @@ The later split moves functions to their owner without changing the contract.
 
 | Current functions / service | Single owner | Consumers |
 |---|---|---|
+| project-cli: runProjectStatus/runSessionContext and validateProjectStatus optional seat_id; todo-cli: mutationActor agent fallback | Plan/lifecycle | Shared seatIdentityFields(env) from Surfaces; [seat workflow flow](dfd-seat-workflow.md); digest-covered top-level identity omitted when unset/invalid |
+| todo-workflow: typed workflow note validation and pure reduction; todo-cli workflow authoring/status wiring; todo-status optional task workflow fields | Plan/lifecycle; Store API is sole note writer | Existing task note journal/full projected history; project/todo status and session; Surfaces consumes the same todo fields for Gantt |
 | todo-cli: startTask, mutate, startAdvisory, startStructureContext, mutationActor | Plan/lifecycle | CLI dispatch and runtime callers via plan public index |
 | project-cli: `runPlanCreate`, `resolveProjectState`, `validateProjectStatus`; plan-backchain: existing additional-plan branch | Plan/lifecycle | Create/backchain call the Store authored API with a g5 writer and select the requested plan_key; status/session use Store's read-only layout classifier. See the [authoring flow](dfd-plan-create.md). |
 | project-cli: create-input diagnosis; todo-contracts: `validateTodoPlan`, `explainTodoPlan`, shared strict-order diagnosis | Plan/lifecycle; no direct persistence | Create and migration retain existing error codes, report pointer/rule, and distinguish extraction input from derived-plan pointer space in the [authoring flow](dfd-plan-create.md). |

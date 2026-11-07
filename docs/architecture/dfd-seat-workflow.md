@@ -1,0 +1,22 @@
+# Seat identity and task workflow projection
+
+Plan/lifecycle owns authoring and projection. Surfaces owns seat identity and
+Gantt rendering; Store owns note persistence and historical migration. This is
+the t07/t19 implementation contract approved by Snow White on 2026-11-07.
+
+| Owner / step | Input / reads | Output / contract | Failure / recovery |
+|---|---|---|---|
+| Surfaces: seat identity | `LATTICE_SEAT_ID`, shared `seat-identity.mjs` | `seatIdentityFields(env)` supplies `{seat_id}` for a valid configured seat and `{}` for absent/invalid input; Plan reuses this helper without another identifier rule. | Invalid/absent seat identity does not stop discovery. No identity/state-directory write belongs to Plan. |
+| Plan: project and session read | `runProjectStatus`, `runSessionContext`; supplied env and existing project result | `status --json` exposes top-level `seat_id`; `session-context --json` exposes top-level `seat_id` and the same nested status identity. Unset/invalid omits the field. Existing result digests cover any new field; project status validator accepts the optional field and validates it through the shared helper. No discovery priority changes. | Preserve existing discovery failures and field shape when no seat is configured. |
+| Plan: actor default | `mutationActor(env)` and the shared `resolveSeatIdentity(env)` | Agent uses explicit LATTICE_TODO_ACTOR_AGENT, otherwise configured valid seat_id, otherwise the existing USER/LOGNAME fallback. Host/session selection and explicit invalid-actor validation remain unchanged. Store actor work is not needed. | Unset/invalid seat identity falls through to the existing legacy default; explicit actor input keeps existing validation. |
+| Plan: workflow authoring | Existing `todo note --plan <key> --task <id> --workflow <stage> --pr-url <url> [--ci-url <url> --ci-result <result>] [--detail <text>]`; machine emits `lattice.workflow_state.v1` with stage `pr`, `ci`, `review` or `clear`, PR/CI URLs, `ci_result` in `pass`, `fail`, `running`, optional string `detail` | Validate fields and serialize the typed body through existing note writing; actor/time/digest remain machine-derived by the existing path. Non-clear updates are complete observations with a PR URL; CI stage includes CI URL/result. Clear carries no stale PR/CI data. No remote query. | Invalid input names field/rule and correction before writing; no lifecycle start/done/reopen mutation. |
+| Store: task note journal | Existing appendTodoNoteEvent body and public projected history reader | Old readers see an ordinary note. Store retains note locks/hash chain, supersedes and task migration. Need full projected history once per plan, not bounded prompt context; exact public history connection is agreed with Store before caller implementation. | Store owns I/O, recovery and historical identity checks. Plan does not read files or duplicate migration. |
+| Plan: workflow reduction | Latest-first full task history, effective non-superseded notes | Latest valid `lattice.workflow_state.v1` determines optional per-task `flow_state`, `pr_url`, `ci_url`, `ci_result`, `detail`, `workflow_note_digest` and `workflow_recorded_at`. Clear omits workflow fields; ordinary notes do not erase a prior workflow fact. Lifecycle status and done meaning stay unchanged. | Unrelated/prose notes are not workflow input. Bounded prompt truncation never erases recorded workflow. |
+| Plan: status projection | Pure workflow fields plus existing project/todo status and session context | Each corresponding todo/status entry carries the same workflow fields when present; no workflow fields on legacy tasks. Project active_runs retains the fields, session todo reuses the same projection. Digest/validators include optional fields. | Readiness/dependencies/next-action priority stay unchanged. |
+| Surfaces: Gantt | The same per-todo status fields above | Consumer uses the status projection directly; no second Gantt contract, state or reader is introduced by Plan. | Rendering belongs to supervisor; Plan ships no render changes. |
+
+The pure workflow parser/reducer has no I/O. Store's normal note API is the only
+writer. Protected recorded task state, note bytes and migration ownership are
+unchanged; clearing workflow is an explicit new note, not deletion. Scope checks
+cover seat set/unset/invalid and digest validation; workflow roundtrip, latest
+valid observation, clear, supersedes, post-revision history and unchanged lifecycle.
