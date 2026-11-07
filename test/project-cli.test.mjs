@@ -25,6 +25,7 @@ function run(root, args, env = {}) {
     ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0', ...env,
   };
   delete childEnv.FORCE_COLOR;
+  if (env.LATTICE_SEAT_ID === null) delete childEnv.LATTICE_SEAT_ID;
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: root, encoding: 'utf8', env: childEnv,
   });
@@ -809,4 +810,23 @@ test('statusは公開未設定をstderrへ返し、既存の工程状態契約�
   assert.equal(validateProjectStatus(JSON.parse(stdout)), true);
   assert.equal(JSON.parse(stderr).state, 'local_only');
   assert.equal(JSON.parse(stderr).reason, 'bridge_unconfigured');
+});
+
+test('status JSONは有効なseatだけを投影し、digestとvalidatorで検証する', async (context) => {
+  const root = await workspace(context);
+  const read = (seat) => {
+    const result = run(root, ['status', '--json'], { LATTICE_SEAT_ID: seat });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const configured = read('seat-alice');
+  assert.equal(configured.seat_id, 'seat-alice');
+  assert.equal(configured.result_digest, todoSelfDigest(configured, 'result_digest'));
+  assert.equal(validateProjectStatus(configured), true);
+  for (const seat of [null, 'bad seat']) {
+    const value = read(seat);
+    assert.equal(Object.hasOwn(value, 'seat_id'), false);
+    assert.equal(validateProjectStatus(value), true);
+  }
+  assert.equal(validateProjectStatus({ ...configured, seat_id: 'bad seat' }), false);
 });

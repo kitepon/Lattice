@@ -533,6 +533,26 @@ test('名乗りの無い操作のhostは端末の識別子から導いたlabel�
   assert.equal((await lastActor()).host, ACTOR.host);
 });
 
+test('mutation actorは明示agent、seat identity、既存USER fallbackの順に選ぶ', async (context) => {
+  const root = await workspace(context);
+  const lastActor = async () => (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+
+  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'], {
+    actor: false, extraEnv: { LATTICE_SEAT_ID: 'seat-alice', USER: 'legacy-user' },
+  }));
+  assert.equal((await lastActor()).agent, 'seat-alice');
+
+  successJson(runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'], {
+    actor: false, extraEnv: { LATTICE_SEAT_ID: 'seat-alice', LATTICE_TODO_ACTOR_AGENT: 'explicit-agent' },
+  }));
+  assert.equal((await lastActor()).agent, 'explicit-agent');
+
+  successJson(runCli(root, ['todo', 'unblock', '--plan', 'main', '--task', 'T1'], {
+    actor: false, extraEnv: { LATTICE_SEAT_ID: 'invalid seat', USER: 'legacy-user' },
+  }));
+  assert.equal((await lastActor()).agent, 'legacy-user');
+});
+
 test('端末の識別子を読めず作れない時、名乗りの無い操作のhostは`host`になり操作は通る（ADR 0197）', async (context) => {
   const root = await workspace(context);
   // 設定の置き場がfileで塞がっている: 識別子は読めも作れもしない。

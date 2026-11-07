@@ -32,7 +32,7 @@ if (help !== null) {
 } else if (args.length === 2 && args[0] === 'session-context' && args[1] === '--json') {
   const { runSessionContext } = await import('../src/project-cli.mjs');
   process.exitCode = await runSessionContext({
-    cwd: process.cwd(), stdout: process.stdout, cliVersion: packageJson.version,
+    cwd: process.cwd(), stdout: process.stdout, cliVersion: packageJson.version, env: process.env,
   });
 } else if (args.length === 2 && args[0] === 'status' && args[1] === '--json') {
   const { projectStatusFailure, runProjectStatus } = await import('../src/project-cli.mjs');
@@ -42,7 +42,7 @@ if (help !== null) {
     });
   } catch (error) {
     process.exitCode = projectStatusFailure({
-      cwd: process.cwd(), stdout: process.stdout, cliVersion: packageJson.version, error,
+      cwd: process.cwd(), stdout: process.stdout, cliVersion: packageJson.version, error, env: process.env,
     });
   }
 } else if (args[0] === 'plan' && args[1] === 'create'

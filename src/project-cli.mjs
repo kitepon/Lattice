@@ -26,6 +26,7 @@ import { selectIndependenceGuidance } from './todo-independence-guidance.mjs';
 import { ensureTodoDashboardActivity } from './todo-dashboard-registry.mjs';
 import { reportProjectDashboardDelivery } from './dashboard-delivery.mjs';
 import { resolveProjectIdentity } from './project-identity.mjs';
+import { resolveSeatIdentity, seatIdentityFields } from './seat-identity.mjs';
 import {
   appendAuthoredTodoPlan,
   buildTodoPlan,
@@ -89,10 +90,14 @@ function plain(value) {
 
 export function validateProjectStatus(value) {
   try {
-    if (!exactRecord(value, [
+    const keys = [
       'schema', 'cli', 'project', 'state', 'store', 'active_plans', 'active_runs',
       'can_create_plan', 'next_action', 'result_digest',
-    ]) || value.schema !== STATUS_SCHEMA
+    ];
+    if (Object.hasOwn(value, 'seat_id')) keys.push('seat_id');
+    if (!exactRecord(value, keys) || (Object.hasOwn(value, 'seat_id')
+      && resolveSeatIdentity({ LATTICE_SEAT_ID: value.seat_id }).seat_id !== value.seat_id)
+      || value.schema !== STATUS_SCHEMA
       || !exactRecord(value.cli, ['available', 'version']) || value.cli.available !== true
       || typeof value.cli.version !== 'string' || value.cli.version.length > 64
       || !['uninitialized', 'ready', 'active_run', 'invalid'].includes(value.state)
@@ -206,8 +211,9 @@ function statusResult(fields) {
   return result;
 }
 
-function invalidStatus({ cliVersion, repoRoot, reason, nextAction = null }) {
+function invalidStatus({ cliVersion, repoRoot, reason, nextAction = null, env = process.env }) {
   return statusResult({
+    ...seatIdentityFields(env),
     cli: { available: true, version: cliVersion },
     project: repoRoot === null ? null : { root: repoRoot, git_head: gitHead(repoRoot), project_id: null },
     state: 'invalid',
@@ -226,11 +232,11 @@ function invalidStatus({ cliVersion, repoRoot, reason, nextAction = null }) {
  * store読みはここでしか行わない——session開始経路が同じstoreを二度払っていたのが
  * ADR 0131で直した欠陥である。
  */
-async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts = false }) {
+async function resolveProjectState({ cwd, cliVersion, env = process.env, diagnoseStructureArtifacts = false }) {
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) {
     return { exitCode: 1, repoRoot: null, store: null, todo: null,
-      result: invalidStatus({ cliVersion, repoRoot: null, reason: 'git_repository_unresolved' }) };
+      result: invalidStatus({ cliVersion, repoRoot: null, reason: 'git_repository_unresolved', env }) };
   }
   const storeAbsolute = path.join(repoRoot, STORE_REF);
   const manifestAbsolute = path.join(repoRoot, MANIFEST_REF);
@@ -240,7 +246,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
   let manifestState;
   const invalid = (reason) => ({
     exitCode: 1, repoRoot, store: null, todo: null,
-    result: invalidStatus({ cliVersion, repoRoot, reason }),
+    result: invalidStatus({ cliVersion, repoRoot, reason, env }),
   });
   try { latticeState = await lstat(latticeAbsolute); } catch (error) {
     if (error?.code !== 'ENOENT') return invalid('lattice_root_unreadable');
@@ -259,6 +265,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
   catch { return invalid('store_unreadable'); }
   if (uninitialized) {
     return { exitCode: 0, repoRoot, store: null, todo: null, result: statusResult({
+      ...seatIdentityFields(env),
       cli: { available: true, version: cliVersion },
       project: { root: repoRoot, git_head: gitHead(repoRoot), project_id: null },
       state: 'uninitialized',
@@ -315,6 +322,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
             reason: 'audit_pending' }
           : { command: 'lattice todo status', reason: 'no_ready_task' };
     const result = statusResult({
+      ...seatIdentityFields(env),
       cli: { available: true, version: cliVersion },
       project: { root: repoRoot, git_head: gitHead(repoRoot), project_id: store.project_id },
       state,
@@ -337,7 +345,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
       : null;
     return {
       exitCode: 1, repoRoot, store: null, todo: null,
-      result: invalidStatus({ cliVersion, repoRoot, reason, nextAction }),
+      result: invalidStatus({ cliVersion, repoRoot, reason, nextAction, env }),
     };
   }
 }
@@ -346,7 +354,7 @@ export async function runProjectStatus({ cwd, stdout, stderr = process.stderr, c
   ensureDashboardActivity = ensureTodoDashboardActivity,
   reportDelivery = reportProjectDashboardDelivery }) {
   const state = await resolveProjectState({
-    cwd, cliVersion, diagnoseStructureArtifacts: true,
+    cwd, cliVersion, env, diagnoseStructureArtifacts: true,
   });
   // dashboard活動の登録はdiscovery面の副作用として維持する（ADR 0131 Decision 4で
   // session-context側だけが持たない、と決めた面である）。
@@ -385,12 +393,13 @@ export async function runProjectStatus({ cwd, stdout, stderr = process.stderr, c
  *
  * dashboard活動の登録は行わない。現在地を知るために呼ぶ面であり、常駐面を起こす面ではない。
  */
-export async function runSessionContext({ cwd, stdout, cliVersion }) {
-  const state = await resolveProjectState({ cwd, cliVersion });
+export async function runSessionContext({ cwd, stdout, cliVersion, env = process.env }) {
+  const state = await resolveProjectState({ cwd, cliVersion, env });
   const independence = state.store === null || state.todo === null
     ? [] : await summarizeIndependence({ repoRoot: state.repoRoot, store: state.store, todo: state.todo });
   const result = {
     schema: SESSION_CONTEXT_SCHEMA,
+    ...seatIdentityFields(env),
     // project discoveryの答えをそのまま埋める。hostは既存の検証器を再利用できる。
     status: state.result,
     // todoは`lattice todo status`のresultそのもの。新しい意味論を発明しない。
@@ -809,7 +818,7 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
   return 0;
 }
 
-export function projectStatusFailure({ cwd, stdout, cliVersion, error }) {
+export function projectStatusFailure({ cwd, stdout, cliVersion, error, env = process.env }) {
   if (error?.code === 'STRUCTURE_ARTIFACT_INVALID') {
     const payload = {
       schema: 'lattice.cli_error.v2', code: error.code,
@@ -822,6 +831,7 @@ export function projectStatusFailure({ cwd, stdout, cliVersion, error }) {
   const projectRootConflict = error?.code === 'PROJECT_ROOT_CONFLICT';
   const result = invalidStatus({
     cliVersion, repoRoot: resolveRepoRoot(cwd),
+    env,
     reason: projectRootConflict
       ? 'project_root_conflict'
       : `status_internal_failure:${error?.constructor?.name ?? 'Error'}`,

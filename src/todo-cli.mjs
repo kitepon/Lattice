@@ -180,6 +180,7 @@ import {
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
+import { resolveSeatIdentity } from './seat-identity.mjs';
 
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 const DEFAULT_GANTT_SCOPE = 'live';
@@ -595,7 +596,7 @@ function mutationActor(env) {
       : 'session',
     agent: isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT)
       ? env.LATTICE_TODO_ACTOR_AGENT
-      : sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
+      : resolveSeatIdentity(env).seat_id ?? sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
   };
 }
 

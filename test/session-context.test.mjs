@@ -25,6 +25,7 @@ async function workspace(context) {
 function run(root, args, env = {}) {
   const childEnv = { ...process.env, NO_COLOR: '1', ...env };
   delete childEnv.FORCE_COLOR;
+  if (env.LATTICE_SEAT_ID === null) delete childEnv.LATTICE_SEAT_ID;
   return spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8', env: childEnv });
 }
 
@@ -116,6 +117,20 @@ test('git repositoryの外ではstatusと同じくinvalidで終わる', async (c
   assert.equal(value.status.state, 'invalid');
   assert.equal(value.todo, null);
   assert.deepEqual(value.independence, []);
+});
+
+test('session-contextはstatusと同じseat identityを投影しdigestに含める', async (context) => {
+  const root = await workspace(context);
+  for (const [seat, expected] of [['seat-alice', 'seat-alice'], [null, undefined], ['bad seat', undefined]]) {
+    const result = run(root, ['session-context', '--json'], { LATTICE_SEAT_ID: seat });
+    assert.equal(result.status, 0, result.stderr);
+    const value = parse(result.stdout);
+    assert.equal(value.seat_id, expected);
+    assert.equal(value.status.seat_id, expected);
+    assert.equal(Object.hasOwn(value, 'seat_id'), expected !== undefined);
+    assert.equal(validateProjectStatus(value.status), true);
+    assert.equal(value.result_digest, todoSelfDigest(value, 'result_digest'));
+  }
 });
 
 test('readyがあるplanだけ並列可否を要約し、記録が無ければ未判定と述べる', async (context) => {
