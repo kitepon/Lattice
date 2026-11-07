@@ -19,7 +19,7 @@ Directory moves are proposed boundaries, not claims that those directories exist
 
 | Boundary | Owner / caller | Contract |
 |---|---|---|
-| macOS product CI runtime | Snow White; product-full-ci workflow and its three Node-consuming steps | [Runtime identity and non-overwriting generations](dfd-ci-macos-runtime.md): current c13 version path, proposed legacy-first selection, exclusive `mkdir` generation reservation, marker publication, interruption states and the ESET renewal connection. |
+| macOS product CI runtime | Snow White; product-full-ci workflow and its three Node-consuming steps | [Runtime identity and non-overwriting generations](dfd-ci-macos-runtime.md): current c13 version path, proposed `/Users/Shared` root with ownership check, exclusive `mkdir` generation reservation, marker publication, interruption states and the ESET renewal connection. |
 
 ## Product boundary
 

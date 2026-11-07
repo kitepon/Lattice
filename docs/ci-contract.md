@@ -29,4 +29,6 @@ separates current PR53 behavior from the proposed non-overwriting generations.
 No exclusive cache allocation or prior-consumer exit handoff exists, so a tree
 another job may run is never replaced, renamed over or deleted: a failed tree is
 left in place and a new generation is reserved with `mkdir` and published by a
-marker. A verified complete generation is reused by later jobs.
+marker. A verified complete generation is reused by later jobs. The proposed
+root is `/Users/Shared/lattice-node` (owner-checked), because the ESET chooser
+cannot reach the 0700 runner home.
