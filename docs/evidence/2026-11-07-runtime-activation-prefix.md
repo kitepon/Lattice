@@ -29,7 +29,7 @@ Focused verification:
 - `node --test test/runtime-multi-epoch-store.test.mjs`: 11 passed, no skips.
 - Deterministic heartbeat callback: failed before the fix, passed afterward.
 - Both tails may advance; absent digest, corrupt chain, foreign run, later
-  stop/gate/epoch/plan/freeze/resume and future epoch are rejected. Restoring the
+  stop/recovery barrier/gate/epoch/plan/freeze/resume and future epoch are rejected. Restoring the
   recorded input lets the same staged transaction commit.
 - Initial activation and interrupted rename/pointer retries retain their focused
   regression cases. Changed source and Mac fixture pass Node syntax checks.
