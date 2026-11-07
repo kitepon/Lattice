@@ -31,7 +31,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const COMMANDS = [
   ['setup'], ['setup', 'status'],
   ['status'], ['session-context'], ['factory-diagnostics'],
-  ['plan', 'create'], ['plan', 'show'], ['plan', 'compile'], ['plan', 'verify'],
+  ['plan', 'create'], ['plan', 'show'], ['plan', 'compile'], ['plan', 'verify'], ['plan', 'revise'],
   ['run', 'start'], ['run', 'adapter', 'register'], ['run', 'adapter', 'list'],
   ['run', 'observe'], ['run', 'status'], ['run', 'resume'], ['run', 'close'],
   ['run', 'abandon'], ['run', 'list'], ['run', 'activate'], ['run', 'conflict'],

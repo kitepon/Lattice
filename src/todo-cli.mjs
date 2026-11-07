@@ -191,8 +191,8 @@ const ACTOR_ENV_KEYS = Object.freeze([
 ]);
 
 /**
- * `revise` / `revise-set` / `revise-phase` / `migrate`が実際に受理する最新契約のJSON
- * Schemaを配布物から読む入口（`project-cli.mjs`の`runPlanCreateSchema`と同じ作法）。
+ * `revise` / `revise-set` / `revise-phase` / `migrate`が配布する名前付き入力契約のJSON
+ * Schemaを読む入口。受理するartifact版すべての列挙ではない（`project-cli.mjs`の`runPlanCreateSchema`と同じ作法）。
  *
  * schemaを取る手段がCLIに無いと、AIはsrcを読んで必須keyを数えるしかなくなる
  * （実運用で`phase_todo_revision.v3`の必須12 keyを試行錯誤で当てた）。storeは読まない
@@ -3677,6 +3677,7 @@ async function verify({ repoRoot, requestedPlanKey }) {
         case 'lattice.phase_todo_revision.v2':
         case 'lattice.phase_todo_revision.v3':
         case 'lattice.phase_todo_revision.v4':
+        case 'lattice.phase_todo_revision.v5':
           verifiedSourceInventories.set(member.descriptor.plan_key,
             await verifyEffectivePhaseTodoRevisionSources({ repoRoot, member }));
           break;
@@ -3689,7 +3690,8 @@ async function verify({ repoRoot, requestedPlanKey }) {
     const reconciled = member.revision !== null;
     const sourceInventory = verifiedSourceInventories.get(member.descriptor.plan_key) ?? null;
     const phaseRevision = ['lattice.phase_todo_revision.v1', 'lattice.phase_todo_revision.v2',
-      'lattice.phase_todo_revision.v3', 'lattice.phase_todo_revision.v4']
+      'lattice.phase_todo_revision.v3', 'lattice.phase_todo_revision.v4',
+      'lattice.phase_todo_revision.v5']
       .includes(member.revision?.schema);
     return {
       plan_key: member.descriptor.plan_key,

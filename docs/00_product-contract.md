@@ -408,8 +408,9 @@ journal eventのschema列は、v1 genesisのjournalへ`phase_*` eventだけをv3
 
 authoring契約のJSON Schemaは各入口から取得できる。`plan create --schema --json`の既定は最新版
 （現在v4）で、`--schema-version <1|2|3|4> --json`が版を明示する。`todo revise`／`revise-set`／
-`revise-phase`／`migrate`も`--schema --json`を持ち、実際に受理する最新契約を返す（storeを読まない
-決定的出力）。schema違反は`detail`へ互換fieldの`violation_reason`／`violation_path`と、構造化した
+`revise-phase`／`migrate`も`--schema --json`を持ち、配布している名前付き入力契約を返す（storeを読まない
+決定的出力）。`revise-phase --schema`はv3のJSON Schemaを返す。受理するartifact版すべての列挙ではなく、
+登録済みv4／v5も既存の検証とStore適用経路で受理する。軽量改訂の入力契約は`plan revise --schema --json`で取得する。schema違反は`detail`へ互換fieldの`violation_reason`／`violation_path`と、構造化した
 `violation_kind`／JSON `pointer`／`expected`／`actual`／`task_id`／`next_action`を載せる。
 `todo migrate --input <ref> --dry-run --json`はstoreとdashboard registryを変更せず、独立した違反を
 上限付き配列でまとめて返す。digest不一致は期待digest、ソート違反はsort key、未来時刻は現在時刻と

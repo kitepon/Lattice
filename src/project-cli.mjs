@@ -601,10 +601,7 @@ function describeCreateInputViolation(value) {
   return null;
 }
 
-export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, featureChain = null }) {
-  const repoRoot = resolveRepoRoot(cwd);
-  if (repoRoot === null) throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved');
-  const input = inputValue ?? await readCanonicalInput(repoRoot, inputRef);
+export function validatePlanCreateInput(input) {
   if (input?.schema !== MEMO_PHASE_CREATE_INPUT_SCHEMA) {
     throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_retired', undefined, {
       violation_kind: 'const_mismatch', pointer: '/schema',
@@ -636,6 +633,13 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
       next_action: 'correct_the_reported_pointer_then_rerun_plan_create',
     });
   }
+}
+
+export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, featureChain = null }) {
+  const repoRoot = resolveRepoRoot(cwd);
+  if (repoRoot === null) throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved');
+  const input = inputValue ?? await readCanonicalInput(repoRoot, inputRef);
+  validatePlanCreateInput(input);
   // dispatch_shapeは結果へ載せる観測であり、直列度では初期化を拒まない（ADR 0180）。
   const dispatchShape = computeTodoDispatchShapeForPlan({
     projectId: input.project_id,

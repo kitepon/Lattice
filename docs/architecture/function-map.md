@@ -74,20 +74,25 @@ Authoring inputs, the seat command surface and the error shape follow the
 
 ## Function ownership in shared source files
 
+The [light revision flow](dfd-plan-revise.md) owns w1b's authored full-state input,
+explicit continuity and the v5 Store connection; this is separate from w1/w5.
+
 Ownership is by responsibility/function while files are still mixed. A shared
 filename is not permission for two boundaries to own the same function or state.
 The later split moves functions to their owner without changing the contract.
 
 | Current functions / service | Single owner | Consumers |
 |---|---|---|
+| todo-authoring-input: v5 revision_digest registration; todo-cli: revisePhase shared validator/apply routing (including registered v5), verify phase schema classification and reconciliation projection | Plan/lifecycle; no direct persistence | Artifact CLI → Store generic apply/effective-source verification; [light revision flow](dfd-plan-revise.md). `revise-phase --schema` distributes v3; acceptance also includes registered later artifacts. |
 | todo-cli: startTask, mutate, startAdvisory, startStructureContext, mutationActor | Plan/lifecycle | CLI dispatch and runtime callers via plan public index |
 | project-cli: `runPlanCreate`, `resolveProjectState`, `validateProjectStatus`; plan-backchain: existing additional-plan branch | Plan/lifecycle | Create/backchain call the Store authored API with a g5 writer and select the requested plan_key; status/session use Store's read-only layout classifier. See the [authoring flow](dfd-plan-create.md). |
 | project-cli: create-input diagnosis; todo-contracts: `validateTodoPlan`, `explainTodoPlan`, shared strict-order diagnosis | Plan/lifecycle; no direct persistence | Create and migration retain existing error codes, report pointer/rule, and distinguish extraction input from derived-plan pointer space in the [authoring flow](dfd-plan-create.md). |
+| project-cli: `validatePlanCreateInput`; plan-backchain: exported planSeed/compilePhaseMigration (same inputs), carried-work rebind with existing defaults; plan-revise: light input/compiler/command with explicit carry/reset/retire + reason (no backchain inference) | Plan/lifecycle; no direct persistence | `plan revise`; Store's generic phase transaction and v5 validator/reader registration owned by Rudmira; [light revision flow](dfd-plan-revise.md) |
 | todo-cli: runTodoCli, flag matching, typedFailure and result printing; project CLI argument dispatch | Surfaces | bin/lattice and host clients |
 | isolation-runner: disposable worktree execution/verification service | Independence + seam | Seam transformation primary consumer; runtime through independence/seam public index |
 | todo-cli: resolveDoneEvidence/writeEvidenceBlob, also used by phase decisions | Plan/lifecycle evidence service | done and phase decision commands; sole writer of `.lattice/todo/evidence/<plan>/<task>/<digest>.md` and its Git blob descriptors |
 | plan-backchain: validatePlanBackchain and context projection | Plan/lifecycle | Plan activation/revision supply validated values to Store; Store alone persists backchain.json |
-| `todo-store-view.mjs`: schema classification, `projectTodoCrossPlanDependencies`, `todoTaskCarrySemantics` and pure reference helpers | Store (pure view; no I/O or feature import) | Readiness, status, Store; CLI and existing clients via Store compatibility re-exports |
+| `todo-store-view.mjs`: schema classification, `projectTodoCrossPlanDependencies`, read-only `todoTaskCarrySemantics` and pure reference helpers | Store (pure view; no I/O or feature import) | Readiness, status, Store and Plan light-revision compiler (direct pure import); CLI and existing clients via Store compatibility re-exports |
 | `todo-readiness.mjs`: `createTodoReadiness(store)`, `validateProspectiveEvent({store, member, event})` | Plan/lifecycle; no state writes. Canonical task/phase view is `member.tasks` / journal-derived `member.phases`, including synthetic fixtures; `snapshot.phases` is never read by readiness. | Status and prospective validation use one prerequisite predicate set. Store invokes the supplied validator after lock/re-read. The stage-1 compatibility wrapper and upward import were removed by Store in stage 2. Replay historical integrity remains unchanged. |
 | Shared identified lock and recovery claims (store-lock.mjs); todo-store withLock and note-store withNoteLock | Store | All todo/note writers; runtime/adapter/setup integration deferred |
 | phase revision v5 artifact recognition and active-reader registration; taskSemantics and pure reference helpers moved to todo-store-view; todoTaskCarrySemantics re-exported by todo-store | Store | Plan compiler/preliminary continuity diagnostics and existing generic phase revision transaction; Plan owns policy, Store retains locked final carry checks. |
