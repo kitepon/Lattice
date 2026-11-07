@@ -91,14 +91,13 @@ test('CI cancels only superseded pull_request runs and never groups main runs', 
   assert.ok(caller.includes("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"));
 });
 
-test('macOS CIは共有Homebrewを変えずjob専有Nodeを全commandへ渡す', async () => {
+test('macOS CIは工場のNode（dotagentsのhost copy）を版とSHAで受け取り全commandへ渡す', async () => {
   const workflow = await readFile(path.join(repoRoot, '.github/workflows/product-full-ci.yml'), 'utf8');
+  const publish = await readFile(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
+  const version = publish.match(/node-version:\s*'([^']+)'/u)?.[1];
   assert.match(workflow, /id: macos_runtime/u);
-  assert.match(workflow, /bash scripts\/ci-macos-node-runtime\.sh/u);
+  // 置き場の選択・世代の作成と退役は工場の契約（dotagents docs/feature-map/mac-node-runtime.md）が持つ。
+  assert.match(workflow, new RegExp(`run: /usr/local/libexec/dotagents/factory-node-runtime\\.sh ${version.replaceAll('.', '\\.')} [0-9a-f]{64}\n`, 'u'));
   assert.equal((workflow.match(/steps\.macos_runtime\.outputs\.directory/gu) ?? []).length, 3);
-  const runtime = await readFile(path.join(repoRoot, 'scripts/ci-macos-node-runtime.sh'), 'utf8');
-  assert.match(runtime, /mkdir -m 700/u);
-  assert.match(runtime, /shasum --algorithm 256 --check --status/u);
-  assert.match(runtime, /--no-same-owner/u);
-  assert.doesNotMatch(runtime, /sudo|brew (?:install|upgrade)|npm install -g/u);
+  assert.doesNotMatch(workflow, /ci-macos-node-runtime|FACTORY_NODE_BASE/u);
 });
