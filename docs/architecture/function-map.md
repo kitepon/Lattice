@@ -3,6 +3,8 @@
 Baseline: 0.79.5, commit `047139e5`. This is the canonical implementation map;
 [product contract](../00_product-contract.md) owns public behavior. The
 [start data flow](dfd-todo-start.md) composes the lifecycle connections below.
+The [receipt flow](dfd-mcp-startup-receipt.md) owns private MCP startup observation
+and atomic publication through the existing storage helper.
 Directory moves are proposed boundaries, not claims that those directories exist.
 
 ## Product boundary
