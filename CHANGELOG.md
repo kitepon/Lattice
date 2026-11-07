@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.81.0 — 2026-11-07
 
+- 席は`LATTICE_SEAT_ID`で自分を名乗れる。機械が`seat_id`を導き、席の表示・配信状態（bridge設定、dashboard登録簿、receipt）を`~/.lattice/seats/<seat_id>`へ分ける（`LATTICE_CONFIG_DIR`が優先）。bridge設定の端末識別と既定actor hostも席ごとになる。未設定・不正な値は無名の席になり、何も止めない。
+- Storeに段階改訂v5（`lattice.phase_todo_revision.v5`、backchainなしのv7 desired plan）の読み手と書き手を登録する。既存の改訂key・版digest・carry検査・v4 backchainの扱いは変えない。taskのcarry projectionは`todo-store-view.mjs`へ移し、`todo-store.mjs`は同じ関数を再exportする。
 - `plan create`は現在のv4入力で、既存Storeにも同じprojectの新planを追加できる。
   既存keyの上書きや暗黙revisionは行わず、phaseと任意backchainを保持する。
 - `lattice.project_status.v1`のfield形を維持し、`can_create_plan`はready/active_runでもtrueを返す。
