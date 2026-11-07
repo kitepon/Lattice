@@ -1,4 +1,4 @@
-import { selfDigest, validateExecutorPacket } from './runtime-contracts.mjs';
+import { selfDigest, validateExecutorPacket } from '../../src/runtime-contracts.mjs';
 
 /**
  * RC3-E 決定論的scripted executor adapter（ADR 0044 Decision 9）。

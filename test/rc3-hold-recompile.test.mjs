@@ -21,7 +21,7 @@ import {
   validateRuntimeTaskMigration,
 } from '../src/runtime-hold-recompile.mjs';
 import { detectCheckpointFindings } from '../src/runtime-diff-observer.mjs';
-import { createScriptedExecutorAdapter } from '../src/runtime-scripted-executor.mjs';
+import { createScriptedExecutorAdapter } from './helpers/scripted-executor.mjs';
 import {
   computeReadyFrontier,
   recomputeHoldDecision,

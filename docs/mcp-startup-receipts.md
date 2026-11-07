@@ -1,5 +1,10 @@
 # MCP startup receipts
 
+Implementation ownership and publication transitions are canonical in the
+[receipt publication flow](architecture/dfd-mcp-startup-receipt.md). Publication
+reuses the existing atomic storage helper's bounded Windows transient-error retry;
+persistent failure still disables only observation and never blocks MCP.
+
 通常の `lattice-mcp` wrapper は、起動経路ごとに私有の `~/.lattice/mcp-startup/slot-N/receipt.json` を best-effort で残す。sensor を単独で呼ぶ既存 API や daemon 内部の接続を、wrapper の起動として重ねて記録しない。
 
 記録は run UUID、PID と OS で観測できた process birth（得られなければ null）、wrapper 版、sensor 版、実際の direct / proxy 経路、次の固定段階と時刻だけである。wrapper と sensor の版は別の値になり得る。

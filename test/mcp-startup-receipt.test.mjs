@@ -16,16 +16,31 @@ async function until(read, accepts, ms = 15000) {
   while (Date.now() < end) { const value = await read(); if (accepts(value)) return value; await new Promise(r => setTimeout(r, 20)); }
   throw Error('receipt fixture timed out');
 }
-async function fixture(t, mode, { prepare, writeFailure = false, recordingFailure = false, identityDelay = false, home, wrapper = false } = {}) {
+async function fixture(t, mode, { prepare, writeFailure = false, recordingFailure = false, identityDelay = false, publicationFailure, home, wrapper = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-mcp-receipt-'));
   const tracked = []; registerManagedDaemonFixture(t, root, { tracked });
   home ??= root;
   const receipts = path.join(home, '.lattice', 'mcp-startup');
   if (prepare) await prepare(root, receipts);
   let module = url('src/mcp-startup-receipt.mjs');
-  if (recordingFailure || identityDelay) {
+  if (recordingFailure || identityDelay || publicationFailure) {
     let source = await readFile('src/mcp-startup-receipt.mjs', 'utf8');
     for (const file of ['runtime-errors.mjs', 'dashboard-process-control.mjs', 'windows-owner-only.mjs']) source = source.replace(`'./${file}'`, JSON.stringify(url(`src/${file}`)));
+    if (publicationFailure) {
+      let storage = await readFile('src/runtime-errors.mjs', 'utf8');
+      for (const file of ['cli-command-kind.mjs', 'cli-failure-class.mjs', 'windows-owner-only.mjs']) storage = storage.replace(`'./${file}'`, JSON.stringify(url(`src/${file}`)));
+      assert.equal(storage.split('renameSync(source, destination);').length, 2);
+      storage = storage.replace('export function replaceStoreFile(source, destination) {', 'let publicationAttempts = 0;\nexport function replaceStoreFile(source, destination) {');
+      storage = storage.replace('renameSync(source, destination);', `writeFileSync(${JSON.stringify(path.join(root, 'publication-attempts'))}, String(++publicationAttempts));
+      if (${publicationFailure === 'persistent' ? 'true' : 'publicationAttempts <= 2'}) throw Object.assign(new Error('injected'), { code: 'EBUSY' });
+      renameSync(source, destination);`);
+      const copy = path.join(root, 'fault-runtime-errors.mjs'); await writeFile(copy, storage);
+      source = source.replace(JSON.stringify(url('src/runtime-errors.mjs')), JSON.stringify(pathToFileURL(copy).href));
+      if (publicationFailure === 'persistent') {
+        assert.equal(source.split('disabled = true; parentPort.close();').length, 2);
+        source = source.replace('disabled = true; parentPort.close();', `disabled = true; writeFileSync(${JSON.stringify(path.join(root, 'publication-stopped'))}, 'stopped'); parentPort.close();`);
+      }
+    }
     assert.equal(source.split('writeFileSync(fd, bytes)').length, 2);
     if (recordingFailure) source = source.replace('writeFileSync(fd, bytes)', '(() => { writeFileSync(path.join(workerData.home, "attempted"), "attempted"); throw Object.assign(new Error("secret-EIO"), {code:"EIO"}); })()');
     if (identityDelay) source = source.replace('const identity = await observeDashboardProcess', 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000); const identity = await observeDashboardProcess');
@@ -90,6 +105,30 @@ async function fixture(t, mode, { prepare, writeFailure = false, recordingFailur
       const frame = frames.find(f => f.id === 7); assert.equal(frame.jsonrpc, '2.0'); assert.ok(frame.result.serverInfo.version);
       return frame;
     } };
+}
+
+for (const failure of ['transient', 'persistent']) {
+  test(`Windows publication ${failure} preserves fail-open MCP behavior`, { timeout: 30000, skip: process.platform !== 'win32' }, async t => {
+    const f = await fixture(t, 'proxy', { publicationFailure: failure });
+    await f.initialize();
+    const attempts = () => readFile(path.join(f.root, 'publication-attempts'), 'utf8').then(Number).catch(e => {
+      if (e.code === 'ENOENT') return 0; throw e;
+    });
+    if (failure === 'transient') {
+      const [record] = await until(f.records, rs => rs[0]?.events.at(-1)?.phase === 'initialize_response_written');
+      assert.deepEqual(record.events.map(e => e.phase), ['started', 'initialize_received', 'initialize_response_written']);
+      assert.ok(await attempts() >= 5);
+    } else {
+      await until(() => readFile(path.join(f.root, 'publication-stopped'), 'utf8').catch(e => {
+        if (e.code === 'ENOENT') return ''; throw e;
+      }), marker => marker === 'stopped');
+      assert.ok((await f.request(8, 'tools/list')).find(frame => frame.id === 8).result.tools.length > 0);
+      assert.deepEqual(await f.records(), []);
+      assert.deepEqual(await readdir(path.join(f.receipts, 'slot-0')), ['pending.json']);
+      assert.equal(await attempts(), 8);
+    }
+    f.child.stdin.end(); assert.deepEqual(await f.closed, { code: 0, signal: null });
+  });
 }
 for (const mode of ['direct', 'proxy']) {
   test(`${mode}: initializeと実write完了、版/identityを私有receiptで対応づける`, { timeout: 30000 }, async t => {
@@ -163,10 +202,23 @@ test('64 slot境界の並行起動は既存63件を保持し、予約とpublish�
   const children = await Promise.all(['direct', 'proxy'].map(mode => fixture(t, mode, { home })));
   await Promise.all(children.map(f => f.initialize()));
   const newest = path.join(dir, `slot-${MCP_RECEIPT_SLOTS - 1}`);
-  const final = await until(async () => {
-    try { return JSON.parse(await readFile(path.join(newest, 'receipt.json'), 'utf8')); }
-    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-  }, r => r?.events.at(-1)?.phase === 'initialize_response_written');
+  let final;
+  try {
+    final = await until(async () => {
+      try { return JSON.parse(await readFile(path.join(newest, 'receipt.json'), 'utf8')); }
+      catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    }, r => r?.events.at(-1)?.phase === 'initialize_response_written');
+  } catch (error) {
+    const names = await readdir(newest).catch(() => []);
+    let receipt = 'missing';
+    if (names.includes('receipt.json')) {
+      try {
+        const record = JSON.parse(await readFile(path.join(newest, 'receipt.json'), 'utf8'));
+        receipt = record.events?.at(-1)?.phase === 'initialize_response_written' ? 'complete' : 'partial';
+      } catch { receipt = 'unreadable'; }
+    }
+    throw new Error(`capacity receipt ${receipt}, pending=${names.includes('pending.json')}, children=${JSON.stringify(children.map(f => ({ exitCode: f.child.exitCode, signalCode: f.child.signalCode })))}`, { cause: error });
+  }
   assert.ok(children.some(f => f.child.pid === final.pid));
   assert.equal((await readdir(dir)).filter(n => n.startsWith('slot-')).length, MCP_RECEIPT_SLOTS);
   for (let i = 0; i < MCP_RECEIPT_SLOTS - 1; i++) assert.equal(await readFile(path.join(dir, `slot-${i}`, 'receipt.json'), 'utf8'), `old-${i}`);

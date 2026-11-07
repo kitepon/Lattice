@@ -2,8 +2,8 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { lstatSync, mkdirSync, openSync, writeFileSync, closeSync, renameSync, readdirSync } from 'node:fs';
-import { ensureSafeDir, ensureSafeFile } from './runtime-errors.mjs';
+import { lstatSync, mkdirSync, openSync, writeFileSync, closeSync, readdirSync } from 'node:fs';
+import { ensureSafeDir, ensureSafeFile, replaceStoreFile } from './runtime-errors.mjs';
 import { observeDashboardProcess } from './dashboard-process-control.mjs';
 import { isAclScratchName } from './windows-owner-only.mjs';
 
@@ -91,7 +91,7 @@ if (!isMainThread && workerData?.receipt === true) {
     const fd = openSync(temporary, 'wx', 0o600);
     try { writeFileSync(fd, bytes); } finally { closeSync(fd); }
     ensureSafeFile(temporary, slot);
-    renameSync(temporary, target);
+    replaceStoreFile(temporary, target);
   }
   parentPort.on('message', message => {
     queue = queue.then(() => receive(message)).catch(() => { disabled = true; parentPort.close(); });

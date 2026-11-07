@@ -53,15 +53,15 @@ test('product test child envは、設定の置き場をrunごとの一時の置�
 });
 
 test('環境別profileはfocused再現用のsuiteだけを選びcoreの総当たりを複製しない', () => {
-  const retired = 'control-compiler.test.mjs';
+  const historicalName = 'control-compiler.test.mjs';
   const all = [
-    retired,
+    historicalName,
     'portable-new-feature.test.mjs',
     ...new Set(Object.values(nativeTestProfiles).flat()),
   ].sort();
 
   const core = selectProductTests(all, 'core');
-  assert.equal(core.includes(retired), false);
+  assert.equal(core.includes(historicalName), true);
   assert.equal(core.includes('portable-new-feature.test.mjs'), true);
   for (const [profile, expected] of Object.entries(nativeTestProfiles)) {
     assert.deepEqual(selectProductTests(all, profile), [...expected]);

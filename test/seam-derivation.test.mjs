@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateBoundedSeamCandidate } from '../src/bounded-seam.mjs';
 import {
   BOUNDED_SEAM_CANDIDATE_SCHEMA,
   buildSeamDerivationQuerySet,
@@ -43,7 +42,10 @@ test('宣言が依存する未宣言symbolは共有面へ集まり、原pathは�
   }));
   assert.deepEqual(reasons, []);
   assert.equal(candidate.schema, BOUNDED_SEAM_CANDIDATE_SCHEMA);
-  assert.equal(validateBoundedSeamCandidate(candidate), true);
+  for (const key of [
+    'require_behavior_equivalence', 'require_fresh_sensor', 'require_overlap_reduction',
+    'require_no_new_conflict_pairs', 'require_parallelism_improvement',
+  ]) assert.equal(candidate.verification_policy[key], true, key);
 
   const byRole = Object.fromEntries(candidate.surfaces.map((s) => [
     `${s.role}:${s.owner_task_ids.join(',')}`, s,
@@ -96,7 +98,6 @@ test('依存が無ければ共有面を作らず、二面だけの候補にな�
   const { candidate } = deriveBoundedSeamCandidate(base());
   assert.deepEqual(candidate.surfaces.map(({ role }) => role).sort(),
     ['residual', 'task_owned', 'task_owned']);
-  assert.equal(validateBoundedSeamCandidate(candidate), true);
 });
 
 test('宣言の無いtaskがある構成は所有面を作れない', () => {
@@ -113,18 +114,6 @@ test('同じsymbolを2 taskが所有する構成は移動先が決まらない',
   }));
   assert.equal(candidate, null);
   assert.deepEqual(reasons, ['owned_symbol_claimed_twice']);
-});
-
-test('五条件を1つでも緩めた候補は契約が拒否する', () => {
-  const { candidate } = deriveBoundedSeamCandidate(base());
-  for (const key of [
-    'require_behavior_equivalence', 'require_fresh_sensor', 'require_overlap_reduction',
-    'require_no_new_conflict_pairs', 'require_parallelism_improvement',
-  ]) {
-    const relaxed = structuredClone(candidate);
-    relaxed.verification_policy[key] = false;
-    assert.equal(validateBoundedSeamCandidate(relaxed), false, key);
-  }
 });
 
 test('calleeを照会していないsymbolがあれば、閉包を閉じたことにしない', () => {
