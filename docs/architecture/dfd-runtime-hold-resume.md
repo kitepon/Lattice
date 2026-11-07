@@ -124,8 +124,11 @@ dependency or second orchestrator. Public bins and standalone execution remain.
 ## Verification boundary
 
 For this documentation change: source/contract trace, local Markdown checks,
-Leviathan's diagram review and three-OS documentation CI at the exact candidate
-commit. No runtime test execution is claimed by this draft.
+Leviathan's diagram review and exact-candidate CI. Normal Markdown-only CI runs
+documentation checks and skips the product matrix. Where three-OS acceptance is
+required, use the existing manual full-CI entry at the candidate commit; do not
+describe a skipped matrix as three-OS evidence. This draft claims no runtime test
+execution.
 
 For the subsequent code change, select only touched rows:
 
