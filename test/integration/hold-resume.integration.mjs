@@ -171,6 +171,19 @@ test('競合群の後継を先に起動し、無関係workerの旧epoch成果を
   const recompiled = ok(recompileResult, 'run recompile');
   assert.equal(JSON.parse(recompiled.stdout).outcome, 'recompiled');
 
+  const pointer = JSON.parse(await readFile(path.join(runDir, 'committed-epoch.json'), 'utf8'));
+  const activationEvidence = {};
+  for (const stream of ['run', 'control']) {
+    const events = JSON.parse(await readFile(path.join(runDir,
+      stream === 'run' ? 'events.json' : 'control-events.json'), 'utf8'));
+    const expected = pointer[`activation_${stream}_event_digest`];
+    activationEvidence[stream] = { expected_tail: expected,
+      actual_tail: events.at(-1).event_digest,
+      expected_in_chain: events.some((event) => event.event_digest === expected) };
+    assert.equal(activationEvidence[stream].expected_in_chain, true);
+  }
+  t.diagnostic(JSON.stringify({ activation_prefix: activationEvidence }));
+
   const afterRecompile = JSON.parse(await readFile(path.join(runDir, 'control-events.json'), 'utf8'));
   assert.equal(afterRecompile.find((event) => event.kind === 'epoch_rebind_acknowledged'),
     undefined, '無関係workerをrebindしている');

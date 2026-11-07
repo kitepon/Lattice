@@ -17,6 +17,12 @@ a singleton excess group; claim 7 requires observed source commit and resolution
 before loser resume. These target rows are not claims of baseline conformance.
 Directory moves are proposed boundaries, not claims that those directories exist.
 
+Runtime activation publication: `runtime-multi-epoch-store` protects durable
+membership of the selected run/control activation prefix, not equality with a
+moving journal tail. See the [activation flow](dfd-todo-start.md#runtime-activation-publication).
+Heartbeats may append after the selected control head; contradictory activation
+transitions still reject publication. Runtime alone owns this correction.
+
 ## Product boundary
 
 Lattice runs independently of BellTeam. Runtime execution management is required

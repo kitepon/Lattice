@@ -12,6 +12,8 @@ import path from 'node:path';
 
 import { canonicalizeArtifact, digestArtifact } from './artifact-contracts.mjs';
 import { buildExecutorPackets } from './runtime-engine.mjs';
+import { verifyRunEventChain } from './runtime-event-store.mjs';
+import { validateRuntimeControlJournal } from './runtime-control-store.mjs';
 import {
   RUNTIME_CONFLICT_KINDS,
   validateExecutorPacket,
@@ -91,6 +93,42 @@ function selfDigestValid(value, field) {
   const body = { ...value };
   delete body[field];
   return digestArtifact(body) === value[field];
+}
+
+function activationPrefixEvidence(events, expectedDigest, { stream, runId, plan }) {
+  plan ??= {};
+  const isArray = Array.isArray(events);
+  const index = isArray ? events.findIndex((event) => event?.event_digest === expectedDigest) : -1;
+  const actual = isArray ? events.at(-1)?.event_digest : null;
+  const chainValid = isArray && (stream === 'run'
+    ? verifyRunEventChain({ events }).valid && events[0]?.run_id === runId
+    : validateRuntimeControlJournal(events, runId));
+  const conflicting = chainValid && index >= 0 ? events.slice(index + 1).find((event) => {
+    if (stream === 'run') {
+      return event.plan_epoch > plan.plan_epoch
+        || ['run_closed', 'intake_frozen'].includes(event.kind)
+        || (event.kind === 'intake_resumed' && event.plan_epoch === plan.plan_epoch)
+        || (event.kind === 'plan_recompiled' && event.plan_epoch >= plan.plan_epoch
+          && (event.plan_epoch !== plan.plan_epoch
+            || event.payload.new_plan_digest !== plan.plan_digest
+            || event.subject.ref !== plan.plan_ref));
+    }
+    return ['supervisor_stopped', 'supervisor_recovery_barrier', 'write_gate_committed'].includes(event.kind)
+      || (['epoch_activated', 'intake_resumed'].includes(event.kind)
+        && event.payload.plan_epoch >= plan.plan_epoch);
+  }) : null;
+  return {
+    expected_tail: expectedDigest, actual_tail: HEX_DIGEST.test(actual ?? '') ? actual : null,
+    expected_in_chain: index >= 0, chain_valid: chainValid,
+    conflicting_event_digest: conflicting?.event_digest ?? null,
+  };
+}
+
+function activationEvidence(runEvents, controlEvents, runDigest, controlDigest, runId, plan) {
+  return {
+    run: activationPrefixEvidence(runEvents, runDigest, { stream: 'run', runId, plan }),
+    control: activationPrefixEvidence(controlEvents, controlDigest, { stream: 'control', runId, plan }),
+  };
 }
 
 export function validateRuntimeFindingRecord(value) {
@@ -431,13 +469,12 @@ export async function activateEpochOneStore({
   }
   const runEvents = await readRegularJson(path.join(runDir, 'events.json'), 'run events');
   const controlEvents = await readRegularJson(path.join(runDir, 'control-events.json'), 'runtime control events');
-  const controlHead = controlEvents.at?.(-1);
-  if (!Array.isArray(runEvents) || runEvents.at(-1)?.event_digest !== activationRunEventDigest
-    || !Array.isArray(controlEvents)
-    || controlHead?.event_digest !== activationControlEventDigest
-    || controlHead?.kind !== 'supervisor_activated'
-    || !selfDigestValid(controlHead, 'event_digest')) {
-    fail('INVALID_RUN_STORE', 'activation pointerがdurable event headへbindしない');
+  const evidence = activationEvidence(runEvents, controlEvents, activationRunEventDigest,
+    activationControlEventDigest, request?.request_id, compileArtifact?.plan);
+  if (!Object.values(evidence).every((entry) => entry.chain_valid && entry.expected_in_chain
+      && entry.conflicting_event_digest === null)
+    || controlEvents.find((event) => event.event_digest === activationControlEventDigest)?.kind !== 'supervisor_activated') {
+    fail('INVALID_RUN_STORE', `activation pointerがdurable event prefixへbindしない: ${JSON.stringify(evidence)}`, evidence);
   }
   const normalizedMeta = normalizeActivationMeta(legacyMeta, request, compileArtifact);
   const bundle = buildEpochOneBundle({ request, compileArtifact, legacyMeta: normalizedMeta });
@@ -507,7 +544,7 @@ export async function activateEpochOneStore({
   };
   meta.meta_digest = digestArtifact(meta);
   await replaceDurableJson(runDir, 'run-meta.json', meta);
-  return { bundle, meta, pointer };
+  return { bundle, meta, pointer, activation_evidence: evidence };
 }
 
 /** pointerを正本としてactive bundleだけを読む。directory最大値へfallbackしない。 */
@@ -697,7 +734,7 @@ export async function stageSuccessorEpoch({ runDir, transactionId, bundle, recom
 }
 
 /**
- * staged successorをepoch historyへrenameし、durable event headsを確認してpointerを最後にcommitする。
+ * staged successorをepoch historyへrenameし、durable activation prefixを確認してpointerを最後にcommitする。
  * 同digest retryだけを許し、directory最大値や別transactionへfallbackしない。
  */
 export async function commitStagedSuccessorEpoch({ runDir, transactionId,
@@ -746,9 +783,12 @@ export async function commitStagedSuccessorEpoch({ runDir, transactionId,
   const controlEvents = typeof readActivationControlEvents === 'function'
     ? await readActivationControlEvents()
     : await readRegularJson(path.join(runDir, 'control-events.json'), 'runtime control events');
-  if (!Array.isArray(runEvents) || runEvents.at(-1)?.event_digest !== activationRunEventDigest
-    || !Array.isArray(controlEvents) || controlEvents.at(-1)?.event_digest !== activationControlEventDigest) {
-    fail('EPOCH_ACTIVATION_INCOMPLETE', 'successor activation event headが未耐久化');
+  const evidence = activationEvidence(runEvents, controlEvents, activationRunEventDigest,
+    activationControlEventDigest, bundle.run_id, bundle.plan);
+  if (!Object.values(evidence).every((entry) => entry.chain_valid && entry.expected_in_chain
+      && entry.conflicting_event_digest === null)) {
+    fail('EPOCH_ACTIVATION_INCOMPLETE',
+      `successor activation event prefixが未耐久化又は矛盾: ${JSON.stringify(evidence)}`, evidence);
   }
   const epochsDir = path.join(runDir, 'epochs');
   const epochDir = path.join(epochsDir, String(bundle.plan_epoch).padStart(8, '0'));
@@ -776,7 +816,7 @@ export async function commitStagedSuccessorEpoch({ runDir, transactionId,
   };
   pointer.pointer_digest = digestArtifact(pointer);
   await replaceDurableJson(runDir, 'committed-epoch.json', pointer);
-  return { bundle, pointer };
+  return { bundle, pointer, activation_evidence: evidence };
 }
 
 export async function commitReleaseEpochBarrier({ runDir, barrier }) {
