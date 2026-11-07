@@ -21,8 +21,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  appendTodoEvent, buildTodoPlan, createTodoStoreWriter, initializeTodoStore,
+   buildTodoPlan, createTodoStoreWriter, initializeTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
 import { TODO_STATUS_SCHEMA, validateTodoStatusResult } from '../src/todo-status.mjs';
 

@@ -17,12 +17,12 @@ import {
 } from '../src/todo-contracts.mjs';
 import {
   appendImportedPlan,
-  appendTodoEvent,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import {
   phaseTodoRevisionPlanVersion, todoLegacyReconciliationDigest,
   todoReconciliationDigest,
@@ -1038,17 +1038,16 @@ const snapshotCases = [
 ];
 
 for (const [name, mutate] of snapshotCases) {
-  test(`crash matrix: journal健全×snapshot ${name} はverify read-only＋明示rebuild`, async (context) => {
+  test(`crash matrix: journal健全×snapshot ${name} はverify openで自動rebuildする`, async (context) => {
     const root = await workspace(context);
     await mutate(root);
-    const beforeVerify = await storeDigest(root);
-    const verify = successJson(runCli(root, ['todo', 'verify']));
-    assert.equal(verify.snapshot_stale, true);
-    assert.equal(verify.verified_members[0].snapshot_stale, true);
-    assert.equal(await storeDigest(root), beforeVerify, 'verify must not regenerate or modify snapshot');
-
     const journalBefore = await fileBytes(root, journalRef);
     const manifestBefore = await fileBytes(root, manifestRef);
+    const verify = successJson(runCli(root, ['todo', 'verify']));
+    assert.equal(verify.snapshot_stale, false);
+    assert.equal(verify.verified_members[0].snapshot_stale, false);
+    assert.deepEqual(await fileBytes(root, journalRef), journalBefore);
+    assert.deepEqual(await fileBytes(root, manifestRef), manifestBefore);
     const rebuilt = successJson(runCli(root, ['todo', 'snapshot', '--rebuild', '--plan', 'main']));
     assertExactKeys(rebuilt, [
       'schema', 'project_id', 'plan_key', 'snapshot_ref', 'through_sequence',

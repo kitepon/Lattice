@@ -18,9 +18,10 @@ import {
 } from '../src/todo-revision.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
 import {
-  appendTodoEvent, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
+   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   initializeTodoStore, readTodoStore, verifyPhaseTodoRevisionSources,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(REPO_ROOT, 'bin', 'lattice.mjs');
@@ -725,6 +726,21 @@ for (const crashStage of [
     assert.equal(receipt.revision_digest, revision.revision_digest);
     const store = await readTodoStore({ repoRoot: root, now: '2026-07-21T00:00:02.000Z' });
     assert.equal(store.members[0].descriptor.active_revision_digest, revision.revision_digest);
+  });
+}
+
+for (const crashStage of ['phase_v3_cutover_barrier_durable', 'phase_v3_source_cleanup', 'phase_v3_manifest_activated']) {
+  test(`open automatically completes the recorded phase-v3 transaction after ${crashStage}`, async (t) => {
+    const { root, revision, writer } = await fixture(t);
+    await assert.rejects(applyPhaseTodoRevision({ repoRoot: root, writer, revision, actor: ACTOR,
+      recordedAt: COMMIT_AT, now: COMMIT_AT,
+      onProtocolStage(stage) { if (stage === crashStage) throw new Error('injected crash'); },
+    }), /injected crash/u);
+    const store = await readTodoStore({ repoRoot: root, now: COMMIT_AT });
+    assert.equal(store.members[0].descriptor.active_revision_digest, revision.revision_digest);
+    await assert.rejects(readFile(path.join(root, '.lattice/todo/source-cutover-recovery.json')), { code: 'ENOENT' });
+    assert.equal((await readTodoStore({ repoRoot: root, now: COMMIT_AT })).members[0].plan.plan_digest,
+      revision.desired_plan.plan_digest);
   });
 }
 

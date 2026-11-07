@@ -20,9 +20,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  TodoStoreError, appendTodoEvent, buildTodoPlan, createTodoStoreWriter,
+  TodoStoreError, buildTodoPlan, createTodoStoreWriter,
   initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { renderTodoGanttForProject } from '../src/todo-cli.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
 

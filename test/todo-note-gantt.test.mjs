@@ -8,8 +8,9 @@ import test from 'node:test';
 import { ganttLiveHeadDigest, renderTodoGanttForProject } from '../src/todo-cli.mjs';
 import { appendTodoNote } from '../src/todo-note-store.mjs';
 import {
-  appendTodoEvent, createTodoStoreWriter, initializeTodoStore, readTodoStore,
+   createTodoStoreWriter, initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { registerManagedDaemonFixture } from './helpers/managed-daemon-fixture.mjs';
 
 const ACTOR = { host: 'host-1', session: 'session-1', agent: 'agent-1' };

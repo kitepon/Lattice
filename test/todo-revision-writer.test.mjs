@@ -11,12 +11,12 @@ import {
   TodoStoreError,
   appendImportedPlan,
   applyTodoRevision,
-  appendTodoEvent,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import {
   todoCutoverArchiveSourceRef,
   todoLegacyReconciliationDigest,
@@ -792,7 +792,7 @@ for (const stage of [
   'source_cutover_staged', 'source_cutover_barrier_durable', 'source_cutover_published',
   'revision_manifest_activated', 'source_cutover_cleanup',
 ]) {
-  test(`v2 source cutoverは${stage}停止から同一revisionだけで収束する`, async (context) => {
+  test(`v2 source cutoverは${stage}停止からopenまたは同一revisionで収束する`, async (context) => {
     const root = await fixture(context);
     const revision = await cutoverRevisionFor(root, { twoFiles: true });
     await assert.rejects(apply(root, revision, {
@@ -800,9 +800,8 @@ for (const stage of [
     }), new RegExp(`crash:${stage}`, 'u'));
     if (['source_cutover_barrier_durable', 'source_cutover_published',
       'revision_manifest_activated'].includes(stage)) {
-      await assert.rejects(readTodoStore({ repoRoot: root, now: NOW }),
-        (error) => error instanceof TodoStoreError
-          && error.code === 'SOURCE_CUTOVER_RECOVERY_REQUIRED');
+      const reopened = await readTodoStore({ repoRoot: root, now: NOW });
+      assert.equal(reopened.members[0].plan.plan_version, revision.desired_plan.plan_version);
     }
     const result = await apply(root, revision);
     assert.equal(result.revision_digest, revision.revision_digest);

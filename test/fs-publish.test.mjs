@@ -3,7 +3,16 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { renamePublishedFile } from '../src/fs-publish.mjs';
+import { renamePublishedFile, syncPublishedFile } from '../src/fs-publish.mjs';
+
+test('file sync shares exactly the existing WSL2 /mnt EIO exception', async () => {
+  const error = Object.assign(new Error('sync failed'), { code: 'EIO' });
+  const handle = { sync: async () => { throw error; } };
+  await syncPublishedFile(handle, '/mnt/c/store/.write.lock', { platform: 'linux' });
+  for (const [absolute, platform] of [['/srv/store/.write.lock', 'linux'], ['/mnt/c/store', 'darwin']]) {
+    await assert.rejects(syncPublishedFile(handle, absolute, { platform }), (value) => value === error);
+  }
+});
 
 test('Windowsの一時的なEPERMだけを同じrenameで待ち、恒久拒否は元のエラーで返す', async () => {
   const denied = Object.assign(new Error('拒否'), { code: 'EPERM' });

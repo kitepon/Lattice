@@ -18,9 +18,10 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  TodoStoreError, appendTodoEvent, buildTodoPlan, createTodoStoreWriter,
+  TodoStoreError, buildTodoPlan, createTodoStoreWriter,
   initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
 import { runTodoCli } from '../src/todo-cli.mjs';
 

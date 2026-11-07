@@ -8,11 +8,11 @@ import test from 'node:test';
 
 import { computeReadyFrontier, projectTodoStatus } from '../src/todo-status.mjs';
 import {
-  appendTodoEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 // ready判定の単一正本化（ADR 0127 工程5）。切り出しは挙動不変でなければならないため、
 // status v4の出力バイト列をgoldenで固定する。ready集合はstatusと同じ計算から出る。

@@ -40,7 +40,7 @@ preserve historical records and identify the live product replacement.
 
 | Boundary | Current implementation / public interface | Owned state and writer | Callers / connections | Failure and unknown handling |
 |---|---|---|---|---|
-| Store | `todo-store.mjs`: readTodoStore, appendTodoEvent, activation/revision; `todo-note-store.mjs`, `todo-store-git-transaction.mjs`, `todo-store-cache.mjs`; `readTodoStore` returns canonical `member.tasks` and journal-derived `member.phases` for every member (ADR 0147); the locked `forWrite` view has snapshot phases equal to that projection. | `.lattice/todo/manifest.json`, `plans/<key>/<version>/{plan.json,journal/**,snapshot.json}`, recovery markers: todo-store under write lock; `notes/**`: note-store under note lock; staged store commits: git transaction | CLI, status, plan/structure/independence, dashboard, runtime pull-intake; currently imports structure adapter and seam contracts upward | Identity/digest/event-chain checks protect recorded bytes; snapshot is derived. Current stale snapshot and crash windows are recorded in DFD. Proposed: isolate read/append/CAS/lock without feature imports; caller supplies feature data. No on-disk format change. |
+| Store | `todo-store.mjs`: readTodoStore (public), readTodoStoreLocked (private), appendTodoEvent, marker recovery, activation/revision; `todo-note-store.mjs`, `todo-store-git-transaction.mjs`, `todo-store-cache.mjs`; `store-lock.mjs`: shared identified lock/recovery claims; `readTodoStore` returns canonical `member.tasks` and journal-derived `member.phases` for every member (ADR 0147); the locked `forWrite` view has snapshot phases equal to that projection. | `.lattice/todo/manifest.json`, `plans/<key>/<version>/{plan.json,journal/**,snapshot.json}`, recovery markers: todo-store under write lock; `notes/**`: note-store under note lock; staged store commits: git transaction; todo/note .write.lock, .write.lock.*.tmp, .write.lock.recovery/** and .cross-plan-recovery/** are host-local, never committed | CLI, status, plan/structure/independence, dashboard, runtime pull-intake; currently imports structure adapter and seam contracts upward | Identity/digest/event-chain checks protect recorded bytes; snapshot is derived and rebuilt under lock. Reopen rolls a validated journal ancestor forward to snapshot/manifest and resolves recorded recovery markers. Locks atomically publish complete PID + process-start + host ownership; default proven-dead recovery through identity-aware claims. Preserve live/foreign-host/unidentified owners; legacy empty/pid-only locks require operator confirmation before clearing. See DFD for transitions and error compatibility. Proposed: isolate read/append/CAS/lock without feature imports; caller supplies feature data. No event/store artifact format change. |
 | Plan + lifecycle | `project-cli.mjs`, `todo-cli.mjs`, `todo-revision.mjs`, `todo-migration.mjs`, `plan-backchain.mjs`, `plan-scope-review.mjs`, `todo-status.mjs`; public plan/todo commands | Immutable plans and lifecycle events via Store; backchain.json is written only by todo-store activation/revision; plan-backchain validates and supplies its value; author owns input files | Surfaces call lifecycle; lifecycle calls Store; status reads Store; runtime consumes plan bindings | Keep dependency and phase-accept ordering. Unknown observational evidence is a separate concern. Actor binding will permit any actor, retaining event attribution and target digest binding. |
 | Independence + seam | `todo-independence*.mjs`, `todo-witness-scaffold.mjs`, `boundary-observation-compiler-v2.mjs`, `schedulability-compiler-v2.mjs`, `schedulability-verifier-v2.mjs`, `seam-*.mjs`; public independence/seam commands | AI authors `witness/<key>.json`; todo-independence validates its contracts; todo-store persists version-bound artifacts. Independence compiler and seam operations write version-bound artifacts via Store; isolation runner owns disposable worktrees | Lifecycle consumes advisory projection; compiler consumes bundled sensor; seam transforms feed plan revision; currently independence also imports runtime-front-end | Missing/stale/unknown observations remain visible. Current start refusals are listed in DFD; proposed advisory conversion must preserve explicit unknowns. Real transformation still verifies behavior and records accepted artifacts. |
 | Structure | `todo-structure*.mjs`; structure commands and lifecycle context | AI authors structure inputs; writeTodoStructureSource in todo-store validates and persists canonical source; structure compiler validates/produces values, todo-store alone writes version bindings and realization/finalization artifacts | Lifecycle and phase decisions consume structure; adapter consumes Git and bundled sensor | Source inconsistency currently both projects unreadable context and refuses mutation. Separate observation staleness from required acceptance evidence before any behavior change. |
@@ -67,7 +67,12 @@ The later split moves functions to their owner without changing the contract.
 | todo-cli: resolveDoneEvidence/writeEvidenceBlob, also used by phase decisions | Plan/lifecycle evidence service | done and phase decision commands; sole writer of `.lattice/todo/evidence/<plan>/<task>/<digest>.md` and its Git blob descriptors |
 | plan-backchain: validatePlanBackchain and context projection | Plan/lifecycle | Plan activation/revision supply validated values to Store; Store alone persists backchain.json |
 | `todo-store-view.mjs`: schema classification and `projectTodoCrossPlanDependencies` | Store (pure view; no I/O or feature import) | Readiness, status, Store; CLI and existing clients via Store compatibility re-exports |
-| `todo-readiness.mjs`: `createTodoReadiness(store)`, `validateProspectiveEvent({store, member, event})` | Plan/lifecycle; no state writes. Canonical task/phase view is `member.tasks` / journal-derived `member.phases`, including synthetic fixtures; `snapshot.phases` is never read by readiness. | Status and prospective validation use one prerequisite predicate set. Store invokes the supplied validator after lock/re-read. During this extraction only, its existing private wrapper delegates to the validator; Store recovery removes that temporary upward import. Replay historical integrity remains unchanged. |
+| `todo-readiness.mjs`: `createTodoReadiness(store)`, `validateProspectiveEvent({store, member, event})` | Plan/lifecycle; no state writes. Canonical task/phase view is `member.tasks` / journal-derived `member.phases`, including synthetic fixtures; `snapshot.phases` is never read by readiness. | Status and prospective validation use one prerequisite predicate set. Store invokes the supplied validator after lock/re-read. The stage-1 compatibility wrapper and upward import were removed by Store in stage 2. Replay historical integrity remains unchanged. |
+| Shared identified lock and recovery claims (store-lock.mjs); todo-store withLock and note-store withNoteLock | Store | All todo/note writers; runtime/adapter/setup integration deferred |
+| appendTodoEvent supplied-callback invocation | Store | Five todo-cli append sites supply Plan's validateProspectiveEvent; the option is mandatory and runs once after locked reread. No default validator or Store → Plan import remains in S3 stage 2. |
+| runtime-os-observation: observeStartIdentityRaw/observeProcessHostIdentityRaw | Platform helper, no runtime policy | Store lock and runtime process/lifecycle observation; Store host domain uses OS identity + Linux PID namespace, independent of actor configuration. Start digests in the two lock protocols are internal and never compared |
+| fs-publish: syncPublishedFile | Filesystem publication helper | Todo atomicWrite/atomicWriteMode, note atomicWrite and shared Store lock; owns the existing WSL2 /mnt EIO allowance |
+| todo-store-git-transaction: detached store commit path selection | Store | Only durable store artifacts enter Git; todo/note .write.lock, .write.lock.*.tmp, .write.lock.recovery/** and .cross-plan-recovery/** are host-local and excluded |
 
 ## Dependency direction after the proposed split
 
@@ -75,6 +80,13 @@ The later split moves functions to their owner without changing the contract.
 and returns artifacts/advisories to lifecycle. Store imports no features. Runtime
 uses both the plan public index and independence/seam public index instead of CLI internals. `src/todo-contracts.mjs`
 remains an external compatibility re-export until consumers migrate.
+
+Store → platform OS observer is an infrastructure dependency; the observer's
+current runtime-os-observation filename does not make it runtime policy. Store
+and runtime lock start digests use different internal encodings and are never
+compared. Store → filesystem publication helper shares one file-sync policy.
+
+Stage 1 extraction note (the Store stage-2 supplied-callback row above is current):
 
 The single temporary Store → Plan import is `validateProspectiveEvent` at the
 `todo-store.mjs` private `validateMergedTransition` wrapper. Rudmira removes it
@@ -86,6 +98,16 @@ and executes it after the locked re-read. Store retains schema/identity/chain,
 replay projection, locks and CAS; it imports no feature policy. Structure's
 phase_accept/close evidence validator is supplied the same way. For manual start
 only, observational structure failure becomes context/advice.
+
+The prospective callback is `validateProspectiveEvent({store, member, event})`.
+`store` is the complete fresh locked read, treated read-only by Plan, so cross-plan
+edges and states remain available. Plan returns `{ok:true}` or
+`{ok:false,code,detail:{reason,cause,...}}`; existing per-kind code/reason are
+preserved, with additive task/phase/acceptance/predecessor cause detail. It covers
+start, done, reopen and phase_reopen. S3 stage 2 completes the stage-1 seam
+described above: callers now supply the mandatory function; the temporary
+validateMergedTransition wrapper and upward import are removed. Failure maps
+the validator's existing code/reason and additive detail to the same refusal.
 
 Replace independence→runtime-front-end with runtime passing observed-change facts
 as data through lifecycle; independence consumes the facts, never runtime state

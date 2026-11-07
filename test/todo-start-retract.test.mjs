@@ -9,8 +9,9 @@ import test from 'node:test';
 import { runTodoCli } from '../src/todo-cli.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
 import {
-  appendTodoEvent, createTodoStoreWriter, initializeTodoStore, readTodoStore,
+   createTodoStoreWriter, initializeTodoStore, readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const ACTOR = Object.freeze({ host: 'mac', session: 'seat-a', agent: 'seat-a' });
 const OTHER = Object.freeze({ host: 'mac', session: 'seat-b', agent: 'seat-b' });

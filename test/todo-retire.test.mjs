@@ -7,11 +7,11 @@ import test from 'node:test';
 
 import { runTodoCli } from '../src/todo-cli.mjs';
 import {
-  appendTodoEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { computeReadyFrontier } from '../src/todo-status.mjs';
 
 const NOW = '2026-08-28T00:00:00.000Z';

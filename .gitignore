@@ -19,6 +19,10 @@ research/runs/
 .lattice/todo/plans/*/*/independence.json
 # seam提案も同じ並置artifactで、independence記録とHEADから再生成できる。
 .lattice/todo/plans/*/*/seam-proposal.json
+# Host-local exclusion state must never be distributed with durable store bytes.
+.lattice/todo/**/.write.lock
+.lattice/todo/**/.write.lock.*
+.lattice/todo/.cross-plan-recovery/
 # Project-local orchestration run state（ADR 0060）。
 .lattice/runs/
 # upstream (CodeGraph) のbare clone。scripts/upstream-sync.mjsが再取得できる派生物で、

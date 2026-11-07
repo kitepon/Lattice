@@ -10,10 +10,10 @@ export {
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
 } from './todo-store-view.mjs';
-import { validateProspectiveEvent } from './todo-readiness.mjs';
 import { randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
-import { renamePublishedFile } from './fs-publish.mjs';
+import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
+import { StoreLockError, withStoreLock } from './store-lock.mjs';
 import {
   lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir,
 } from 'node:fs/promises';
@@ -75,6 +75,7 @@ const CROSS_PLAN_RECOVERY_CLAIMS_REF = `${STORE_ROOT_REF}/.cross-plan-recovery`;
 const CROSS_PLAN_IMPORT_TRANSACTION_SCHEMA = 'lattice.todo_cross_plan_import_transaction.v1';
 const SOURCE_CUTOVER_BARRIER_REF = `${STORE_ROOT_REF}/source-cutover-recovery.json`;
 const SOURCE_CUTOVER_RECOVERY_CAPABILITY = Symbol('lattice.todo.source-cutover-recovery');
+const STORE_LOCK_HELD = Symbol('lattice.todo.lock-held');
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const WRITER_CALLERS = new Set(['g4-migration', 'g5-authoring']);
 const TODO_REVISION_SCHEMAS = Object.freeze([
@@ -251,7 +252,10 @@ async function readJournal(repoRoot, journalRef) {
     if (error?.code !== 'ENOENT') fail('STORE_CORRUPT', 'sealed_segment_read_failed');
   }
   const activeBytes = await readFile(state.absolute);
-  segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef) });
+  const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
+  if (!duplicateActive) {
+    segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef) });
+  }
   const events = segments.flatMap(({ events: entries }) => entries);
   const failures = verifyLinearHashChain({
     entries: events,
@@ -284,7 +288,7 @@ async function readJournal(repoRoot, journalRef) {
       ? event.schema !== 'lattice.todo_event.v1' : !legacyOrImplicitPhaseTail(event)))) {
     fail('STORE_CORRUPT', 'journal_schema_sequence_invalid');
   }
-  return { segments, events, activeBytes };
+  return { segments, events, activeBytes: duplicateActive ? Buffer.alloc(0) : activeBytes };
 }
 
 /**
@@ -1014,13 +1018,6 @@ function mergedTaskKey(refValue) {
 }
 
 // Temporary adapter until Store receives the Plan callback from its caller.
-function validateMergedTransition(store, member, event) {
-  const result = validateProspectiveEvent({ store, member, event });
-  if (!result.ok) {
-    const { reason, ...detail } = result.detail;
-    fail(result.code, reason, detail);
-  }
-}
 
 /**
  * refsから辿れるobject idの集合。repositoryごとに1度だけ数え、以後は使い回す。
@@ -1354,7 +1351,61 @@ function verifyPlanNarrativeAnchors(repoRoot, plan, trustedPlan = null, cache = 
   }
 }
 
+function recoverableReadError(error) {
+  return error instanceof TodoStoreError && [
+    'manifest_journal_head_mismatch', 'snapshot_stale',
+    'source_cutover_recovery_required', 'cross_plan_import_recovery_required',
+  ].includes(error.detail.reason);
+}
+
 export async function readTodoStore(options = {}) {
+  const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+  let view;
+  let observedError;
+  try {
+    view = await readTodoStoreView(options);
+    const lockPresent = await lstat(path.join(repoRoot, STORE_ROOT_REF, '.write.lock'))
+      .then(() => true, (error) => { if (error?.code === 'ENOENT') return false; throw error; });
+    if (!view.snapshot_stale && !lockPresent) return view;
+  } catch (error) {
+    if (!recoverableReadError(error)) throw error;
+    observedError = error;
+  }
+  try { return await withLock(repoRoot, () => readTodoStoreLocked(options)); }
+  catch (error) {
+    // A concurrent writer owns its publication window; stable readers retry it.
+    if (error instanceof TodoStoreError && error.code === 'STORE_WRITE_CONFLICT') {
+      if (view) return view;
+      if (error.detail.reason !== 'store_locked' || error.detail.cause) throw error;
+      if (observedError) throw observedError;
+    }
+    throw error;
+  }
+}
+
+async function readTodoStoreLocked(options = {}) {
+  const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+  if (options.sourceCutoverRecoveryCapability !== SOURCE_CUTOVER_RECOVERY_CAPABILITY) {
+    await recoverSourceCutover(repoRoot, options.now);
+  }
+  await recoverCrossPlanImports(repoRoot);
+  const recovery = { manifestDirty: false };
+  const store = await readTodoStoreView({ ...options, recovery });
+  // Every member and merged graph has validated before any derived publication.
+  for (const member of store.members) {
+    if (!member.snapshot_stale) continue;
+    await atomicWrite(path.resolve(repoRoot, member.descriptor.snapshot_ref), canonicalLine(member.snapshot));
+    member.snapshot_stale = false;
+  }
+  if (recovery.manifestDirty) {
+    store.manifest.manifest_digest = todoSelfDigest(store.manifest, 'manifest_digest');
+    await atomicWrite(path.resolve(repoRoot, MANIFEST_REF), canonicalLine(store.manifest));
+  }
+  store.snapshot_stale = false;
+  return store;
+}
+
+async function readTodoStoreView(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   const barrier = await exactFileOrNull(path.resolve(repoRoot, SOURCE_CUTOVER_BARRIER_REF));
   if (barrier !== null) {
@@ -1389,7 +1440,12 @@ export async function readTodoStore(options = {}) {
     }
     const journal = await readJournal(repoRoot, descriptor.journal_ref);
     if (journal.events.at(-1).event_digest !== descriptor.journal_head_digest) {
-      fail('STORE_INCONSISTENT', 'manifest_journal_head_mismatch');
+      if (!options.recovery || !journal.events.some(({ event_digest: digest }) => (
+        digest === descriptor.journal_head_digest))) {
+        fail('STORE_INCONSISTENT', 'manifest_journal_head_mismatch');
+      }
+      options.recovery.manifestDirty = true;
+      descriptor.journal_head_digest = journal.events.at(-1).event_digest;
     }
     let revision = null;
     const genesis = journal.events[0];
@@ -1474,7 +1530,7 @@ export async function readTodoStore(options = {}) {
           'artifact_eol_converted'].includes(error.detail.reason)) snapshotStale = true;
       else throw error;
     }
-    if (options.forWrite === true && snapshotStale) fail('STORE_WRITE_REFUSED', 'snapshot_stale');
+    if (options.forWrite === true && snapshotStale && !options.recovery) fail('STORE_WRITE_REFUSED', 'snapshot_stale');
     // 導出済みphase状態(ADR 0147)。snapshot artifactの形式(v1/v2)には縛られず、v4/v5・
     // phase無しplanのどちらでも同じ形(暗黙のterminal-audit Phase込み)で常に埋める。
     // 消費者はここを読み、snapshot.phases(v1には存在しない)を直接読まない。
@@ -1550,11 +1606,7 @@ async function atomicWrite(absolute, bytes) {
   try {
     handle = await open(temporary, 'wx', 0o600);
     await handle.writeFile(bytes);
-    // WSL2でのNTFSパス（/mnt/以下）ではfsyncがEIOを返すことがある。データ自体は書き込まれている。
-    try { await handle.sync(); } catch (syncError) {
-      if (!(process.platform === 'linux' && /^\/mnt\//.test(absolute) && syncError?.code === 'EIO')) throw syncError;
-      process.stderr.write(`lattice: fsync skipped (WSL2/NTFS EIO) ${absolute}\n`);
-    }
+    await syncPublishedFile(handle, absolute);
     await handle.close(); handle = null;
     await renamePublishedFile(temporary, absolute);
     await fsyncDirectory(path.dirname(absolute));
@@ -1572,10 +1624,7 @@ async function atomicWriteMode(absolute, bytes, mode) {
   try {
     handle = await open(temporary, 'wx', mode);
     await handle.writeFile(bytes); await handle.chmod(mode);
-    try { await handle.sync(); } catch (syncError) {
-      if (!(process.platform === 'linux' && /^\/mnt\//.test(absolute) && syncError?.code === 'EIO')) throw syncError;
-      process.stderr.write(`lattice: fsync skipped (WSL2/NTFS EIO) ${absolute}\n`);
-    }
+    await syncPublishedFile(handle, absolute);
     await handle.close(); handle = null;
     await renamePublishedFile(temporary, absolute);
     await fsyncDirectory(path.dirname(absolute));
@@ -1586,105 +1635,25 @@ async function atomicWriteMode(absolute, bytes, mode) {
 }
 
 
-async function createWriteLock(lockRef, { recordOwner = false } = {}) {
-  const handle = await open(lockRef, 'wx', 0o600);
-  if (!recordOwner) return handle;
+async function withLock(repoRoot, callback, { onProtocolStage = null, lockCapability = null } = {}) {
+  if (lockCapability === STORE_LOCK_HELD) return callback();
   try {
-    await handle.writeFile(canonicalLine({ pid: process.pid }));
-    await handle.sync();
-    return handle;
+    return await withStoreLock({
+      lockPath: path.join(repoRoot, STORE_ROOT_REF, '.write.lock'),
+      recoveryClaimsPath: path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF),
+      onRecoveryClaim: typeof onProtocolStage === 'function'
+        ? () => onProtocolStage('cross_plan_lock_recovery_mutex_acquired') : null,
+    }, callback);
   } catch (error) {
-    await handle.close();
-    await rm(lockRef, { force: true });
+    if (error instanceof StoreLockError) fail('STORE_WRITE_CONFLICT', error.reason, error.detail);
     throw error;
   }
-}
-
-async function staleWriteLockOwner(lockRef) {
-  let record;
-  try { record = JSON.parse((await readFile(lockRef)).toString('utf8')); }
-  catch { return false; }
-  if (!exactRecord(record, ['pid']) || !Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
-  try {
-    process.kill(record.pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === 'ESRCH';
-  }
-}
-
-function processIsDead(pid) {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === 'ESRCH';
-  }
-}
-
-async function acquireCrossPlanRecoveryClaim(recoveryClaimsRef) {
-  await mkdir(recoveryClaimsRef, { recursive: true, mode: 0o700 });
-  const claimOrder = process.hrtime.bigint().toString().padStart(20, '0');
-  const claimName = `${claimOrder}-${process.pid}-${randomBytes(8).toString('hex')}`;
-  const claimRef = path.join(recoveryClaimsRef, claimName);
-  await mkdir(claimRef, { mode: 0o700 });
-  for (const entry of await readdir(recoveryClaimsRef, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === claimName) continue;
-    const parts = entry.name.split('-', 3);
-    const pid = Number(parts.length === 2 ? parts[0] : parts[1]);
-    if (Number.isSafeInteger(pid) && pid > 0 && processIsDead(pid)) {
-      await rm(path.join(recoveryClaimsRef, entry.name), { recursive: true, force: true });
-    }
-  }
-  const candidates = (await readdir(recoveryClaimsRef)).sort();
-  if (candidates[0] === claimName) return claimRef;
-  await rmdir(claimRef);
-  return null;
-}
-
-async function recoverCrossPlanWriteLock(lockRef, recoveryClaimsRef, onProtocolStage) {
-  const claimRef = await acquireCrossPlanRecoveryClaim(recoveryClaimsRef);
-  if (claimRef === null) return undefined;
-  try {
-    if (typeof onProtocolStage === 'function') await onProtocolStage('cross_plan_lock_recovery_mutex_acquired');
-    if (!await staleWriteLockOwner(lockRef)) return undefined;
-    await rm(lockRef, { force: true });
-    try { return await createWriteLock(lockRef, { recordOwner: true }); }
-    catch (error) {
-      if (error?.code === 'EEXIST') return undefined;
-      throw error;
-    }
-  } finally {
-    await rm(claimRef, { recursive: true, force: true });
-    try { await rmdir(recoveryClaimsRef); }
-    catch (error) {
-      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error;
-    }
-  }
-}
-
-async function withLock(repoRoot, callback, { recoverDeadLock = false, onProtocolStage = null } = {}) {
-  const root = path.join(repoRoot, STORE_ROOT_REF);
-  await mkdir(root, { recursive: true });
-  const lockRef = path.join(root, '.write.lock');
-  const recoveryClaimsRef = path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF);
-  let handle;
-  try { handle = await createWriteLock(lockRef, { recordOwner: recoverDeadLock }); }
-  catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    if (recoverDeadLock) {
-      handle = await recoverCrossPlanWriteLock(lockRef, recoveryClaimsRef, onProtocolStage);
-    }
-  }
-  if (handle === undefined) fail('STORE_WRITE_CONFLICT', 'store_locked');
-  try { return await callback(); }
-  finally { await handle.close(); await rm(lockRef, { force: true }); }
 }
 
 export async function rebuildTodoSnapshot(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, now: options.now });
     const member = store.members.find(({ descriptor }) => descriptor.plan_key === options.planKey);
     if (!member) fail('STORE_INCONSISTENT', 'plan_not_active');
     await atomicWrite(path.resolve(repoRoot, member.descriptor.snapshot_ref), canonicalLine(member.snapshot));
@@ -1887,9 +1856,12 @@ async function enforceTodoStructureLifecycleGate(repoRoot, member, eventInput) {
 
 export async function appendTodoEvent(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
+  if (typeof options.validateProspectiveEvent !== 'function') {
+    throw new TypeError('appendTodoEvent requires a Plan-supplied validateProspectiveEvent');
+  }
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({
+    const store = await readTodoStoreLocked({
       repoRoot, forWrite: true, now: options.now,
       // 修理扉は除去event（tombstone）の書込みだけに開く。それ以外の書込みは従来どおり
       // binding_stale で fail closed する（validateMergedGraph の注記を参照）
@@ -1935,7 +1907,12 @@ export async function appendTodoEvent(options = {}) {
       fail('STORE_WRITE_CONFLICT', 'historical_import_writer_required');
     }
     // Validate the prospective history, including hard evidence and transitions, before any write.
-    validateMergedTransition(store, member, event);
+    const validation = options.validateProspectiveEvent({ store, member, event });
+    if (validation?.ok === false) {
+      const { reason, ...detail } = validation.detail;
+      fail(validation.code, reason, detail);
+    }
+    if (validation?.ok !== true) throw new TypeError('prospective validator must return an ok result');
     const appendSourceCache = { commits: new Set(), blobs: new Map() };
     prefetchVerificationObjects(store.manifest, repoRoot,
       [...member.journal.events, event], appendSourceCache);
@@ -1971,6 +1948,7 @@ export async function appendTodoEvent(options = {}) {
     } else {
       await atomicWrite(activeAbsolute, Buffer.concat([member.journal.activeBytes, eventBytes]));
     }
+    await protocolStage(options, 'event_journal_published');
     const tasks = replay(member.plan, [...member.journal.events, event], {
       now: options.now ? new Date(options.now) : new Date(),
       verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
@@ -1978,9 +1956,11 @@ export async function appendTodoEvent(options = {}) {
     });
     const snapshot = snapshotFor(member.plan, [...member.journal.events, event], tasks);
     await atomicWrite(path.resolve(repoRoot, member.descriptor.snapshot_ref), canonicalLine(snapshot));
+    await protocolStage(options, 'event_snapshot_published');
     member.descriptor.journal_head_digest = event.event_digest;
     store.manifest.manifest_digest = todoSelfDigest(store.manifest, 'manifest_digest');
     await atomicWrite(path.resolve(repoRoot, MANIFEST_REF), canonicalLine(store.manifest));
+    await protocolStage(options, 'event_manifest_published');
     // snapshot artifactの形式(v1/v2)はplanのschemaで決まったまま変えない。呼び出し側
     // (todo-cli.mjsのphaseMutation・done advisory)がPhase状態(暗黙のterminal-audit含む)を
     // 見るための導出ビューは、snapshotと分けてここで別途返す。
@@ -2471,7 +2451,17 @@ async function finalizeVisibleCrossPlanImport(repoRoot, transaction, { removeTra
         ref: artifact.staged_ref,
       });
     }
-    await atomicWrite(path.resolve(repoRoot, artifact.ref), bytes);
+    const eventBytes = canonicalLine(transaction.marker.events[0]);
+    if (!bytes.subarray(-eventBytes.length).equals(eventBytes)) {
+      fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.staged_ref });
+    }
+    const target = await pathState(repoRoot, artifact.ref, 'STORE_INCONSISTENT', { missing: true });
+    const current = target === null ? Buffer.alloc(0) : await readFile(target.absolute);
+    const before = bytes.subarray(0, bytes.length - eventBytes.length);
+    if (!current.equals(before) && !current.equals(bytes)) {
+      fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.ref });
+    }
+    if (!current.equals(bytes)) await atomicWrite(path.resolve(repoRoot, artifact.ref), bytes);
   }
   if (removeTransaction) {
     await rm(path.resolve(repoRoot, transaction.transactionRef), { recursive: true, force: true });
@@ -2497,16 +2487,13 @@ async function assertNoCrossPlanImportRecoveryNeeded(repoRoot) {
     plan_key: transaction.marker.descriptor.plan_key,
     transaction_digest: transaction.marker.transaction_digest,
     state: visible ? 'manifest_activated' : 'pre_activation',
-    next_action: 'rerun_the_same_todo_migrate_input',
+    next_action: 'lattice todo status --json',
   });
 }
 
-async function recoverCrossPlanImports(repoRoot, { expectedTransactionDigest }) {
+async function recoverCrossPlanImports(repoRoot) {
   const transactions = await crossPlanImportTransactions(repoRoot);
   if (transactions.length === 0) return [];
-  if (!transactions.every(({ marker }) => marker.transaction_digest === expectedTransactionDigest)) {
-    await assertNoCrossPlanImportRecoveryNeeded(repoRoot);
-  }
   let manifest;
   try {
     manifest = await readArtifact(repoRoot, MANIFEST_REF, {
@@ -2535,7 +2522,7 @@ async function recoverCrossPlanImports(repoRoot, { expectedTransactionDigest }) 
 }
 
 async function recoveredImportedPlanResult(repoRoot, marker, now) {
-  const store = await readTodoStore({ repoRoot, forWrite: true, now });
+  const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === marker.descriptor.plan_key);
   if (member === undefined) fail('STORE_INCONSISTENT', 'cross_plan_transaction_recovery_missing_plan');
   return {
@@ -2555,7 +2542,7 @@ async function appendExistingCrossPlanDependency(options) {
   }
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     const source = store.members.find(({ plan }) => plan.project_id === options.connectionPlan.project_id
       && plan.plan_key === options.connectionPlan.plan_key);
     if (source === undefined) {
@@ -2582,7 +2569,7 @@ async function appendExistingCrossPlanDependency(options) {
       snapshot: source.snapshot, descriptor: source.descriptor,
       crossPlanDependencies: prepared.events, connectionOnly: true,
     };
-  }, { recoverDeadLock: true, onProtocolStage: options.onProtocolStage });
+  }, { onProtocolStage: options.onProtocolStage });
 }
 
 /** G4-only atomic import, with optional all-or-nothing store bootstrap. */
@@ -2602,13 +2589,13 @@ export async function appendImportedPlan(options = {}) {
   }
   const transactionDigest = importedPlanTransactionDigest(options);
   return withLock(repoRoot, async () => {
-    const recovered = await recoverCrossPlanImports(repoRoot, { expectedTransactionDigest: transactionDigest });
+    const recovered = await recoverCrossPlanImports(repoRoot);
     const recoveredOwnTransaction = recovered.find((marker) => marker.transaction_digest === transactionDigest);
     if (recoveredOwnTransaction !== undefined) {
       return recoveredImportedPlanResult(repoRoot, recoveredOwnTransaction, options.now);
     }
     // 1. Validate canonical manifest bytes and every current member before preparing output.
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     const expectedManifestDigest = store.manifest.manifest_digest;
     await protocolStage(options, 'manifest_validated');
 
@@ -2743,8 +2730,7 @@ export async function appendImportedPlan(options = {}) {
       }
       throw error;
     }
-  }, { recoverDeadLock: Array.isArray(options.crossPlanDependencies)
-    && options.crossPlanDependencies.length > 0, onProtocolStage: options.onProtocolStage });
+  }, { onProtocolStage: options.onProtocolStage });
 }
 
 export async function initializeTodoStore(options = {}) {
@@ -2776,7 +2762,7 @@ export async function initializeTodoStore(options = {}) {
     if (!validateTodoManifest(manifest)) throw new TypeError('manifest input violates lattice.todo_manifest.v1');
     // Activation is last: a crash before this point leaves the new store/version unpublished.
     await atomicWrite(path.resolve(repoRoot, MANIFEST_REF), canonicalLine(manifest));
-    return readTodoStore({ repoRoot, now: options.now });
+    return readTodoStoreLocked({ repoRoot, now: options.now });
   });
 }
 
@@ -2879,7 +2865,7 @@ export async function initializeAuthoredTodoStore(options = {}) {
       || activatedParent.isSymbolicLink() || !activatedParent.isDirectory()) {
       fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
     }
-    const store = await readTodoStore({ repoRoot });
+    const store = await readTodoStoreView({ repoRoot });
     const member = store.members[0];
     if (store.project_id !== options.projectId || store.members.length !== 1
       || store.snapshot_stale !== false || member?.journal?.events?.length !== 1
@@ -3601,6 +3587,78 @@ function parseRevisionSetMarker(bytes) {
   });
 }
 
+async function recoverSourceCutover(repoRoot, now) {
+  const barrierBytes = await exactFileOrNull(path.resolve(repoRoot, SOURCE_CUTOVER_BARRIER_REF));
+  if (barrierBytes === null) return;
+  const barrier = parseCanonicalJsonLine(barrierBytes, {
+    code: 'SOURCE_CUTOVER_RECOVERY_REQUIRED', reason: 'barrier_invalid',
+    maxBytes: TODO_LIMITS.snapshotBytes,
+    validate: (value) => (exactRecord(value, ['schema', 'revision_digest'])
+      && value.schema === 'lattice.todo_source_cutover_barrier.v1' && isTodoDigest(value.revision_digest))
+      || (exactRecord(value, ['schema', 'revision_set_digest', 'revision_digests'])
+        && value.schema === 'lattice.todo_source_cutover_set_barrier.v1'
+        && isTodoDigest(value.revision_set_digest) && Array.isArray(value.revision_digests)
+        && value.revision_digests.every(isTodoDigest)),
+  });
+  const isSet = barrier.schema === 'lattice.todo_source_cutover_set_barrier.v1';
+  const matches = [];
+  async function visit(ref, depth, parse) {
+    const directory = path.resolve(repoRoot, ref);
+    let entries;
+    try {
+      const state = await lstat(directory);
+      if (!state.isDirectory() || state.isSymbolicLink()) fail('REVISION_CONFLICT', 'revision_directory_unsafe');
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+    for (const entry of entries) {
+      if (!isTodoIdentifier(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) {
+        fail('REVISION_CONFLICT', 'revision_directory_unsafe');
+      }
+      const childRef = path.posix.join(ref, entry.name);
+      if (depth > 1) { await visit(childRef, depth - 1, parse); continue; }
+      const markerState = await pathState(repoRoot, `${childRef}/marker.json`, 'REVISION_CONFLICT', { missing: true });
+      if (markerState === null) continue;
+      const bytes = await exactFileOrNull(markerState.absolute);
+      if (bytes === null) continue;
+      const marker = parse(bytes);
+      if ((isSet ? marker.revision_set_digest : marker.revision.revision_digest)
+        === (isSet ? barrier.revision_set_digest : barrier.revision_digest)) matches.push(marker);
+    }
+  }
+  if (isSet) {
+    await visit(`${STORE_ROOT_REF}/transactions/revision-sets`, 1, parseRevisionSetMarker);
+  } else {
+    await visit(`${STORE_ROOT_REF}/transactions/revisions`, 2, parseRevisionMarker);
+    await visit(`${STORE_ROOT_REF}/transactions/phase-v3`, 2, parsePhaseRevisionMarker);
+  }
+  if (matches.length !== 1) fail('SOURCE_CUTOVER_RECOVERY_REQUIRED', 'source_cutover_recovery_required');
+  const marker = matches[0];
+  const genesis = isSet ? marker.entries[0].genesis : marker.genesis;
+  const options = { repoRoot, now, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+    actor: genesis.actor, recordedAt: genesis.recorded_at, provenance: genesis.provenance,
+    [STORE_LOCK_HELD]: STORE_LOCK_HELD };
+  if (!isSet) {
+    const apply = marker.revision.schema.startsWith('lattice.phase_')
+      ? applyPhaseTodoRevision : applyTodoRevision;
+    await apply({ ...options, revision: marker.revision });
+    return;
+  }
+  const revisions = marker.entries.map(({ revision }) => revision);
+  if (canonicalizeTodoArtifact(barrier.revision_digests) !== canonicalizeTodoArtifact(revisions
+    .filter(({ schema }) => schema === 'lattice.todo_revision.v2').map(({ revision_digest: digest }) => digest))) {
+    fail('SOURCE_CUTOVER_RECOVERY_REQUIRED', 'barrier_invalid');
+  }
+  for (const schema of ['lattice.todo_revision_set.v1', 'lattice.todo_revision_set.v2', 'lattice.todo_revision_set.v3']) {
+    const revisionSet = { schema, project_id: marker.project_id, revisions, revision_set_digest: '' };
+    revisionSet.revision_set_digest = todoSelfDigest(revisionSet, 'revision_set_digest');
+    if (revisionSet.revision_set_digest === marker.revision_set_digest && validateTodoRevisionSet(revisionSet)) {
+      await applyTodoRevisionSet({ ...options, revisionSet });
+      return;
+    }
+  }
+  fail('SOURCE_CUTOVER_RECOVERY_REQUIRED', 'source_cutover_recovery_required');
+}
+
 async function rejectCompetingRevisionTransaction(repoRoot, revision) {
   const root = path.join(repoRoot, STORE_ROOT_REF, 'transactions', 'revisions', revision.plan_key);
   let names;
@@ -4110,7 +4168,7 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
       }
       recovering = true;
     }
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now,
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now,
       ...(recovering ? { allowSourceCutoverRevisionDigest: revision.revision_digest,
         sourceCutoverRecoveryCapability: SOURCE_CUTOVER_RECOVERY_CAPABILITY } : {}) });
     const previous = store.members.find(({ descriptor }) => descriptor.plan_key === revision.plan_key);
@@ -4299,7 +4357,7 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     await fsyncDirectory(path.dirname(barrierAbsolute));
     await rm(transaction, { recursive: true, force: true });
     return commitReceipt;
-  });
+  }, { lockCapability: options[STORE_LOCK_HELD] });
 }
 
 /** Native successor transaction for first-class Phase plans; no Markdown source inventory is involved. */
@@ -4312,7 +4370,7 @@ export async function applyPhaseTodoRevision(options = {}) {
     return applyPhaseTodoRevisionV3(options, revision, repoRoot);
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     const previous = store.members.find(({ descriptor }) => descriptor.plan_key === revision.plan_key);
     if (!previous || revision.project_id !== store.project_id) fail('STORE_INCONSISTENT', 'plan_not_active');
     const transaction = path.join(repoRoot, STORE_ROOT_REF, 'transactions', 'phase-revisions',
@@ -4409,7 +4467,7 @@ export async function applyPhaseTodoRevision(options = {}) {
     await protocolStage(options, 'phase_revision_manifest_activated');
     await rm(transaction, { recursive: true, force: true });
     return phaseRevisionResult(revision, genesis, false);
-  });
+  }, { lockCapability: options[STORE_LOCK_HELD] });
 }
 
 /** G5 revision transaction: exact successor, state migration, and manifest-CAS activation. */
@@ -4436,7 +4494,7 @@ export async function applyTodoRevision(options = {}) {
       }
       recovering = true;
     }
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now,
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now,
       ...(recovering ? { allowSourceCutoverRevisionDigest: revision.revision_digest,
         sourceCutoverRecoveryCapability: SOURCE_CUTOVER_RECOVERY_CAPABILITY } : {}) });
     const previous = store.members.find(({ descriptor }) => descriptor.plan_key === revision.plan_key);
@@ -4597,7 +4655,7 @@ export async function applyTodoRevision(options = {}) {
     }
     await rm(transaction, { recursive: true, force: true });
     return revisionResult(revision, genesis, { recovered: recovering });
-  });
+  }, { lockCapability: options[STORE_LOCK_HELD] });
 }
 
 function revisionSetResult(projectId, revisionSetDigest, entries, { recovered }) {
@@ -4671,7 +4729,7 @@ export async function applyTodoRevisionSet(options = {}) {
       }
       recovering = true;
     }
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now,
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now,
       ...(recovering ? {
         allowSourceCutoverRevisionSetDigest: revisionSetDigest,
         sourceCutoverRecoveryCapability: SOURCE_CUTOVER_RECOVERY_CAPABILITY,
@@ -4904,7 +4962,7 @@ export async function applyTodoRevisionSet(options = {}) {
     }
     await rm(transaction, { recursive: true, force: true });
     return revisionSetResult(projectId, revisionSetDigest, prepared, { recovered: recovering });
-  });
+  }, { lockCapability: options[STORE_LOCK_HELD] });
 }
 
 /** G5 revise primitive: topology changes only by publishing a successor version. */
@@ -4912,7 +4970,7 @@ export async function createSuccessorTodoPlan(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     const previous = store.members.find(({ descriptor }) => descriptor.plan_key === options.planKey);
     if (!previous) fail('STORE_INCONSISTENT', 'plan_not_active');
     if (options.plan.predecessor_plan_digest !== previous.plan.plan_digest
@@ -5005,7 +5063,7 @@ export async function writeTodoIndependenceArtifact(options = {}) {
     fail('INDEPENDENCE_ARTIFACT_INVALID', 'independence_artifact_invalid');
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     if (store.project_id !== artifact.project_id) {
       fail('INDEPENDENCE_BINDING_MISMATCH', 'project_id_mismatch', {
         expected: store.project_id, actual: artifact.project_id,
@@ -5098,7 +5156,7 @@ export async function writeTodoSeamProposalArtifact(options = {}) {
     fail('SEAM_PROPOSAL_ARTIFACT_INVALID', 'seam_proposal_artifact_invalid');
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     if (store.project_id !== artifact.project_id) {
       fail('SEAM_PROPOSAL_BINDING_MISMATCH', 'project_id_mismatch', {
         expected: store.project_id, actual: artifact.project_id,
@@ -5263,7 +5321,7 @@ export async function writeTodoStructureSource(options = {}) {
     fail('INVALID_TODO_STRUCTURE_SET', explained.reason, { path: explained.path });
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     if (store.project_id !== structureSet.project_id) {
       fail('STRUCTURE_BINDING_MISMATCH', 'project_id_mismatch', {
         expected: store.project_id, actual: structureSet.project_id,
@@ -5359,7 +5417,7 @@ export async function writeTodoStructureCompileArtifact(options = {}) {
     fail('INVALID_TODO_STRUCTURE_COMPILE_ARTIFACT', 'compile_artifact_invalid');
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     if (store.project_id !== artifact.project_id) {
       fail('STRUCTURE_BINDING_MISMATCH', 'project_id_mismatch');
     }
@@ -5425,7 +5483,7 @@ export async function writeTodoStructureBinding(options = {}) {
     fail('INVALID_TODO_STRUCTURE_BINDING', 'structure_binding_invalid');
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     if (store.project_id !== binding.project_id) {
       fail('STRUCTURE_BINDING_MISMATCH', 'project_id_mismatch');
     }
@@ -5489,7 +5547,7 @@ export async function writeTodoStructureFinalization(options = {}) {
     fail('INVALID_TODO_STRUCTURE_FINALIZATION', 'finalization_not_consistent');
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     const member = activeMember(store, artifact.plan_key);
     if (store.project_id !== artifact.project_id || member.plan.project_id !== artifact.project_id) {
       fail('STRUCTURE_BINDING_MISMATCH', 'project_id_mismatch');
@@ -5605,7 +5663,7 @@ export async function appendTodoStructureRealization(options = {}) {
     fail('INVALID_TODO_STRUCTURE_REALIZATION', initial.reason, { path: initial.path });
   }
   return withLock(repoRoot, async () => {
-    const store = await readTodoStore({ repoRoot, forWrite: true, now: options.now });
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
     const member = activeMember(store, realization.plan_key);
     if (store.project_id !== realization.project_id
       || member.plan.plan_version !== realization.plan_version) {

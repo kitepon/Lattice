@@ -15,6 +15,11 @@ import {
 
 const execFileAsync = promisify(execFile);
 const STORE_REF = '.lattice/todo';
+const STORE_PATHS = [STORE_REF,
+  ':(exclude,glob).lattice/todo/**/.write.lock*',
+  ':(exclude,glob).lattice/todo/**/.write.lock*/**',
+  ':(exclude,glob).lattice/todo/.cross-plan-recovery/**',
+];
 const LOCK_NAME = 'lattice-todo-store-commit.lock';
 
 export class TodoStoreGitTransactionError extends Error {
@@ -104,7 +109,7 @@ async function headTarget(repoRoot, env) {
 
 async function storeStatus(repoRoot, env) {
   const result = await git(repoRoot,
-    ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', STORE_REF], { env });
+    ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...STORE_PATHS], { env });
   return fields(result.stdout);
 }
 
@@ -142,13 +147,13 @@ async function prepareSharedIndex({ repoRoot, commitSha, env }) {
     await lockHandle.close();
     lockHandle = null;
     const isolatedEnv = { ...env, GIT_INDEX_FILE: lockPath };
-    await git(repoRoot, ['reset', '--quiet', commitSha, '--', STORE_REF], { env: isolatedEnv });
+    await git(repoRoot, ['reset', '--quiet', commitSha, '--', ...STORE_PATHS], { env: isolatedEnv });
     const indexCompared = await git(repoRoot,
-      ['diff', '--quiet', '--cached', commitSha, '--', STORE_REF], {
+      ['diff', '--quiet', '--cached', commitSha, '--', ...STORE_PATHS], {
         env: isolatedEnv, allowExitCodes: [0, 1],
       });
     const worktreeCompared = await git(repoRoot,
-      ['diff', '--quiet', commitSha, '--', STORE_REF], {
+      ['diff', '--quiet', commitSha, '--', ...STORE_PATHS], {
         env: isolatedEnv, allowExitCodes: [0, 1],
       });
     if (indexCompared.exitCode !== 0 || worktreeCompared.exitCode !== 0) {
@@ -221,9 +226,9 @@ async function buildDetachedCommit({ repoRoot, commonDir, headBefore, message, e
       GIT_INDEX_FILE: indexPath,
     };
     await git(repoRoot, ['read-tree', headBefore], { env: isolatedEnv });
-    await git(repoRoot, ['add', '-A', '--', STORE_REF], { env: isolatedEnv });
+    await git(repoRoot, ['add', '-A', '--', ...STORE_PATHS], { env: isolatedEnv });
     const changed = fields((await git(repoRoot,
-      ['diff', '--cached', '--name-only', '-z', '--', STORE_REF], { env: isolatedEnv })).stdout);
+      ['diff', '--cached', '--name-only', '-z', '--', ...STORE_PATHS], { env: isolatedEnv })).stdout);
     if (changed.length === 0) fail('STORE_COMMIT_NO_CHANGES', 'todo_store_mutation_changed_no_paths');
     if (changed.some((ref) => ref !== STORE_REF && !ref.startsWith(`${STORE_REF}/`))) {
       fail('STORE_COMMIT_SCOPE_VIOLATION', 'todo_store_commit_contains_outside_path', {

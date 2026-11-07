@@ -12,11 +12,11 @@ import { appendTodoExtraction, compileTodoExtraction } from '../src/todo-migrati
 import { computeReadyFrontier } from '../src/todo-status.mjs';
 import {
   appendImportedPlan,
-  appendTodoEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
 } from '../src/todo-store.mjs';
+import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-08-13T00:00:00.000Z';
 const ACTOR = Object.freeze({ host: 'host-1', session: 'session-1', agent: 'agent-1' });
@@ -166,16 +166,12 @@ function childCrash(root, stage, inputName = 'companion.json') {
   });
 }
 
-function exitedProcessPid() {
-  const exited = spawnSync(process.execPath, ['--eval', 'process.exit(0)']);
-  assert.equal(exited.status, 0);
-  assert.ok(Number.isSafeInteger(exited.pid) && exited.pid > 0);
-  return exited.pid;
-}
-
 async function writeStaleWriteLock(root) {
-  await writeFile(path.join(root, '.lattice', 'todo', '.write.lock'),
-    `${JSON.stringify({ pid: exitedProcessPid() })}\n`);
+  const exited = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+    import {withStoreLock} from ${JSON.stringify(new URL('../src/store-lock.mjs', import.meta.url).href)};
+    await withStoreLock({lockPath:${JSON.stringify(path.join(root, '.lattice/todo/.write.lock'))}},()=>process.exit(0));
+  `], { encoding: 'utf8' });
+  assert.equal(exited.status, 0, exited.stderr);
 }
 
 function evidence(root) {
@@ -512,7 +508,7 @@ test('同時cross-plan stale-lock回収はmutexの所有者だけをwriterへ進
   await assert.rejects(stat(path.join(root, '.lattice', 'todo', '.cross-plan-recovery')), { code: 'ENOENT' });
 });
 
-test('通常import writerはcross-plan回収用のPID lockを作らない', async (context) => {
+test('通常import writerも完全なPID/start/host lockを公開する', async (context) => {
   const root = await workspace(context);
   let lockBytes = null;
   await appendImportedPlan({
@@ -528,7 +524,10 @@ test('通常import writerはcross-plan回収用のPID lockを作らない', asyn
       }
     },
   });
-  assert.deepEqual(lockBytes, Buffer.alloc(0));
+  const owner = JSON.parse(lockBytes.toString('utf8'));
+  assert.equal(owner.pid, process.pid);
+  assert.ok(owner.process_start.identity.length > 0);
+  assert.ok(owner.host.length > 0);
 });
 
 test('transaction marker durable前の実process停止はstoreを変えず同一入力で再試行できる', async (context) => {
@@ -559,18 +558,21 @@ for (const stage of [
     const crashed = childCrash(root, stage);
     assert.equal(crashed.status, 91, crashed.stderr);
 
-    await assert.rejects(readTodoStore({ repoRoot: root, now: NOW }), (error) => error instanceof Error
-      && error.code === 'STORE_RECOVERY_REQUIRED'
-      && error.detail.reason === 'cross_plan_import_recovery_required');
+    const visible = ['manifest_activated', 'cross_plan_dependencies_activated'].includes(stage);
+    const reopened = await readTodoStore({ repoRoot: root, now: NOW });
+    assert.deepEqual(reopened.members.map(({ plan }) => plan.plan_key), visible ? ['companion', 'main'] : ['main']);
     if (stage === 'cross_plan_transaction_durable') {
       await assert.rejects(stat(path.join(root, '.lattice', 'todo', 'plans', 'companion', 'v1')), {
         code: 'ENOENT',
       });
     }
-    const retry = await appendTodoExtraction({ repoRoot: root, extraction: input });
-    assert.equal(retry.crossPlanDependencies.length, 1);
-    assert.equal(retry.recovered === true,
-      ['manifest_activated', 'cross_plan_dependencies_activated'].includes(stage));
+    if (visible) {
+      await assert.rejects(appendTodoExtraction({ repoRoot: root, extraction: input }),
+        (error) => error.code === 'STORE_WRITE_CONFLICT' && error.detail.reason === 'plan_key_already_imported');
+    } else {
+      const retry = await appendTodoExtraction({ repoRoot: root, extraction: input });
+      assert.equal(retry.crossPlanDependencies.length, 1);
+    }
     const finalStore = await readTodoStore({ repoRoot: root, now: NOW });
     assert.deepEqual(finalStore.members.map(({ plan }) => plan.plan_key), ['companion', 'main']);
     assert.equal(finalStore.members.find(({ plan }) => plan.plan_key === 'main').plan_scoped.events.length, 1);
@@ -593,3 +595,41 @@ for (const stage of [
     await assert.rejects(stat(path.join(root, '.lattice', 'todo', '.write.lock')), { code: 'ENOENT' });
   });
 }
+
+for (const stage of ['plan_directory_renamed', 'manifest_activated']) {
+  test(`a different import resolves the abandoned ${stage} transaction before writing`, async (context) => {
+    const root = await workspace(context);
+    const input = await extraction(root);
+    await writeFile(path.join(root, 'companion.json'), `${JSON.stringify(input)}\n`);
+    const crashed = childCrash(root, stage);
+    assert.equal(crashed.status, 91, crashed.stderr);
+    await appendImportedPlan({ repoRoot: root, writer: WRITER, now: NOW,
+      plan: { schema: 'lattice.todo_plan.v1', project_id: 'project-1', plan_key: 'different',
+        plan_version: 'v1', predecessor_plan_digest: null, tasks: [task('D')],
+        hard_dependencies: [], joins: [] }, genesis: { actor: ACTOR, recorded_at: NOW } });
+    const store = await readTodoStore({ repoRoot: root, now: NOW });
+    assert.deepEqual(store.members.map(({ plan }) => plan.plan_key), stage === 'manifest_activated'
+      ? ['companion', 'different', 'main'] : ['different', 'main']);
+    assert.equal(store.members.find(({ plan }) => plan.plan_key === 'main').plan_scoped.events.length,
+      stage === 'manifest_activated' ? 1 : 0);
+  });
+}
+
+test('visible import recovery preserves unknown destination bytes and resumes from its recorded preimage', async (context) => {
+  const root = await workspace(context);
+  const input = await extraction(root);
+  await writeFile(path.join(root, 'companion.json'), `${JSON.stringify(input)}\n`);
+  const crashed = childCrash(root, 'manifest_activated');
+  assert.equal(crashed.status, 91, crashed.stderr);
+  const destination = path.join(root, '.lattice/todo/plans/main/v1/journal/plan-scoped.jsonl');
+  const unknown = 'unknown destination bytes\n';
+  await writeFile(destination, unknown);
+  const manifest = await readFile(path.join(root, '.lattice/todo/manifest.json'));
+  await assert.rejects(readTodoStore({ repoRoot: root, now: NOW }), (error) =>
+    error.code === 'STORE_INCONSISTENT' && error.detail.reason === 'cross_plan_transaction_staging_digest_mismatch');
+  assert.equal(await readFile(destination, 'utf8'), unknown);
+  assert.deepEqual(await readFile(path.join(root, '.lattice/todo/manifest.json')), manifest);
+  await rm(destination);
+  const recovered = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.equal(recovered.members.find(({ plan }) => plan.plan_key === 'main').plan_scoped.events.length, 1);
+});

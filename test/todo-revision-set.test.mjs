@@ -374,7 +374,7 @@ test('revision set v2は複数planのsource cutoverも一つのbarrierで公開�
     (error) => error?.code === 'ENOENT');
 });
 
-test('revision set v2はsource一件目で停止しても同じsetのretryだけが収束させる', async (context) => {
+test('revision set v2はsource一件目で停止してもopenだけで同じsetを復旧する', async (context) => {
   const root = await fixture(context);
   const set = revisionSet(await revisions(root, { cutover: true }), 'lattice.todo_revision_set.v2');
   await assert.rejects(applyTodoRevisionSet({
@@ -383,9 +383,8 @@ test('revision set v2はsource一件目で停止しても同じsetのretryだけ
       if (stage === 'revision_set_source_published_0') throw new Error('simulated source crash');
     },
   }), /simulated source crash/u);
-  await assert.rejects(readTodoStore({ repoRoot: root, now: NOW }), (error) => (
-    error instanceof TodoStoreError && error.code === 'SOURCE_CUTOVER_RECOVERY_REQUIRED'
-  ));
+  const reopened = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(reopened.members.map(({ plan }) => plan.plan_digest), set.revisions.map(({ desired_plan: plan }) => plan.plan_digest));
   const recovered = await applyTodoRevisionSet({
     repoRoot: root, writer, revisionSet: set, actor: ACTOR, recordedAt: NOW, now: NOW,
   });
