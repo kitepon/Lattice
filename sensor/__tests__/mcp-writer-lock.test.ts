@@ -69,8 +69,10 @@ describe('issue #1740 — direct-mode writer lock', () => {
   let tempDir: string;
   let realRoot: string;
   const children: ChildProcessWithoutNullStreams[] = [];
+  let cleanupComplete = false;
 
   beforeEach(async () => {
+    cleanupComplete = false;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg1740-mcp-'));
     realRoot = fs.realpathSync(tempDir);
     fs.mkdirSync(path.join(realRoot, 'src'));
@@ -81,6 +83,7 @@ describe('issue #1740 — direct-mode writer lock', () => {
   });
 
   async function cleanup(): Promise<void> {
+    if (cleanupComplete) return;
     // Capture the fixture writer before stopping its proxies (#1782). The
     // daemon stop helper verifies its socket identity before signaling it.
     const childPids = new Set(children.map((c) => c.pid));
@@ -88,12 +91,15 @@ describe('issue #1740 — direct-mode writer lock', () => {
     // With the launchers gone no new daemon candidate can appear. A loser can
     // still be starting on a loaded machine; stopping the winner first would
     // let it take over the fixture being removed (#1773).
+    let deadline: number;
     const stopWriter = async (): Promise<void> => {
-      await settleLosingCandidates(realRoot, () => readWriterPid(realRoot));
+      deadline = Date.now() + 30_000;
+      await settleLosingCandidates(realRoot, () => readWriterPid(realRoot), deadline - Date.now());
       if (writerPid === undefined || childPids.has(writerPid)) return;
-      const result = await stopDaemonAt(realRoot);
+      const result = await stopDaemonAt(realRoot, { preserveUnverified: true });
       expect(result.pid).toBe(writerPid);
       expect(result.outcome).not.toBe('unverified');
+      expect(result.outcome).not.toBe('still-running');
     };
     const results = [
       ...await Promise.allSettled(children.map(stopChild)),
@@ -102,9 +108,7 @@ describe('issue #1740 — direct-mode writer lock', () => {
     for (const result of results) {
       if (result.status === 'rejected') throw result.reason;
     }
-    if (writerPid !== undefined) {
-      expect(isProcessAlive(writerPid), `Writer ${writerPid} did not exit`).toBe(false);
-    }
+    await settleLosingCandidates(realRoot, () => null, deadline! - Date.now());
     children.length = 0;
     removeSpawnLog(realRoot);
     // A stopped daemon's files can stay held for a moment (handle rundown, an
@@ -113,6 +117,7 @@ describe('issue #1740 — direct-mode writer lock', () => {
     // use the asynchronous removal, which does back off and retry (#1773).
     await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     expect(fs.existsSync(tempDir)).toBe(false);
+    cleanupComplete = true;
   }
 
   afterEach(cleanup, 45_000);
