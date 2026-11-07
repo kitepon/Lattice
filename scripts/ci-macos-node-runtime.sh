@@ -11,8 +11,9 @@ case "$runtime_dir" in /*) ;; *) exit 2 ;; esac
 version=24.22.0
 sha256=6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5
 
+# Called under `!`/`if`, where errexit is off: every check must return on its own.
 verify() {
-  [[ $("$1/bin/node" -p 'process.versions.node') == "$version" ]]
+  [[ $("$1/bin/node" -p 'process.versions.node' 2>/dev/null) == "$version" ]] || return 1
   "$1/bin/node" -e 'const fs = require("node:fs"), assert = require("node:assert/strict"), info = fs.statSync(process.execPath); assert.equal(info.uid, process.getuid()); assert.equal(info.mode & 0o022, 0);'
 }
 
