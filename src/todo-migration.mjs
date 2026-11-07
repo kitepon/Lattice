@@ -1,6 +1,7 @@
 import {
   TODO_LIMITS,
   exactRecord,
+  explainTodoOrder,
   isStrictTodoTimestamp,
   isTodoDigest,
   isTodoDesignMemo,
@@ -56,7 +57,7 @@ function refKey(value) {
 }
 
 function sortedStrictly(values, key = (value) => value) {
-  return values.every((value, index) => index === 0 || key(values[index - 1]) < key(value));
+  return explainTodoOrder(values, key, '') === null;
 }
 
 function sourceLocation(value) {
@@ -191,12 +192,9 @@ function explainKeys(value, requiredKeys, at) {
 }
 
 function explainSortedStrictly(values, key, at) {
-  for (let index = 1; index < values.length; index += 1) {
-    if (!(key(values[index - 1]) < key(values[index]))) {
-      return reject('unsorted_or_duplicate_collection', `${at}/${index}`);
-    }
-  }
-  return { valid: true };
+  const violation = explainTodoOrder(values, key, at);
+  return violation === null ? { valid: true }
+    : { valid: false, ...violation };
 }
 
 /**
@@ -275,8 +273,27 @@ export function explainTodoExtraction(value) {
     if (new Set(value.tasks.map(({ task_id: taskId }) => taskId)).size !== value.tasks.length) {
       return reject('duplicate_task_id', '/tasks');
     }
-    if (!validateEdges(value.hard_dependencies, schema)) return reject('hard_dependencies_invalid', '/hard_dependencies');
-    if (!validateJoins(value.joins)) return reject('joins_invalid', '/joins');
+    if (!validateEdges(value.hard_dependencies, schema)) {
+      if (Array.isArray(value.hard_dependencies)
+        && value.hard_dependencies.every((edge) => nodeRef(edge?.from) && nodeRef(edge?.to))) {
+        const order = explainSortedStrictly(value.hard_dependencies,
+          (edge) => `${refKey(edge.from)}\0${refKey(edge.to)}`, '/hard_dependencies');
+        if (!order.valid) return order;
+      }
+      return reject('hard_dependencies_invalid', '/hard_dependencies');
+    }
+    if (!validateJoins(value.joins)) {
+      if (Array.isArray(value.joins) && value.joins.every((join) => isTodoIdentifier(join?.id)
+        && Array.isArray(join.after) && join.after.every(nodeRef))) {
+        const order = explainSortedStrictly(value.joins, (join) => join.id, '/joins');
+        if (!order.valid) return order;
+        for (const [index, join] of value.joins.entries()) {
+          const afterOrder = explainSortedStrictly(join.after, refKey, `/joins/${index}/after`);
+          if (!afterOrder.valid) return afterOrder;
+        }
+      }
+      return reject('joins_invalid', '/joins');
+    }
     if (!isTodoDigest(value.extraction_digest)) return reject('invalid_digest', '/extraction_digest');
     const expectedDigest = todoSelfDigest(value, 'extraction_digest');
     if (value.extraction_digest !== expectedDigest) {
@@ -520,5 +537,13 @@ export function compileTodoExtraction(value, repoRoot) {
 
 export async function appendTodoExtraction({ repoRoot, extraction }) {
   const request = compileTodoExtraction(extraction, repoRoot);
-  return appendImportedPlan(request);
+  try { return await appendImportedPlan(request); }
+  catch (error) {
+    if (!(error instanceof TypeError) || error.detail?.pointer === undefined) throw error;
+    const index = /^\/tasks\/(\d+)(?:\/|$)/u.exec(error.detail.pointer)?.[1];
+    throw new TodoStoreError('INVALID_TODO_EXTRACTION', 'schema_invalid', undefined, {
+      ...error.detail, pointer_space: 'todo_plan',
+      ...(index === undefined ? {} : { task_id: request.plan.tasks[Number(index)].task_id }),
+    });
+  }
 }

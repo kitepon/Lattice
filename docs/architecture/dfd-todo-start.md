@@ -117,6 +117,11 @@ proposals and are not integrated by this Store change.
 | Journal ahead of manifest/cache / appendTodoEvent | Crash at steps 22–24 yields manifest_journal_head_mismatch | Implemented: clean → appended → projected → manifest-published → clean; reopen validates the append and finishes publication → clean | A digest mismatch of unknown origin is not permission to accept arbitrary data. Repair under the shared transaction lock; old manifest head must be a validated journal ancestor. No on-disk format change. |
 | Runtime conflict hold / supervisor and pull-intake | Intentional scoped pause | running → conflict-held → conflict resolved → recompile/rebind when needed → running | Keep real overlap detection, process identity, scoped barriers and evidence checks. |
 
+Store owner Rudmira's authoring follow-up after PR37 also changes ordinary append
+so it does not create a missing store root before taking the lock. The
+[authoring flow](dfd-plan-create.md) owns uninitialized-layout classification and
+transient cleanup before initial directory-rename activation.
+
 ## Changed scope
 
 S1 records the current implementation and proposed boundaries. S2 only retires
