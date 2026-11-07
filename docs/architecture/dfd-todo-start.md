@@ -107,8 +107,8 @@ that recovery is already implemented.
 
 | Protected state / current owner | Current failure | Proposed states and self-exit | Protection retained |
 |---|---|---|---|
-| Todo store write lock / withLock | Normal start uses recovery off; crash can leave EEXIST forever | free → owned → free; proven-dead owner → claim recovery → reopen/replay → owned → free | Live writer exclusion; inspect existing recovery claims/PID protocol before reuse. Never unlink another live owner's lock. |
-| Note lock / note-store | Dead lock can remain | free → owned → free; dead owner → claim/replay note chain → owned | Append-only note integrity and sole writer. |
+| Todo store write lock / withLock | Normal start publishes an empty lock; cross-plan recovery publishes PID only | Implemented: free → complete owner record atomically linked → owned → free; identified dead owner → identity-aware recovery claim → locked reread/replay → owned → free. Recovery becomes default for all todo writes. | PID + process-start identity + host identify the owner. Never reclaim a live owner or by age. Legacy empty/pid-only locks stay untouched: STORE_WRITE_CONFLICT, reason lock_owner_unidentified, next_action naming the lock and operator confirmation before clearing. |
+| Note lock / note-store | Empty lock cannot identify a dead owner | Implemented: same shared identified lock protocol → reread/replay note chain under lock → append → free | Append-only note integrity and sole writer. Live/unidentified/foreign-host owners stay protected; legacy failure retains NOTE_WRITE_CONFLICT with lock_owner_unidentified detail and manual next_action. |
 | Run lifecycle lock / runtime-lifecycle-lock | Torn owner record can stay busy | free → initializing → owned → free; abandoned initialization → identity-aware reclamation → owned | Do not reclaim a concurrent live initializer by age alone. |
 | Adapter registry / runtime-adapter-registry | No PID recovery | free → owned → free; proven-dead owner → reclaim + reread registry → owned | Do not overwrite a live registry writer. |
 | Setup lock / setup | Crash leaves setup locked | free → owned → free; proven-dead owner → reclaim + reread host entries → owned | Preserve unrelated host entries and exclude concurrent configuration writes. |
@@ -202,3 +202,27 @@ Verification is limited to readiness truth tables and read-only behavior, existi
 status/store/cross-plan/start/phase suites, changed syntax/document links, and the
 normal three-OS candidate CI. Historical replay cases remain regression checks;
 unrelated product and sensor behavior is outside the focused local range.
+
+## Store lock implementation contract (S3, Snow White 2026-11-07)
+
+The shared Store lock module calls the platform process-start observer directly;
+it does not import runtime policy. Only todo/note integration is included here.
+The transient lock record is `{pid, process_start, host}`. Publication writes and
+syncs a complete temporary record, hard-links it to `.write.lock` (EEXIST means
+busy), then unlinks the temporary. No reader can see a partially filled new lock.
+
+| State | Entry and protected data | Self-exit / next operation |
+|---|---|---|
+| Preparing ownership | Temporary complete record, no lock ownership yet; temporary name includes host/PID/start digest | Link publishes ownership atomically; failed acquisition removes its own temporary. Next acquisition removes abandoned temporaries only after proving their encoded owner dead. |
+| Live identified owner | Complete lock bound to local PID + process start, or foreign host | Keep the lock; existing conflict code/reason for a live contender. Owner releases after callback. |
+| Identified dead owner | Local PID absent, or observed start identity differs from recorded identity | Publish unique recovery-claim directory with host/PID/start digest in its name. Clean only proven-dead claims; recover only as sole remaining claimant. Reread lock before removing it, then link new complete ownership. EEXIST preserves any competing owner. |
+| Abandoned recovery claim | Claim creator died before/during initialization or recovery | Next contender proves claim owner's death from the complete identity in its directory name and removes only that unique claim. No age-only reclaim. |
+| Multiple live claimants | Two recovery attempts overlap | Each preserves other live claims and exits with existing conflict; owner/claim release permits subsequent acquisition. Claim remains for the whole recovery operation. |
+| Unidentified legacy owner | Empty or pid-only pre-S3 lock; death cannot be established | Keep bytes and conflict code; reason lock_owner_unidentified and next_action identify manual clearing after the operator confirms no writer. This is the explicit legacy compatibility boundary. |
+| Unavailable observation | Observer fails and local PID still exists | Keep ownership and return existing busy result; retry can observe the owner again. PID absence is usable only for a complete local owner record. |
+
+The Plan callback receives `validateProspectiveEvent({store,member,event})` after
+lock acquisition and fresh read/recovery, before durable append. The complete
+store includes every active member and cross-plan edge. It is read-only for Plan.
+Existing transition code/reason stay unchanged; `cause` is additive. The existing
+validateMergedTransition call is retained until Alice's extraction lands.

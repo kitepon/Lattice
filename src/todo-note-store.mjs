@@ -4,6 +4,7 @@ import {
   mkdir, open, readFile, readdir, rename, rm, stat,
 } from 'node:fs/promises';
 import path from 'node:path';
+import { StoreLockError, withStoreLock } from './store-lock.mjs';
 
 import {
   TODO_LIMITS,
@@ -203,16 +204,14 @@ async function atomicWrite(ref, bytes) {
 
 async function withNoteLock(repoRoot, callback) {
   const root = path.resolve(repoRoot, NOTE_ROOT_REF);
-  await mkdir(root, { recursive: true });
-  const lockRef = path.join(root, '.write.lock');
-  let handle;
-  try { handle = await open(lockRef, 'wx', 0o600); }
+  try { return await withStoreLock({ lockPath: path.join(root, '.write.lock') }, callback); }
   catch (error) {
-    if (error?.code === 'EEXIST') fail('NOTE_WRITE_CONFLICT', 'note_store_locked');
+    if (error instanceof StoreLockError) {
+      fail('NOTE_WRITE_CONFLICT', error.reason === 'store_locked' ? 'note_store_locked' : error.reason,
+        error.detail);
+    }
     throw error;
   }
-  try { return await callback(); }
-  finally { await handle.close(); await rm(lockRef, { force: true }); }
 }
 
 /** lifecycle artifactsへ触れず、独立note chainだけへ1 eventを追記する。 */

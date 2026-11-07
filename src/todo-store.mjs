@@ -14,6 +14,7 @@ import { validateProspectiveEvent } from './todo-readiness.mjs';
 import { randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { renamePublishedFile } from './fs-publish.mjs';
+import { StoreLockError, withStoreLock } from './store-lock.mjs';
 import {
   lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir,
 } from 'node:fs/promises';
@@ -1586,99 +1587,18 @@ async function atomicWriteMode(absolute, bytes, mode) {
 }
 
 
-async function createWriteLock(lockRef, { recordOwner = false } = {}) {
-  const handle = await open(lockRef, 'wx', 0o600);
-  if (!recordOwner) return handle;
+async function withLock(repoRoot, callback, { onProtocolStage = null } = {}) {
   try {
-    await handle.writeFile(canonicalLine({ pid: process.pid }));
-    await handle.sync();
-    return handle;
+    return await withStoreLock({
+      lockPath: path.join(repoRoot, STORE_ROOT_REF, '.write.lock'),
+      recoveryClaimsPath: path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF),
+      onRecoveryClaim: typeof onProtocolStage === 'function'
+        ? () => onProtocolStage('cross_plan_lock_recovery_mutex_acquired') : null,
+    }, callback);
   } catch (error) {
-    await handle.close();
-    await rm(lockRef, { force: true });
+    if (error instanceof StoreLockError) fail('STORE_WRITE_CONFLICT', error.reason, error.detail);
     throw error;
   }
-}
-
-async function staleWriteLockOwner(lockRef) {
-  let record;
-  try { record = JSON.parse((await readFile(lockRef)).toString('utf8')); }
-  catch { return false; }
-  if (!exactRecord(record, ['pid']) || !Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
-  try {
-    process.kill(record.pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === 'ESRCH';
-  }
-}
-
-function processIsDead(pid) {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === 'ESRCH';
-  }
-}
-
-async function acquireCrossPlanRecoveryClaim(recoveryClaimsRef) {
-  await mkdir(recoveryClaimsRef, { recursive: true, mode: 0o700 });
-  const claimOrder = process.hrtime.bigint().toString().padStart(20, '0');
-  const claimName = `${claimOrder}-${process.pid}-${randomBytes(8).toString('hex')}`;
-  const claimRef = path.join(recoveryClaimsRef, claimName);
-  await mkdir(claimRef, { mode: 0o700 });
-  for (const entry of await readdir(recoveryClaimsRef, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === claimName) continue;
-    const parts = entry.name.split('-', 3);
-    const pid = Number(parts.length === 2 ? parts[0] : parts[1]);
-    if (Number.isSafeInteger(pid) && pid > 0 && processIsDead(pid)) {
-      await rm(path.join(recoveryClaimsRef, entry.name), { recursive: true, force: true });
-    }
-  }
-  const candidates = (await readdir(recoveryClaimsRef)).sort();
-  if (candidates[0] === claimName) return claimRef;
-  await rmdir(claimRef);
-  return null;
-}
-
-async function recoverCrossPlanWriteLock(lockRef, recoveryClaimsRef, onProtocolStage) {
-  const claimRef = await acquireCrossPlanRecoveryClaim(recoveryClaimsRef);
-  if (claimRef === null) return undefined;
-  try {
-    if (typeof onProtocolStage === 'function') await onProtocolStage('cross_plan_lock_recovery_mutex_acquired');
-    if (!await staleWriteLockOwner(lockRef)) return undefined;
-    await rm(lockRef, { force: true });
-    try { return await createWriteLock(lockRef, { recordOwner: true }); }
-    catch (error) {
-      if (error?.code === 'EEXIST') return undefined;
-      throw error;
-    }
-  } finally {
-    await rm(claimRef, { recursive: true, force: true });
-    try { await rmdir(recoveryClaimsRef); }
-    catch (error) {
-      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error;
-    }
-  }
-}
-
-async function withLock(repoRoot, callback, { recoverDeadLock = false, onProtocolStage = null } = {}) {
-  const root = path.join(repoRoot, STORE_ROOT_REF);
-  await mkdir(root, { recursive: true });
-  const lockRef = path.join(root, '.write.lock');
-  const recoveryClaimsRef = path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF);
-  let handle;
-  try { handle = await createWriteLock(lockRef, { recordOwner: recoverDeadLock }); }
-  catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    if (recoverDeadLock) {
-      handle = await recoverCrossPlanWriteLock(lockRef, recoveryClaimsRef, onProtocolStage);
-    }
-  }
-  if (handle === undefined) fail('STORE_WRITE_CONFLICT', 'store_locked');
-  try { return await callback(); }
-  finally { await handle.close(); await rm(lockRef, { force: true }); }
 }
 
 export async function rebuildTodoSnapshot(options = {}) {
