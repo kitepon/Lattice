@@ -259,11 +259,6 @@ export async function planReviseSchema() {
 }
 
 /**
- * 現行plan(v7/v8)をそのまま作成入力にする(a14)。辺の追加・削除など、planの一部だけを変える
- * 軽量改訂の「いまの姿」を作る。v8はcreate v5、v7はcreate v4。continuityは付けない(全taskがcarry)。
- * 源泉束縛planと旧schemaは `plan revise` と同じ理由で拒否する。
- */
-/**
  * 軽量改訂でそのまま表せるmemberか(a14)。resolvePlanRevisionと作成入力の検査が断る形
  * (v7/v8以外・源泉束縛・旧event・compile_binding付きtask)ならfalse。書く前の判定にだけ使う。
  */
@@ -273,6 +268,11 @@ export function lightRevisionExpresses(member) {
     && member.plan.tasks.every((task) => task.narrative_anchor === null && task.compile_binding === null);
 }
 
+/**
+ * 現行plan(v7/v8)をそのまま作成入力にする(a14)。辺の追加・削除など、planの一部だけを変える
+ * 軽量改訂の「いまの姿」を作る。v8はcreate v5、v7はcreate v4。continuityは付けない(全taskがcarry)。
+ * 源泉束縛planと旧schemaは `plan revise` と同じ理由で拒否する。
+ */
 export function desiredFromPlan(plan, { env = process.env, now = new Date() } = {}) {
   if (plan.schema === 'lattice.todo_plan.v6' || plan.tasks.some((task) => task.narrative_anchor !== null)) {
     fail('plan_revise_requires_source_revision', '/desired/tasks', {
