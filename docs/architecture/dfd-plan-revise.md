@@ -108,17 +108,11 @@ validation checks graph shape only and never flags these states.
 | Store: light carry (Ludmila) | phase_todo_revision.v5 | Task carry_reconciled_metadata compares only mapped task_id and `compile_binding`; carried phases compare only id mapping and carry what phase_migration says. Stays: compile_binding → `carry_semantics_changed` (the claim 1–4 impact binding must not carry onto another compiled spec); merged-graph validation; v1–v4 and plain todo_revision checks; predecessor CAS. Relaxed for v5 only: title/lane/memo/done_condition/phase_id/edges/joins on carried tasks, `carry_outgoing_edge_removed`, `phase_carry_semantics_changed`. | compile_binding change: author uses reset or the source/backchain route that recompiles. |
 | Plan: history notes | Applied revision, continuity reasons | A task "changed" when any of title, lane, design_memo, done_condition, narrative_ref, parent_task_id, phase_id, incoming/outgoing hard_dependencies, join memberships or phase_accept_dependencies differ. After publication, one task note per changed carried task on the successor version, and one plan note on the successor per removed task naming its task_id, via `appendTodoNote`; body starts `plan revise <from_version>→<to_version> <task_id>:` then the reason. | A note failure after publication returns `revision_applied: true` with `pending_history_notes: [{task_id, body}]` (only the ones not yet appended in this run) and the exact `lattice todo note add` commands; the author runs exactly those. No automatic retry. |
 
-Named limit (Store DFD, PR55; Snow White 2026-11-08): revising a plan that is the
-`from` of another plan's live cross-plan connection still refuses before publication
-with `STORE_INCONSISTENT/binding_stale`, because topology_digest includes
-plan_version and every revision moves it. The same class covers removing a task
-that is a live connection endpoint. Protection: meaning of live connections to the
-predecessor topology (including done targets). Exit: Snow's separate Store+Plan unit
-on u03 after u12 (the revision rebinds carried-source connections in its
-transaction); until then the existing carried-source rebind recovery applies. The
-u12 acceptance plan `lattice-usability-20261108` is not a live source (checked
-2026-11-08; only lattice-refactor-20261107 is), so the acceptance revision does
-not hit it.
+Closed by Store u03 A24/A25b/N6 (2026-11-08): revising a plan that is the `from` of
+another plan's live cross-plan connection, or removing such a task, no longer
+refuses. The next locked write (and the revision itself at its end) rebinds carried
+connections and tombstones those whose task was removed; see the Store phase
+revision DFD "Cross-plan binding findings and automatic repair".
 
 Plan migration of `lattice-usability-20261108` (u12 acceptance): after the release,
 one light revision to create-v5 moves each task's trailing `終了条件: …` line from

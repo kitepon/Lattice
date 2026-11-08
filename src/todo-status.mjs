@@ -30,7 +30,9 @@ import {
  * plan単位noteは工程に属する義務で、taskへ着手した人のcontextには届くが、**まだ誰も
  * 着手していない工程の義務は、この欄が無いとどこにも出ない**。
  */
-export const TODO_STATUS_SCHEMA = 'lattice.todo_status_result.v7';
+export const TODO_STATUS_SCHEMA = 'lattice.todo_status_result.v8';
+/** v8: cross_plan_findingsは件数だけ全数、本文は先頭からこの件数まで（statusを止めない）。 */
+export const TODO_STATUS_FINDING_LIMIT = 32;
 export const TODO_DISPATCH_FRONTIER_SCHEMA = 'lattice.todo_dispatch_frontier.v1';
 export const TODO_STATUS_LIST_LIMIT = 2_000;
 export const TODO_STATUS_LABEL_LIMIT = 160;
@@ -303,13 +305,39 @@ function dispatchFrontierEntry(value, projectId, nextReady) {
     && value.frontier_digest === expected.frontier_digest;
 }
 
-/** todo status v7 wire shapeを検証し、digestも再計算する。 */
+function crossPlanFindingEntry(value) {
+  if (!exactRecord(value, ['owner_plan_key', 'event_digest', 'side', 'ref', 'reason'])
+    || !isTodoIdentifier(value.owner_plan_key)
+    || !(value.event_digest === null || isTodoDigest(value.event_digest))
+    || !['from', 'to'].includes(value.side)
+    || !['binding_stale', 'endpoint_missing'].includes(value.reason)) return false;
+  const { ref } = value;
+  const common = (keys) => exactRecord(ref, keys) && isTodoIdentifier(ref.project_id)
+    && isTodoIdentifier(ref.plan_key)
+    && (!keys.includes('expected_topology_digest') || isTodoDigest(ref.expected_topology_digest));
+  if (Object.hasOwn(ref ?? {}, 'phase_id')) {
+    return value.side === 'from' && common(['project_id', 'plan_key', 'phase_id', 'expected_topology_digest'])
+      && isTodoIdentifier(ref.phase_id);
+  }
+  return (common(['project_id', 'plan_key', 'task_id'])
+    || common(['project_id', 'plan_key', 'task_id', 'expected_topology_digest']))
+    && isTodoIdentifier(ref.task_id);
+}
+
+function crossPlanFindings(value) {
+  return exactRecord(value, ['total', 'entries']) && isNonNegativeSafeInteger(value.total)
+    && Array.isArray(value.entries) && value.entries.length <= TODO_STATUS_FINDING_LIMIT
+    && value.entries.length === Math.min(value.total, TODO_STATUS_FINDING_LIMIT)
+    && value.entries.every(crossPlanFindingEntry);
+}
+
+/** todo status v8 wire shapeを検証し、digestも再計算する。 */
 export function validateTodoStatusResult(value) {
   try {
     return exactRecord(value, [
       'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
       'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
-      'coordination', 'parallel_candidates',
+      'coordination', 'parallel_candidates', 'cross_plan_findings',
       'member_heads', 'result_digest',
     ]) && value.schema === TODO_STATUS_SCHEMA && isTodoIdentifier(value.project_id)
       && boundedList(value.active_set, activeTaskEntry) && boundedList(value.next_ready, taskEntry)
@@ -319,6 +347,7 @@ export function validateTodoStatusResult(value) {
       && boundedList(value.plan_notes, planNoteEntry)
       && boundedList(value.coordination, coordinationEntry)
       && boundedList(value.parallel_candidates, parallelCandidateEntry)
+      && crossPlanFindings(value.cross_plan_findings)
       && boundedList(value.member_heads, memberHead)
       && isTodoDigest(value.result_digest)
       && value.result_digest === todoSelfDigest(value, 'result_digest');
@@ -620,6 +649,12 @@ export function projectTodoStatus(readModel, options = undefined) {
     // 並列候補も別の列である。判定が進んでもdispatchは動かない——next_ready・
     // dispatch_frontier・frontier_digestは判定状態を1バイトも含まない（ADR 0063・ob04）。
     parallel_candidates: parallelCandidates,
+    // u03 A24/A25b/N6: 陳腐化・消えた越境参照はStoreのfindingで、dispatchを止めない。
+    // 一覧で上限に達してもstatusを拒否しないよう、本文は先頭から切り、件数は全数を返す。
+    cross_plan_findings: {
+      total: (readModel.cross_plan_findings ?? []).length,
+      entries: (readModel.cross_plan_findings ?? []).slice(0, TODO_STATUS_FINDING_LIMIT),
+    },
     member_heads: memberHeads,
     result_digest: '',
   };

@@ -60,7 +60,7 @@ test('全taskがdoneでnext_readyが空になった時、audit_pendingが監査�
 
   const before = await status();
   assert.equal(before.schema, TODO_STATUS_SCHEMA);
-  assert.equal(before.schema, 'lattice.todo_status_result.v7');
+  assert.equal(before.schema, 'lattice.todo_status_result.v8');
   assert.deepEqual(before.audit_pending, [], '未doneのtaskが残る間は監査の地点に到達していない');
 
   await finish('T1');

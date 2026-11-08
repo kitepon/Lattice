@@ -188,7 +188,7 @@ test('statusのcoordination欄は宣言済みplanだけを列挙する', async (
   // 未宣言は載せない。全plan分をmode:nullで出すと、plan数ぶん常に埋まって読み飛ばされる
   // 列になる（前campaignでaudit_pendingの設計時に避けた形）。
   const before = projectTodoStatus(await read(), { parallelCandidates: [], planNotes: [] });
-  assert.equal(before.schema, 'lattice.todo_status_result.v7');
+  assert.equal(before.schema, 'lattice.todo_status_result.v8');
   assert.deepEqual(before.coordination, []);
   assert.deepEqual(before.member_heads.map(({ plan_key: key }) => key), ['main'],
     '未宣言はmember_headsに居てcoordinationに居ない、で引ける');
@@ -206,7 +206,7 @@ test('statusのcoordination欄は宣言済みplanだけを列挙する', async (
   assert.deepEqual(Object.keys(after), [
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
     'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
-    'coordination', 'parallel_candidates',
+    'coordination', 'parallel_candidates', 'cross_plan_findings',
     'member_heads', 'result_digest',
   ]);
 });

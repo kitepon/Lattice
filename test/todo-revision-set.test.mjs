@@ -213,16 +213,20 @@ function revisionSet(revisionsValue, schema = 'lattice.todo_revision_set.v1') {
   return value;
 }
 
-test('cross-plan successorは一件ずつ公開できずrevision setだけが同時activationする', async (context) => {
+test('cross-plan successorは一件ずつ公開でき、authored edgeはbinding_stale findingとして残る', async (context) => {
   const root = await fixture(context);
   const set = await revisions(root);
-  const beforeManifest = await readFile(path.join(root, '.lattice/todo/manifest.json'));
-  await assert.rejects(applyTodoRevision({
+  await applyTodoRevision({
     repoRoot: root, writer, revision: set[1], actor: ACTOR, recordedAt: NOW, now: NOW,
-  }), (error) => error instanceof TodoStoreError
-    && error.code === 'STORE_INCONSISTENT' && error.detail.reason === 'binding_stale');
-  assert.deepEqual(await readFile(path.join(root, '.lattice/todo/manifest.json')), beforeManifest);
+  });
+  const store = await readTodoStore({ repoRoot: root });
+  assert.deepEqual(store.cross_plan_findings.map(({ owner_plan_key: owner, event_digest: event, side, reason }) => (
+    [owner, event, side, reason])), [['a', null, 'from', 'binding_stale']]);
+});
 
+test('revision setはcross-plan successorsを同時activationしてfindingを残さない', async (context) => {
+  const root = await fixture(context);
+  const set = await revisions(root);
   const result = await applyTodoRevisionSet({
     repoRoot: root, writer, revisionSet: revisionSet(set), actor: ACTOR, recordedAt: NOW, now: NOW,
   });
@@ -230,6 +234,7 @@ test('cross-plan successorは一件ずつ公開できずrevision setだけが同
   assert.equal(result.recovered, false);
   assert.deepEqual(result.members.map(({ plan_key }) => plan_key), ['a', 'b']);
   const active = await readTodoStore({ repoRoot: root });
+  assert.deepEqual(active.cross_plan_findings, []);
   assert.deepEqual(active.members.map(({ plan }) => [plan.plan_key, plan.plan_version]), [
     ['a', set[0].desired_plan.plan_version], ['b', set[1].desired_plan.plan_version],
   ]);
