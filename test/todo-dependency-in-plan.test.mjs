@@ -154,3 +154,23 @@ test('same-plan connect works while another plan holds a live connection bound t
   assert.equal(projectTodoCrossPlanDependencies(store.members).length, 1, 'cross-plan edge stays live');
   assert.deepEqual(bodyEdges(store.members.find(({ plan }) => plan.plan_key === 'work')), ['b>c']);
 });
+
+test('same-plan connect on a plan the light route cannot express (create v3) uses the ledger as before', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-dependency-in-plan-v3-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const input = createInput(SCHEMAS[0]);
+  input.schema = 'lattice.plan_create_input.v3';
+  for (const task of input.tasks) delete task.design_memo;
+  await writeFile(path.join(root, 'plan.json'), JSON.stringify(input));
+  success(root, ['plan', 'create', '--input', 'plan.json']);
+  const before = await readWork(root);
+  const result = success(root, ['todo', 'dependency', 'connect', ...edgeArgs('a', 'b'), '--reason', 'v3']);
+  assert.equal(result.schema, 'lattice.todo_dependency_connect_result.v1');
+  const after = await readWork(root);
+  assert.equal(after.plan.plan_version, before.plan.plan_version);
+  assert.deepEqual(bodyEdges(after), []);
+  assert.equal(projectTodoCrossPlanDependencies((await readTodoStore({ repoRoot: root })).members).length, 1);
+  const removed = success(root, ['todo', 'dependency', 'disconnect', ...edgeArgs('a', 'b'), '--reason', 'v3']);
+  assert.equal(removed.schema, 'lattice.todo_dependency_disconnect_result.v1');
+});

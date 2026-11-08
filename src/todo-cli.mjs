@@ -1305,6 +1305,9 @@ async function dependencyConnect(options) {
   if (member.tasks.find(({ task_id: id }) => id === toTaskId)?.status === 'done') {
     throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_target_terminal');
   }
+  const { lightRevisionExpresses } = await import('./plan-revise.mjs');
+  // 軽量改訂で表せないplan(create v1〜v3由来・源泉束縛・compile_binding付き)は、従来どおり台帳へ積む。
+  if (!lightRevisionExpresses(member)) return dependencyConnectLedger(options);
   return dependencyRevision({
     repoRoot, env, store, member, operation: 'connect', fromTaskId, toTaskId, reason });
 }

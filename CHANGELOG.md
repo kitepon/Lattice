@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `todo dependency connect|disconnect`は、同一plan内の辺ならplan本体を軽い改訂で書き換える（a14）。plan_versionが変わり、結果は`lattice.todo_dependency_revision_result.v1`、理由はplanの履歴noteに残る。これまで、planが持つ辺を`disconnect`すると`cross_plan_dependency_not_found`で断られ、`plan revise`の全入力が要った。台帳に積んだ同一plan辺の除去、plan跨ぎの接続・除去は従来どおり。台帳に同じ同一plan辺が生きていれば、connectは従来どおり`cross_plan_dependency_duplicate`で断る。辺が無い時の断りには`next_action`（`lattice plan show <plan> --json`）が付く。
+- `todo dependency connect|disconnect`は、同一plan内の辺ならplan本体を軽い改訂で書き換える（a14）。plan_versionが変わり、結果は`lattice.todo_dependency_revision_result.v1`、理由はplanの履歴noteに残る。これまで、planが持つ辺を`disconnect`すると`cross_plan_dependency_not_found`で断られ、`plan revise`の全入力が要った。台帳に積んだ同一plan辺の除去、plan跨ぎの接続・除去は従来どおり。軽量改訂で表せないplan（create v1〜v3由来・源泉束縛・compile_binding付き）は従来どおり台帳へ積む。台帳に同じ同一plan辺が生きていれば、connectは従来どおり`cross_plan_dependency_duplicate`で断る。辺が無い時の断りには`next_action`（`lattice plan show <plan> --json`）が付く。
 - 工程表（gantt）の描画は、工程数・依存数の上限超え、依存の循環、独立性の投影のずれ、図に描けない依存、説明文の量、ページの大きさ、壊れた表示設定（presentation）で断らない。描ける所を描き、何を省いたかを図の上の注記に出す（u03 D-gantt）。注記のcodeは従来の拒否のcodeと同じ。
 - `todo start`は、守るもののない理由で止まらない（u03）。独立性記録があって工程が未宣言・失効でも`INDEPENDENCE_UNVERIFIED`で拒否せず、`advisory.guidance`で示す。記録が読めない・HEADを解決できない時は記録なしと同じ助言で通し、警告`LATTICE_START_INDEPENDENCE_UNUSABLE`を出す。壊れた`backchain.json`は`feature_context`を付けない結果（v5）と警告`LATTICE_START_BACKCHAIN_UNUSABLE`になる。readyでない工程への`--parallel-frontier`は無視する。不正な`LATTICE_TODO_ACTOR_*`は未設定と同じに扱う。
 - `todo retire`は進行中の工程も外せる。外す前に、その着手に結び付いた未受理intakeを`task_retired`として解放して記録する。
