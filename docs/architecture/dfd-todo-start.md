@@ -328,3 +328,16 @@ typed read failure for stable-read retry; no recovery touches its bytes.
 Fault-injection stages after journal publication, snapshot publication and manifest
 publication expose the three durable boundaries to focused recovery tests. They
 do not alter event bytes or result schemas. Completed recovery is idempotent.
+
+## Retire at any state (u12, Snow White 2026-11-08)
+
+Owner 「削除や変更は許す」: deleting a task is never refused by its state.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: `todo retire --plan <key> --task <id> --reason <text>` | Fresh task state | Appends `retire` with payload `{reason, prior_status}` from pending, blocked, in-progress or done. An in-progress authored start binding is closed by the retire; done evidence stays in the journal. `invalid_retire_transition` (Lattice-invented, block→retire already reached the same end) is removed. | Already retired → existing typed refusal (nothing to delete). Stale state between read and append → existing CAS conflict; reread and retry. |
+| Store replay (contract registered with Ludmila) | `retire` payload: legacy `{reason}` or `{reason, prior_status}` | Legacy payload keeps the old pending/blocked rule. New payload requires `prior_status` to equal the replayed status (recorded fact, not a gate the author can hit through normal CLI use). Readiness of successors treats a retired predecessor exactly as today. | Old readers reject the new payload shape; same shared-store rollout as plan v8. |
+
+Patent: authoring, revision and lifecycle transitions are outside claims 1–12;
+claimed mechanisms (impact estimation, overlap resolution, hold/commit/resume,
+runtime conflict detection and targeted replanning) are untouched.
