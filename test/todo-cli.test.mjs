@@ -451,7 +451,7 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
       'event_digest', 'journal_head_digest', 'snapshot_digest', 'status', 'advisory',
       'result_digest',
     ];
-    if (kind === 'start') keys.push('design_memo', 'note_context', 'structure_context');
+    if (kind === 'start') keys.push('design_memo', 'done_condition', 'note_context', 'structure_context');
     assertExactKeys(output, keys);
     assert.equal(output.schema, kind === 'start'
       ? 'lattice.todo_mutation_result.v5' : 'lattice.todo_mutation_result.v2');

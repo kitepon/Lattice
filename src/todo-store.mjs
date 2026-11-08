@@ -6,10 +6,12 @@ import {
   localTaskRef,
   normalizeCheckoutEol,
   removedTaskRef,
+  isFinishedTodoTaskState,
   todoTaskCarrySemantics as taskSemantics,
 } from './todo-store-view.mjs';
 export {
   isDecoupledPhaseTodoPlanSchema,
+  isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
@@ -637,7 +639,8 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
     }
     const state = states.get(event.task_id);
     if (state === undefined) fail('STORE_INCONSISTENT', 'event_task_missing');
-    const dependenciesDone = localPredecessors(plan, event.task_id).every((id) => states.get(id)?.status === 'done');
+    const dependenciesDone = localPredecessors(plan, event.task_id)
+      .every((id) => isFinishedTodoTaskState(states.get(id)));
     if (event.kind === 'start') {
       if (event.payload.start_mode === 'rebind') {
         // 改訂でcarryされたin-progressの再束縛。状態・開始時刻は動かさず、start束縛だけを
@@ -706,9 +709,26 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
       if (state.status !== 'blocked') fail('STORE_INCONSISTENT', 'invalid_unblock_transition');
       state.status = 'in-progress'; state.blocked_reason = null;
     } else if (event.kind === 'retire') {
-      // 恒久除去はpending/blockedからだけ。in-progressは保持者がretractしてから、doneは撤去対象でない。
-      if (!['pending', 'blocked'].includes(state.status)) fail('STORE_INCONSISTENT', 'invalid_retire_transition');
+      const priorStatus = event.payload.prior_status;
+      if (priorStatus === undefined) {
+        // legacy payload: pending/blocked only.
+        if (!['pending', 'blocked'].includes(state.status)) fail('STORE_INCONSISTENT', 'invalid_retire_transition');
+      } else {
+        if (state.status === 'retired') fail('STORE_INCONSISTENT', 'invalid_retire_transition');
+        if (priorStatus !== state.status) fail('STORE_INCONSISTENT', 'retire_prior_status_mismatch');
+      }
+      const wasDone = state.status === 'done';
       state.status = 'retired'; state.blocked_reason = event.payload.reason;
+      state.done_at = wasDone ? state.done_at : null;
+      // done_at and imported survive a retire from done so the finished mark stays (isFinishedTodoTaskState).
+      state.evidence = null; state.test_result = null; state.imported = wasDone ? state.imported : false;
+      state.evidence_unverified = false;
+      authoredStartBindings.delete(event.task_id);
+      if (wasDone) {
+        completion.delete(event.task_id);
+        pendingVerifications.delete(`task:${event.task_id}`);
+      }
+      // a retired task is unreachable by promotion/reopen (both require status done), so doneDigest is left as is.
     } else if (event.kind === 'done') {
       if (event.payload.done_mode === 'authored') {
         if (state.status !== 'in-progress' || !dependenciesDone) fail('STORE_INCONSISTENT', 'invalid_done_transition');
@@ -1309,9 +1329,9 @@ function materializeImportedNarrativeAnchors(repoRoot, planInput, sources, cache
 
 function verifyPlanNarrativeAnchors(repoRoot, plan, trustedPlan = null, cache = null) {
   if (!['lattice.todo_plan.v2', 'lattice.todo_plan.v3', 'lattice.todo_plan.v4',
-    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(plan.schema)) return;
+    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) return;
   const trusted = new Map((['lattice.todo_plan.v2', 'lattice.todo_plan.v3', 'lattice.todo_plan.v4',
-    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(trustedPlan?.schema)
+    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(trustedPlan?.schema)
     ? trustedPlan.tasks : [])
     .map((task) => [task.task_id, task.narrative_anchor]));
   for (const task of plan.tasks) {
@@ -3736,9 +3756,16 @@ function validateAcquirePhaseCarry(previous, revision, migration, idMap) {
 }
 
 function stateMigrationFor(previous, revision) {
-  if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(previous.plan.schema)
-    && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(revision.desired_plan.schema)) {
+  if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(previous.plan.schema)
+    && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']
+      .includes(revision.desired_plan.schema)) {
     fail('REVISION_INVALID', 'design_memo_schema_downgrade', {
+      predecessor_schema: previous.plan.schema, desired_schema: revision.desired_plan.schema,
+    });
+  }
+  if (previous.plan.schema === 'lattice.todo_plan.v8'
+    && revision.desired_plan.schema !== 'lattice.todo_plan.v8') {
+    fail('REVISION_INVALID', 'done_condition_schema_downgrade', {
       predecessor_schema: previous.plan.schema, desired_schema: revision.desired_plan.schema,
     });
   }
@@ -3776,6 +3803,16 @@ function stateMigrationFor(previous, revision) {
         if (canonicalizeTodoArtifact(before) !== canonicalizeTodoArtifact(after)) {
           fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
         }
+      }
+    } else if (revision.schema === 'lattice.phase_todo_revision.v5' && reconciliationMetadata) {
+      // u12 light carry: only the task_id mapping and compile_binding bind carried state.
+      const predecessorTask = previous.plan.tasks
+        .find(({ task_id }) => task_id === migration.from_task_id);
+      const desiredTask = revision.desired_plan.tasks
+        .find(({ task_id }) => task_id === migration.to_task_id);
+      if (!desiredTask || canonicalizeTodoArtifact(predecessorTask?.compile_binding)
+        !== canonicalizeTodoArtifact(desiredTask.compile_binding)) {
+        fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
       }
     } else if (revision.schema === 'lattice.phase_todo_revision.v3') {
       validatePhaseV3Carry(previous, revision, migration, idMap, state);
@@ -3833,7 +3870,10 @@ function phaseStateMigrationFor(previous, revision) {
         .map(({ task_id }) => taskIdMap.get(task_id) ?? 'removed').filter((id) => id !== 'removed').sort();
       const afterTaskIds = revision.desired_plan.tasks
         .filter(({ phase_id }) => phase_id === migration.to_phase_id).map(({ task_id }) => task_id).sort();
-      if (canonicalizeTodoArtifact({ phase: mappedBefore, task_ids: beforeTaskIds })
+      // u12 light carry (revision v5): Plan chose carry vs reset; Store checks only the id mapping.
+      if (revision.schema === 'lattice.phase_todo_revision.v5') {
+        if (!after) fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
+      } else if (canonicalizeTodoArtifact({ phase: mappedBefore, task_ids: beforeTaskIds })
         !== canonicalizeTodoArtifact({ phase: after, task_ids: afterTaskIds })) {
         fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
       }
@@ -5490,7 +5530,7 @@ export async function createSuccessorTodoPlan(options = {}) {
       ['lattice.todo_plan.v1', 1], ['lattice.todo_plan.v2', 2], ['lattice.todo_plan.v3', 3],
       // v6はphase無しv3へdesign_memoを追加した枝であり、phase世代より後という意味ではない。
       ['lattice.todo_plan.v4', 4], ['lattice.todo_plan.v5', 5], ['lattice.todo_plan.v6', 3],
-      ['lattice.todo_plan.v7', 5],
+      ['lattice.todo_plan.v7', 5], ['lattice.todo_plan.v8', 5],
     ]);
     if (schemaRank.get(plan.schema) < schemaRank.get(previous.plan.schema)) {
       throw new TypeError(previous.plan.schema === 'lattice.todo_plan.v2'
@@ -5498,9 +5538,16 @@ export async function createSuccessorTodoPlan(options = {}) {
         ? 'todo plan schema cannot regress from v2 to v1'
         : 'todo plan schema cannot regress');
     }
-    if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(previous.plan.schema)
-      && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(plan.schema)) {
-      throw new TypeError('todo plan design_memo cannot be removed by successor schema');
+    if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(previous.plan.schema)
+      && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) {
+      fail('REVISION_INVALID', 'design_memo_schema_downgrade', {
+        predecessor_schema: previous.plan.schema, desired_schema: plan.schema,
+      });
+    }
+    if (previous.plan.schema === 'lattice.todo_plan.v8' && plan.schema !== 'lattice.todo_plan.v8') {
+      fail('REVISION_INVALID', 'done_condition_schema_downgrade', {
+        predecessor_schema: previous.plan.schema, desired_schema: plan.schema,
+      });
     }
     verifyPlanNarrativeAnchors(repoRoot, plan, previous.plan);
     const migration = options.genesis.task_migration ?? [];

@@ -107,3 +107,22 @@ the path refers to a task; it never claims a filtered plan index is an extractio
 index.
 ADR 0181 canonicalization covers formatting/BOM/CRLF/digest/path normalization;
 it does not sort arrays. Ordering failures require explicit author correction.
+
+## Authored done condition (u12, agreed 2026-11-08)
+
+Owner ruling 2026-11-08: each task's author defines its own done condition; Lattice
+records and shows the text, never evaluates it, never chooses/assigns work and never
+records done. Snow White approved name, scope and display; Ludmila owns and writes
+the Store rows (branch ludmilla/u12-store, merged into this PR).
+
+| Step / owner | Input and reads | Decision / output | Failure / recovery |
+|---|---|---|---|
+| Plan: create/add input | `lattice.plan_create_input.v5` = v4 plus per-task `done_condition` (string or null; `design_memo` text rule with null allowed). v1–v4 inputs and their outputs are unchanged. | v5 builds `lattice.todo_plan.v8`; v4 still builds v7. Plan builders that derive a successor (plan-backchain, project-cli phase builders, todo-split) emit v8 when the predecessor is v8. | Invalid text → INPUT_INVALID at `/tasks/<i>/done_condition`; author corrects and resubmits. |
+| Plan: authoring normalizer (u03, v5 input only) | v5 input sets whose order carries no authored meaning: `hard_dependencies`, `joins` (by id), each `joins[].after`, `phase_accept_dependencies`, `phases` (by phase_id), `phases[].predecessor_phase_ids`, `phases[].required_evidence_slots` | Sorted into the canonical order the plan validator already requires and exact duplicates dropped, before validation. `tasks` and every other list are never reordered. Stored plans are already canonical, so digests are unchanged: a sorted equal desired plan stays `plan_revise_unchanged`. | Non-identical entries with the same key (two joins with one id, two phases with one id) still refuse at their pointer. v1–v4 keep `unsorted_or_duplicate_collection`. |
+| Store: plan v8 contract (Ludmila) | `lattice.todo_plan.v8` = v7 + task `done_condition` (string or null, always present) | Validator/explain, isPhase/isDecoupledPhase, rank 5; no regression v8→v7 on every revision route (`REVISION_INVALID/done_condition_schema_downgrade`); phase_todo_revision v3 desired v5/v7/v8, v4 and v5 desired v7/v8. | Old readers reject v8 (UNSUPPORTED_SCHEMA); every shared-store member CLI runs the release before the first v8 write. |
+| Plan: projections | v7/v8 task | `todo show`/`todo next` task object, `plan show`, `status --json` ready-task entries (the shared `computeReadyFrontier` entries, so `todo migrate` `connected_frontier` too) and the MCP seat task object carry `done_condition` (v7 → null). Hard-coded v5/v7 lists in todo-status and project-cli use the store-view helpers so v8 is included. | Projection only; readiness and lifecycle unchanged. |
+| Display: Gantt detail (Snow White reviews; in this PR by her ruling) | `task.done_condition`, including the unverified-state raw member through Snow's tolerant `plan` projection (u01) | Detail shows a `終了条件` section (escaped plain text) after the design memo; null or non-string shows nothing; the prose byte budget counts it. Gantt schema lists (gantt-html-shared, gantt-layout) include v8. | Display-only. |
+
+Patent: authoring and projection are outside claims 1–12; no claimed mechanism
+(impact estimation, overlap resolution, parallel hold/commit/resume, runtime
+conflict detection and targeted replanning) is touched.

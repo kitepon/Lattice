@@ -135,8 +135,8 @@ test('plan noteを書いてもdispatchは1バイトも動かない', async (cont
   assert.equal(after.dispatch_frontier.frontier_digest, beforeDigest);
   // next_readyはリテラルでも固定する（両側が同時に壊れた時に通る形を避ける）。
   assert.deepEqual(after.next_ready, [
-    { plan_key: 'carrier', task_id: 'A', label: 'A' },
-    { plan_key: 'quiet', task_id: 'P', label: 'P' },
+    { plan_key: 'carrier', task_id: 'A', label: 'A', done_condition: null },
+    { plan_key: 'quiet', task_id: 'P', label: 'P', done_condition: null },
   ]);
 });
 

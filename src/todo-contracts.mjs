@@ -376,6 +376,14 @@ function taskV6(value) {
     && isTodoIdentifier(value.phase_id);
 }
 
+function taskV8(value) {
+  const { done_condition: doneCondition, ...rest } = value ?? {};
+  return exactRecord(value, [
+    'task_id', 'title', 'lane', 'design_memo', 'narrative_ref', 'narrative_anchor',
+    'compile_binding', 'parent_task_id', 'phase_id', 'done_condition',
+  ]) && taskV6(rest) && (doneCondition === null || isTodoDesignMemo(doneCondition));
+}
+
 function phaseV1(value) {
   return exactRecord(value, [
     'phase_id', 'title', 'gate_policy', 'predecessor_phase_ids', 'required_evidence_slots',
@@ -445,14 +453,16 @@ export function explainTodoPlan(value) {
         : value?.schema === 'lattice.todo_plan.v3' ? taskV3
           : ['lattice.todo_plan.v4', 'lattice.todo_plan.v5'].includes(value?.schema) ? taskV4
             : value?.schema === 'lattice.todo_plan.v6' ? taskV5
-              : value?.schema === 'lattice.todo_plan.v7' ? taskV6 : null;
+              : value?.schema === 'lattice.todo_plan.v7' ? taskV6
+                : value?.schema === 'lattice.todo_plan.v8' ? taskV8 : null;
     const planKeys = [
       'schema', 'project_id', 'plan_key', 'plan_version', 'predecessor_plan_digest',
       'tasks', 'hard_dependencies', 'joins', 'topology_digest', 'plan_digest',
     ];
-    const phased = ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7']
+    const phased = ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7',
+      'lattice.todo_plan.v8'].includes(value?.schema);
+    const decoupled = ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']
       .includes(value?.schema);
-    const decoupled = ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(value?.schema);
     if (phased) planKeys.push('phases');
     if (decoupled) planKeys.push('phase_accept_dependencies');
     if (!exactRecord(value, planKeys)) return reject('unexpected_or_missing_keys', '/');
@@ -485,7 +495,7 @@ export function explainTodoPlan(value) {
       if (!isTodoDigest(value[field])) return reject('digest_invalid', `/${field}`);
     }
     if (['lattice.todo_plan.v3', 'lattice.todo_plan.v4', 'lattice.todo_plan.v5',
-      'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(value.schema)
+      'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(value.schema)
       && !validParentGraph(value.tasks)) return reject('parent_graph_invalid', '/tasks');
     if (phased) {
       if (!Array.isArray(value.phases) || value.phases.length === 0
@@ -591,7 +601,12 @@ function validPayload(event) {
   if (event.kind === 'unblock') return exactRecord(payload, []);
   // retire: 消費計画が消えた工程の恒久除去（ADR 0147系の状態遷移に足す軽量kind・2026-08-29オーナー裁定）。
   // 理由必須。blocked_reasonのfieldを理由の置き場として再利用し、state recordの形を変えない。
-  if (event.kind === 'retire') return exactRecord(payload, ['reason']) && nullableText(payload.reason) && payload.reason !== null;
+  if (event.kind === 'retire') {
+    return (exactRecord(payload, ['reason'])
+      || (exactRecord(payload, ['reason', 'prior_status'])
+        && ['pending', 'blocked', 'in-progress', 'done'].includes(payload.prior_status)))
+      && nullableText(payload.reason) && payload.reason !== null;
+  }
   if (event.kind === 'done' && payload?.done_mode === 'authored') {
     return (exactRecord(payload, ['done_mode', 'imported', 'evidence'])
       || exactRecord(payload, ['done_mode', 'imported', 'evidence', 'test_result']))
@@ -662,7 +677,8 @@ function validCarriedState(value) {
   if (value.status === 'blocked') return value.done_at === null && value.blocked_reason !== null
     && activeEvidenceValid && testResult === null;
   // retired: 実行されないまま恒久に閉じた工程。理由はblocked_reasonが持ち、証拠・試験結果は持たない。
-  if (value.status === 'retired') return value.done_at === null && value.blocked_reason !== null
+  // done_at is kept only when retired from done (u12).
+  if (value.status === 'retired') return value.blocked_reason !== null
     && value.evidence === null && testResult === null;
   return value.blocked_reason === null && value.evidence !== null
     // importedは完了状態の来歴を表す。evidence_promotion後もtrueを維持するため、

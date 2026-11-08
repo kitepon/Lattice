@@ -69,6 +69,13 @@ function renderDesignMemo(task) {
   return `<section class="design-memo"><h2>設計メモ</h2><div class="design-memo-body">${rendered.html}</div>${filtering}</section>`;
 }
 
+/** 作成者が書いた終了条件（u12）。プレーンテキストをescapeして出し、文字列でなければ何も出さない。 */
+function renderDoneCondition(task) {
+  if (typeof task.done_condition !== 'string') return '';
+  const text = escapeHtmlText(task.done_condition).replace(/\r\n|\r|\n/gu, '<br>');
+  return `<section><h2>終了条件</h2><p class="done-condition-body">${text}</p></section>`;
+}
+
 /**
  * 図の外が語るための独立性要約を、plan単位の投影から引ける形へ畳む（ADR 0129 Decision 3）。
  */
@@ -246,7 +253,7 @@ export function renderRightPane(
         ? '<p class="fold-note">完走済みのため既定の図には描いていません。左上の「完走済み」バッジを押すと、このページ内で表示できます。</p>'
         : '<p class="fold-note">完走済みのため図には描いていません。図に出すには動的dashboardを <code>lattice todo gantt serve --port &lt;port&gt; --scope all</code> で起動してください。</p>';
     const workLog = notesEnabled ? renderNoteContext(section.noteContext, hostDisplayNames) : '';
-    const designMemo = renderDesignMemo(section.task);
+    const designMemo = renderDesignMemo(section.task) + renderDoneCondition(section.task);
     return `<article class="task-detail" data-detail-key="${escapeHtmlAttribute(key)}" hidden><header><span class="detail-status status-${escapeHtmlAttribute(section.state.status)}">${escapeHtmlText(status.mark)} ${escapeHtmlText(status.label)}</span><span class="detail-reference">${escapeHtmlText(taskReference(section, lookup))}</span></header><h1>${escapeHtmlText(section.task.title)}</h1><p class="detail-category"><strong>カテゴリ:</strong> ${escapeHtmlText(category)}</p>${categoryDescription}<p><strong>正規ID:</strong> <code>${escapeHtmlText(`${section.ref.plan_key}/${section.task.task_id}`)}</code></p>${blockedReason}${readiness}${independenceNote}${foldedNote}${designMemo}<section><h2>前提工程</h2>${renderRelationList(incoming.get(key), sectionByKey, lookup, '登録済みの前提工程はありません。', folds)}</section><section><h2>後続工程</h2>${renderRelationList(outgoing.get(key), sectionByKey, lookup, '登録済みの後続工程はありません。', folds)}</section>${workLog}<p class="anchor-status">${escapeHtmlText(anchorText)}</p><details class="task-diagnostics"><summary>開発者向け診断</summary><dl><dt>canonical ref</dt><dd><code>${escapeHtmlText(`${section.ref.project_id}/${section.ref.plan_key}/${section.task.task_id}`)}</code></dd><dt>anchor</dt><dd>${escapeHtmlText(section.anchorOutcome.anchored ? 'verified' : section.anchorOutcome.reason)}</dd></dl></details></article>`;
   }).join('');
   const taskIndex = renderTaskIndex(sections, lookup, folds, planActivity(readModel));

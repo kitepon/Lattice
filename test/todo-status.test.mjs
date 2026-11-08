@@ -140,7 +140,7 @@ test('todo statusはactive/next-ready/blockedを混在投影しstore bytesを変
   assert.deepEqual(result.active_set, [{
     plan_key: 'main', task_id: 'A', label: 'Active work', unmet_dependencies: [],
   }]);
-  assert.deepEqual(result.next_ready, [{ plan_key: 'main', task_id: 'C', label: 'Ready work' }]);
+  assert.deepEqual(result.next_ready, [{ plan_key: 'main', task_id: 'C', label: 'Ready work', done_condition: null }]);
   assert.deepEqual(result.dispatch_frontier, {
     schema: 'lattice.todo_dispatch_frontier.v1',
     selection_source: 'next_ready',
