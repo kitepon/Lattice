@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +69,24 @@ export function selectScope({ changed, tests, importers, isImported }) {
   return { full: false, reason: reasons.join('; '), tests: selected, sensor };
 }
 
+/** Package file text without its release version, to tell a version bump from a dependency change. */
+export function withoutVersion(text) {
+  const json = JSON.parse(text);
+  delete json.version;
+  if (json.packages?.['']) delete json.packages[''].version;
+  return JSON.stringify(json);
+}
+
+function versionOnly(base, file) {
+  const before = spawnSync('git', ['show', `${base}:${file}`], { cwd: repoRoot, encoding: 'utf8' });
+  if (before.status !== 0) return false;
+  try {
+    return withoutVersion(before.stdout) === withoutVersion(readFileSync(path.join(repoRoot, file), 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
 async function listFiles(directory, prefix) {
   const files = [];
   for (const entry of await readdir(path.join(repoRoot, directory), { withFileTypes: true })) {
@@ -83,16 +102,21 @@ export async function computeCiScope(base, { allTests }) {
   if (!base) return { full: true, reason: 'not a pull request', tests: allTests, sensor: true };
   const diff = spawnSync('git', ['diff', '--name-only', `${base}...HEAD`], { cwd: repoRoot, encoding: 'utf8' });
   if (diff.status !== 0) return { full: true, reason: 'comparison base unavailable', tests: allTests, sensor: true };
-  const changed = diff.stdout.split('\n').filter(Boolean);
+  let changed = diff.stdout.split('\n').filter(Boolean);
+  // A release bump changes only `version`: run what reads the package files, not the full gate.
+  const bumped = changed.filter((file) => /^package(-lock)?\.json$/u.test(file) && versionOnly(base, file));
   const sources = [...await listFiles('src', 'src'), ...await listFiles('bin', 'bin'), ...await listFiles('test', 'test')];
   const reverse = new Map();
   for (const file of sources) {
     const text = await readFile(path.join(repoRoot, file), 'utf8');
+    // shortcut: a bump runs only suites that read the package files themselves; main's full gate covers the rest.
+    if (bumped.length > 0 && allTests.includes(file.slice('test/'.length)) && /package(-lock)?\.json/u.test(text)) changed.push(file);
     for (const ref of referencesIn(text, file)) {
       if (!reverse.has(ref)) reverse.set(ref, new Set());
       reverse.get(ref).add(file);
     }
   }
+  changed = changed.filter((file) => !bumped.includes(file));
   return selectScope({ changed, tests: allTests,
     importers: (file) => [...(reverse.get(file) ?? [])],
     isImported: (file) => reverse.has(file) });

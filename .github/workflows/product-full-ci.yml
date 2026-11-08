@@ -25,12 +25,16 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 jobs:
   classify:
     runs-on: ubuntu-latest
     outputs:
       product_change: ${{ steps.changes.outputs.product_change }}
+      covered: ${{ steps.coverage.outputs.covered == 'true' }}
+      covered_reason: ${{ steps.coverage.outputs.reason }}
     steps:
       - name: checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -79,6 +83,28 @@ jobs:
 
           printf 'product_change=%s\n' "$product_change" >> "$GITHUB_OUTPUT"
           printf 'CI classification: %s\n' "$reason"
+      # Main-push coverage (scripts/ci-main-coverage.mjs): a PR records what its gate tested; a main
+      # push whose tree a full, three-OS green PR run already tested keeps green gate jobs without rerunning.
+      - name: record tested tree
+        id: tested
+        if: github.event_name == 'pull_request' && steps.changes.outputs.product_change == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          LATTICE_CI_BASE: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/ci-main-coverage.mjs record
+      - name: tested merge ${{ steps.tested.outputs.merge }} tree ${{ steps.tested.outputs.tree }} scope ${{ steps.tested.outputs.scope }}
+        if: steps.tested.outputs.tree != ''
+        shell: bash
+        run: 'true'
+      - name: main coverage
+        id: coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.changes.outputs.product_change == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-main-coverage.mjs decide
       - name: documentation check
         if: steps.changes.outputs.product_change == 'false' && inputs.documentation-command != ''
         shell: bash
@@ -100,29 +126,37 @@ jobs:
     env:
       # PR runs scope suites to the affected range (scripts/ci-scope.mjs); main, tags and manual runs stay full.
       LATTICE_CI_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
-    runs-on: [self-hosted, factory, "${{ matrix.environment }}"]
+    runs-on: ${{ needs.classify.outputs.covered == 'true' && 'ubuntu-latest' || fromJSON(format('["self-hosted","factory","{0}"]', matrix.environment)) }}
     steps:
+      - name: covered by PR run
+        if: needs.classify.outputs.covered == 'true'
+        shell: bash
+        env:
+          REASON: ${{ needs.classify.outputs.covered_reason }}
+        run: |
+          printf 'Full gate not rerun on main: %s\n' "$REASON" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: checkout
+        if: needs.classify.outputs.covered != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: repaired Windows Node in the product job
-        if: matrix.environment == 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment == 'windows-native')
         id: windows_runtime
         shell: pwsh
         run: ./scripts/ci-windows-node-runtime.ps1 -Directory "$env:RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: repaired Linux Node in the product job
-        if: matrix.environment == 'linux-workstation'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment == 'linux-workstation')
         id: linux_runtime
         shell: bash
         run: bash scripts/ci-linux-node-runtime.sh "$RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: factory macOS Node (dotagents host copy)
-        if: matrix.environment == 'macos-native'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment == 'macos-native')
         id: macos_runtime
         shell: bash
         run: /usr/local/libexec/dotagents/factory-node-runtime.sh 24.22.0 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5
       - name: logical CPU parallelism
-        if: matrix.environment != 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment != 'windows-native')
         shell: bash
         run: |
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
@@ -134,14 +168,14 @@ jobs:
           jobs=$(node -p "require('node:os').availableParallelism()")
           printf 'FACTORY_CI_JOBS=%s\n' "$jobs" >> "$GITHUB_ENV"
       - name: logical CPU parallelism
-        if: matrix.environment == 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment == 'windows-native')
         shell: pwsh
         run: |
           $env:PATH = '${{ steps.windows_runtime.outputs.directory }};' + $env:PATH
           $jobs = node -p "require('node:os').availableParallelism()"
           "FACTORY_CI_JOBS=$jobs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: dependency install
-        if: inputs.dependency-command != '' && matrix.environment != 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (inputs.dependency-command != '' && matrix.environment != 'windows-native')
         shell: bash
         run: |
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
@@ -152,14 +186,14 @@ jobs:
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then export npm_config_engine_strict=true; fi
           ${{ inputs.dependency-command }}
       - name: dependency install
-        if: inputs.dependency-command != '' && matrix.environment == 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (inputs.dependency-command != '' && matrix.environment == 'windows-native')
         shell: pwsh
         run: |
           $env:PATH = '${{ steps.windows_runtime.outputs.directory }};' + $env:PATH
           $env:npm_config_engine_strict = 'true'
           ${{ inputs.dependency-command }}
       - name: product full test
-        if: matrix.environment != 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment != 'windows-native')
         shell: bash
         run: |
           if [[ '${{ matrix.environment }}' == linux-workstation ]]; then
@@ -169,7 +203,7 @@ jobs:
           fi
           ${{ inputs.full-command }}
       - name: product full test
-        if: matrix.environment == 'windows-native'
+        if: needs.classify.outputs.covered != 'true' && (matrix.environment == 'windows-native')
         shell: pwsh
         run: |
           $env:PATH = '${{ steps.windows_runtime.outputs.directory }};' + $env:PATH
