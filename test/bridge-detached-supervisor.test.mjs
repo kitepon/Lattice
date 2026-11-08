@@ -176,6 +176,20 @@ test('supervisor writer preserves the Windows numeric pidfile contract',
     assert.match(saved, /^[0-9]+$/u);
   });
 
+test('a superseded supervisor on the same descriptor exits and stops its bridge', async (context) => {
+  const { env, bridgePath, launchSupervisor, children } = await fixture(context);
+  await installBridgeDetachedSupervisor({ config, env, bridgePath, launch: launchSupervisor, waitReady: noWait });
+  const [first] = children;
+  const { descriptor } = bridgeDetachedSupervisorPaths(env);
+  // A second launch on the same descriptor (seat helper + product, 2026-11-08) takes the pidfile.
+  await launchSupervisor({ nodePath: process.execPath,
+    supervisorPath: path.resolve('bin/lattice-bridge-supervisor.mjs'), descriptorPath: descriptor });
+  const [code] = await Promise.race([once(first, 'exit'),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('superseded supervisor kept running')), 10_000))]);
+  assert.equal(code, 0);
+  assert.equal(children[1].exitCode, null, 'the recorded supervisor keeps running');
+});
+
 test('uninstalled snapshot describes null and disable removes nothing', async (context) => {
   const { env } = await fixture(context);
   const snapshot = await snapshotBridgeDetachedSupervisor({ env });
