@@ -26,6 +26,10 @@ function inputFlag(detail, ctx) {
 
 function movedAfter(detail, ctx, pointer) {
   const where = record(detail.expected) ? detail.expected.greater_than : undefined;
+  // The machine sorts distinct ids itself, so an equal neighbour is a duplicate with different content.
+  if (where !== undefined && where === detail.actual) {
+    return `${q(detail.actual)} appears twice with different content (${pointer}); keep one entry.`;
+  }
   return `Move ${q(detail.actual)} after ${q(where)}; ${pointer} must be ascending and unique.`;
 }
 
@@ -232,15 +236,8 @@ const REGISTRY = {
   flag_unknown: {
     repair: (detail, ctx, pointer) => `Remove ${pointer}: \`${run(ctx)}\` does not accept it; see \`${run(ctx, '--help')}\`.`,
   },
-  evidence_or_message_exactly_one: {
-    repair: (detail, ctx) => `Pass exactly one of --evidence <file> or --message <text> to \`${run(ctx)}\`.`,
-  },
   path_token_invalid: {
     repair: (detail, ctx, pointer) => `Give ${pointer} a repo file path (non-empty, not starting with '--').`,
-  },
-
-  actor_environment_invalid: {
-    repair: (detail) => `Set each of ${names(strings(detail.invalid_environment))} to a todo identifier (letters, digits, '.', '_' or '-', at most 128 characters), or unset it.`,
   },
 
   plan_revise_schema_invalid: {

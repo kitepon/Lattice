@@ -550,6 +550,9 @@ test('active revisionのfuture schemaは破損と分離してstatus/verifyへtyp
         'lattice.phase_todo_revision.v4',
         'lattice.phase_todo_revision.v5',
       ],
+      pointer: null,
+      rule: 'unsupported_revision_schema',
+      next_action: 'lattice todo verify --help',
     },
   });
 });

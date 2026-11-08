@@ -303,9 +303,6 @@ function explainArgumentRefusal(argv) {
   if (flags.evidence !== undefined && !isAuthoringPathToken(flags.evidence)) {
     return { pointer: '--evidence', rule: 'path_token_invalid' };
   }
-  if (isAuthoringPathToken(flags.evidence) === hasMessage) {
-    return { pointer: '--evidence', rule: 'evidence_or_message_exactly_one' };
-  }
   if (flags['test-result'] !== undefined && !isAuthoringPathToken(flags['test-result'])) {
     return { pointer: '--test-result', rule: 'path_token_invalid' };
   }

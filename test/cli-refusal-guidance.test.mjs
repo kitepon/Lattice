@@ -116,9 +116,6 @@ test('state rules name the command to run, from the CLI context', () => {
   assert.equal(guide({ reason: 'plan_not_active', pointer: '/desired/plan_key' }, context).pointer, '/desired/plan_key');
   assert.equal(guide({ reason: 'task_not_found', requested_task_id: 'Tx' }, context).pointer, '--task');
   assert.match(guide({ reason: 'unknown_requires_evidence', task_ids: ['Q1', 'Q2'] }, context).next_action, /\[Q1, Q2\]/u);
-  assert.match(guide({
-    reason: 'actor_environment_invalid', invalid_environment: ['LATTICE_TODO_ACTOR_HOST'],
-  }, context).next_action, /\[LATTICE_TODO_ACTOR_HOST\].*identifier/u);
   assert.match(guide({ reason: 'carry_semantics_changed', from_task_id: 'T9' }, context).next_action, /Task T9/u);
 });
 
@@ -193,27 +190,17 @@ function createDraft(mutate) {
   return value;
 }
 
-test('plan create with unsorted tasks names the pointer, the rule and both ids', async (context) => {
+test('plan create with a duplicate task_id names the pointer, the rule and the id', async (context) => {
   const root = await workspace(context);
   await writeFile(path.join(root, 'draft.json'), `${JSON.stringify(createDraft((value) => {
     const [first] = value.tasks;
-    value.tasks = [{ ...first, task_id: 't2' }, { ...first, task_id: 't1' }];
+    value.tasks = [first, { ...first, title: 'other' }];
     return value;
   }))}\n`);
   const detail = lattice(root, ['plan', 'create', '--input', 'draft.json']);
   assert.equal(detail.pointer, '/tasks/1/task_id');
   assert.equal(detail.rule, 'unsorted');
-  assert.match(detail.next_action, /'t1'/u);
-  assert.match(detail.next_action, /'t2'/u);
-});
-
-test('todo done with neither --evidence nor --message names a flag', async (context) => {
-  const root = await workspace(context, { store: true });
-  const detail = lattice(root, ['todo', 'done', '--plan', 'main', '--task', 'T1']);
-  assert.equal(detail.command, 'done');
-  assert.equal(detail.rule, 'evidence_or_message_exactly_one');
-  assert.equal(detail.pointer, '--evidence');
-  assert.match(detail.next_action, /--evidence <file> or --message <text>/u);
+  assert.match(detail.next_action, /'t1' appears twice with different content/u);
 });
 
 test('todo done names a missing or unknown flag', async (context) => {
