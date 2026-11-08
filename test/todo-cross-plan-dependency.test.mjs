@@ -394,7 +394,6 @@ test('binding recovery refuses CAS changes, wrong originals and missing carry wi
     [{ expectedPlanScopedHeadDigest: 'f'.repeat(64) }, 'dependency_rebind_binding_changed'],
     [{ eventDigests: ['f'.repeat(64)] }, 'dependency_rebind_original_mismatch'],
     [{ validateBindingCarry: () => ({ ok: false, code: 'REVISION_INVALID', detail: { reason: 'carry_not_proven', task_id: 'P' } }) }, 'carry_not_proven'],
-    [{ eventDigests: options.eventDigests.slice(0, 1) }, 'binding_stale'],
   ]) {
     await assert.rejects(rebindTodoCrossPlanDependencies({ ...options, ...override }),
       (error) => error.detail.reason === reason);
@@ -406,6 +405,13 @@ test('binding recovery refuses CAS changes, wrong originals and missing carry wi
     await assert.rejects(rebindTodoCrossPlanDependencies({ ...options, ...override }), TypeError);
     assert.deepEqual(await readFile(chainPath), originalBytes);
   }
+  // An unselected stale binding is no longer a refusal; it stays a finding.
+  const partial = await rebindTodoCrossPlanDependencies({ ...options,
+    eventDigests: options.eventDigests.slice(0, 1) });
+  assert.equal(partial.replacements.length, 1);
+  const after = await readTodoStore({ repoRoot: options.repoRoot });
+  assert.deepEqual(after.cross_plan_findings.map(({ event_digest: digest, reason }) => [digest, reason]),
+    [[options.eventDigests[1], 'binding_stale']]);
 });
 
 test('binding recovery publication has no disconnect-only crash state', async (context) => {
@@ -415,7 +421,9 @@ test('binding recovery publication has no disconnect-only crash state', async (c
     onProtocolStage(stage) { if (stage === 'dependency_rebind_validated') throw new Error('before'); },
   }), /before/u);
   assert.deepEqual(await readFile(chainPath), originalBytes);
-  await assert.rejects(fixture.read(), (error) => error.detail.reason === 'binding_stale');
+  const stale = await fixture.read();
+  assert.deepEqual(stale.cross_plan_findings.map(({ event_digest: digest, side, reason }) => [digest, side, reason]).sort(),
+    options.eventDigests.map((digest) => [digest, 'from', 'binding_stale']).sort());
   await assert.rejects(rebindTodoCrossPlanDependencies({ ...options,
     onProtocolStage(stage) { if (stage === 'dependency_rebind_published') throw new Error('after'); },
   }), /after/u);
