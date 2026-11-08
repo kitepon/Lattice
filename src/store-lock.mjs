@@ -50,7 +50,10 @@ async function processIsDead(pid, startDigest) {
     const observed = await observeStartIdentityRaw(pid);
     if (observed) return hash(`${process.platform}:${observed}`) !== startDigest;
   } catch {
-    // A failed observation cannot turn an existing PID into a dead owner.
+    // A failed observation cannot turn an existing PID into a dead owner, but a PID that
+    // vanished meanwhile was a short-lived reuser (Windows reuses PIDs at once): the owner is gone.
+    try { process.kill(pid, 0); }
+    catch (error) { if (error?.code === 'ESRCH') return true; }
   }
   return false;
 }
