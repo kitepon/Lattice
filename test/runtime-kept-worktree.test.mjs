@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -93,4 +93,32 @@ test('R2k: a terminal TODO is not touched, and an unreadable tree is recorded in
   const [entry] = await recoverKeptWorktrees({ events: gone });
   assert.equal(entry.index_lock, 'unknown');
   assert.equal(typeof entry.observation_error, 'string');
+});
+
+test('R2k: a checkpoint path reverted to base is reported as unobserved', posix, async (t) => {
+  const { tree, baseSha } = await keptTree(t);
+  const { worker, binding } = await realWorker(t, tree);
+  await writeFile(path.join(tree, 'a.txt'), 'checkpointed\n');
+  const checkpoint = await captureWorktreeDiff({ worktreePath: tree, baseSha });
+  await writeFile(path.join(tree, 'a.txt'), 'base\n');
+  process.kill(worker.pid, 'SIGKILL');
+
+  const [entry] = await recoverKeptWorktrees({ events: runEvents(binding, baseSha, checkpoint) });
+  assert.deepEqual(entry.unobserved_paths, ['a.txt']);
+});
+
+test('R2k: a lock recovery permission error is recorded as unknown with observation_error', posix, async (t) => {
+  const { tree, baseSha, lockPath } = await keptTree(t);
+  const { worker, binding } = await realWorker(t, tree);
+  process.kill(worker.pid, 'SIGKILL');
+  await writeFile(lockPath, 'partial index');
+  const gitDir = path.dirname(lockPath);
+  await chmod(gitDir, 0o555);
+  try {
+    const [entry] = await recoverKeptWorktrees({ events: runEvents(binding, baseSha) });
+    assert.equal(entry.index_lock, 'unknown');
+    assert.match(entry.observation_error, /permission denied/i);
+  } finally {
+    await chmod(gitDir, 0o755);
+  }
 });

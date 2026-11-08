@@ -71,15 +71,28 @@ async function recoverIndexLock(worktreePath, bindings) {
   const owners = await waitOwners(bindings);
   if (owners !== 'dead') return `owner_${owners}`;
   try { return await removeJudgedEntry(lockPath, info); }
-  catch { return 'conflict_kept'; } // put-back raced a new lock: both entries are kept
+  catch (error) {
+    if (error?.code === 'RUN_LOCK_INVALID') return 'conflict_kept'; // put-back EEXIST preserves both entries
+    throw error;
+  }
 }
 
 function unobservedPaths(current, checkpoint) {
-  const recorded = new Map((checkpoint?.payload?.diff?.entries ?? [])
+  const checkpointEntries = checkpoint?.payload?.diff?.entries ?? [];
+  const recorded = new Map(checkpointEntries
     .map((entry) => [entry.path, `${entry.change}:${entry.content_digest}`]));
-  return current.diff.entries
-    .filter((entry) => recorded.get(entry.path) !== `${entry.change}:${entry.content_digest}`)
-    .map((entry) => entry.path);
+  const currentPaths = new Set(current.diff.entries.map((entry) => entry.path));
+  const checkpointOnlyPaths = new Set();
+  return [
+    ...current.diff.entries
+      .filter((entry) => recorded.get(entry.path) !== `${entry.change}:${entry.content_digest}`)
+      .map((entry) => entry.path),
+    ...checkpointEntries.filter((entry) => {
+      if (currentPaths.has(entry.path) || checkpointOnlyPaths.has(entry.path)) return false;
+      checkpointOnlyPaths.add(entry.path);
+      return true;
+    }).map((entry) => entry.path),
+  ];
 }
 
 /**
