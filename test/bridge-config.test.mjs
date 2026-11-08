@@ -13,6 +13,7 @@ import {
   disableBridge,
   readBridgeConfig,
 } from '../src/bridge-config.mjs';
+import { freePort } from './helpers/free-port.mjs';
 
 async function fixture(context) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-config-'));
@@ -45,10 +46,11 @@ test('auto portは高番帯をactual exclusive bindして0600で永続化し再�
     server.once('listening', () => { listened = true; });
     return server;
   };
-  const first = await configureBridge({ address: '127.0.0.1', env, choosePort: () => 58_731,
+  const chosen = await freePort();
+  const first = await configureBridge({ address: '127.0.0.1', env, choosePort: () => chosen,
     createCandidateServer, now: () => new Date('2026-07-21T12:00:00.000Z') });
   assert.equal(listened, true);
-  assert.equal(first.listen.port, 58_731);
+  assert.equal(first.listen.port, chosen);
   assert.ok(first.listen.port >= BRIDGE_PORT_MIN && first.listen.port <= BRIDGE_PORT_MAX);
   if (process.platform !== 'win32') {
     assert.equal((await stat(path.join(root, 'bridge.json'))).mode & 0o777, 0o600);
@@ -64,37 +66,44 @@ test('auto portは高番帯をactual exclusive bindして0600で永続化し再�
 test('occupied auto candidateは同じportを再試行せず別portをactual bindする', async (context) => {
   const { env } = await fixture(context);
   const occupied = createServer();
-  await listen(occupied, 58_732);
+  // the product steps a repeated candidate to the next port, so busy+1 must be free too
+  const busy = await freePort('127.0.0.1', { span: 2 });
+  await listen(occupied, busy);
   context.after(() => close(occupied));
-  const values = [58_732, 58_732, 58_733];
+  const spare = busy + 1;
+  const values = [busy, busy, spare];
   const config = await configureBridge({ address: '127.0.0.1', env,
-    choosePort: () => values.shift() ?? 58_733 });
-  assert.equal(config.listen.port, 58_733);
+    choosePort: () => values.shift() ?? spare });
+  assert.equal(config.listen.port, spare);
 });
 
 test('明示auto reconfigureは旧portを固定せず新しいexclusive bindを選べる', async (context) => {
   const { env } = await fixture(context);
-  const first = await configureBridge({ address: '127.0.0.1', port: 58_748, env });
+  const oldPort = await freePort();
+  const newPort = await freePort('127.0.0.1', { avoid: [oldPort] });
+  const first = await configureBridge({ address: '127.0.0.1', port: oldPort, env });
   const changed = await configureBridge({ address: '127.0.0.1', port: null, env,
-    reuseCurrentPort: false, choosePort: () => 58_749 });
-  assert.equal(first.listen.port, 58_748);
-  assert.equal(changed.listen.port, 58_749);
+    reuseCurrentPort: false, choosePort: () => newPort });
+  assert.equal(first.listen.port, oldPort);
+  assert.equal(changed.listen.port, newPort);
 });
 
 test('occupied explicit portはtyped failureになり旧configを維持する', async (context) => {
   const { env } = await fixture(context);
-  const original = await configureBridge({ address: '127.0.0.1', port: 58_734, env });
+  const originalPort = await freePort();
+  const busy = await freePort('127.0.0.1', { avoid: [originalPort] });
+  const original = await configureBridge({ address: '127.0.0.1', port: originalPort, env });
   const occupied = createServer();
-  await listen(occupied, 58_735);
+  await listen(occupied, busy);
   context.after(() => close(occupied));
-  await assert.rejects(configureBridge({ address: '127.0.0.1', port: 58_735, env }),
+  await assert.rejects(configureBridge({ address: '127.0.0.1', port: busy, env }),
     (error) => error instanceof BridgeConfigError && error.code === 'BRIDGE_PORT_UNAVAILABLE');
   assert.deepEqual(await readBridgeConfig({ env }), original);
 });
 
 test('concurrent setupはlockで直列化し一つの選択portを共有する', async (context) => {
   const { env } = await fixture(context);
-  let candidate = 58_736;
+  let candidate = await freePort();
   const [left, right] = await Promise.all([
     configureBridge({ address: '127.0.0.1', env, choosePort: () => candidate++ }),
     configureBridge({ address: '127.0.0.1', env, choosePort: () => candidate++ }),
