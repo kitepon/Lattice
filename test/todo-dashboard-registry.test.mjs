@@ -871,7 +871,7 @@ test('store書き込みのtodo commandが明示serveなしでproject登録とdae
     stdout: { write: (value) => { stdout += value; } },
     stderr: { write: (value) => { stderr += value; } } });
   assert.equal(code, 1, stdout);
-  assert.equal(JSON.parse(stderr.split('\n')[0]).state, 'local_only');
+  assert.equal(stderr.includes('lattice.dashboard_delivery.v1'), false); // a15: no bridge, no line
   const descriptor = JSON.parse(await readFile(path.join(runtime, 'daemon.json'), 'utf8'));
   daemonPid = descriptor.pid;
   assert.ok(descriptor.port > 0);

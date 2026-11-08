@@ -798,6 +798,6 @@ test('statusは公開未設定をstderrへ返し、既存の工程状態契約�
   });
   assert.equal(code, 0);
   assert.equal(validateProjectStatus(JSON.parse(stdout)), true);
-  assert.equal(JSON.parse(stderr).state, 'local_only');
-  assert.equal(JSON.parse(stderr).reason, 'bridge_unconfigured');
+  // a15: a seat without a bridge gets no delivery line on stderr.
+  assert.equal(stderr, '');
 });

@@ -107,3 +107,13 @@ test('reportのcatchは配信3段階のsubreasonを落とさず、任意detail�
   assert.deepEqual(result.failure, { stage: 'unknown', subreason: 'unavailable' });
   assert.doesNotMatch(JSON.stringify(result), /secret-marker/u);
 });
+
+test('a15: a seat without a bridge gets the local_only receipt but no stderr line', async () => {
+  let stderr = '';
+  const result = await reportProjectDashboardDelivery({ projectId: 'movie', env: {},
+    stderr: { write: (text) => { stderr += text; } },
+    ensureDelivery: async () => ({ schema: 'lattice.dashboard_delivery.v1', state: 'local_only',
+      reason: 'bridge_unconfigured', project_ids: ['movie'], urls: [] }) });
+  assert.equal(result.state, 'local_only');
+  assert.equal(stderr, '');
+});

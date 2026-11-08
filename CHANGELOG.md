@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- bridgeを設定していない（または止めている）席では、書き込みのたびにstderrへ出ていた配送の行（`local_only` / `bridge_unconfigured`）を出さない。配送しないのは席の選択で、失敗ではない。`todo dashboard ensure`の結果には今までどおり載る。配送の失敗（`failed`）は今までどおり出す。
+
 - `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
 
 ## 0.83.0 — 2026-11-08
