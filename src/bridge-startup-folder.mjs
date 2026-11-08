@@ -161,7 +161,8 @@ function launcherScript({ nodePath, supervisorPath, descriptorPath }) {
   return `Set shell = CreateObject("WScript.Shell")\r\nshell.Run ${command}, 0, False\r\n`;
 }
 
-function supervisorDescriptor({ bridgePath, pidfile, instanceToken, env }) {
+/** Shared with `bridge-detached-supervisor.mjs`; `nodePath` is recorded only where no launcher file holds it. */
+export function supervisorDescriptor({ bridgePath, pidfile, instanceToken, env, nodePath = undefined }) {
   const forwarded = { LATTICE_BRIDGE_INSTANCE_TOKEN: instanceToken };
   if (env.LATTICE_CONFIG_DIR !== undefined) {
     if (typeof env.LATTICE_CONFIG_DIR !== 'string' || !path.isAbsolute(env.LATTICE_CONFIG_DIR)) {
@@ -177,7 +178,8 @@ function supervisorDescriptor({ bridgePath, pidfile, instanceToken, env }) {
     forwarded.LATTICE_BRIDGE_REGISTRAR_SSH_HOST = registrar.host;
     forwarded.LATTICE_BRIDGE_REGISTRAR_SCRIPT = registrar.script;
   }
-  return JSON.stringify({ schema: DESCRIPTOR_SCHEMA, bridgePath, pidPath: pidfile, env: forwarded });
+  return JSON.stringify({ schema: DESCRIPTOR_SCHEMA, bridgePath, pidPath: pidfile, env: forwarded,
+    ...(nodePath === undefined ? {} : { nodePath }) });
 }
 
 export async function defaultStartupRunner(args) {
@@ -198,7 +200,8 @@ function healthHost(address) {
   return address.includes(':') ? `[${address}]` : address;
 }
 
-export async function waitForBridgeStartupReady({ config, instanceToken, env, timeoutMs = START_TIMEOUT_MS }) {
+export async function waitForBridgeStartupReady({ config, instanceToken, env, timeoutMs = START_TIMEOUT_MS,
+  failureCode = 'BRIDGE_STARTUP_FOLDER_START_FAILED' }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const descriptor = await readBridgeDaemonDescriptor({ env });
@@ -217,7 +220,7 @@ export async function waitForBridgeStartupReady({ config, instanceToken, env, ti
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw fail('BRIDGE_STARTUP_FOLDER_START_FAILED', 'bridge startup process did not become healthy');
+  throw fail(failureCode, 'bridge startup process did not become healthy');
 }
 
 async function defaultWaitStopped({ listen, timeoutMs = STOP_TIMEOUT_MS }) {

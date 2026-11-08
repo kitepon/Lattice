@@ -26,6 +26,10 @@ import {
   describeBridgeStartupFolder, disableBridgeStartupFolder, installBridgeStartupFolder,
   restoreBridgeStartupFolder, snapshotBridgeStartupFolder,
 } from './bridge-startup-folder.mjs';
+import {
+  describeBridgeDetachedSupervisor, disableBridgeDetachedSupervisor, installBridgeDetachedSupervisor,
+  restoreBridgeDetachedSupervisor, snapshotBridgeDetachedSupervisor,
+} from './bridge-detached-supervisor.mjs';
 
 // v2 adds the liveness fields. `enabled` only says the configuration is on;
 // it never said the bridge could actually be reached, which let a DHCP lease
@@ -86,16 +90,24 @@ async function bridgeLiveness(config, { interfaces = networkInterfaces(), probe 
 // what lets `lattice bridge setup` on Windows persist via the Startup folder
 // exactly the way it persists via a LaunchAgent on macOS, with no separate
 // command or manual step (see bridge-startup-folder.mjs's module doc for why
-// Task Scheduler's ONLOGON trigger could not be used instead).
+// Task Scheduler's ONLOGON trigger could not be used instead). Every other OS
+// (Linux seats in containers) gets the detached supervisor: the adapter is the
+// only code that touches its OS tool, so `dashboard ensure` on Linux never
+// probes launchctl (docs/architecture/dfd-bridge-persistence.md).
 function platformLaunchAgent() {
   if (process.platform === 'win32') {
     return { snapshot: snapshotBridgeStartupFolder, install: installBridgeStartupFolder,
       disable: disableBridgeStartupFolder, restore: restoreBridgeStartupFolder,
       describe: describeBridgeStartupFolder };
   }
-  return { snapshot: snapshotBridgeLaunchAgent, install: installBridgeLaunchAgent,
-    disable: disableBridgeLaunchAgent, restore: restoreBridgeLaunchAgent,
-    describe: describeBridgeLaunchAgent };
+  if (process.platform === 'darwin') {
+    return { snapshot: snapshotBridgeLaunchAgent, install: installBridgeLaunchAgent,
+      disable: disableBridgeLaunchAgent, restore: restoreBridgeLaunchAgent,
+      describe: describeBridgeLaunchAgent };
+  }
+  return { snapshot: snapshotBridgeDetachedSupervisor, install: installBridgeDetachedSupervisor,
+    disable: disableBridgeDetachedSupervisor, restore: restoreBridgeDetachedSupervisor,
+    describe: describeBridgeDetachedSupervisor };
 }
 
 const UNREADABLE_PERSISTENCE = Object.freeze({ loaded: null, node_path: null, node_exists: false,
