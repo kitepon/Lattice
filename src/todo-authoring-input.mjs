@@ -15,12 +15,6 @@ import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-iden
 import { TodoStoreError } from './todo-store.mjs';
 
 const MAX_AUTHORING_INPUT_BYTES = 8_388_608;
-const ACTOR_ENV_KEYS = Object.freeze([
-  'LATTICE_TODO_ACTOR_HOST',
-  'LATTICE_TODO_ACTOR_SESSION',
-  'LATTICE_TODO_ACTOR_AGENT',
-]);
-
 function sanitizeActorIdentifier(raw, fallback) {
   const compact = String(raw ?? '').replace(/[^0-9A-Za-z._-]/gu, '-').replace(/^-+/u, '').slice(0, 128);
   return isTodoIdentifier(compact) ? compact : fallback;
