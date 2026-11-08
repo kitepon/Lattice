@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 // URL.pathnameはWindowsで"/C:/..."となりpath.resolveが"C:\C:\..."を作るため、fileURLToPathで変換する。
 const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-const testRoot = path.join(repoRoot, 'test');
+export const testRoot = path.join(repoRoot, 'test');
 
 // CI runs core on every supported OS. Profiles remain for short local reproductions.
 export const nativeTestProfiles = Object.freeze({
@@ -36,7 +36,7 @@ export const nativeTestProfiles = Object.freeze({
   ]),
 });
 
-async function collectTests(directory, prefix = '') {
+export async function collectTests(directory, prefix = '') {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
@@ -100,7 +100,9 @@ function requestedProfile(argv = process.argv.slice(2)) {
 async function runProductTests() {
   const allTests = (await collectTests(testRoot)).sort();
   const profile = requestedProfile();
-  const productTests = selectProductTests(allTests, profile);
+  // PR CI passes the affected suites chosen by scripts/ci-scope.mjs; everything else runs the profile.
+  const productTests = process.env.LATTICE_CI_TESTS
+    ? JSON.parse(process.env.LATTICE_CI_TESTS) : selectProductTests(allTests, profile);
   process.stdout.write(`Current product gate (${profile}): ${productTests.length} suites\n\n`);
   const configDir = await mkdtemp(path.join(tmpdir(), 'lattice-product-tests-config-'));
   let result;
