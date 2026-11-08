@@ -1,6 +1,10 @@
 # Gantt display: verified, unverified, last-verified and unavailable rendering
 
-Status: DESIGN ONLY, connected to the [Store display read](dfd-store-display-read.md).
+Status: display half implemented in `src/todo-gantt-display.mjs` (tolerant projection, banner and
+empty state, head token, per-project memo/reader) and wired by
+`createTodoGanttDisplayServing` in `src/todo-cli.mjs` into both serving paths; it consumes the
+Store's `readTodoStoreForDisplay` / `readTodoStoreDisplaySource` from `src/todo-store.mjs` and is
+unusable until the Store row lands. Connected to the [Store display read](dfd-store-display-read.md).
 Delta 2026-11-08 (guards.remove-unnamed): `unverified` added; `unavailable` only when nothing is readable.
 Implementation starts after the PR55/56 merge and the bounded shared-Store recovery,
 and after Leviathan reviews this row together with the Store row.
