@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.84.0 — 2026-11-08
+
+Lattice単体の完成に向けた版。席がLatticeを使う時に、拒否で止まらず、止まる時は直し方が1回で分かることを中心にした。計画は1〜2回で作れ、ターンの始めは一度の読み取りで済み、終わった・外した工程は後続を止めない。
+
 - 最初のplanを1〜2回で作れる（a11）。`plan create`は、定数・nullの欄（`schema`=v5、`lane`=main、`narrative_*`、`compile_binding`、`parent_task_id`、`done_condition`、`gate_policy`=heavy、`predecessor_phase_ids`、空の`hard_dependencies`/`joins`/`phase_accept_dependencies`、辺の`project_id`/`plan_key`）を書かなくてよく、`recorded_at`は時差（Zか±hh:mm）付きの実在するISO時刻なら受ける。断る時は独立な違反を`detail.problems`にすべて載せ、欄の過不足は`missing_keys`/`unexpected_keys`で示す。`plan create --template --json`が最小のv5入力を出し、`plan show`が`hard_dependencies`/`joins`/`phase_accept_dependencies`を載せる。既定のcreate入力と案内（`next_action`）はv4からv5になった。
 - `todo dependency connect|disconnect`は、同一plan内の辺ならplan本体を軽い改訂で書き換える（a14）。plan_versionが変わり、結果は`lattice.todo_dependency_revision_result.v1`、理由はplanの履歴noteに残る。これまで、planが持つ辺を`disconnect`すると`cross_plan_dependency_not_found`で断られ、`plan revise`の全入力が要った。台帳に積んだ同一plan辺の除去、plan跨ぎの接続・除去は従来どおり。軽量改訂で表せないplan（create v1〜v3由来・源泉束縛・compile_binding付き）は従来どおり台帳へ積む。台帳に同じ同一plan辺が生きていれば、connectは従来どおり`cross_plan_dependency_duplicate`で断る。辺が無い時の断りには`next_action`（`lattice plan show <plan> --json`）が付く。
 - 工程表（gantt）の描画は、工程数・依存数の上限超え、依存の循環、独立性の投影のずれ、図に描けない依存、説明文の量、ページの大きさ、壊れた表示設定（presentation）で断らない。描ける所を描き、何を省いたかを図の上の注記に出す（u03 D-gantt）。注記のcodeは従来の拒否のcodeと同じ。
@@ -12,8 +16,15 @@
 - `todo status`は件数・大きさの上限で拒否せず切り詰める。版9（`lattice.todo_status_result.v9`）になり、`truncated: [{list, total, shown}]`で切った所を示す。
 - `lattice hooks install`を入れ直しても、Latticeの項目はその位置で置き換わり、他の製品のhookの位置と並びは変わらない。これまでは自分の項目を消して末尾へ足していたため、位置でhookの承認を覚えるCodexで、他の製品の承認がずれた。
 - bridgeを設定していない（または止めている）席では、書き込みのたびにstderrへ出ていた配送の行（`local_only` / `bridge_unconfigured`）を出さない。配送しないのは席の選択で、失敗ではない。`todo dashboard ensure`の結果には今までどおり載る。配送の失敗（`failed`）は今までどおり出す。
-
 - `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
+- 拒否はどれも、直す欄（`detail.pointer`）、規則（`detail.rule`）、直し方（`detail.next_action`）を1回で返す（a5）。`next_action`は、置き換え用の記号ではなく、実際の値（動かすid、足す・外すkey、打つ`lattice todo start/show`のコマンド）を名指す。状態の拒否は`pointer: null`。他の欄、code、終了コードは変わらない。
+- 同じ`task_id`で中身の違う工程が2つある時は、「並べ替えろ」ではなく、そのidが中身の違う形で2回あると言う。
+- `lattice session-context --json`は版2（`lattice.session_context.v2`）になり、ターンの始めに一度で読める`turn {actor, startable, own, warning?}`を返す（a3）。`startable`は今着手できる工程、`own`はこの席が着手した進行中・blockの工程（開始時刻、blockの理由、完了条件付き）。storeが無い・読めない時も拒否せず、空の一覧と警告を返す。`status --json`は`project_status.v1`のままで、進行中の仕事がある時は`next_action`で`session-context`を名指す。Latticeは記録して見せるだけで、次の工程を選ばない。
+- 順序・状態による拒否は、codeが`TODO_TRANSITION_REFUSED`になり、止めている工程・phase（`blocking_tasks` / `blocking_phases`）と状態を返す。`next_action`は最初に止めている工程かphaseを名指す（a12）。何も食い違っていないのに`STORE_INCONSISTENT`を返さない（`STORE_INCONSISTENT`は記録の履歴の食い違いだけ）。
+- 同じ状態への`todo start`（同じagentの着手）・`done`・`block`・`unblock`は、拒否せず`unchanged: true`で成功し、何も記録しない。別の席が進行中の工程への着手は今までどおり断る（a12）。
+- `todo verify`は版4（`lattice.todo_verify_result.v4`）になり、まだcommitしていない証拠を`uncommitted_evidence`に挙げて成功する。消えた・変わった証拠は今までどおり断る（a12）。
+- 退役した（完了せずに外した）先行工程は、後続を止めない（a13）。着手判定、`todo status`、gantt、Storeの再生のどれでも、`done`と`retired`を「終わった」として扱う。**席は先に0.84.0へ上げること**: 古い版は、退役した先行工程の後に記録された着手を読めずに断る。
+- sensorのMCP: 常駐プロセスの本人確認で、挨拶を待つ時間を1秒から5秒にした。負荷の高い機械では、起動直後の常駐プロセスが挨拶を返すまで数秒かかり、動いている常駐プロセスを「本人でない」と見誤って`lattice sensor index`と`daemon stop`が断られていた。相手がいない・違う挨拶が返った時は、今までどおりすぐに答える。
 
 ## 0.83.0 — 2026-11-08
 
