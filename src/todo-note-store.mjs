@@ -264,7 +264,7 @@ export async function appendTodoNote(options = {}) {
   const planScoped = options.taskId === null;
   const scope = planScoped ? 'plan' : 'task';
   const repoRoot = path.resolve(options.repoRoot);
-  return withNoteLock(repoRoot, async () => {
+  return withNoteLock(repoRoot, async (assertHeld) => {
     // sequenceとprevious_digestはchainごとに独立。note系の起点は1（journal系の0ではない）。
     const chain = await readTodoNoteEvents({ repoRoot, planKey: options.planKey, scope });
     if (options.supersedes !== null) {
@@ -300,6 +300,8 @@ export async function appendTodoNote(options = {}) {
     const paths = chainRefs(repoRoot, options.planKey, scope);
     await ensureNoteDirectory(path.dirname(paths.active));
     const eventBytes = canonicalLine(event);
+    // A holder that lost its lock while suspended must not overwrite the new owner's chain.
+    await assertHeld();
     if (chain.active_bytes.length > 0
       && chain.active_bytes.length + eventBytes.length > TODO_LIMITS.journalSegmentBytes) {
       const activeEvents = parseCanonicalSegment(chain.active_bytes, paths.active);

@@ -184,19 +184,39 @@ test('unavailable own identity publishes a weak owner and still acquires', async
   assert.deepEqual(await readdir(root), []);
 });
 
-test('unsupported hard links returns typed actionable conflict and publishes no owner', async (t) => {
+test('unsupported hard links publish the owner in place and still release cleanly', async (t) => {
   const { root, lockPath } = await fixture(t);
   const result = await runWithLoader(lockPath, 'node:fs/promises',
-    `export {lstat,mkdir,open,readFile,readdir,readlink,rm,rmdir,utimes} from 'node:fs/promises';
+    `export {lstat,mkdir,open,readFile,readdir,readlink,rename,rm,rmdir,utimes} from 'node:fs/promises';
      export async function link(){throw Object.assign(new Error('unsupported'),{code:'ENOTSUP'})}`, `
-    try {await withStoreLock({lockPath:${JSON.stringify(lockPath)}},()=>process.exit(2));process.exit(3)}
-    catch(error){if(!(error instanceof StoreLockError))throw error;
-      process.stdout.write(JSON.stringify({reason:error.reason,...error.detail}))}`);
-  const detail = JSON.parse(result.stdout);
-  assert.equal(detail.reason, 'store_locked');
-  assert.equal(detail.cause, 'lock_publication_unavailable');
-  assert.ok(detail.next_action.includes(lockPath));
+    import {readFile} from 'node:fs/promises';
+    await withStoreLock({lockPath:${JSON.stringify(lockPath)}},async()=>{
+      process.stdout.write(await readFile(${JSON.stringify(lockPath)},'utf8'));
+    });`);
+  assert.equal(typeof JSON.parse(result.stdout).pid, 'number');
   assert.deepEqual(await readdir(root), []);
+});
+
+test('assertHeld resolves while the lock is still ours', async (t) => {
+  const { root, lockPath } = await fixture(t);
+  const result = await withStoreLock({ lockPath }, async (assertHeld) => {
+    await assertHeld();
+    return 'held';
+  });
+  assert.equal(result, 'held');
+  assert.deepEqual(await readdir(root), []);
+});
+
+test('assertHeld rejects with lock_lost after a replacement and release leaves the foreign lock', async (t) => {
+  const { lockPath } = await fixture(t);
+  const foreign = '{"pid":1,"foreign":true}\n';
+  await withStoreLock({ lockPath }, async (assertHeld) => {
+    await rm(lockPath);
+    await writeFile(lockPath, foreign);
+    await assert.rejects(assertHeld(), (error) => busy('store_locked')(error)
+      && error.detail.cause === 'lock_lost' && error.detail.next_action.includes(lockPath));
+  });
+  assert.equal(await readFile(lockPath, 'utf8'), foreign);
 });
 
 test('unidentified lock is recovered only after its mtime exceeds LOCK_STALE_MS', async (t) => {

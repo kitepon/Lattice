@@ -1621,7 +1621,7 @@ async function atomicWriteMode(absolute, bytes, mode) {
 async function withLock(repoRoot, callback, {
   onProtocolStage = null, lockCapability = null, initialize = false,
 } = {}) {
-  if (lockCapability === STORE_LOCK_HELD) return callback();
+  if (lockCapability === STORE_LOCK_HELD) return callback(async () => {});
   try {
     if (!initialize) {
       const root = await lstat(path.join(repoRoot, STORE_ROOT_REF)).catch((error) => {
@@ -1796,7 +1796,7 @@ export async function appendTodoEvent(options = {}) {
     throw new TypeError('appendTodoEvent requires a Plan-supplied validateProspectiveEvent');
   }
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
-  return withLock(repoRoot, async () => {
+  return withLock(repoRoot, async (assertHeld) => {
     const store = await readTodoStoreLocked({
       repoRoot, forWrite: true, now: options.now,
       // 修理扉は除去event（tombstone）の書込みだけに開く。それ以外の書込みは従来どおり
@@ -1827,7 +1827,7 @@ export async function appendTodoEvent(options = {}) {
         }
       }
       return appendPlanScopedEvent({
-        repoRoot, member,
+        repoRoot, member, assertHeld,
         input: { ...options.event, recorded_at: options.event.recorded_at ?? new Date().toISOString() },
       });
     }
@@ -1872,6 +1872,8 @@ export async function appendTodoEvent(options = {}) {
     const eventBytes = canonicalLine(event);
     const activeRef = member.descriptor.journal_ref;
     const activeAbsolute = path.resolve(repoRoot, activeRef);
+    // A holder that lost its lock while suspended must not overwrite the new owner's journal.
+    await assertHeld();
     if (member.journal.activeBytes.length + eventBytes.length > TODO_LIMITS.journalSegmentBytes) {
       const activeEvents = member.journal.segments.at(-1).events;
       const previousSegmentDigest = member.journal.segments.length > 1
@@ -1944,9 +1946,10 @@ function planScopedEventBytes(member, event) {
   return bytes;
 }
 
-async function appendPlanScopedEvent({ repoRoot, member, input }) {
+async function appendPlanScopedEvent({ repoRoot, member, input, assertHeld }) {
   const event = buildPlanScopedEvent(member, input);
   const bytes = planScopedEventBytes(member, event);
+  await assertHeld();
   await atomicWrite(path.resolve(repoRoot, member.plan_scoped.ref),
     Buffer.concat([member.plan_scoped.activeBytes, bytes]));
   const events = [...member.plan_scoped.events, event];
@@ -2889,7 +2892,7 @@ const sameDirectoryIdentity = (left, right) => left !== null && right !== null
 
 async function transientStoreDirectory(root, allowNotes = true) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.tmp$/u.test(entry.name))) continue;
+    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.(?:tmp|stale)$/u.test(entry.name))) continue;
     if (!entry.isDirectory()) return false;
     const child = path.join(root, entry.name);
     if (allowNotes && entry.name === 'notes') {

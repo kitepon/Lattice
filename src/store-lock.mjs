@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { link, lstat, mkdir, open, readFile, readdir, rm, rmdir, utimes } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
@@ -13,6 +13,7 @@ export const LOCK_STALE_MS = 10 * 60_000;
 export const LOCK_HEARTBEAT_MS = 30_000;
 // Weak identity when own observation is unavailable: never PID-recovered, only heartbeat-stale.
 const WEAK = 'unobserved';
+const NO_HARD_LINK = ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS'];
 let ownStart;
 let ownHost;
 
@@ -54,20 +55,20 @@ async function processIsDead(pid, startDigest) {
   return false;
 }
 
-/** Returns null (absent), {owner, stale} for an identified owner, or {owner: null, stale} when unidentified. */
+/** Returns null (absent) or {owner (null when unidentified), stale, info: the judged lstat}. */
 async function readOwner(lockPath) {
   try {
     const info = await lstat(lockPath);
     const stale = info.mtimeMs < Date.now() - LOCK_STALE_MS;
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 8192) return { owner: null, stale };
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 8192) return { owner: null, stale, info };
     let owner;
     try { owner = JSON.parse(await readFile(lockPath, 'utf8')); }
     catch (error) {
       if (error?.code === 'ENOENT') return null;
       if (!(error instanceof SyntaxError)) throw error;
-      return { owner: null, stale };
+      return { owner: null, stale, info };
     }
-    return { owner: identified(owner) ? owner : null, stale };
+    return { owner: identified(owner) ? owner : null, stale, info };
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     throw error;
@@ -82,6 +83,32 @@ async function abandoned({ owner, stale }, host) {
       hash(`${owner.process_start.platform}:${owner.process_start.identity}`));
   }
   return stale;
+}
+
+/**
+ * Remove only the entry that was judged abandoned. A stale owner may still be alive and
+ * release, letting a new owner link in between judgement and removal; that one goes back.
+ */
+async function removeJudged(lockPath, judged) {
+  const quarantine = `${lockPath}.${randomBytes(8).toString('hex')}.stale`;
+  try { await rename(lockPath, quarantine); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+  const moved = await lstat(quarantine);
+  if (moved.dev === judged.dev && moved.ino === judged.ino && moved.size === judged.size
+    && moved.mtimeMs === judged.mtimeMs) {
+    await rm(quarantine);
+    return;
+  }
+  try { await link(quarantine, lockPath); }
+  catch (error) {
+    if (error?.code !== 'EEXIST' && !NO_HARD_LINK.includes(error?.code)) throw error;
+    // Both owners stay on disk; the displaced one fails its held-check (lock_lost).
+    throw new StoreLockError('store_locked', lockPath, {
+      cause: 'lock_recovery_raced', quarantine_path: quarantine,
+      next_action: `Retry; ${quarantine} keeps the owner displaced by a racing recovery and is removed by hand only after that owner exits.`,
+    });
+  }
+  await rm(quarantine);
 }
 
 function busy(state, lockPath) {
@@ -194,6 +221,20 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
   let fileIdentity = null;
   let callbackEntered = false;
   let heartbeat = null;
+  let lost = false;
+  const stillOwned = async (current) => {
+    if (current === null || !acquired) return false;
+    const info = await lstat(current).catch((error) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    return info !== null && info.isFile() && !info.isSymbolicLink()
+      && info.dev === fileIdentity.dev && info.ino === fileIdentity.ino
+      && await readFile(current, 'utf8').catch((error) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      }) === ownerBytes;
+  };
   try {
     // A weak writer cannot prove anyone dead by PID; it only clears stale entries.
     const hostDigest = host === WEAK ? null : hash(host);
@@ -212,13 +253,20 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
     for (;;) {
       try { await link(temporary, lockPath); acquired = true; break; }
       catch (error) {
-        if (['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS'].includes(error?.code)) {
-          throw new StoreLockError('store_locked', lockPath, {
-            cause: 'lock_publication_unavailable',
-            next_action: `Use a filesystem permitting atomic hard-link publication for ${lockPath}, then retry`,
-          });
-        }
-        if (error?.code !== 'EEXIST') throw error;
+        if (NO_HARD_LINK.includes(error?.code)) {
+          // u03: without hard links publish in place; a torn record reads as unidentified and goes stale.
+          let direct = null;
+          try { direct = await open(lockPath, 'wx', 0o600); }
+          catch (openError) { if (openError?.code !== 'EEXIST') throw openError; }
+          if (direct !== null) {
+            try {
+              await direct.writeFile(ownerBytes); await syncPublishedFile(direct, lockPath);
+              fileIdentity = await direct.stat();
+            } finally { await direct.close(); }
+            acquired = true;
+            break;
+          }
+        } else if (error?.code !== 'EEXIST') throw error;
       }
       const existing = await readOwner(lockPath);
       if (existing === null) continue;
@@ -230,21 +278,32 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
       const fresh = await readOwner(lockPath);
       if (fresh !== null) {
         if (!await abandoned(fresh, host)) throw busy(fresh, lockPath);
-        await rm(lockPath);
+        await removeJudged(lockPath, fresh.info);
       }
     }
     await rm(temporary);
     await fsyncDirectory(path.dirname(lockPath));
+    // Touch only our own entry: a resumed old holder must not keep a replacement lock fresh.
     heartbeat = setInterval(() => {
-      const now = new Date();
-      Promise.resolve(releasePath()).then((current) => Promise.all([
-        current === null ? null : utimes(current, now, now),
-        claimPath === null ? null : utimes(claimPath, now, now),
-      ])).catch(() => {});
+      Promise.resolve(releasePath()).then(async (current) => {
+        if (current === null) return;
+        if (!await stillOwned(current)) { lost = true; clearInterval(heartbeat); return; }
+        const now = new Date();
+        await Promise.all([utimes(current, now, now),
+          claimPath === null ? null : utimes(claimPath, now, now)]);
+      }).catch(() => {});
     }, LOCK_HEARTBEAT_MS);
     heartbeat.unref();
     callbackEntered = true;
-    return await callback();
+    // Callers check right before publishing; the check-to-rename gap is a named residual.
+    return await callback(async () => {
+      if (!lost && await stillOwned(await releasePath())) return;
+      lost = true;
+      throw new StoreLockError('store_locked', lockPath, {
+        cause: 'lock_lost',
+        next_action: `Retry; ${lockPath} was recovered by another writer while this one held it, and nothing was published after the check.`,
+      });
+    });
   } catch (error) {
     if (!callbackEntered && error?.code === 'ENOENT') {
       throw new StoreLockError('store_locked', lockPath, {
@@ -257,16 +316,7 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
     clearInterval(heartbeat);
     try {
       const currentLockPath = await releasePath();
-      const currentIdentity = currentLockPath === null ? null : await lstat(currentLockPath).catch((error) => {
-        if (error?.code === 'ENOENT') return null;
-        throw error;
-      });
-      if (acquired && currentIdentity?.isFile() && !currentIdentity.isSymbolicLink()
-        && currentIdentity.dev === fileIdentity.dev && currentIdentity.ino === fileIdentity.ino
-        && await readFile(currentLockPath, 'utf8').catch((error) => {
-        if (error?.code === 'ENOENT') return null;
-        throw error;
-      }) === ownerBytes) {
+      if (await stillOwned(currentLockPath)) {
         await rm(currentLockPath);
         await fsyncDirectory(path.dirname(currentLockPath));
       }
