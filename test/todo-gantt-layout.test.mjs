@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
-import { layoutTodoGantt, TodoGanttLayoutError } from '../src/todo-gantt-layout.mjs';
+import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { projectTodoChainV1 } from '../src/todo-chain.mjs';
 
 const ref = (task_id, plan_key = 'plan', project_id = 'project') => ({ project_id, plan_key, task_id });
@@ -565,9 +565,77 @@ test('2,000 tasks / 8,000 unique edges layout completes within the suite content
   assert.ok(elapsed < 10_000, `layout took ${elapsed.toFixed(1)}ms`);
 });
 
-test('scale overflow fails closed with typed detail', () => {
-  const tasks = Array.from({ length: 2_001 }, (_, index) => ({ id: `T${index}`, lane: 'lane' }));
-  const input = fixture([{ plan_key: 'plan', tasks }]);
-  assert.throws(() => layoutOf(input), (error) => error instanceof TodoGanttLayoutError
-    && error.code === 'TODO_SCALE_EXCEEDED' && error.detail.task_count === 2_001);
+test('task overflow draws the first 2,000 in ref order and says what was left out', () => {
+  const tasks = Array.from({ length: 2_001 }, (_, index) => ({ id: `T${String(index).padStart(4, '0')}`, lane: 'lane' }));
+  const input = fixture([{ plan_key: 'plan', tasks }], [dependency(ref('T0000'), ref('T2000'))]);
+  const result = layoutOf(input, { scope: 'all' });
+  assert.equal(result.nodes.length, 2_000);
+  assert.equal(result.nodes.some((node) => node.ref.task_id === 'T2000'), false);
+  assert.equal(result.edges.length, 0, 'an edge touching a dropped task is dropped with it');
+  assert.deepEqual(result.notices.map(({ code, detail }) => [code, detail.task_count, detail.dropped_task_count]),
+    [['TODO_SCALE_EXCEEDED', 2_001, 1]]);
+});
+
+test('edge overflow draws the first 8,000 in edge-key order and says what was left out', { timeout: 15_000 }, () => {
+  const tasks = Array.from({ length: 2_000 }, (_, index) => ({ id: `T${String(index).padStart(4, '0')}`, lane: 'lane' }));
+  const edges = [];
+  for (let distance = 1; edges.length < 8_001; distance += 1) {
+    for (let from = 0; from + distance < 2_000 && edges.length < 8_001; from += 1) {
+      edges.push(dependency(ref(tasks[from].id), ref(tasks[from + distance].id)));
+    }
+  }
+  const result = layoutOf(fixture([{ plan_key: 'plan', tasks }], edges), { scope: 'all' });
+  assert.equal(result.metrics.edge_count, 8_000);
+  assert.deepEqual(result.notices.map(({ code, detail }) => [code, detail.edge_count, detail.dropped_edge_count]),
+    [['TODO_SCALE_EXCEEDED', 8_001, 1]]);
+});
+
+test('a dependency cycle is drawn without the edges that point back, and named', () => {
+  const tasks = ['A', 'B', 'C', 'D'].map((id) => ({ id, lane: 'lane' }));
+  const input = fixture([{ plan_key: 'plan', tasks }], [
+    dependency(ref('A'), ref('B')), dependency(ref('B'), ref('C')), dependency(ref('C'), ref('B')),
+    dependency(ref('C'), ref('D')),
+  ]);
+  for (const scope of ['all', 'live']) {
+    const result = layoutOf(input, { scope });
+    assert.deepEqual(result.nodes.map((node) => node.ref.task_id).sort(), ['A', 'B', 'C', 'D']);
+    const [notice] = result.notices;
+    assert.equal(notice.code, 'TODO_LAYOUT_CYCLE');
+    // D only hangs below the cycle: it is not a cycle task and its edge C->D stays.
+    assert.deepEqual(notice.detail.cycle_tasks.map((entry) => entry.task_id), ['B', 'C']);
+    assert.deepEqual(notice.detail.cut_edges.map(({ from, to }) => [from.task_id, to.task_id]), [['C', 'B']]);
+    const wave = Object.fromEntries(result.nodes.map((node) => [node.ref.task_id, node.wave]));
+    assert.ok(wave.A < wave.B && wave.B < wave.C && wave.C < wave.D);
+  }
+  const selfContained = layoutOf(fixture([{ plan_key: 'plan', tasks: tasks.slice(0, 2) }],
+    [dependency(ref('A'), ref('B')), dependency(ref('B'), ref('A'))]), { scope: 'all' });
+  assert.equal(selfContained.nodes.length, 2);
+  assert.equal(selfContained.notices[0].code, 'TODO_LAYOUT_CYCLE');
+});
+
+test('a task below a cycle keeps its edge even when it sorts before the cycle', () => {
+  const tasks = ['A', 'B', 'C'].map((id) => ({ id, lane: 'lane' }));
+  const result = layoutOf(fixture([{ plan_key: 'plan', tasks }], [
+    dependency(ref('B'), ref('C')), dependency(ref('C'), ref('B')), dependency(ref('C'), ref('A')),
+  ]), { scope: 'all' });
+  const [notice] = result.notices;
+  assert.deepEqual(notice.detail.cycle_tasks.map((entry) => entry.task_id), ['B', 'C']);
+  assert.deepEqual(notice.detail.cut_edges.map(({ from, to }) => [from.task_id, to.task_id]), [['C', 'B']]);
+  const wave = Object.fromEntries(result.nodes.map((node) => [node.ref.task_id, node.wave]));
+  assert.ok(wave.C < wave.A);
+});
+
+test('an edge whose endpoint is not in the read model, a self edge and a bad join are skipped and named', () => {
+  const tasks = ['A', 'B'].map((id) => ({ id, lane: 'lane' }));
+  const input = fixture([{ plan_key: 'plan', tasks }], [
+    dependency(ref('A'), ref('B')), dependency(ref('A'), ref('ghost')), dependency(ref('B'), ref('B')),
+  ]);
+  input.read.members[0].plan.hard_dependencies.push(dependency(null, ref('B')));
+  input.read.members[0].plan.joins = [null];
+  const result = layoutOf(input, { scope: 'all' });
+  assert.equal(result.edges.length, 1);
+  const [notice] = result.notices;
+  assert.equal(notice.code, 'TODO_LAYOUT_INVALID_INPUT');
+  assert.deepEqual(notice.detail.skipped_edges.map(({ reason }) => reason).sort(),
+    ['endpoint_not_in_read_model', 'join_invalid_shape', 'not_a_task_ref', 'self_edge']);
 });

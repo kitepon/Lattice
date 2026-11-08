@@ -6,8 +6,7 @@
  *
  * 文は事実と次の一歩だけを述べ、指示しない。どのreadyを取るかはhostが所有する
  * （ADR 0063 Decision 5）。命令形にするとLatticeがagentを統制する面へ滑る。
- * ただし記録があるのに対象工程が未検証なら start は拒否する（ADR 0182）。
- * それは配車ではなく、intakeが hold する着手を journal へ書かない。
+ * 未検証の工程も start は拒否しない（u03 B1–B6、ADR 0182 を置き換える）。助言として返す。
  */
 
 export const TODO_INDEPENDENCE_GUIDANCE_CODES = Object.freeze([
@@ -83,7 +82,7 @@ const CATALOG = Object.freeze({
     next_action: 'declare_witness_set_then_compile',
   }),
   independence_task_undeclared: Object.freeze({
-    message: 'この工程はwitness setで宣言されていないため、記録には含まれていない。startは拒否する。',
+    message: 'この工程はwitness setで宣言されていないため、記録には含まれていない。',
     next_action: 'add_task_to_witness_set_then_compile',
   }),
   independence_contract_superseded: Object.freeze({
@@ -174,27 +173,6 @@ const SEVERABILITY_HINT = Object.freeze({
   code_seam: 'symbol／pathの衝突なので、境界を分けるrefactorで並列化しうる。記録済みの競合からseam-proposal compileを検討できる。',
   serial: '共有stateまたはeffectの衝突なので、分割では切り離せない。',
 });
-
-/**
- * 記録があるのに対象工程が未検証なら start を拒否する code。
- * 記録が無い（independence_unrecorded）は従来どおり助言だけで通す。
- * 競合（conflict_*）はどの ready を取るかの dispatch なので拒否しない。
- */
-export const INDEPENDENCE_START_REFUSAL_CODES = Object.freeze([
-  'independence_task_undeclared',
-  'independence_stale_for_task',
-  'independence_superseded',
-  'independence_contract_superseded',
-  'independence_verdicts_absent',
-]);
-
-export function independenceStartRefusal(guidance) {
-  if (guidance === null || typeof guidance !== 'object' || Array.isArray(guidance)) {
-    throw new TypeError('independence start refusal guidance is invalid');
-  }
-  if (!INDEPENDENCE_START_REFUSAL_CODES.includes(guidance.code)) return null;
-  return guidance;
-}
 
 export function todoIndependenceGuidance(code, { severability = null } = {}) {
   const entry = CATALOG[code];
@@ -328,11 +306,11 @@ export function selectSeamProposalGuidance({ coverage, unknownKinds = [] }) {
 export const TODO_INDEPENDENCE_WORKFLOW = Object.freeze([
   '1. 宣言する: .lattice/todo/witness/<plan_key>.json へ、ToDoごとのowns／reads／writes／affected_testsを書く',
   '   係争資源しか所有していないToDoは、ownsまたはwritesの内側で自分が触るsymbolをconcern_anchorsへ宣言できる（witness set v2）。並列可否の判定には写らず、切断候補の束縛だけに効く',
-  '   remaining の A 工程（まだ done でない ready / blocked）も同じ witness に含める。現在の ready だけを compile すると、次の frontier の start が INDEPENDENCE_UNVERIFIED になる',
+  '   remaining の A 工程（まだ done でない ready / blocked）も同じ witness に含める。現在の ready だけを compile すると、次の frontier の start の助言が未検証（independence_task_undeclared）になる',
   '2. 判定する: lattice todo independence compile --plan <key> --input <ref>（実sensorを引く。pretty-printやdigest未計算の下書きは機械が直す）。next_ready が witness に無い compile は拒否する',
   '3. 読む: lattice todo independence --plan <key> --json（sensorを引かず、記録とHEAD照合だけで返る）',
   '4. 追従する: plan改訂後は lattice todo independence witness migrate --plan <key> で宣言を写してから再compileする',
-  '5. 記録があるのに対象工程が未宣言・失効なら todo start は拒否する。競合の同時起動は助言のまま',
+  '5. 記録があるのに対象工程が未宣言・失効でも todo start は止まらず、助言として返る。競合の同時起動も助言のまま',
 ]);
 
 /**

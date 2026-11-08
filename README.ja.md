@@ -298,7 +298,7 @@ lattice todo start --plan <key> --task <id> --parallel-frontier
 lattice todo start --plan <key> --task <id> --override-reason <reason>
 ```
 
-記録があるのに対象工程が未宣言・失効なら`todo start`は`INDEPENDENCE_UNVERIFIED`で拒否します。
+記録があるのに対象工程が未宣言・失効でも`todo start`は止まらず、`advisory.guidance`で知らせます。
 `independence compile`は`next_ready`がwitnessに無いとき`INDEPENDENCE_READY_UNDECLARED`で拒否します。
 remainingのA工程は同じwitnessへ含めます。競合の同時起動は助言のままです。
 
@@ -408,7 +408,7 @@ dashboard adopt`では、監査actorとして次の3環境変数を渡せます�
 （`terminal-`と16進12桁）、sessionは`session`、agentはUSERになります。hostのlabelは端末の乱数の識別子
 （`~/.lattice/bridge-hub-terminal.json`）から導き、OSのhost名はjournalへ書きません
 （[ADR 0197](https://github.com/kitepon/Lattice/blob/main/docs/adr/0197-terminal-label-instead-of-os-hostname.md)）。
-渡した値がidentifierとして不正なら`ACTOR_UNRESOLVED`です。
+渡した値がidentifierとして不正なら、未設定と同じdefaultになります。
 
 ```bash
 export LATTICE_TODO_ACTOR_HOST=<host-id>

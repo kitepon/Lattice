@@ -109,6 +109,33 @@ test('逆算した初回工程を一回で作り、担当者へ目的・必要�
   assert.equal(start.feature_context.provides[0].feature_id, 'index');
 });
 
+test('壊れたbackchain bindingでもstartは通り、feature_contextの無いv5結果と警告を返す（u03 A88）', async (context) => {
+  for (const [label, corrupt] of [
+    ['invalid_json', () => '{ not json'],
+    ['digest不一致', (text) => text.replace(/"plan_digest":"[0-9a-f]{64}"/u, `"plan_digest":"${'0'.repeat(64)}"`)],
+  ]) {
+    const root = await repo(context);
+    await writeFile(path.join(root, 'plan.json'), `${JSON.stringify(createInput(), null, 2)}\n`);
+    await writeFile(path.join(root, 'chain.json'), `${JSON.stringify(chain(), null, 2)}\n`);
+    const created = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
+    assert.equal(created.status, 0, created.stderr);
+    const bindingRef = path.join(root, '.lattice/todo/plans/search/v1/backchain.json');
+    const original = await readFile(bindingRef, 'utf8');
+    const broken = corrupt(original);
+    assert.notEqual(broken, original, label);
+    await writeFile(bindingRef, broken);
+
+    const started = run(root, ['todo', 'start', '--plan', 'search', '--task', 'index']);
+    assert.equal(started.status, 0, `${label}: ${started.stderr}`);
+    assert.match(started.stderr, /LATTICE_START_BACKCHAIN_UNUSABLE/u, label);
+    const start = JSON.parse(started.stdout);
+    assert.equal(start.schema, 'lattice.todo_mutation_result.v5', label);
+    assert.equal(start.kind, 'start');
+    assert.equal(start.status, 'in-progress');
+    assert.equal('feature_context' in start, false, label);
+  }
+});
+
 test('後続の必要機能を作る工程が無ければstoreを作らない', async (context) => {
   const root = await repo(context);
   const plan = createInput();

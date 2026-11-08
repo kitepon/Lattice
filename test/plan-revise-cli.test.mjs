@@ -96,24 +96,21 @@ test('light CLI refuses dangling references before publishing a successor', asyn
 });
 
 
-test('light CLI reports an applied revision when carried work rebind fails, then repairs it', async (context) => {
+// u03 A57: an invalid actor env used to be the only CLI-reachable rebind failure. It is now
+// treated as unset, so the carried in-progress task is rebound in the same revise.
+// shortcut: the PLAN_REBIND_PENDING decoration (plan-revise.mjs catch) has no CLI-reachable
+// trigger left; add an in-process seam test if that path changes.
+test('light CLI rebinds carried in-progress work even with an invalid actor env (u03 A57)', async (context) => {
   const { root } = await fixture(context);
   success(root, ['todo', 'start', '--plan', 'work', '--task', 'b']);
   await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
-  const failed = run(root, ['plan', 'revise', '--input', 'revise.json', '--json'], {
+  const revised = run(root, ['plan', 'revise', '--input', 'revise.json', '--json'], {
     LATTICE_TODO_ACTOR_AGENT: 'invalid agent!',
   });
-  assert.notEqual(failed.status, 0);
-  const error = JSON.parse(failed.stderr);
-  assert.equal(error.code, 'PLAN_REBIND_PENDING');
-  assert.equal(error.detail.task_id, 'b');
-  assert.equal(error.detail.revision_applied, true);
-  assert.match(error.detail.revision_digest, /^[a-f0-9]{64}$/);
-  assert.match(error.detail.plan_version, /^rev-/);
-  assert.equal(error.detail.next_action,
-    'lattice todo start --plan work --task b --rebind --reason <text>');
-  const repaired = success(root, ['todo', 'start', '--plan', 'work', '--task', 'b',
-    '--rebind', '--reason', 'fixture']);
+  assert.equal(revised.status, 0, revised.stderr);
+  const result = JSON.parse(revised.stdout);
+  assert.deepEqual(result.rebound_task_ids, ['b']);
+  assert.match(result.plan_version, /^rev-/);
   assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
 });
 

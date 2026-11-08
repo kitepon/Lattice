@@ -9,13 +9,12 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { projectTodoChainV1 } from '../src/todo-chain.mjs';
-import { layoutTodoGantt, TodoGanttLayoutError } from '../src/todo-gantt-layout.mjs';
+import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { projectTodoGanttPresentation } from '../src/todo-gantt-presentation.mjs';
 import {
   renderTodoGanttHtml,
   TODO_GANTT_HTML_MAX_BYTES,
   TODO_GANTT_PROSE_MAX_BYTES,
-  TodoGanttRenderError,
 } from '../src/todo-gantt-html.mjs';
 import { TODO_MARKDOWN_SECTION_MAX_BYTES } from '../src/todo-markdown-renderer.mjs';
 import { verifyNarrativeAnchors } from '../src/todo-narrative-anchor.mjs';
@@ -855,12 +854,15 @@ test('task/edge scale limit accepts 2,000/8,000 and rejects N+1', { timeout: 15_
   const rendered = renderFixture(atLimit);
   assert.equal((rendered.html.match(/<g class="dependency-edge(?: |")/gu) ?? []).length, 8_000);
   assert.ok(rendered.html_bytes > 0 && rendered.html_bytes <= TODO_GANTT_HTML_MAX_BYTES);
-  assert.throws(() => layoutTodoGantt(readFixture(2_001)),
-    (error) => error instanceof TodoGanttLayoutError && error.code === 'TODO_SCALE_EXCEEDED');
-  const overEdges = readFixture(2_000, edges);
-  assert.throws(() => layoutTodoGantt(overEdges),
-    (error) => error instanceof TodoGanttLayoutError && error.code === 'TODO_SCALE_EXCEEDED'
-      && error.detail.edge_count === 8_001);
+  // u03 D-gantt: past the limit the page is still drawn, with a visible notice.
+  const overTasks = renderFixture(readFixture(2_001));
+  assert.deepEqual(overTasks.notices.map(({ code }) => code), ['TODO_SCALE_EXCEEDED']);
+  assert.ok(overTasks.html.includes('data-render-notices') && overTasks.html.includes('<code>TODO_SCALE_EXCEEDED</code>'));
+  assert.equal(overTasks.html.includes('"T2000"'), true, 'the dropped task stays reachable in the task index');
+  const overEdges = renderFixture(readFixture(2_000, edges));
+  assert.equal((overEdges.html.match(/<g class="dependency-edge(?: |")/gu) ?? []).length, 8_000);
+  assert.equal(overEdges.notices[0].detail.edge_count, 8_001);
+  assert.equal(renderFixture(atLimit).html.includes('data-render-notices'), false);
 });
 
 test('aggregate prose limit accepts N-1/N and rejects N+1', { timeout: 15_000 }, () => {
@@ -873,9 +875,11 @@ test('aggregate prose limit accepts N-1/N and rejects N+1', { timeout: 15_000 },
   const below = [...base]; below[31] -= 1;
   assert.equal(renderFixture(read, narrativeFor(below)).prose_bytes, TODO_GANTT_PROSE_MAX_BYTES - 1);
   assert.equal(renderFixture(read, narrativeFor(base)).prose_bytes, TODO_GANTT_PROSE_MAX_BYTES);
-  assert.throws(() => renderFixture(read, narrativeFor([...base, 1])),
-    (error) => error instanceof TodoGanttRenderError && error.code === 'TODO_SCALE_EXCEEDED'
-      && error.detail.prose_bytes === TODO_GANTT_PROSE_MAX_BYTES + 1);
+  // N+1 is not counted and not refused: the (never rendered) narrative is left out and noted.
+  const over = renderFixture(read, narrativeFor([...base, 1]));
+  assert.equal(over.prose_bytes, TODO_GANTT_PROSE_MAX_BYTES);
+  assert.deepEqual(over.notices.map(({ code, detail }) => [code, detail.omitted.narrative]),
+    [['TODO_SCALE_EXCEEDED', 1]]);
   assert.equal(oneSection.length, TODO_MARKDOWN_SECTION_MAX_BYTES);
 });
 
@@ -887,9 +891,41 @@ test('design_memoもaggregate prose limitへ計上する', { timeout: 15_000 }, 
   ));
   assert.equal(renderFixture(read).prose_bytes, TODO_GANTT_PROSE_MAX_BYTES);
   read.members[0].plan.tasks[32].design_memo = 'a';
-  assert.throws(() => renderFixture(read),
-    (error) => error instanceof TodoGanttRenderError && error.code === 'TODO_SCALE_EXCEEDED'
-      && error.detail.prose_bytes === TODO_GANTT_PROSE_MAX_BYTES + 1);
+  const over = renderFixture(read);
+  assert.equal(over.prose_bytes, TODO_GANTT_PROSE_MAX_BYTES);
+  assert.deepEqual(over.notices.map(({ code, detail }) => [code, detail.omitted.design_memo]),
+    [['TODO_SCALE_EXCEEDED', 1]]);
+  assert.match(detailPanelOf(over.html, 'T0032'), /表示上限のため省略/u);
+  assert.match(over.html, /data-render-notices/u);
+});
+
+function bulkyFixture(titleBytes, memoBytes) {
+  const read = readFixture(100);
+  read.members[0].plan.tasks = read.members[0].plan.tasks.map((task, index) => ({
+    ...task, title: `${'t'.repeat(titleBytes)}${index}`, design_memo: 'm'.repeat(memoBytes),
+  }));
+  return read;
+}
+
+test('a page over the HTML limit is re-drawn without embedded prose, and still served if too large', () => {
+  const rescued = renderFixture(bulkyFixture(50_000, 70_000));
+  assert.ok(rescued.html_bytes <= TODO_GANTT_HTML_MAX_BYTES);
+  assert.equal(rescued.notices.at(-1).detail.html_limit, TODO_GANTT_HTML_MAX_BYTES);
+  assert.equal(rescued.html.includes('mmmmmmmmmm'), false, 'the prose was left out');
+  assert.ok(rescued.html.includes('data-render-notices'));
+  const stillOver = renderFixture(bulkyFixture(100_000, 0));
+  assert.ok(stillOver.html_bytes > TODO_GANTT_HTML_MAX_BYTES);
+  assert.ok(stillOver.html.includes('data-render-notices') && stillOver.html.includes('<code>TODO_SCALE_EXCEEDED</code>'));
+});
+
+test('an invalid presentation file is ignored with a notice on the rendered page', async (context) => {
+  const root = await workspace(context);
+  await writeFile(path.join(root, '.lattice', 'todo', 'gantt-presentation.json'), '{not json');
+  const { rendered } = await renderTodoGanttForProject({ repoRoot: root });
+  assert.deepEqual(rendered.notices.map(({ code, detail }) => [code, detail.reason]),
+    [['PRESENTATION_INVALID', 'presentation_json_parse_failed']]);
+  assert.ok(rendered.html.includes('data-render-notices') && rendered.html.includes('<code>PRESENTATION_INVALID</code>'));
+  assert.match(rendered.html, /data-gantt-svg/u);
 });
 
 test('a successor of a retired, never-done task is not drawn ready (the drawing uses Lattice readiness)', () => {

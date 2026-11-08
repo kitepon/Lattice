@@ -5,7 +5,7 @@ import {
   TODO_GANTT_INDEPENDENCE_PRESENTATION,
   renderTodoGanttSvg,
 } from '../src/todo-gantt-svg.mjs';
-import { TodoGanttLayoutError, layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
+import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { renderTodoGanttHtml } from '../src/todo-gantt-html.mjs';
 import { projectTodoGanttPresentation } from '../src/todo-gantt-presentation.mjs';
 import { selectSeamProposalGuidance } from '../src/todo-independence-guidance.mjs';
@@ -135,15 +135,17 @@ test('独立性の記録が無いplanはnull summaryのまま描ける', () => {
   assert.equal(layout.nodes[0].visibility.independence, null);
 });
 
-test('図に無いtaskを指す投影はtyped errorで露見させる', () => {
-  assert.throws(() => layoutWith(['A'], {
+test('図に無いtaskを指す投影は印を付けず、通知で露見させる', () => {
+  const layout = layoutWith(['A'], {
     parallel_groups: [{ task_ids: ['A', 'ghost'] }],
     serialize_pairs: [],
     conflicts_with_active: [],
     unknown: [],
-  }), (error) => error instanceof TodoGanttLayoutError
-    && error.code === 'TODO_LAYOUT_INDEPENDENCE_DRIFT'
-    && error.detail.task_id === 'ghost');
+  });
+  assert.equal(layout.nodes.find((node) => node.ref.task_id === 'A').visibility.independence, 'verified');
+  assert.equal(layout.notices.length, 1);
+  assert.equal(layout.notices[0].code, 'TODO_LAYOUT_INDEPENDENCE_DRIFT');
+  assert.deepEqual(layout.notices[0].detail.drifted_tasks, [{ plan_key: PLAN, task_id: 'ghost' }]);
 });
 
 test('進行中との競合もconflictとしてカードへ出る', () => {

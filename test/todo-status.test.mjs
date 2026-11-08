@@ -12,6 +12,7 @@ import test from 'node:test';
 import { todoSelfDigest } from '../src/todo-contracts.mjs';
 import {
   TODO_STATUS_CAPTURE_LIMIT,
+  TODO_STATUS_DISPATCH_ONLY,
   TODO_STATUS_FINDING_LIMIT,
   TODO_STATUS_LABEL_LIMIT,
   TODO_STATUS_LIST_LIMIT,
@@ -133,9 +134,10 @@ test('todo statusはactive/next-ready/blockedを混在投影しstore bytesを変
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
     'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
     'coordination', 'parallel_candidates', 'cross_plan_findings',
-    'member_heads', 'result_digest',
+    'member_heads', 'truncated', 'result_digest',
   ]);
-  assert.equal(result.schema, 'lattice.todo_status_result.v8');
+  assert.equal(result.schema, 'lattice.todo_status_result.v9');
+  assert.deepEqual(result.truncated, []);
   // このstoreはまだ全taskがdoneではない(Phaseはactive)ので監査待ちは無い。
   assert.deepEqual(result.audit_pending, []);
   assert.deepEqual(result.active_set, [{
@@ -258,7 +260,7 @@ function syntheticReadModel(activeCount) {
 
 function syntheticStatusResult(activeCount) {
   const result = {
-    schema: 'lattice.todo_status_result.v8',
+    schema: 'lattice.todo_status_result.v9',
     project_id: 'scale-project',
     active_set: Array.from({ length: activeCount }, (_, index) => ({
       plan_key: 'main', task_id: `t${String(index).padStart(4, '0')}`, label: 'x', unmet_dependencies: [],
@@ -281,29 +283,51 @@ function syntheticStatusResult(activeCount) {
     parallel_candidates: [],
     cross_plan_findings: { total: 0, entries: [] },
     member_heads: [],
+    truncated: [],
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
 }
 
-test('list上限2000とconsumer capture上限64 KiBをそれぞれfail closedにする', () => {
+test('list上限2000とconsumer capture上限64 KiBは、出力呼び出しでは切り詰めて記録しdispatch専用ではfail closedのまま', () => {
+  // consumer側の検証器は2001件のlistを受理しない（検証側の上限は不変）。
   assert.equal(validateTodoStatusResult(syntheticStatusResult(TODO_STATUS_LIST_LIMIT)), true);
   assert.equal(validateTodoStatusResult(syntheticStatusResult(TODO_STATUS_LIST_LIMIT + 1)), false);
-  assert.throws(() => projectTodoStatus(syntheticReadModel(TODO_STATUS_LIST_LIMIT + 1), { parallelCandidates: [], planNotes: [] }),
+
+  // dispatch専用（出力しない呼び出し）は切らず、上限超過は従来どおりTODO_SCALE_EXCEEDED。
+  assert.throws(() => projectTodoStatus(syntheticReadModel(TODO_STATUS_LIST_LIMIT + 1), TODO_STATUS_DISPATCH_ONLY),
     (error) => error instanceof TodoStatusProjectionError
       && error.code === 'TODO_SCALE_EXCEEDED'
       && error.detail.list === 'active_set'
       && error.detail.count === 2_001
       && error.detail.limit === 2_000);
-  assert.throws(() => projectTodoStatus(syntheticReadModel(TODO_STATUS_LIST_LIMIT), { parallelCandidates: [], planNotes: [] }),
-    (error) => error instanceof TodoStatusProjectionError
-      && error.code === 'TODO_SCALE_EXCEEDED'
-      && error.detail.reason === 'todo_status_result_size_limit_exceeded'
-      && error.detail.result_bytes > TODO_STATUS_CAPTURE_LIMIT
-      && error.detail.result_limit === 65_536);
+  const uncut = projectTodoStatus(syntheticReadModel(TODO_STATUS_LIST_LIMIT), TODO_STATUS_DISPATCH_ONLY);
+  assert.equal(uncut.active_set.length, TODO_STATUS_LIST_LIMIT);
+  assert.deepEqual(uncut.truncated, []);
+  assert.ok(Buffer.byteLength(`${JSON.stringify(uncut)}\n`) > TODO_STATUS_CAPTURE_LIMIT, 'dispatch専用にはbyte上限が無い');
+
+  // u03 A77: 出力呼び出しは拒否せず、切った分をtruncatedに残す。
+  const listCut = projectTodoStatus(syntheticReadModel(TODO_STATUS_LIST_LIMIT + 1), { parallelCandidates: [], planNotes: [] });
+  const listEntry = listCut.truncated.find(({ list }) => list === 'active_set');
+  assert.equal(listEntry.total, 2_001);
+  assert.equal(listEntry.shown, listCut.active_set.length);
+  assert.ok(listEntry.shown < 2_000);
+  assert.ok(Buffer.byteLength(`${JSON.stringify(listCut)}\n`) <= TODO_STATUS_CAPTURE_LIMIT);
+  assert.equal(validateTodoStatusResult(listCut), true);
+
+  // 上限内のlistでもbyte上限を超えるなら最長のlistを半分にして収める。
+  const byteCut = projectTodoStatus(syntheticReadModel(TODO_STATUS_LIST_LIMIT), { parallelCandidates: [], planNotes: [] });
+  assert.ok(Buffer.byteLength(`${JSON.stringify(byteCut)}\n`) <= TODO_STATUS_CAPTURE_LIMIT);
+  assert.deepEqual(byteCut.truncated, [{
+    list: 'active_set', total: TODO_STATUS_LIST_LIMIT, shown: byteCut.active_set.length,
+  }]);
+  assert.ok(byteCut.active_set.length < TODO_STATUS_LIST_LIMIT);
+  assert.equal(validateTodoStatusResult(byteCut), true);
+
   const capturable = projectTodoStatus(syntheticReadModel(500), { parallelCandidates: [], planNotes: [] });
   assert.ok(Buffer.byteLength(`${JSON.stringify(capturable)}\n`) <= TODO_STATUS_CAPTURE_LIMIT);
+  assert.deepEqual(capturable.truncated, []);
 });
 
 test('consumer境界はPython同様code point数・control拒否・safe integerを使う', () => {

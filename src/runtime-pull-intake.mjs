@@ -646,12 +646,14 @@ async function releaseIntakeRecorded(runDir, current, intake, actor, reason, det
 /**
  * Retracting a start releases every unaccepted intake bound to it and records that (u03 C11).
  * Release happens before Plan's event, so a failed append leaves a start that can be intaken again.
+ * Retiring an in-progress task uses the same release with `releaseReason: 'task_retired'` (u03 A14r).
  */
 export async function withStartRetractionGuard({
   repoRoot, planKey, taskId, activationEventDigest, action, environment = process.env,
+  releaseReason = 'start_retracted',
 }) {
   if (!identifier(planKey) || !identifier(taskId) || !sha256(activationEventDigest)
-    || typeof action !== 'function') {
+    || typeof action !== 'function' || !['start_retracted', 'task_retired'].includes(releaseReason)) {
     fail('INVALID_START_RETRACTION', 'start retraction guard入力が不正');
   }
   const binding = { planKey, taskId, activationEventDigest };
@@ -665,7 +667,7 @@ export async function withStartRetractionGuard({
         const current = await readPullStore(runDir);
         const intake = boundIntake(project(current.events, current.meta), binding);
         if (intake !== undefined) {
-          await releaseIntakeRecorded(runDir, current, intake, actor, 'start_retracted', {
+          await releaseIntakeRecorded(runDir, current, intake, actor, releaseReason, {
             target_start_digest: activationEventDigest,
           });
         }

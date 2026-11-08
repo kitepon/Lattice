@@ -426,9 +426,10 @@ mutation callerは`LATTICE_TODO_ACTOR_HOST`, `LATTICE_TODO_ACTOR_SESSION`,
 `LATTICE_TODO_ACTOR_AGENT`をtodo identifierとして受理する。欠落時のdefaultは、hostが端末の識別子から
 導いたlabel（`terminal-`と16進12桁。識別子を読めず作れない端末は`host`）、sessionが`session`、agentが
 USERをsanitizeした値である。OSのhost名はjournalへ書かない（ADR 0197）。渡した値がidentifierとして
-不正なら`ACTOR_UNRESOLVED`で書き込まない。
+不正なら未設定と同じdefaultを使う（u03 A57）。
 `done`はtaskを閉じる。evidenceはrepo内のdescriptor JSONでも証拠本文でもよく、`--message`は
-本文からblob descriptorを書く。dashboard故障とstructure realizationはdoneの門ではない。
+本文からblob descriptorを書く。両方を渡すとmessageへevidence fileの場所とdigestを添えた本文、
+どちらも無いと「証拠の指定なしで完了した。」を証拠として記録する（u03 A58）。dashboard故障とstructure realizationはdoneの門ではない。
 `evidence promote`は現在doneのtaskへ最新done digestで束縛した追記eventを積み、authored／importedを
 問わずevidenceだけを再束縛する。done_atとimportedはlock内の現状態を維持し、対象taskの過去evidence
 不達を新eventのhard検証で置き換える。以後のreplayは最新の証拠束縛だけを検証し、importedは
@@ -441,10 +442,10 @@ import sourceが不達でも、各taskを未検証と表示して通常の書込
 `lattice.todo_mutation_result.v5`）、失敗とusage違反は`lattice.cli_error.v2`一行で、
 失敗時のstore bytesは不変とする。`advisory`は`todo start`だけが非nullで返し、着手対象と
 進行中ToDoの競合・切断可能性・未検査の内訳を機械可読で載せる（ADR 0128）。
-どの ready を取るかは host の所有のまま変えない。記録があるのに対象工程が未宣言・失効なら
-`todo start`は`INDEPENDENCE_UNVERIFIED`で拒否する（ADR 0182）。
+どの ready を取るかは host の所有のまま変えない。記録があるのに対象工程が未宣言・失効でも
+`todo start`は止めず、`advisory.guidance`で示す（u03 B1–B6、ADR 0182を置き換える）。
 `independence compile`は`next_ready`が witness に無いとき`INDEPENDENCE_READY_UNDECLARED`で拒否する。
-記録があるのに鮮度を判定できない場合は、助言なしで通さずjournal書込前に失敗させる。`todo start`はさらに`structure_context`を
+記録が読めない、またはHEADを解決できない場合は、記録なしと同じ助言と警告で通す（u03 B7・B16）。`todo start`はさらに`structure_context`を
 必ず返す。構造機能が有効なら対象taskのcanonical planned構造、structure set identity、compile freshness、
 realizationの次操作を同梱し、未適用なら`status=not_enabled`、破損なら`status=unreadable`を明示する。
 note chainが壊れていてもstartは通り、`note_context`はunreadableを返す。実装者へ別コマンドやsource file探索を

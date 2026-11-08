@@ -262,7 +262,7 @@ export function renderRightPane(
   return `<div class="right-toolbar"><button type="button" data-show-overview>概要</button><button type="button" data-show-selected hidden>選択工程へ戻る</button><button type="button" data-show-task-index>全工程一覧</button>${structureButton}</div><div class="right-content">${overview}<div data-right-panel="details" hidden>${details}</div><section class="task-index" data-right-panel="task-index" hidden><h1>全工程</h1><p>Latticeに登録された全工程を現在の状態とともに表示しています。planは動いているものを最終活動の新しい順で上に、完走したものを古い順で下にまとめ、plan内は登録順です。</p>${taskIndex}</section>${renderTodoStructurePanel(structurePresentation)}${renderTodoStructureNoscript(structurePresentation)}</div>`;
 }
 
-export function renderDiagramLegend(presentation, layout = null, expandable = false) {
+export function renderDiagramLegend(presentation, layout = null, expandable = false, noticesBanner = '') {
   const categories = (presentation?.lanes ?? []).map((lane) => `<div class="category-entry"><dt><code>${escapeHtmlText(lane.lane)}</code> — ${escapeHtmlText(lane.name)}</dt><dd>${escapeHtmlText(lane.description)}</dd></div>`).join('');
   const categoryDetails = categories === '' ? '' : `<details class="category-legend"><summary>カテゴリ説明</summary><dl>${categories}</dl></details>`;
   const foldedCount = layout?.scope?.folded_task_count ?? 0;
@@ -283,5 +283,5 @@ export function renderDiagramLegend(presentation, layout = null, expandable = fa
   const dispatchSentence = layout.independence === null
     ? 'ready frontierは全件同時dispatchが既定です。未登録の資源・host制約によりsubsetだけを選ぶ場合は理由を記録します。'
     : '同時着手できるかはカードの並列可否で判断してください。未検査の工程は依存線が無くても並列可の根拠になりません。';
-  return `<div class="diagram-legend" aria-label="工程図の凡例"><span>${statusMarkup('pending', ' 未着手')}</span><span>${statusMarkup('in-progress', ' 作業中')}</span><span>${statusMarkup('done', ' 完了')}</span><span>${statusMarkup('blocked', ' ブロック中')}</span><span>破線枠: ready frontier</span>${independenceLegend}<span>太線: 構造上の最長依存鎖</span><span>半円: 非接触の線交差</span><span>黒丸: 論理上の合流</span>${foldChip}${categoryDetails}${foldNote}<p>縦方向は時間ではなく、登録済み依存関係による工程段階です。${dispatchSentence}構造上の最長依存鎖は各工程を同じ重みとして数え、実時間・工数・納期を表しません。</p></div>`;
+  return `<div class="diagram-legend" aria-label="工程図の凡例">${noticesBanner}<span>${statusMarkup('pending', ' 未着手')}</span><span>${statusMarkup('in-progress', ' 作業中')}</span><span>${statusMarkup('done', ' 完了')}</span><span>${statusMarkup('blocked', ' ブロック中')}</span><span>破線枠: ready frontier</span>${independenceLegend}<span>太線: 構造上の最長依存鎖</span><span>半円: 非接触の線交差</span><span>黒丸: 論理上の合流</span>${foldChip}${categoryDetails}${foldNote}<p>縦方向は時間ではなく、登録済み依存関係による工程段階です。${dispatchSentence}構造上の最長依存鎖は各工程を同じ重みとして数え、実時間・工数・納期を表しません。</p></div>`;
 }
