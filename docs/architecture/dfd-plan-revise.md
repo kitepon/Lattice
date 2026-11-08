@@ -133,3 +133,22 @@ the machine applies the answer. Supersedes the "explicit complete continuity" an
 | Plan: backchain-bound plans via `plan revise` (N3) | Plan with a readPlanBackchainBinding | `plan revise` compiles the existing backchain revision (phase_todo_revision.v4, `compileBackchainRevision`) instead of refusing `plan_revise_requires_backchain`. Successor chain = bound chain with `continuity` = the computed continuity, and `tasks` = one entry per desired task in desired order: a kept task keeps its chain entry, a new task gets `{task_id, requires_feature_ids: [], provides_feature_ids: []}`; goal and features are unchanged. | Feature-chain gaps (a new task providing nothing, a feature whose provider task was removed) follow A85. |
 | Plan: feature chain findings (A85) | `plan backchain` / backchain revise | Coverage, provider, cycle and orphan checks of the feature chain become `feature_chain_findings` in the result (same entry shape as their old refusal detail: reason, pointer); the plan is registered. Unreadable chain shape still refuses. | None added. |
 
+
+## In-plan dependency connect/disconnect (a14, 2026-11-08)
+
+Seat walkthrough: `todo dependency disconnect` refused an edge the plan itself
+holds (`cross_plan_dependency_not_found`), so one edge needed a full
+`plan revise` input. Same-plan edges (`--from-plan` = `--to-plan`) now go
+through the light revision route above; cross-plan edges are unchanged.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: desired from the current plan | Fresh Store member (v7/v8 plan) | `desiredFromPlan(plan)` in plan-revise: the plan's own tasks, phases, hard_dependencies, joins, phase_accept_dependencies as a create input (v8 → create v5, v7 → create v4), actor = seat (`resolveTodoActor`), recorded_at = now. No continuity entries (every task carries, computed N5). | Older plan schemas or source-backed plans: the existing `plan revise` refusals (`predecessor_plan_schema_unsupported`, `plan_revise_requires_source_revision`) with their next_action. |
+| Plan: same-plan connect | `--from-task`, `--to-task`, `--reason` | Both tasks must exist (existing `dependency_task_not_found`); an edge the plan already holds keeps `DEPENDENCY_EXISTS/dependency_already_in_plan`, and a live ledger edge with the same endpoints (an earlier same-plan connect) keeps `DEPENDENCY_EXISTS/cross_plan_dependency_duplicate`; a done target keeps `dependency_target_terminal` (same checks as the ledger route). Desired = current + edge `{from, to}`; applied by the shared light-revision apply (`applyPlanRevision`, extracted from `runPlanRevise`, same compile → Store apply → history notes → carried-work rebind). A cycle refuses at the plan validator with its pointer. | A plan the light route cannot express (`lightRevisionExpresses` false: plan schema not v7/v8, e.g. from create v1–v3; source-backed v6/narrative_anchor/todo_event.v2 genesis; a task with a compile_binding) gets the existing ledger route (`cross_plan_dependency` event, result v1), decided before any write, so connect proceeds on every plan as before a14. Otherwise Store refusals are those of `plan revise`; a live connection from this plan to another plan does not stop the revision (tested). |
+| Plan: same-plan disconnect | same flags | Edge in the plan body → desired = current minus that edge, applied as above. Else a live ledger edge with those endpoints (earlier same-plan connect) → existing tombstone (`cross_plan_dependency_removed`, result v1). Neither → the existing `DEPENDENCY_INVALID/cross_plan_dependency_not_found` (reason unchanged) with next_action `lattice plan show <plan> --json`. | Store refusals are those of `plan revise`. |
+| Plan: result and record | Applied revision | `lattice.todo_dependency_revision_result.v1`: `{project_id, plan_key, operation: connect|disconnect, from, to, reason, actor, plan_version, revision_digest, rebound_task_ids, result_digest}`. The reason is a plan history note (`dependency <operation> <from>→<to>: <reason>`) appended with the revision notes. Ledger routes keep their v1 results. | Post-publication Store errors carry `revision_applied` as for `plan revise`. |
+
+Help text: `dependency connect|disconnect` says same-plan edges change the plan
+(a light revision, new plan_version) and cross-plan edges use the ledger.
+Patent: authoring only; readiness, hold/commit/resume and claimed mechanisms
+are untouched.

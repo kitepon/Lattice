@@ -119,7 +119,7 @@ Write commands:
   start --plan <key> --task <id> --rebind --reason <text>  # 改訂でcarryされたin-progressへ現版のstart束縛を積み直す（ADR 0191）
   dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
   dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
-      # 開発中に発見した依存を明示接続する（同一plan内・plan跨ぎとも）。依存の自動推定は行わない
+      # 開発中に発見した依存を明示接続する。同一plan内の辺はplan本体を軽い改訂で書き換え（plan_versionが変わる）、plan跨ぎは台帳に積む。依存の自動推定は行わない
   independence compile --plan <key> --input <file>  # witness setとsensorから並列可否を記録する
   independence witness migrate --plan <key>  # revision後の宣言をtask migrationで写す
   independence witness scaffold --plan <key> --input <draft>  # 下書きとfresh観測から宣言を書き出す
