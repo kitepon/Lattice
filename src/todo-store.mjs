@@ -1615,8 +1615,16 @@ const DISPLAY_CHECKPOINT_MAX_BYTES = 64 * 1_048_576;
 
 const nullableString = (value) => (typeof value === 'string' ? value : null);
 
+/** Any display-read error as public {code, detail}; an untyped fault is warned server-side only. */
+function displayFault(error) {
+  if (error instanceof TodoStoreError) return { code: error.code, detail: { ...error.detail } };
+  process.emitWarning(`Store display read fault: ${error?.stack ?? error}`, { code: 'LATTICE_STORE_DISPLAY_READ_FAULT' });
+  return { code: 'STORE_READ_FAULT', detail: { reason: 'unexpected_error' } };
+}
+
 function displayFailure(error) {
-  return { code: error.code, reason: error.detail?.reason ?? null };
+  const { code, detail } = displayFault(error);
+  return { code, reason: detail.reason ?? null };
 }
 
 async function canonicalRepoRoot(repoRoot) {
@@ -1668,7 +1676,6 @@ async function observeDisplaySource(repoRoot, manifest) {
     const planKey = nullableString(entry.plan_key);
     const observe = async (field, read) => {
       try { return await read(); } catch (error) {
-        if (!(error instanceof TodoStoreError)) throw error;
         diagnostics.push({ plan_key: planKey, field, ...displayFailure(error) });
         return null;
       }
@@ -1733,9 +1740,12 @@ function checkpointDigest(checkpoint) {
   return sha256Bytes(Buffer.from(JSON.stringify(body), 'utf8'));
 }
 
-/** Returns the checkpoint attributable to this repository/project, or null. Never writes. */
+/**
+ * Returns the checkpoint attributable to this repository, or null. Never writes.
+ * A readable current projectId must match; without one (broken manifest) the realpath
+ * repository identity attributes it, since the file lives in this repository's .lattice.
+ */
 async function readDisplayCheckpoint(repoRoot, projectId) {
-  if (typeof projectId !== 'string') return null;
   const root = await canonicalRepoRoot(repoRoot);
   const absolute = path.resolve(root, DISPLAY_CHECKPOINT_REF);
   let checkpoint;
@@ -1751,8 +1761,9 @@ async function readDisplayCheckpoint(repoRoot, projectId) {
     && checkpoint.checkpoint_digest === checkpointDigest(checkpoint)
     && checkpoint.source?.schema === DISPLAY_SOURCE_SCHEMA
     && checkpoint.source.repository_identity === sha256Bytes(Buffer.from(root, 'utf8'))
-    && checkpoint.source.project_id === projectId
-    && checkpoint.store?.project_id === projectId && Array.isArray(checkpoint.store.members);
+    && typeof checkpoint.source.project_id === 'string'
+    && (typeof projectId !== 'string' || checkpoint.source.project_id === projectId)
+    && checkpoint.store?.project_id === checkpoint.source.project_id && Array.isArray(checkpoint.store.members);
   return valid ? checkpoint : null;
 }
 
@@ -1780,14 +1791,12 @@ async function readRawDisplayMembers(repoRoot, manifest) {
     const planKey = nullableString(entry.plan_key);
     let snapshot;
     try { snapshot = await readRawStoreJson(repoRoot, entry.snapshot_ref, TODO_LIMITS.snapshotBytes); } catch (error) {
-      if (!(error instanceof TodoStoreError)) throw error;
       dropped.push({ plan_key: planKey, snapshot_ref: nullableString(entry.snapshot_ref), ...displayFailure(error) });
       continue;
     }
     // Plans are immutable per version; an unreadable plan drops only the plan, not the member.
     let plan = null;
     try { plan = await readRawStoreJson(repoRoot, entry.plan_ref, TODO_LIMITS.snapshotBytes); } catch (error) {
-      if (!(error instanceof TodoStoreError)) throw error;
       dropped.push({ plan_key: planKey, plan_ref: nullableString(entry.plan_ref), ...displayFailure(error) });
     }
     members.push({ descriptor, plan, snapshot });
@@ -1822,13 +1831,10 @@ export async function readTodoStoreForDisplay({ repoRoot = process.cwd(), now } 
     }
     return { state: 'verified', store, verified_at: verifiedAt, source, inconsistency: null, dropped_members: [] };
   } catch (error) {
-    if (!(error instanceof TodoStoreError)) throw error;
-    inconsistency = { code: error.code, detail: { ...error.detail } };
+    inconsistency = displayFault(error);
   }
   let manifest = null;
-  try { manifest = await readRawManifest(root); } catch (error) {
-    if (!(error instanceof TodoStoreError)) throw error;
-  }
+  try { manifest = await readRawManifest(root); } catch (error) { displayFault(error); }
   let dropped = [];
   if (manifest !== null) {
     const raw = await readRawDisplayMembers(root, manifest);
@@ -1844,7 +1850,7 @@ export async function readTodoStoreForDisplay({ repoRoot = process.cwd(), now } 
       };
     }
   }
-  const checkpoint = await readDisplayCheckpoint(root, manifest?.project_id);
+  const checkpoint = await readDisplayCheckpoint(root, nullableString(manifest?.project_id));
   if (checkpoint !== null) {
     return {
       state: 'last_verified', store: checkpoint.store, verified_at: checkpoint.verified_at,

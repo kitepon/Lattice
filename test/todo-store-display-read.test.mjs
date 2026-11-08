@@ -5,7 +5,7 @@
 // 回復したら次の読みでverifiedへ戻る／canonical Storeへは一切書かない。
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -276,4 +276,53 @@ test('checkpoint publication failure still returns the verified view without thr
   assert.equal(result.store.members.length, 2);
   const warning = await Promise.race([warned, new Promise((resolve) => setTimeout(resolve, 1000))]);
   assert.equal(warning?.code, 'LATTICE_STORE_DISPLAY_CHECKPOINT_PUBLICATION_FAILED');
+});
+
+test('an untyped strict-read error degrades to unverified instead of throwing', async (context) => {
+  if (process.getuid?.() === 0) return context.skip('root ignores file modes');
+  const w = await workspace(context);
+  // An unreadable cutover barrier makes the strict reader's readFile throw a plain EACCES
+  // Error (not a TodoStoreError); the raw reader never touches the barrier.
+  const barrier = w.abs('.lattice/todo/source-cutover-recovery.json');
+  await writeFile(barrier, '{}\n');
+  await chmod(barrier, 0o000);
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning);
+  process.on('warning', onWarning);
+  let result;
+  try {
+    result = await w.display();
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally { process.off('warning', onWarning); }
+  assert.equal(result.state, 'unverified');
+  assert.deepEqual(result.inconsistency, { code: 'STORE_READ_FAULT', detail: { reason: 'unexpected_error' } });
+  assert.equal(result.store.members.length, 2);
+  assert.equal(warnings.some((warning) => warning.code === 'LATTICE_STORE_DISPLAY_READ_FAULT'), true);
+});
+
+test('a corrupt manifest with an earlier checkpoint is last_verified', async (context) => {
+  const w = await workspace(context);
+  const verified = await w.display();
+  await w.clobber('.lattice/todo/manifest.json', 'not json');
+  const result = await w.display();
+  assert.equal(result.state, 'last_verified');
+  assert.deepEqual(result.store, verified.store);
+  assert.deepEqual(result.source, verified.source);
+  assert.equal(result.verified_at, verified.verified_at);
+  assert.equal(typeof result.inconsistency.code, 'string');
+});
+
+test('a corrupt manifest without a checkpoint is unavailable', async (context) => {
+  const w = await workspace(context);
+  await w.clobber('.lattice/todo/manifest.json', 'not json');
+  const result = await w.display();
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.store, null);
+  assert.equal(result.source, null);
+});
+
+test('the display source probe throws typed STORE_INCONSISTENT on a corrupt manifest', async (context) => {
+  const w = await workspace(context);
+  await w.clobber('.lattice/todo/manifest.json', 'not json');
+  await assert.rejects(w.source(), (error) => error.name === 'TodoStoreError' && error.code === 'STORE_INCONSISTENT');
 });

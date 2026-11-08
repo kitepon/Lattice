@@ -32,13 +32,20 @@ so no host path is published. Verified source is taken from the validated store
 `plan.json` `plan_digest`, and the last line of `journal/active.jsonl` and of
 `plan-scoped.jsonl` (`event_digest`; absent plan-scoped file = null, no diagnostic).
 An unreadable field is null plus one `diagnostics` entry; it never fails the probe.
+An untyped fault on a member field is recorded the same way with
+`STORE_READ_FAULT`/`unexpected_error` (see below). Only an unenumerable manifest
+fails the probe, with typed `STORE_INCONSISTENT`.
 
 Checkpoint file (`schema:'lattice.todo_store_display_checkpoint.v1'`):
 `{schema, verified_at, source, store, checkpoint_digest}`; `checkpoint_digest` is the
 sha256 of the JSON text of the same object without that field. Valid = bounded
 size (64 MiB), regular non-symlink file at its own realpath, exact keys, strict
-timestamp, matching digest, and `source.repository_identity` + `source.project_id`
-equal to the current repository and the current raw manifest `project_id`. An
+timestamp, matching digest, `source.repository_identity` equal to the current
+repository, and `source.project_id` = `store.project_id`. Whenever a current raw
+manifest `project_id` is readable it must equal that too. When none is readable
+(unreadable manifest or non-string `project_id`; `project_id` has no other source),
+repository identity plus the other checks attribute the checkpoint: it lives in
+this repository's own `.lattice` (one store per repository). An
 invalid checkpoint counts as absent; it is never deleted or rewritten by a read.
 Publication creates `.lattice/generated/store-display/` only under a real,
 non-symlink `.lattice`, refuses symlinked or aliased directories, then uses the
@@ -54,8 +61,14 @@ display uses its titles/lanes/edges when present. A member whose snapshot is
 unreadable is dropped as `{plan_key, snapshot_ref, code, reason}`; a readable
 snapshot with an unreadable plan keeps the member with `plan:null` and names only
 the plan as `{plan_key, plan_ref, code, reason}`. Non-string fields become null.
-Only typed `TodoStoreError` strict failures degrade; any other thrown error (a
-real I/O or program fault) still propagates to the caller as today.
+Every strict-attempt failure degrades; nothing thrown by the strict read reaches the
+caller. A `TodoStoreError` keeps its `{code, detail}`; any other error becomes
+`{code:'STORE_READ_FAULT', detail:{reason:'unexpected_error'}}`, and the original
+error (with stack) goes server-side only through `process.emitWarning` code
+`LATTICE_STORE_DISPLAY_READ_FAULT`. The same rule applies on the raw path: an
+untyped error on the raw manifest counts as an unreadable manifest, and one on a
+member drops that member (or nulls its plan / source field) with
+`STORE_READ_FAULT`/`unexpected_error`. Public results never carry the stack.
 
 ## Public function and result
 
@@ -122,10 +135,10 @@ Do not independently re-project Plan meaning inside this Store serializer.
 `source` binds the canonical repository identity and project_id, manifest_digest,
 and for each sorted plan_key the active version, plan/topology digests, lifecycle
 head and plan-scoped head (null for an empty chain). The cache stores a repository
-identity digest, not an absolute host path for publication. The project identity
-must be established from independently validated current project/manifest metadata
-before a retained checkpoint can be attributed to that request; unknown/mismatched
-identity prevents use of that checkpoint; current raw data is still attempted. A copied checkpoint is never accepted for another
+identity digest, not an absolute host path for publication. Repository identity
+must match before a retained checkpoint is attributed to the request; a readable
+current project_id must also match. A mismatch prevents use of that checkpoint;
+current raw data is still attempted. A copied checkpoint is never accepted for another
 repository/project. Source tokens identify the observed version; they do not
 claim that a prior view is the latest current state.
 
@@ -209,8 +222,8 @@ code; that rendering/notification digest remains display-owned.
 | Store strict display read | Resolve requested repository; use a stable raw read with existing identity/hash/replay/full merged-graph checks and named publication-window retry bounds | No canonical writes, lock reclaim or recovery. A typed current failure goes to current raw-member selection, then checkpoint selection; strict validation is never waived. |
 | Store checkpoint publication | Serialize the complete verified view and bound source metadata; validate the checkpoint; atomically publish only if source differs from the retained valid checkpoint | Return verified and inconsistency:null. No intermediate or partial checkpoint may replace the previous one. |
 | Checkpoint write failure | Current view already passed strict validation | Preserve current verified result and prior checkpoint bytes; report a typed checkpoint-publication diagnostic through existing reporting. Do not turn a healthy current read into HTTP500. The next strict success retries derived publication. |
-| Typed current read failure | Public display reader attempts current manifest member snapshots raw, without Store validation, lock, recovery or writer | At least one readable member returns unverified with current observed source, original inconsistency and named dropped_members, even if a checkpoint exists; verified_at is null and checkpoint bytes are untouched. |
-| No current member readable | Read retained checkpoint and validate schema/self digest/repository+project identity | Valid checkpoint returns last_verified with its original verified_at/source plus the current typed inconsistency. No checkpoint yields unavailable; store/verified_at null and diagnostics retained. |
+| Any strict read failure (typed, or untyped as STORE_READ_FAULT) | Public display reader attempts current manifest member snapshots raw, without Store validation, lock, recovery or writer | At least one readable member returns unverified with current observed source, original inconsistency and named dropped_members, even if a checkpoint exists; verified_at is null and checkpoint bytes are untouched. |
+| No current member readable (including unreadable manifest) | Read retained checkpoint and validate schema/self digest/repository identity, plus project identity when a current project_id is readable | Valid checkpoint returns last_verified with its original verified_at/source plus the current typed inconsistency. No checkpoint yields unavailable; store/verified_at null and diagnostics retained. |
 | Missing/invalid/unsafe/wrong-target checkpoint | Do not attribute wrong-target data to the request or overwrite existing bytes | Current raw data still wins when readable. Otherwise return unavailable as the present observation; next poll retries current raw reads and leaves automatically when member bytes become readable. |
 | Subsequent strict success | Full current graph and source bindings validate again | unverified/last_verified/unavailable → verified, refresh checkpoint and clear current inconsistency automatically. No manual unlock or canonical recovery is required by this display state. |
 | Display connection / Snow White | Consume exactly the Store-selected state, store, verified_at, source, inconsistency and dropped_members | Display owns unverified/current diagnostic and last_verified banners, no-data diagnostics, public diagnostic selection and HTTP/SSE behavior. It must not convert a typed Store display result into HTTP500 or authorize mutations from it. |
@@ -226,7 +239,9 @@ Cover complete verified publication and unchanged-source no-write; the exact
 four-state precedence, including raw current data before an existing checkpoint;
 unverified never publishing checkpoint/stamping verified_at; per-member
 unreadable/unparsable drops preserving readable neighbors; unreadable manifest
-meaning no enumerable current members; zero readable members with/without a
+meaning no enumerable current members (last_verified via repository identity with a
+checkpoint, unavailable without, typed STORE_INCONSISTENT from the probe); an
+untyped strict-read error degrading instead of throwing; zero readable members with/without a
 checkpoint; next full-read poll leaving last_verified/unavailable when member bytes become
 readable, including same-head repairs within the bounded revalidation ceiling; current source plan-scoped head changes while inconsistent;
 plan-scoped-only head change; checkpoint persistence across restart; absent,
