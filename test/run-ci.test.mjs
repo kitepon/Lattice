@@ -33,3 +33,10 @@ test('PR scope runs only the suites that reach the change and skips untouched Se
     assert.equal(selectScope({ changed: [file], tests, importers, isImported }).full, true, file);
   }
 });
+
+test('a version-only package bump is told apart from a dependency change', async () => {
+  const { withoutVersion } = await import('../scripts/ci-scope.mjs');
+  const lock = (version, dep) => JSON.stringify({ name: 'x', version, packages: { '': { version }, 'node_modules/a': { version: dep } } });
+  assert.equal(withoutVersion(lock('0.82.0', '1.0.0')), withoutVersion(lock('0.83.0', '1.0.0')));
+  assert.notEqual(withoutVersion(lock('0.82.0', '1.0.0')), withoutVersion(lock('0.83.0', '1.0.1')));
+});
