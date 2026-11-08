@@ -329,15 +329,18 @@ Fault-injection stages after journal publication, snapshot publication and manif
 publication expose the three durable boundaries to focused recovery tests. They
 do not alter event bytes or result schemas. Completed recovery is idempotent.
 
-## Retire at any state (u12, Snow White 2026-11-08)
+## Retire at any state (u12, agreed 2026-11-08)
 
 Owner 「削除や変更は許す」: deleting a task is never refused by its state.
 
 | Owner / step | Input / read | Output / decision | Failure / recovery |
 |---|---|---|---|
-| Plan: `todo retire --plan <key> --task <id> --reason <text>` | Fresh task state | Appends `retire` with payload `{reason, prior_status}` from pending, blocked, in-progress or done. An in-progress authored start binding is closed by the retire; done evidence stays in the journal. `invalid_retire_transition` (Lattice-invented, block→retire already reached the same end) is removed. | Already retired → existing typed refusal (nothing to delete). Stale state between read and append → existing CAS conflict; reread and retry. |
-| Store replay (contract registered with Ludmila) | `retire` payload: legacy `{reason}` or `{reason, prior_status}` | Legacy payload keeps the old pending/blocked rule. New payload requires `prior_status` to equal the replayed status (recorded fact, not a gate the author can hit through normal CLI use). Readiness of successors treats a retired predecessor exactly as today. | Old readers reject the new payload shape; same shared-store rollout as plan v8. |
+| Plan: `todo retire --plan <key> --task <id> --reason <text>` | Fresh task state | Appends `retire` with `{reason, prior_status}` from pending, blocked, in-progress or done; `invalid_retire_transition` (Lattice-invented: block→retire already reached the same end) is removed for the new payload. | Already retired → existing typed refusal (nothing to delete). Stale state → existing CAS conflict; reread and retry. |
+| Store replay (Ludmila) | Legacy `{reason}` or new `{reason, prior_status}` | Legacy keeps pending/blocked. New requires prior_status equal to the replayed status; in-progress retire deletes the authored start binding; done evidence stays in the journal. | Old readers reject the new payload; same rollout as plan v8. |
+| Plan: readiness after retire | Retired predecessor | `prior_status: done` keeps satisfying successors in replay dependenciesDone and readiness predecessorsDone (the work was done). Pending/blocked/in-progress retire keeps today's rule: the successor waits until a revision drops or replaces the edge. Phase gate counts retired as finished, as today. | None added. |
+| Runtime (Tov) | Run/hold/claim of a retired in-progress task | Released by the Runtime path Tov names (pending his answer); Plan never touches Runtime state. | Runtime's own contract. |
 
-Patent: authoring, revision and lifecycle transitions are outside claims 1–12;
-claimed mechanisms (impact estimation, overlap resolution, hold/commit/resume,
-runtime conflict detection and targeted replanning) are untouched.
+A retired task stays in the plan, so cross-plan connections to it keep a valid
+endpoint; removal by revision is covered by the named limit in dfd-plan-revise.md.
+
+Patent: lifecycle transitions are outside claims 1–12.
