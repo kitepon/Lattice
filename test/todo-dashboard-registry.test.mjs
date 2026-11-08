@@ -844,7 +844,11 @@ test('todo dashboard removeはrepoRoot解決もdaemon起動もせずに登録を
   assert.equal(missing.stdout, '');
   const failure = JSON.parse(missing.stderr);
   assert.equal(failure.code, 'PROJECT_NOT_REGISTERED');
-  assert.deepEqual(failure.detail, { project_id: 'ghost' });
+  // u05: the printer adds pointer/rule/next_action; the refusal's own keys stay.
+  assert.equal(failure.detail.project_id, 'ghost');
+  assert.equal(failure.detail.pointer, null);
+  assert.equal(typeof failure.detail.rule, 'string');
+  assert.equal(typeof failure.detail.next_action, 'string');
 });
 
 test('store書き込みのtodo commandが明示serveなしでproject登録とdaemon起動をensureする', async (context) => {
