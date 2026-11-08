@@ -1,5 +1,5 @@
 // u12: `todo retire`はpending/blocked/doneから閉じられ（prior_status記録）、in-progressもu03 A14rで閉じられる、
-// 既にretiredなら成功（unchanged:true・event追加なし）。retired from doneの先行は後続を妨げない。
+// 既にretiredなら成功（unchanged:true・event追加なし）。retiredの先行は後続を妨げない（u12、a13でどの状態からでも）。
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -84,7 +84,7 @@ test('retire from in-progress succeeds, records prior_status and closes the star
   assert.equal((await retireEvents(root)).length, 1);
 });
 
-test('retire from done keeps the successor startable and finishable; retire from pending does not', async (context) => {
+test('retire from done or pending keeps the successor startable and finishable (u12, a13)', async (context) => {
   const doneRoot = await fixture(context);
   success(doneRoot, ['todo', 'start', '--plan', 'work', '--task', 'a']);
   success(doneRoot, ['todo', 'done', '--plan', 'work', '--task', 'a', '--evidence', 'evidence.md']);
@@ -96,12 +96,14 @@ test('retire from done keeps the successor startable and finishable; retire from
   success(doneRoot, ['todo', 'done', '--plan', 'work', '--task', 'b', '--evidence', 'evidence.md']);
   assert.equal(state(doneRoot, 'b').status, 'done');
 
+  // a13: retire is the user deleting the task, so its edge counts as gone in readiness and Store replay.
   const pendingRoot = await fixture(context);
   assert.equal(retire(pendingRoot, 'a').status, 0);
-  assert.equal(readyIds(pendingRoot).includes('b'), false);
-  const refused = run(pendingRoot, ['todo', 'start', '--plan', 'work', '--task', 'b']);
-  assert.notEqual(refused.status, 0);
-  assert.equal(JSON.parse(refused.stderr).detail.reason, 'invalid_start_transition');
+  assert.ok(readyIds(pendingRoot).includes('b'));
+  success(pendingRoot, ['todo', 'start', '--plan', 'work', '--task', 'b']);
+  success(pendingRoot, ['todo', 'done', '--plan', 'work', '--task', 'b', '--evidence', 'evidence.md']);
+  assert.equal(state(pendingRoot, 'b').status, 'done');
+  success(pendingRoot, ['todo', 'verify', '--json']);
 });
 
 test('retiring an already retired task succeeds without a new event', async (context) => {

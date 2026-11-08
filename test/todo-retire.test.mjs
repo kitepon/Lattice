@@ -161,7 +161,7 @@ const storeOnly = (root, event) => appendStoreEvent({ repoRoot: root, writer: WR
   now: NOW, validateProspectiveEvent: () => ({ ok: true }),
   event: { actor: ACTOR, recorded_at: NOW, ...event } });
 
-test('Store replay: doneからretireした前提は後続のauthored doneを許し、pendingからのretireは許さない', async (context) => {
+test('Store replay: done・pendingどちらからretireした前提も後続のauthored doneを許す（a13）', async (context) => {
   const fromDone = await workspace(context, { edge: true });
   await start(fromDone, 'A');
   await done(fromDone, 'A');
@@ -172,11 +172,9 @@ test('Store replay: doneからretireした前提は後続のauthored doneを許�
 
   const fromPending = await workspace(context, { edge: true });
   await retireFrom(fromPending, 'A', 'pending');
-  await storeOnly(fromPending, { kind: 'start', task_id: 'B', payload: { override_reason: '前提を迂回して着手' } });
-  await assert.rejects(done(fromPending, 'B', storeOnly), (error) => {
-    assert.equal(reasonOf(error), 'invalid_done_transition');
-    return true;
-  });
+  await storeOnly(fromPending, { kind: 'start', task_id: 'B', payload: { override_reason: null } });
+  await done(fromPending, 'B', storeOnly);
+  assert.equal((await taskOf(fromPending, 'B')).status, 'done');
 });
 
 test('retireのpayloadはreason必須', async (context) => {
@@ -185,11 +183,11 @@ test('retireのpayloadはreason必須', async (context) => {
     event: { kind: 'retire', task_id: 'B', actor: ACTOR, recorded_at: NOW, payload: {} } }));
 });
 
-test('retiredの前提を持つ工程はreadyにならない（撤去は完了の代わりではない）', async (context) => {
+test('retiredの前提を持つ工程はreadyになる（撤去は利用者の削除で、辺も消えたものとして扱う。a13）', async (context) => {
   const root = await workspace(context, { edge: true });
   await retire(root, 'A');
   const store = await readTodoStore({ repoRoot: root, now: NOW });
-  assert.deepEqual(computeReadyFrontier(store), []);
+  assert.deepEqual(computeReadyFrontier(store).map(({ task_id: id }) => id), ['B']);
 });
 
 test('CLI retireコマンドが正規経路で遷移を書く', async (context) => {

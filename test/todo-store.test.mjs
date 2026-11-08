@@ -193,7 +193,7 @@ test('Phaseは重いgateをjournalで証明しacceptまで後続ToDoを閉じる
   const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T2', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+      payload: { override_reason: null } } }), 'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
 
   const evidenceBytes = Buffer.from('heavy phase verification\n');
   const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], {
@@ -243,7 +243,7 @@ test('Phaseは重いgateをjournalで証明しacceptまで後続ToDoを閉じる
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'phase_reopen', phase_id: 'phase-1', actor: ACTOR, recorded_at: NOW,
       payload: { reason: '再監査', override_reason: null } } }),
-  'STORE_INCONSISTENT', 'phase_reopen_has_started_successor');
+  'TODO_TRANSITION_REFUSED', 'phase_reopen_has_started_successor');
   store = await readTodoStore({ repoRoot: root, now: NOW });
   assert.equal(store.members[0].journal.events.every(({ schema }) => schema === 'lattice.todo_event.v3'), true);
   assert.equal(store.members[0].snapshot.schema, 'lattice.todo_snapshot.v2');
@@ -343,11 +343,11 @@ test('todo_plan.v5はPhaseを監査境界に限定しToDo DAGの並列性を維�
       payload: { override_reason: null } } });
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T3', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+      payload: { override_reason: null } } }), 'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T3', actor: ACTOR, recorded_at: NOW,
       payload: { override_reason: '明示Phase gateを迂回' } } }),
-  'STORE_INCONSISTENT', 'invalid_start_transition');
+  'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
   const evidenceBytes = Buffer.from('v5 phase audit\n');
   const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], {
     cwd: root, input: evidenceBytes, encoding: 'utf8',
@@ -695,7 +695,7 @@ test('closed transitionと依存gateをappend前に検証し、失敗時bytesを
   const before = await bytes(root, journalRef);
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T2', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } }),
-  'STORE_INCONSISTENT', 'invalid_start_transition');
+  'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
   assert.deepEqual(await bytes(root, journalRef), before);
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
@@ -738,10 +738,10 @@ test('cross-plan predecessorはstart/done/reopenをmerged graphで保護する',
   const storeBeforeStart = await bytes(root, manifestRef);
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'downstream', now: NOW,
     event: { kind: 'start', task_id: 'D1', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+      payload: { override_reason: null } } }), 'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'downstream', now: NOW,
     event: { kind: 'start', task_id: 'D2', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+      payload: { override_reason: null } } }), 'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
   assert.deepEqual(await bytes(root, manifestRef), storeBeforeStart);
 
   const evidenceBytes = Buffer.from('cross-plan evidence\n');
@@ -754,7 +754,7 @@ test('cross-plan predecessorはstart/done/reopenをmerged graphで保護する',
       payload: { override_reason: 'parallel audit' } } });
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'downstream', now: NOW,
     event: { kind: 'done', task_id: 'D1', actor: ACTOR, recorded_at: NOW, payload: { evidence } } }),
-  'STORE_INCONSISTENT', 'invalid_done_transition');
+  'TODO_TRANSITION_REFUSED', 'invalid_done_transition');
 
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'upstream', now: NOW,
     event: { kind: 'start', task_id: 'U1', actor: ACTOR, recorded_at: NOW,
@@ -767,7 +767,7 @@ test('cross-plan predecessorはstart/done/reopenをmerged graphで保護する',
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'upstream', now: NOW,
     event: { kind: 'reopen', task_id: 'U1', actor: ACTOR, recorded_at: NOW,
       payload: { reason: 'correction', override_reason: null } } }),
-  'STORE_INCONSISTENT', 'reopen_has_started_successor');
+  'TODO_TRANSITION_REFUSED', 'reopen_has_started_successor');
 });
 
 test('cross-plan後続はpredecessor ToDo doneでなくPhase acceptedまで閉じreopenも保護する', async (context) => {
@@ -804,7 +804,7 @@ test('cross-plan後続はpredecessor ToDo doneでなくPhase acceptedまで閉�
     event: { kind: 'done', task_id: 'U1', actor: ACTOR, recorded_at: NOW, payload: { evidence } } });
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'downstream', now: NOW,
     event: { kind: 'start', task_id: 'D1', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+      payload: { override_reason: null } } }), 'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
   const review = await appendTodoEvent({ repoRoot: root, writer, planKey: 'upstream', now: NOW,
     event: { kind: 'phase_review', phase_id: 'phase-1', actor: ACTOR, recorded_at: NOW,
       payload: { reason: 'heavy' } } });
@@ -820,7 +820,7 @@ test('cross-plan後続はpredecessor ToDo doneでなくPhase acceptedまで閉�
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'upstream', now: NOW,
     event: { kind: 'phase_reopen', phase_id: 'phase-1', actor: ACTOR, recorded_at: NOW,
       payload: { reason: 'recheck', override_reason: null } } }),
-  'STORE_INCONSISTENT', 'phase_reopen_has_started_successor');
+  'TODO_TRANSITION_REFUSED', 'phase_reopen_has_started_successor');
 });
 
 const journalCorruptions = [
@@ -1574,7 +1574,7 @@ test('authored doneはpending/blockedを許さず従来のhard evidence検証も
   const before = await bytes(root, journalRef);
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'done', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: authored } }),
-  'STORE_INCONSISTENT', 'invalid_done_transition');
+  'TODO_TRANSITION_REFUSED', 'invalid_done_transition');
   assert.deepEqual(await bytes(root, journalRef), before);
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
@@ -1585,7 +1585,7 @@ test('authored doneはpending/blockedを許さず従来のhard evidence検証も
     event: { kind: 'block', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { reason: 'blocked' } } });
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'done', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: authored } }),
-  'STORE_INCONSISTENT', 'invalid_done_transition');
+  'TODO_TRANSITION_REFUSED', 'invalid_done_transition');
 });
 
 // 一度もcommitされないままGCで消えたblobを指す旧doneがjournalに残ると、hard検証が

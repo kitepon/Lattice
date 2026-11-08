@@ -928,15 +928,16 @@ test('an invalid presentation file is ignored with a notice on the rendered page
   assert.match(rendered.html, /data-gantt-svg/u);
 });
 
-test('a successor of a retired, never-done task is not drawn ready (the drawing uses Lattice readiness)', () => {
-  // T0000 -> T0001. T0000 was retired without finishing; Lattice readiness never counts a
-  // retired predecessor as done, so T0001 must not be marked next-ready even though the
-  // retired task and its edge are hidden from the drawing.
+test('a successor of a retired, never-done task is drawn ready (the drawing uses Lattice readiness, a13)', () => {
+  // T0000 -> T0001. T0000 was retired without finishing; retire deletes the task, so Lattice
+  // readiness counts its edge as gone and the drawing (which hides the edge) agrees.
   const read = readFixture(2, [{ from: ref('T0000'), to: ref('T0001') }]);
+  read.members[0].tasks[0].status = 'pending';
+  assert.deepEqual(layoutTodoGantt(read).nodes.filter(({ visibility }) => visibility.next_ready)
+    .map(({ ref: taskRef }) => taskRef.task_id), ['T0000']);
   read.members[0].tasks[0].status = 'retired';
-  const layout = layoutTodoGantt(read);
-  assert.deepEqual(layout.nodes.filter(({ visibility }) => visibility.next_ready)
-    .map(({ ref: taskRef }) => taskRef.task_id), []);
+  assert.deepEqual(layoutTodoGantt(read).nodes.filter(({ visibility }) => visibility.next_ready)
+    .map(({ ref: taskRef }) => taskRef.task_id), ['T0001']);
   read.members[0].tasks[0].status = 'done';
   assert.deepEqual(layoutTodoGantt(read).nodes.filter(({ visibility }) => visibility.next_ready)
     .map(({ ref: taskRef }) => taskRef.task_id), ['T0001']);

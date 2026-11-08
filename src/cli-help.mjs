@@ -111,8 +111,9 @@ Write commands:
   block --plan <key> --task <id> --reason <text>
   unblock --plan <key> --task <id>
   retire --plan <key> --task <id> --reason <text>
-  done --plan <key> --task <id> (--evidence <file>|--message <text>)
-        # taskを閉じる。--evidenceはdescriptor JSONでも証拠本文でもよい。repo内なら絶対path可。
+  done --plan <key> --task <id> [--evidence <file>] [--message <text>]
+        # taskを閉じる。どちらも省略でき、両方なら本文がfileを名指す（A58）。--evidenceはdescriptor JSONでも証拠本文でもよい。repo内なら絶対path可。
+        # 既にdoneなら何も足さずunchanged:trueで成功する（a12）
         # 監査と構造finalizationは残作業であり、doneの門ではない
   reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]
   evidence promote --plan <key> --task <id> --evidence <file>

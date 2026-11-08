@@ -173,12 +173,12 @@ test('v5 carried phase may change membership (older revisions keep phase_carry_s
   assert.equal(store.members[0].snapshot.phases.length, 2);
 });
 
-test('one finished predicate: done, or retired from done including historical_import with unknown time', async () => {
+test('one finished predicate: done or retired from any status (a13)', async () => {
   const { isFinishedTodoTaskState } = await import('../src/todo-store.mjs');
   const retired = { status: 'retired', done_at: null, imported: false };
   assert.equal(isFinishedTodoTaskState({ status: 'done', done_at: null, imported: true }), true);
   assert.equal(isFinishedTodoTaskState({ ...retired, done_at: '2026-11-08T00:00:00.000Z' }), true);
   assert.equal(isFinishedTodoTaskState({ ...retired, imported: true }), true);
-  assert.equal(isFinishedTodoTaskState(retired), false);
+  assert.equal(isFinishedTodoTaskState(retired), true);
   assert.equal(isFinishedTodoTaskState({ status: 'in-progress', done_at: null, imported: false }), false);
 });

@@ -352,7 +352,7 @@ predecessor source消失は`predecessor_source_silently_dropped`として拒否�
 成功は単体通常revisionが`lattice.todo_revise_result.v1`（revision入力がv2なら
 `lattice.todo_revise_result.v2`）、revision setが
 `lattice.todo_revision_set_result.v1`、statusはreconciliation identityを含む
-`lattice.todo_status_result.v6`、verifyはsource inventoryを再検査する`lattice.todo_verify_result.v3`を返す。
+`lattice.todo_status_result.v6`、verifyはsource inventoryを再検査する`lattice.todo_verify_result.v4`を返す（v3＋commit前の証拠を項目で示す`uncommitted_evidence`、a12）。
 verify v3の各memberは`reconciliation_guidance`を持ち、`registered_unreconciled`がsource inventoryの
 検証状態であってlifecycle操作とdashboard表示を塞がないこと、および正規のrevision schema取得・適用commandを示す。
 status v6の`dispatch_frontier`は`next_ready`全件を既定の同時dispatch集合とし、推奨同時数、
