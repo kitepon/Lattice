@@ -1,4 +1,5 @@
 import { renderTodoGanttSvg, TODO_GANTT_STATUS_PRESENTATION } from './todo-gantt-svg.mjs';
+import { isDecoupledPhaseTodoPlanSchema } from './todo-store-view.mjs';
 
 export const DOCUMENT_STATUS = TODO_GANTT_STATUS_PRESENTATION;
 
@@ -158,7 +159,7 @@ export function renderPhaseProgress(readModel) {
     }
   }
   const decoupled = readModel.members.some(({ plan }) => (
-    ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(plan.schema)
+    isDecoupledPhaseTodoPlanSchema(plan.schema)
   ));
   const guidance = decoupled
     ? 'ToDo完了とPhase受理は別です。Phaseは重監査の順序を表し、通常ToDoの開始順はToDo依存だけで決まります。'

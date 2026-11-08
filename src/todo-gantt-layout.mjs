@@ -2,6 +2,7 @@ import { TODO_GANTT_SCOPES, projectTodoGanttScope } from './todo-gantt-scope.mjs
 import { buildTodoGanttHierarchy } from './todo-gantt-nested.mjs';
 import { projectTodoCrossPlanDependencies } from './todo-store.mjs';
 import { projectTodoChainV1 } from './todo-chain.mjs';
+import { isDecoupledPhaseTodoPlanSchema } from './todo-store-view.mjs';
 
 const TASK_LIMIT = 2_000;
 const EDGE_LIMIT = 8_000;
@@ -257,7 +258,7 @@ function readyTaskKeys(readModel, nodes, nodesByKey, incoming, retiredKeys) {
         member.plan.project_id, member.plan.plan_key, phase.phase_id,
       ]), phase.status);
     }
-    if (['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(member.plan.schema)) {
+    if (isDecoupledPhaseTodoPlanSchema(member.plan.schema)) {
       for (const edge of member.plan.phase_accept_dependencies ?? []) {
         const target = refKey(refOf(edge.to, 'phase_accept_dependencies.to'));
         if (retiredKeys.has(target)) continue;

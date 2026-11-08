@@ -1,4 +1,5 @@
 import { createTodoReadiness } from './todo-readiness.mjs';
+import { isDecoupledPhaseTodoPlanSchema } from './todo-store-view.mjs';
 import {
   AUDIT_PENDING_PHASE_STATUSES,
   auditPendingNextCommands,
@@ -467,7 +468,7 @@ function buildTodoGraph(readModel) {
     for (const join of member.plan.joins) {
       for (const after of join.after) addPredecessor(after, join.before);
     }
-    if (['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(member.plan.schema)) {
+    if (isDecoupledPhaseTodoPlanSchema(member.plan.schema)) {
       for (const edge of member.plan.phase_accept_dependencies) {
         const target = refKey(edge.to);
         if (!nodes.has(target)) fail('TODO_STATUS_INVALID_INPUT', 'todo_status_dependency_dangling');

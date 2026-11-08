@@ -1,6 +1,5 @@
 // u12: plan_create_input.v5 = v4 + 作成者が書く終了条件`done_condition`、
 // および v5 入力だけが受ける「順序に意味が無い集合」の正準化。
-// 「[Store v8]」と付いたtestは、ルドミラのStore枝（lattice.todo_plan.v8登録）が要る。
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -76,13 +75,9 @@ for (const [label, value, kind] of [
   });
 }
 
-test('v5 string and null done_condition pass the text rule (shape errors come from the plan builder)', () => {
+test('v5 string and null done_condition are accepted', () => {
   for (const done of ['全テストが通る', null]) {
-    const input = draft((value) => { value.tasks[0].done_condition = done; return value; });
-    try { validatePlanCreateInput(input); } catch (error) {
-      // Store v8が未登録の間はplan builderが拒否する。text規則の拒否ではないことだけを確かめる。
-      assert.notEqual(error.detail?.pointer, '/tasks/0/done_condition');
-    }
+    validatePlanCreateInput(draft((value) => { value.tasks[0].done_condition = done; return value; }));
   }
 });
 
@@ -172,7 +167,7 @@ async function createFromDraft(context, value) {
   return { root, run };
 }
 
-test('[Store v8] plan create v5 stores plan v8 with done_condition, sorted equal input stays canonical', async (context) => {
+test('plan create v5 stores plan v8 with done_condition, sorted equal input stays canonical', async (context) => {
   const value = draft((v) => {
     v.tasks[0].done_condition = '全テストが通る';
     v.tasks[1].done_condition = null;
@@ -188,7 +183,7 @@ test('[Store v8] plan create v5 stores plan v8 with done_condition, sorted equal
   assert.equal(plan.hard_dependencies.length, 1);
 });
 
-test('[Store v8] same-key conflicting joins in v5 still refuse at the join pointer', async (context) => {
+test('same-key conflicting joins in v5 still refuse at the join pointer', async (context) => {
   const conflicting = draft((v) => {
     v.joins = [
       { id: 'j', after: [ref('t1')], before: ref('t2') },

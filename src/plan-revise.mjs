@@ -5,12 +5,11 @@ import { canonicalizeTodoArtifact, exactRecord, isTodoIdentifier, todoSelfDigest
 import { gitSync } from './git-process.mjs';
 import { readAuthoringJsonFile, repairAuthoringArtifact } from './todo-authoring-input.mjs';
 import { validatePlanCreateInput } from './project-cli.mjs';
-import {
-  compilePhaseMigration, planSeed, readPlanBackchainBinding, rebindCarriedWork,
-} from './plan-backchain.mjs';
+import { planSeed, readPlanBackchainBinding, rebindCarriedWork } from './plan-backchain.mjs';
 import {
   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter, readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
+import { appendTodoNote } from './todo-note-store.mjs';
 import { phaseTodoRevisionPlanVersion, validatePhaseTodoRevision } from './todo-revision.mjs';
 
 export { validateBindingCarry } from './plan-binding-carry.mjs';
@@ -19,6 +18,122 @@ const INPUT_SCHEMA = 'lattice.plan_revise_input.v1';
 
 function fail(reason, pointer, detail = {}) {
   throw new TodoStoreError('INPUT_INVALID', reason, undefined, { pointer, ...detail });
+}
+
+/**
+ * 軽量改訂のphase移行。作成者が書いた手順の改訂は完了済み・進行中でも許すので、
+ * taskの文面や辺の変更ではPhaseを巻き込まない。resetするのは次の2つだけ:
+ * 1. Phase定義（title・gate_policy・predecessor_phase_ids・required_evidence_slots）が変わった。
+ * 2. 新手順の下で再審査が要る task を迎えた——新規task、他Phaseから移ったtask、resetするtask——
+ *    で、その行き先の状態がdone/retiredでない。
+ * 失うだけ、または完了済みだけを迎えるPhaseは受理済みのまま持ち越す。
+ * backchainのcompilePhaseMigrationとは別の規則で、あちらは変えない。
+ */
+export function compileLightPhaseMigration(previousPlan, desiredSeed, taskMigration, taskStates) {
+  const policyById = new Map(taskMigration.map((row) => [row.from_task_id, row.state_policy]));
+  const previousById = new Map(previousPlan.tasks.map((task) => [task.task_id, task]));
+  const definition = ({ title, gate_policy: gatePolicy, predecessor_phase_ids: predecessors,
+    required_evidence_slots: slots }) => canonicalizeTodoArtifact({
+    title, gate_policy: gatePolicy, predecessor_phase_ids: predecessors, required_evidence_slots: slots });
+  const gaining = new Set();
+  for (const task of desiredSeed.tasks) {
+    const previous = previousById.get(task.task_id);
+    const reset = policyById.get(task.task_id) === 'reset_pending';
+    const arrives = previous === undefined || reset || previous.phase_id !== task.phase_id;
+    const state = previous === undefined || reset ? 'pending' : taskStates.get(task.task_id);
+    if (arrives && !['done', 'retired'].includes(state)) gaining.add(task.phase_id);
+  }
+  const nextPhases = new Map(desiredSeed.phases.map((phase) => [phase.phase_id, phase]));
+  const oldPhaseIds = new Set(previousPlan.phases.map(({ phase_id: id }) => id));
+  return [
+    ...previousPlan.phases.map((phase) => {
+      const next = nextPhases.get(phase.phase_id);
+      if (next === undefined) {
+        return { from_phase_id: phase.phase_id, to_phase_id: 'removed', state_policy: 'removed' };
+      }
+      const carry = !gaining.has(phase.phase_id) && definition(phase) === definition(next);
+      return { from_phase_id: phase.phase_id, to_phase_id: phase.phase_id,
+        state_policy: carry ? 'carry' : 'reset' };
+    }),
+    ...desiredSeed.phases.filter(({ phase_id: id }) => !oldPhaseIds.has(id))
+      .map(({ phase_id: id }) => ({ from_phase_id: null, to_phase_id: id, state_policy: 'reset' })),
+  ];
+}
+
+const nullable = (value) => (value === undefined ? null : value);
+
+/** 履歴note用に、taskの作成者が書いた面を欄ごとに正準化して返す。 */
+function authoredSurface(plan, taskId) {
+  const task = plan.tasks.find(({ task_id: id }) => id === taskId);
+  const local = (ref) => ref.plan_key === plan.plan_key && ref.task_id === taskId;
+  const rows = (list) => canonicalizeTodoArtifact(list.map((row) => canonicalizeTodoArtifact(row)).sort());
+  return {
+    title: nullable(task.title), lane: task.lane, design_memo: nullable(task.design_memo),
+    done_condition: nullable(task.done_condition), narrative_ref: nullable(task.narrative_ref),
+    parent_task_id: nullable(task.parent_task_id), phase_id: nullable(task.phase_id),
+    incoming_hard_dependencies: rows(plan.hard_dependencies.filter(({ to }) => local(to))),
+    outgoing_hard_dependencies: rows(plan.hard_dependencies.filter(({ from }) => local(from))),
+    join_memberships: rows(plan.joins.filter(({ before, after }) => local(before) || after.some(local))),
+    phase_accept_dependencies: rows((plan.phase_accept_dependencies ?? []).filter(({ to }) => local(to))),
+  };
+}
+
+/**
+ * 改訂の履歴note。変わったcarry taskごとにtask note1件（変わった欄の全列挙つき）と、
+ * 取り除いたtaskごとにplan note1件。本文は `plan revise <from>→<to> <task_id>: <reason>`。
+ */
+export function planRevisionHistoryNotes({ previousPlan, successorPlan, continuity }) {
+  const prefix = (taskId) => `plan revise ${previousPlan.plan_version}→${successorPlan.plan_version} ${taskId}:`;
+  const notes = [];
+  const ordered = [...continuity].sort((left, right) => (
+    left.task_id < right.task_id ? -1 : left.task_id > right.task_id ? 1 : 0));
+  for (const { task_id: taskId, policy, reason } of ordered) {
+    if (policy === 'retire') {
+      notes.push({ scope: 'plan', task_id: taskId, body: `${prefix(taskId)} ${reason}` });
+    } else if (policy === 'carry') {
+      const before = authoredSurface(previousPlan, taskId);
+      const after = authoredSurface(successorPlan, taskId);
+      const changed = Object.keys(before).filter((field) => before[field] !== after[field]);
+      if (changed.length > 0) {
+        notes.push({ scope: 'task', task_id: taskId,
+          body: `${prefix(taskId)} ${reason}\nchanged: ${changed.join(', ')}` });
+      }
+    }
+  }
+  return notes;
+}
+
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+
+/** 公開後にnoteを順に追記する。失敗したら、まだ書けていないnoteと正確な再実行commandを返す。 */
+async function appendRevisionHistoryNotes({ repoRoot, revision, notes, actor }) {
+  const planKey = revision.plan_key;
+  const planVersion = revision.desired_plan.plan_version;
+  const pending = [...notes];
+  try {
+    while (pending.length > 0) {
+      const [note] = pending;
+      await appendTodoNote({
+        repoRoot, projectId: revision.project_id, planKey, planVersion,
+        taskId: note.scope === 'task' ? note.task_id : null,
+        actor, recordedAt: new Date().toISOString(), body: note.body,
+        supersedes: null, eligibleSupersedes: [],
+      });
+      pending.shift();
+    }
+  } catch (error) {
+    const wrapped = error instanceof TodoStoreError ? error
+      : new TodoStoreError('PLAN_HISTORY_NOTE_PENDING', 'history_note_append_failed', undefined,
+        { cause: String(error?.message ?? error) });
+    wrapped.detail = {
+      ...wrapped.detail, revision_applied: true, revision_digest: revision.revision_digest,
+      plan_version: planVersion,
+      pending_history_notes: pending.map(({ task_id: taskId, body }) => ({ task_id: taskId, body })),
+      pending_history_note_commands: pending.map(({ scope, task_id: taskId, body }) => (
+        `lattice todo note --plan ${planKey}${scope === 'task' ? ` --task ${taskId}` : ''} --message ${shellQuote(body)}`)),
+    };
+    throw wrapped;
+  }
 }
 
 export function compilePlanRevision({ member, input }) {
@@ -41,7 +156,7 @@ export function compilePlanRevision({ member, input }) {
       next_action: `lattice todo revise-phase --plan ${desired.plan_key} --input <phase-revision.json>`,
     });
   }
-  if (member.plan.schema !== 'lattice.todo_plan.v7') {
+  if (!['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(member.plan.schema)) {
     fail('predecessor_plan_schema_unsupported', '/desired/plan_key');
   }
   if (desired.project_id !== member.plan.project_id || desired.plan_key !== member.plan.plan_key) {
@@ -78,8 +193,9 @@ export function compilePlanRevision({ member, input }) {
     journal_head_digest: member.journal.events.at(-1).event_digest,
     plan_version: member.plan.plan_version,
   };
-  const seed = planSeed(desired, predecessor.plan_digest);
-  const phaseMigration = compilePhaseMigration(member.plan, seed, taskMigration);
+  const seed = planSeed(desired, predecessor.plan_digest, member.plan);
+  const phaseMigration = compileLightPhaseMigration(member.plan, seed, taskMigration,
+    new Map(member.tasks.map(({ task_id: id, status }) => [id, status])));
   const version = phaseTodoRevisionPlanVersion({
     projectId: desired.project_id, planKey: desired.plan_key, predecessor,
     desiredPlan: seed, taskMigration, phaseMigration,
@@ -114,38 +230,23 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
       next_action: 'lattice plan backchain --input <file> --json',
     });
   }
+  // v5入力は集合の並びを正準化するので、同じ内容の別の並びは「変更なし」になる。
+  const desired = repairAuthoringArtifact(input.desired);
   const unchanged = input.continuity.every(({ policy }) => policy === 'carry')
-    && canonicalizeTodoArtifact(planSeed(input.desired, null))
+    && canonicalizeTodoArtifact(planSeed(desired, null, member.plan))
       === canonicalizeTodoArtifact(planSeed(member.plan, null));
   if (!unchanged && !validatePhaseTodoRevision(revision)) fail('plan_revise_artifact_invalid', '/');
-  if (!unchanged) {
-    const { todoTaskCarrySemantics } = await import('./todo-store-view.mjs');
-    const idMap = new Map(revision.task_migration.map(({ from_task_id, to_task_id }) => [from_task_id, to_task_id]));
-    const removedTaskIds = new Set(revision.task_migration.filter(({ state_policy }) => state_policy === 'removed')
-      .map(({ from_task_id }) => from_task_id));
-    for (const [index, entry] of input.continuity.entries()) {
-      if (entry.policy !== 'carry') continue;
-      const before = todoTaskCarrySemantics(member.plan, entry.task_id, idMap,
-        { reconciliationMetadata: true, includeDesignMemo: false, removedTaskIds });
-      const after = todoTaskCarrySemantics(revision.desired_plan, entry.task_id, new Map(),
-        { reconciliationMetadata: true, includeDesignMemo: false });
-      if (canonicalizeTodoArtifact(before) !== canonicalizeTodoArtifact(after)) {
-        throw new TodoStoreError('REVISION_INVALID', 'carry_semantics_changed', undefined, {
-          pointer: `/continuity/${index}`, task_id: entry.task_id,
-          expected: { policy: 'reset' }, actual: { policy: 'carry' },
-          next_action: 'set_the_reported_continuity_policy_to_reset_then_rerun_plan_revise_dry_run',
-        });
-      }
-    }
-  }
   let applied = null;
   let reboundTaskIds = [];
   if (!dryRun) {
     if (!unchanged) {
       applied = await applyPhaseTodoRevision({ repoRoot,
         writer: createTodoStoreWriter({ caller: 'g5-authoring' }), revision,
-        actor: input.desired.actor, recordedAt: input.desired.recorded_at,
+        actor: desired.actor, recordedAt: desired.recorded_at,
       });
+      await appendRevisionHistoryNotes({ repoRoot, revision, actor: desired.actor,
+        notes: planRevisionHistoryNotes({ previousPlan: member.plan,
+          successorPlan: revision.desired_plan, continuity: input.continuity }) });
     }
     try {
       reboundTaskIds = await rebindCarriedWork({ repoRoot, planKey: revision.plan_key, env,
