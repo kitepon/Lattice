@@ -125,3 +125,24 @@ Removed refusals: `binding_stale` (read and every successor writer) and
 A binding whose digest matches no retained predecessor version (or whose task has
 no migration entry on the way) stays a finding; the explicit
 `rebindTodoCrossPlanDependencies` recovery repairs it.
+## Effective source inventory across light revisions (u03i, Ludmila 2026-11-08)
+
+A light revision (`phase_todo_revision.v5`, and any revision without
+`source_inventory`: todo_revision.v1, phase v1/v2/v4) records no inventory. Its
+`task_migration` already records which old task became which new task or was
+removed, so Store derives the inventory instead of adding an artifact key. Plan
+supplies nothing new (`plan revise` keeps compiling v5; u03n lifts its guard).
+
+| Step / owner | Input and decision | Output / failure and exit |
+|---|---|---|
+| Store `effectiveSourceInventory(repoRoot, member)` (was `predecessorSourceInventory`) | Walk from the member's own revision back through `predecessor_plan_digest` (retained `plan.json`/`revision.json`, canonical and valid, same plan_key, desired_plan equal to that version's plan, at most 512 steps) to the newest revision that records `source_inventory` (the base). Every revision on the way without an inventory is kept, newest first. No base → empty base, `recorded: false`. | `{inventory: {active, excluded_tombstones}, recorded}`; derivation is pure (no source read). |
+| Store derive one revision (oldest first) | Base inventory + `task_migration` + desired plan | Active: for each row `from → to` (any kept policy) whose `from` has a base entry, the entry with `task_id: to`, in desired task order. A `removed` row's entry is dropped: the revision's own `removed` row is its record, and a tombstone would point at a live line the author may then delete. A base entry whose task has no row stays if the desired plan still has that task id, else is dropped. New tasks get no entry (light revisions do not add sources; adding one is a revise-phase cutover). Tombstones are carried unchanged. |
+| Store `validSourceInventory` (v3 artifacts) | active vs desired tasks | Was: active 1:1 with every desired task. Now: active task ids are an ordered subsequence of desired task ids, and each desired task without an entry has `narrative_ref` null (a task without a source). Other checks unchanged (unique refs, tombstones sorted and disjoint, requireNarrativeRef for present entries). Relaxation only: every previously valid artifact stays valid. |
+| Store revise-phase v3 diff (`validatePhaseV3SourceInventoryDiff`) | effective predecessor inventory | Unchanged rule, now fed the derived inventory, so a source removed by a light revision is not `predecessor_source_silently_dropped`. A null-ref task needs no cutover operation. |
+| Store `verifyEffectivePhaseTodoRevisionSources` / `todo verify` | v5 member | Verifies the derived inventory (active + carried tombstones) against the current source lines, as before. |
+| Plan `todo split` `existingSourceInventory` (Alice reviews the hunk) | Store's exported `readTodoEffectiveSourceInventory({repoRoot, member})` | Starts from the derived inventory; `inherited` = `recorded`. A task without an entry and with no source `narrative_ref` gets no entry and is not cut over (was `predecessor_source_inventory_unavailable`); the compiled v3 inventory omits it. A task with a source `narrative_ref` and no entry is read from its line, as before. |
+
+Old readers: the relaxed v3 validator is needed only to read a v3 artifact that
+omits a null-ref task; an older binary refuses that artifact (same rollout as plan
+v8). Derived inventories are never written, so there is no format change.
+Patent: source inventory bookkeeping is outside claims 1–12.

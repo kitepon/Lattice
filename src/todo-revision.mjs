@@ -382,12 +382,15 @@ function validSourceInventory(value, desiredPlan, { requireNarrativeRef = false 
       'source_ref', 'source_digest', 'exclusion_reason',
     ]) && parseTodoSourceRef(entry.source_ref) !== null && isTodoDigest(entry.source_digest)
       && boundedText(entry.exclusion_reason))) return false;
-  const taskIds = desiredPlan.tasks.map(({ task_id }) => task_id);
-  const activeIds = value.active.map(({ task_id }) => task_id);
+  // u03i: active is an ordered subsequence of the desired tasks; only a task without a source
+  // (narrative_ref null, e.g. added by a light revision) may be absent.
+  const activeIds = new Set(value.active.map(({ task_id }) => task_id));
+  const listed = desiredPlan.tasks.filter(({ task_id }) => activeIds.has(task_id)).map(({ task_id }) => task_id);
   const activeRefs = value.active.map(({ source_ref }) => source_ref);
   const tombstoneRefs = value.excluded_tombstones.map(({ source_ref }) => source_ref);
   const activeRefSet = new Set(activeRefs);
-  return taskIds.length === activeIds.length && taskIds.every((id, index) => id === activeIds[index])
+  return listed.length === value.active.length && listed.every((id, index) => id === value.active[index].task_id)
+    && desiredPlan.tasks.every((task) => activeIds.has(task.task_id) || task.narrative_ref === null)
     && (!requireNarrativeRef || value.active.every((entry) => desiredPlan.tasks
       .find(({ task_id }) => task_id === entry.task_id)?.narrative_ref === entry.source_ref))
     && activeRefSet.size === activeRefs.length

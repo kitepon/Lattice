@@ -15,7 +15,7 @@ import {
   todoSelfDigest,
 } from './todo-contracts.mjs';
 import { migrateWitnessSetTaskIds } from './todo-independence.mjs';
-import { buildTodoPlan } from './todo-store.mjs';
+import { buildTodoPlan, readTodoEffectiveSourceInventory } from './todo-store.mjs';
 import {
   parseTodoSourceRef,
   phaseTodoRevisionPlanVersion,
@@ -155,9 +155,9 @@ function predecessorReconciliationDigest(member, phasePlan) {
 }
 
 async function existingSourceInventory(repoRoot, member) {
-  const inheritedInventory = member.revision?.source_inventory !== undefined;
-  const inherited = new Map((member.revision?.source_inventory?.active ?? [])
-    .map((entry) => [entry.task_id, structuredClone(entry)]));
+  // u03i: Store's effective inventory also follows light revisions that record none.
+  const { inventory, recorded: inheritedInventory } = await readTodoEffectiveSourceInventory({ repoRoot, member });
+  const inherited = new Map(inventory.active.map((entry) => [entry.task_id, structuredClone(entry)]));
   const active = [];
   for (const task of member.plan.tasks) {
     const entry = inherited.get(task.task_id);
@@ -165,6 +165,8 @@ async function existingSourceInventory(repoRoot, member) {
       active.push(entry);
       continue;
     }
+    // A task without a source (added by a light revision) stays out of the inventory.
+    if (task.narrative_ref === null) continue;
     if (typeof task.narrative_ref !== 'string' || parseTodoSourceRef(task.narrative_ref) === null) {
       invalid('predecessor_source_inventory_unavailable', `/tasks/${task.task_id}/narrative_ref`);
     }
@@ -173,9 +175,7 @@ async function existingSourceInventory(repoRoot, member) {
   }
   return {
     active,
-    excluded_tombstones: structuredClone(
-      member.revision?.source_inventory?.excluded_tombstones ?? [],
-    ),
+    excluded_tombstones: structuredClone(inventory.excluded_tombstones),
     inherited: inheritedInventory,
   };
 }
@@ -335,7 +335,8 @@ export async function compileTodoSplit({ repoRoot, member, proposal }) {
   const phasePlan = isPhasedMemoPlan(plan);
   // phase revisionのgenesisではpredecessor inventoryがまだrevisionへ保存されていない。
   // apply側は全既存sourceのarchive移送を差分として要求するため、既存taskも同じbatchへ載せる。
-  const cutoverExistingTasks = phasePlan && !previousInventory.inherited ? plan.tasks : [];
+  const cutoverExistingTasks = phasePlan && !previousInventory.inherited
+    ? plan.tasks.filter(({ narrative_ref: ref }) => ref !== null) : [];
   const reservedSourceRefs = cutoverExistingTasks.length === 0
     ? previousInventory.active.map(({ source_ref: sourceRef }) => sourceRef)
     : [];
@@ -347,11 +348,11 @@ export async function compileTodoSplit({ repoRoot, member, proposal }) {
   const taskMigration = compileTaskMigration(plan, proposal.task_id,
     new Set(cutoverExistingTasks.map(({ task_id: taskId }) => taskId)));
   const sourceInventory = {
-    active: tasks.map(({ task_id: taskId }) => {
+    active: tasks.flatMap(({ task_id: taskId }) => {
       const archived = archivedByTask.get(taskId);
-      if (archived !== undefined) return { task_id: taskId, ...archived };
+      if (archived !== undefined) return [{ task_id: taskId, ...archived }];
       return previousInventory.active
-        .find(({ task_id: previousTaskId }) => previousTaskId === taskId);
+        .filter(({ task_id: previousTaskId }) => previousTaskId === taskId);
     }),
     excluded_tombstones: previousInventory.excluded_tombstones,
   };

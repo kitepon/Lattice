@@ -4741,11 +4741,38 @@ async function cleanupPhaseV3Staging(transaction, staged) {
   await fsyncDirectory(transaction);
 }
 
-async function predecessorSourceInventory(repoRoot, previous) {
-  if (previous.revision?.source_inventory !== undefined) return previous.revision.source_inventory;
-  const versionsRoot = path.join(repoRoot, STORE_ROOT_REF, 'plans', previous.plan.plan_key);
+/**
+ * u03i: the source inventory in effect for `member`'s plan. Revisions without `source_inventory`
+ * (light v5 and older kinds) are applied to the newest recorded inventory through their own
+ * task_migration, so a light revision never leaves the inventory behind its tasks.
+ */
+function deriveSourceInventory(base, revision) {
+  const byTask = new Map(base.active.map((entry) => [entry.task_id, entry]));
+  const target = new Map();
+  for (const row of revision.task_migration) {
+    const entry = byTask.get(row.from_task_id);
+    byTask.delete(row.from_task_id);
+    // A removed row is the record of that source's exclusion; no tombstone on a live line.
+    if (entry !== undefined && row.to_task_id !== 'removed') target.set(row.to_task_id, { ...entry, task_id: row.to_task_id });
+  }
+  for (const [taskId, entry] of byTask) if (!target.has(taskId)) target.set(taskId, entry);
+  return {
+    active: revision.desired_plan.tasks.flatMap(({ task_id: taskId }) => (target.has(taskId) ? [target.get(taskId)] : [])),
+    excluded_tombstones: base.excluded_tombstones,
+  };
+}
+
+async function effectiveSourceInventory(repoRoot, member) {
+  if (member.revision?.source_inventory !== undefined) {
+    return { inventory: member.revision.source_inventory, recorded: true };
+  }
+  const pending = member.revision?.task_migration === undefined ? [] : [member.revision];
+  const versionsRoot = path.join(repoRoot, STORE_ROOT_REF, 'plans', member.plan.plan_key);
   const plansByDigest = new Map();
-  for (const entry of await readdir(versionsRoot, { withFileTypes: true })) {
+  // No predecessor: nothing to walk (also for read models without a store directory).
+  const entries = member.plan.predecessor_plan_digest === null ? []
+    : await readdir(versionsRoot, { withFileTypes: true });
+  for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const planBytes = await exactFileOrNull(path.join(versionsRoot, entry.name, 'plan.json'));
     if (planBytes === null) continue;
@@ -4753,11 +4780,12 @@ async function predecessorSourceInventory(repoRoot, previous) {
     try { plan = JSON.parse(decodeUtf8(planBytes, 'STORE_INCONSISTENT', 'plan_invalid')); }
     catch { continue; }
     if (!planBytes.equals(canonicalLine(plan)) || !validateTodoPlan(plan)
-      || plan.plan_key !== previous.plan.plan_key) continue;
+      || plan.plan_key !== member.plan.plan_key) continue;
     plansByDigest.set(plan.plan_digest, { plan, directory: path.join(versionsRoot, entry.name) });
   }
   const visited = new Set();
-  let digest = previous.plan.predecessor_plan_digest;
+  let digest = member.plan.predecessor_plan_digest;
+  let base = null;
   while (digest !== null && !visited.has(digest) && visited.size < 512) {
     visited.add(digest);
     const candidate = plansByDigest.get(digest);
@@ -4772,12 +4800,21 @@ async function predecessorSourceInventory(repoRoot, previous) {
         && revision.project_id === candidate.plan.project_id
         && revision.plan_key === candidate.plan.plan_key
         && canonicalizeTodoArtifact(revision.desired_plan)
-          === canonicalizeTodoArtifact(candidate.plan)
-        && revision.source_inventory !== undefined) return revision.source_inventory;
+          === canonicalizeTodoArtifact(candidate.plan)) {
+        if (revision.source_inventory !== undefined) { base = revision.source_inventory; break; }
+        pending.push(revision);
+      }
     }
     digest = candidate.plan.predecessor_plan_digest;
   }
-  return { active: [], excluded_tombstones: [] };
+  let inventory = base ?? { active: [], excluded_tombstones: [] };
+  for (const revision of pending.reverse()) inventory = deriveSourceInventory(inventory, revision);
+  return { inventory, recorded: base !== null };
+}
+
+/** u03i: Store's public read of the effective inventory (todo split builds on it). */
+export async function readTodoEffectiveSourceInventory({ repoRoot, member }) {
+  return effectiveSourceInventory(path.resolve(repoRoot ?? process.cwd()), member);
 }
 
 export async function verifyEffectivePhaseTodoRevisionSources(options = {}) {
@@ -4790,7 +4827,7 @@ export async function verifyEffectivePhaseTodoRevisionSources(options = {}) {
     fail('REVISION_INVALID', 'phase_revision_schema_or_digest_invalid');
   }
   const inventory = revision.schema === 'lattice.phase_todo_revision.v3'
-    ? revision.source_inventory : await predecessorSourceInventory(repoRoot, member);
+    ? revision.source_inventory : (await effectiveSourceInventory(repoRoot, member)).inventory;
   await verifyRevisionSources(repoRoot, inventory);
   return inventory;
 }
@@ -4910,7 +4947,7 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
           journalHeadDigest: previous.journal.events.at(-1).event_digest });
     if (revision.reconciliation.predecessor_reconciliation_digest
       !== predecessorReconciliationDigest) fail('STORE_WRITE_CONFLICT', 'stale_predecessor');
-    const previousInventory = await predecessorSourceInventory(repoRoot, previous);
+    const previousInventory = (await effectiveSourceInventory(repoRoot, previous)).inventory;
     await verifyRevisionSources(repoRoot, previousInventory);
     validatePhaseV3SourceInventoryDiff(previousInventory, revision);
     await rejectCompetingPhaseV3Transaction(repoRoot, revision);
