@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { canonicalizeTodoArtifact, exactRecord, isTodoIdentifier, todoSelfDigest } from './todo-contracts.mjs';
 import { gitSync } from './git-process.mjs';
-import { completeCreateInput, readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import { completeCreateInput, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { validatePlanCreateInput } from './project-cli.mjs';
 import {
   compileBackchainRevision, planSeed, readPlanBackchainBinding, rebindCarriedWork,
@@ -258,14 +258,42 @@ export async function planReviseSchema() {
   return JSON.parse(await readFile(new URL('../docs/schemas/lattice.plan_revise_input.v1.schema.json', import.meta.url)));
 }
 
-export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env = process.env }) {
-  let repoRoot;
-  try {
-    repoRoot = path.resolve(gitSync(['rev-parse', '--show-toplevel'], {
-      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    }).replace(/\r?\n$/u, ''));
-  } catch { throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved'); }
-  const input = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'INPUT_INVALID' });
+/**
+ * 現行plan(v7/v8)をそのまま作成入力にする(a14)。辺の追加・削除など、planの一部だけを変える
+ * 軽量改訂の「いまの姿」を作る。v8はcreate v5、v7はcreate v4。continuityは付けない(全taskがcarry)。
+ * 源泉束縛planと旧schemaは `plan revise` と同じ理由で拒否する。
+ */
+export function desiredFromPlan(plan, { env = process.env, now = new Date() } = {}) {
+  if (plan.schema === 'lattice.todo_plan.v6' || plan.tasks.some((task) => task.narrative_anchor !== null)) {
+    fail('plan_revise_requires_source_revision', '/desired/tasks', {
+      next_action: `lattice todo revise-phase --plan ${plan.plan_key} --input <phase-revision.json>`,
+    });
+  }
+  if (!['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) {
+    fail('predecessor_plan_schema_unsupported', '/desired/plan_key');
+  }
+  const edge = ({ from, to }) => ({
+    from: { project_id: from.project_id, plan_key: from.plan_key, task_id: from.task_id },
+    to: { project_id: to.project_id, plan_key: to.plan_key, task_id: to.task_id } });
+  return {
+    schema: plan.schema === 'lattice.todo_plan.v8'
+      ? 'lattice.plan_create_input.v5' : 'lattice.plan_create_input.v4',
+    project_id: plan.project_id, plan_key: plan.plan_key, plan_version: plan.plan_version,
+    actor: resolveTodoActor(env), recorded_at: now.toISOString(),
+    tasks: plan.tasks, phases: plan.phases,
+    hard_dependencies: plan.hard_dependencies.map(edge), joins: plan.joins,
+    phase_accept_dependencies: plan.phase_accept_dependencies,
+  };
+}
+
+/**
+ * 軽量改訂の適用。入力(`plan_revise_input.v1`)を補完・検査し、算出した継続方針で改訂を作り、
+ * 公開→履歴note→作業中taskの結び直しまで行って、結果artifactを返す(印字はしない)。
+ * notes: 履歴noteへ足す plan scope の追加note([{task_id, body}])。公開後に改訂noteと同じ経路で追記する。
+ */
+export async function applyPlanRevision({
+  repoRoot, input, env = process.env, dryRun = false, notes: extraNotes = [],
+}) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === input?.desired?.plan_key);
   const { desired, continuity } = resolvePlanRevision({ member, input, env, now: new Date() });
@@ -293,8 +321,9 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
         actor: desired.actor, recordedAt: desired.recorded_at,
       });
       await appendRevisionHistoryNotes({ repoRoot, revision, actor: desired.actor,
-        notes: planRevisionHistoryNotes({ previousPlan: member.plan,
-          successorPlan: revision.desired_plan, continuity }) });
+        notes: [...planRevisionHistoryNotes({ previousPlan: member.plan,
+          successorPlan: revision.desired_plan, continuity }),
+        ...extraNotes.map(({ task_id: taskId, body: text }) => ({ scope: 'plan', task_id: taskId, body: text }))] });
     }
     try {
       reboundTaskIds = await rebindCarriedWork({ repoRoot, planKey: revision.plan_key, env,
@@ -321,6 +350,18 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env = process.env }) {
+  let repoRoot;
+  try {
+    repoRoot = path.resolve(gitSync(['rev-parse', '--show-toplevel'], {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).replace(/\r?\n$/u, ''));
+  } catch { throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved'); }
+  const input = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'INPUT_INVALID' });
+  const result = await applyPlanRevision({ repoRoot, input, env, dryRun });
   stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
 }

@@ -1238,8 +1238,79 @@ async function independenceMode({ repoRoot, env, planKey, mode, reason }) {
   return result;
 }
 
-/** 開発中に発見した依存（同一plan内・plan跨ぎとも）を、consumer planのplan-scoped chainへ接続する。 */
-async function dependencyConnect({
+const dependencyRef = (store, planKey, taskId) => ({
+  project_id: store.project_id, plan_key: planKey, task_id: taskId });
+
+/**
+ * 同一plan内の依存の変更を軽量改訂として適用する(a14)。現行planから作った desired の辺だけを
+ * 足す/外し、共有の applyPlanRevision(公開→履歴note→作業中taskの結び直し)に任せる。
+ * 理由は plan の履歴noteに `dependency <operation> <from>→<to>: <reason>` として残る。
+ */
+async function dependencyRevision({
+  repoRoot, env, store, member, operation, fromTaskId, toTaskId, reason,
+}) {
+  const { applyPlanRevision, desiredFromPlan } = await import('./plan-revise.mjs');
+  const planKey = member.plan.plan_key;
+  const desired = desiredFromPlan(member.plan, { env });
+  const from = dependencyRef(store, planKey, fromTaskId);
+  const to = dependencyRef(store, planKey, toTaskId);
+  desired.hard_dependencies = operation === 'connect'
+    ? [...desired.hard_dependencies, { from, to }]
+    : desired.hard_dependencies.filter((edge) => !(edge.from.task_id === fromTaskId
+      && edge.to.task_id === toTaskId));
+  const applied = await applyPlanRevision({
+    repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
+    notes: [{ task_id: fromTaskId,
+      body: `dependency ${operation} ${fromTaskId}→${toTaskId}: ${reason}` }],
+  });
+  const result = {
+    schema: 'lattice.todo_dependency_revision_result.v1', project_id: store.project_id,
+    plan_key: planKey, operation, from, to, reason, actor: desired.actor,
+    plan_version: applied.plan_version, revision_digest: applied.revision.revision_digest,
+    rebound_task_ids: applied.rebound_task_ids, result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+const samePlanEdge = (member, fromTaskId, toTaskId) => member.plan.hard_dependencies.some((edge) => (
+  edge.from.task_id === fromTaskId && edge.to.task_id === toTaskId));
+
+/**
+ * 開発中に発見した依存を接続する。同一planの辺はplan本体の軽量改訂(a14)、plan跨ぎは
+ * consumer planのplan-scoped chainへ。
+ */
+async function dependencyConnect(options) {
+  const { repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason } = options;
+  if (fromPlanKey !== toPlanKey) return dependencyConnectLedger(options);
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ plan }) => plan.plan_key === fromPlanKey);
+  const tasks = member?.plan.tasks ?? [];
+  // 台帳経路と同じ事前検査(plan不在・task不在・自己辺・既存辺・完了済み終点)の拒否を保つ。
+  if (member === undefined || !tasks.some(({ task_id: id }) => id === fromTaskId)
+    || !tasks.some(({ task_id: id }) => id === toTaskId) || fromTaskId === toTaskId) {
+    return dependencyConnectLedger(options);
+  }
+  const from = dependencyRef(store, fromPlanKey, fromTaskId);
+  const to = dependencyRef(store, toPlanKey, toTaskId);
+  if (samePlanEdge(member, fromTaskId, toTaskId)) {
+    throw new TodoStoreError('DEPENDENCY_EXISTS', 'dependency_already_in_plan', undefined, { from, to });
+  }
+  // 以前の同一plan接続で台帳に生きている辺を、本体へ二重に足さない（台帳経路と同じ拒否）。
+  if (projectTodoCrossPlanDependencies(store.members).some((dependency) => (
+    dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
+    && dependency.to.plan_key === toPlanKey && dependency.to.task_id === toTaskId))) {
+    throw new TodoStoreError('DEPENDENCY_EXISTS', 'cross_plan_dependency_duplicate', undefined, { from, to });
+  }
+  if (member.tasks.find(({ task_id: id }) => id === toTaskId)?.status === 'done') {
+    throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_target_terminal');
+  }
+  return dependencyRevision({
+    repoRoot, env, store, member, operation: 'connect', fromTaskId, toTaskId, reason });
+}
+
+/** 台帳(cross_plan_dependency event)への接続。plan跨ぎの本線。 */
+async function dependencyConnectLedger({
   repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason,
 }) {
   const store = await readTodoStore({ repoRoot });
@@ -1290,9 +1361,23 @@ async function dependencyConnect({
   return result;
 }
 
-// connectの対。誤って張った線の除去（tombstone）。端点で一意に生きた接続を特定し、
+// connectの対。同一planでplan本体が持つ辺は軽量改訂で外し(a14)、それ以外は台帳の除去へ。
+async function dependencyDisconnect(options) {
+  const { repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason } = options;
+  if (fromPlanKey === toPlanKey) {
+    const store = await readTodoStore({ repoRoot });
+    const member = store.members.find(({ plan }) => plan.plan_key === fromPlanKey);
+    if (member !== undefined && samePlanEdge(member, fromTaskId, toTaskId)) {
+      return dependencyRevision({
+        repoRoot, env, store, member, operation: 'disconnect', fromTaskId, toTaskId, reason });
+    }
+  }
+  return dependencyDisconnectLedger(options);
+}
+
+// 誤って張った線の除去（tombstone）。端点で一意に生きた接続を特定し、
 // その接続eventが積まれているplanのplan-scoped chainへ除去eventを積む。
-async function dependencyDisconnect({
+async function dependencyDisconnectLedger({
   repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason,
 }) {
   const store = await readTodoStore({ repoRoot });
@@ -1304,6 +1389,7 @@ async function dependencyDisconnect({
     throw new TodoStoreError('DEPENDENCY_INVALID', 'cross_plan_dependency_not_found', undefined, {
       from: { plan_key: fromPlanKey, task_id: fromTaskId },
       to: { plan_key: toPlanKey, task_id: toTaskId },
+      ...(fromPlanKey === toPlanKey ? { next_action: `lattice plan show ${fromPlanKey} --json` } : {}),
     });
   }
   const [target] = live;
