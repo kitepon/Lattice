@@ -871,10 +871,14 @@ function snapshotFor(plan, events, tasks) {
   return snapshot;
 }
 
-function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPlanDependencies(members), options = {}) {
-  // Only disconnect and the locked identity-preserving repair tolerate stale digests.
-  // Missing endpoints and bindings remain invalid on both repair paths.
-  const tolerateStale = options.tolerateStaleBindings === true;
+/**
+ * Validates the merged graph and returns cross-plan findings (u03 A24/A25b/N6): a reference into
+ * another plan never refuses for a stale digest or a removed endpoint; a removed endpoint's edge
+ * is left out of the graph. Same-plan shape and merged cycles still refuse.
+ */
+function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPlanDependencies(members),
+  { newPlanKey = null } = {}) {
+  const findings = [];
   const tasks = new Map();
   for (const member of members) for (const task of member.plan.tasks) {
     tasks.set(`${member.plan.project_id}\0${member.plan.plan_key}\0${task.task_id}`, member.plan.topology_digest);
@@ -889,38 +893,43 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
       adjacency.set(key, []);
     }
   }
-  const bind = (ref, ownerPlan) => {
-    const key = `${ref.project_id}\0${ref.plan_key}\0${ref.task_id}`;
-    const topology = tasks.get(key);
-    if (topology === undefined) fail('STORE_INCONSISTENT', 'dangling_dependency');
-    if ((ref.project_id !== ownerPlan.project_id || ref.plan_key !== ownerPlan.plan_key)
-      && ref.expected_topology_digest === undefined) fail('STORE_INCONSISTENT', 'cross_plan_binding_missing');
-    if (!tolerateStale && ref.expected_topology_digest !== undefined && topology !== ref.expected_topology_digest) {
-      fail('STORE_INCONSISTENT', 'binding_stale');
+  // Returns the node key, or null when a foreign endpoint is gone (the edge is then skipped).
+  const bindIn = (nodes, key, ref, ownerPlan, eventDigest, side, danglingReason) => {
+    const foreign = ref.project_id !== ownerPlan.project_id || ref.plan_key !== ownerPlan.plan_key;
+    const topology = nodes.get(key);
+    const finding = (reason) => findings.push({ owner_plan_key: ownerPlan.plan_key,
+      event_digest: eventDigest, side, ref: structuredClone(ref), reason });
+    // A plan being created is new input: it must name existing endpoints at their current topology.
+    const strict = !foreign || ownerPlan.plan_key === newPlanKey;
+    if (topology === undefined) {
+      if (strict) fail('STORE_INCONSISTENT', danglingReason);
+      finding('endpoint_missing');
+      return null;
+    }
+    if (foreign && ref.expected_topology_digest === undefined) fail('STORE_INCONSISTENT', 'cross_plan_binding_missing');
+    if (ref.expected_topology_digest !== undefined && topology !== ref.expected_topology_digest) {
+      if (foreign && ownerPlan.plan_key === newPlanKey) fail('STORE_INCONSISTENT', 'binding_stale');
+      finding('binding_stale');
     }
     return key;
   };
-  const bindPhase = (ref, ownerPlan) => {
-    const key = `phase\0${ref.project_id}\0${ref.plan_key}\0${ref.phase_id}`;
-    const topology = phases.get(key);
-    if (topology === undefined) fail('STORE_INCONSISTENT', 'dangling_phase_dependency');
-    if ((ref.project_id !== ownerPlan.project_id || ref.plan_key !== ownerPlan.plan_key)
-      && ref.expected_topology_digest === undefined) fail('STORE_INCONSISTENT', 'cross_plan_binding_missing');
-    if (!tolerateStale && ref.expected_topology_digest !== undefined && topology !== ref.expected_topology_digest) {
-      fail('STORE_INCONSISTENT', 'binding_stale');
-    }
-    return key;
-  };
+  const bind = (ref, ownerPlan, eventDigest = null, side = null) => bindIn(tasks,
+    `${ref.project_id}\0${ref.plan_key}\0${ref.task_id}`, ref, ownerPlan, eventDigest, side, 'dangling_dependency');
+  const bindPhase = (ref, ownerPlan) => bindIn(phases,
+    `phase\0${ref.project_id}\0${ref.plan_key}\0${ref.phase_id}`, ref, ownerPlan, null, 'from',
+    'dangling_phase_dependency');
   for (const { plan } of members) {
     for (const edge of plan.hard_dependencies) {
-      const from = bind(edge.from, plan); const to = bind(edge.to, plan);
+      const from = bind(edge.from, plan, null, 'from'); const to = bind(edge.to, plan, null, 'to');
+      if (from === null || to === null) continue;
       if (from === to) fail('STORE_INCONSISTENT', 'self_edge');
       adjacency.get(from).push(to);
     }
     for (const join of plan.joins) {
-      const before = bind(join.before, plan);
+      const before = bind(join.before, plan, null, 'to');
       for (const afterRef of join.after) {
-        const after = bind(afterRef, plan);
+        const after = bind(afterRef, plan, null, 'from');
+        if (before === null || after === null) continue;
         if (after === before) fail('STORE_INCONSISTENT', 'join_self_edge');
         adjacency.get(after).push(before);
       }
@@ -938,7 +947,8 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
         }
       }
       for (const edge of plan.phase_accept_dependencies) {
-        adjacency.get(bindPhase(edge.from, plan)).push(bind(edge.to, plan));
+        const from = bindPhase(edge.from, plan); const to = bind(edge.to, plan, null, 'to');
+        if (from !== null && to !== null) adjacency.get(from).push(to);
       }
     }
   }
@@ -946,8 +956,10 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
     const owner = members.find(({ plan }) => plan.project_id === dependency.to.project_id
       && plan.plan_key === dependency.to.plan_key);
     if (owner === undefined) fail('STORE_INCONSISTENT', 'cross_plan_dependency_owner_missing');
-    const from = bind(dependency.from, owner.plan);
-    const to = bind(dependency.to, owner.plan);
+    const digest = dependency.event_digest ?? null;
+    const from = bind(dependency.from, owner.plan, digest, 'from');
+    const to = bind(dependency.to, owner.plan, digest, 'to');
+    if (from === null || to === null) continue;
     if (from === to) fail('STORE_INCONSISTENT', 'self_edge');
     adjacency.get(from).push(to);
   }
@@ -958,6 +970,11 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
     colors.set(node, 1); for (const next of adjacency.get(node)) visit(next); colors.set(node, 2);
   };
   for (const node of adjacency.keys()) visit(node);
+  // A join binds `before` once per member: keep one finding per identity, in code-unit order.
+  const order = (finding) => JSON.stringify([finding.owner_plan_key, finding.event_digest ?? '',
+    finding.side, finding.ref.plan_key, finding.ref.task_id ?? finding.ref.phase_id, finding.reason]);
+  return [...new Map(findings.map((finding) => [canonicalizeTodoArtifact(finding), finding])).values()]
+    .sort((left, right) => (order(left) < order(right) ? -1 : order(left) > order(right) ? 1 : 0));
 }
 
 function crossPlanDependencyTask(store, ref) {
@@ -1394,6 +1411,9 @@ async function readTodoStoreLocked(options = {}) {
   await recoverCrossPlanImports(repoRoot);
   const recovery = { manifestDirty: false };
   const store = await readTodoStoreView({ ...options, recovery });
+  if (options.assertHeld) {
+    store.cross_plan_repairs = await repairCrossPlanBindings(repoRoot, store, options.repairContext);
+  }
   // Every member and merged graph has validated before any derived publication.
   for (const member of store.members) {
     if (!member.snapshot_stale) continue;
@@ -1546,13 +1566,98 @@ async function readTodoStoreView(options = {}) {
       snapshot: snapshotStale ? expectedSnapshot : snapshot,
       tasks, phases, coordination, snapshot_stale: snapshotStale });
   }
-  validateMergedGraph(loaded, projectTodoCrossPlanDependencies(loaded), {
-    tolerateStaleBindings: options.tolerateStaleBindings === true,
-  });
+  const crossPlanFindings = validateMergedGraph(loaded, projectTodoCrossPlanDependencies(loaded));
   return {
     schema: 'lattice.todo_store_read.v1', project_id: manifest.project_id, manifest,
     members: loaded, snapshot_stale: loaded.some((member) => member.snapshot_stale),
+    cross_plan_findings: crossPlanFindings,
   };
+}
+
+async function predecessorPlanOf(repoRoot, member) {
+  const base = `${STORE_ROOT_REF}/plans/${member.plan.plan_key}`;
+  let versions;
+  try { versions = await readdir(path.resolve(repoRoot, base)); } catch { return null; }
+  for (const version of versions) {
+    if (version === member.plan.plan_version || !isTodoIdentifier(version)) continue;
+    const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
+      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
+    }).catch(() => null);
+    if (plan?.plan_digest === member.plan.predecessor_plan_digest) return plan;
+  }
+  return null;
+}
+
+/**
+ * u03 A24/A25b: a live connection bound to the immediate predecessor of its source plan follows
+ * that revision's task_migration: carried → tombstone + replacement, removed → tombstone. Publishes
+ * each owner chain once and updates the in-memory store; anything else stays a finding.
+ */
+async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, recordedAt }) {
+  const stale = (store.cross_plan_findings ?? []).filter(({ event_digest: digest, side }) => (
+    digest !== null && side === 'from'));
+  if (stale.length === 0) return [];
+  const live = new Map(projectTodoCrossPlanDependencies(store.members)
+    .map((dependency) => [dependency.event_digest, dependency]));
+  const predecessors = new Map();
+  const staged = new Map();
+  const repairs = [];
+  for (const finding of stale) {
+    const dependency = live.get(finding.event_digest);
+    const source = store.members.find(({ plan }) => plan.project_id === finding.ref.project_id
+      && plan.plan_key === finding.ref.plan_key);
+    const owner = store.members.find(({ plan_scoped: chain }) => (chain?.events ?? [])
+      .some(({ event_digest: digest }) => digest === finding.event_digest));
+    if (!dependency || !source || !owner) continue;
+    if (!predecessors.has(source)) predecessors.set(source, await predecessorPlanOf(repoRoot, source));
+    const predecessor = predecessors.get(source);
+    if (predecessor?.topology_digest !== dependency.from.expected_topology_digest) continue;
+    const migration = (source.journal.events[0].payload.task_migration ?? [])
+      .find(({ from_task_id: from }) => from === dependency.from.task_id);
+    if (migration === undefined) continue;
+    if (!staged.has(owner)) {
+      staged.set(owner, { ...owner, plan_scoped: { ...owner.plan_scoped,
+        events: [...owner.plan_scoped.events], activeBytes: owner.plan_scoped.activeBytes } });
+    }
+    const target = staged.get(owner);
+    const inputs = [{ kind: 'cross_plan_dependency_removed', payload: {
+      target_event_digest: dependency.event_digest,
+      reason: `source ${source.plan.plan_key} ${source.plan.plan_version} ${migration.to_task_id === 'removed'
+        ? 'removed the task' : 'carried the task'}`,
+    } }];
+    if (migration.to_task_id !== 'removed') inputs.push({ kind: 'cross_plan_dependency', payload: {
+      from: { ...dependency.from, task_id: migration.to_task_id,
+        expected_topology_digest: source.plan.topology_digest },
+      to: dependency.to, reason: dependency.reason,
+    } });
+    for (const input of inputs) {
+      const event = buildPlanScopedEvent(target, { ...input, actor, recorded_at: recordedAt });
+      target.plan_scoped.activeBytes = Buffer.concat([target.plan_scoped.activeBytes,
+        planScopedEventBytes(target, event)]);
+      target.plan_scoped.events.push(event);
+    }
+    repairs.push({ owner_plan_key: owner.plan.plan_key, original_event_digest: dependency.event_digest,
+      replacement_event_digest: migration.to_task_id === 'removed' ? null : target.plan_scoped.events.at(-1).event_digest,
+      action: migration.to_task_id === 'removed' ? 'tombstoned' : 'rebound' });
+  }
+  if (repairs.length === 0) return [];
+  const prospective = store.members.map((member) => staged.get(member) ?? member);
+  const keys = projectTodoCrossPlanDependencies(prospective)
+    .map(({ from, to }) => `${mergedTaskKey(from)}\0${mergedTaskKey(to)}`);
+  let findings;
+  // A repair that would duplicate or close a cycle stays a finding instead of blocking the write.
+  try {
+    if (new Set(keys).size !== keys.length) return [];
+    findings = validateMergedGraph(prospective);
+  } catch (error) { if (error instanceof TodoStoreError) return []; throw error; }
+  await assertHeld();
+  for (const [owner, target] of staged) {
+    await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), target.plan_scoped.activeBytes);
+    owner.plan_scoped = target.plan_scoped;
+    owner.coordination = projectTodoCoordination(target.plan_scoped.events);
+  }
+  store.cross_plan_findings = findings;
+  return repairs;
 }
 
 export async function readTodoStoreStable(options = {}) {
@@ -1897,9 +2002,21 @@ async function atomicWriteMode(absolute, bytes, mode) {
 
 
 async function withLock(repoRoot, callback, {
-  onProtocolStage = null, lockCapability = null, initialize = false,
+  onProtocolStage = null, lockCapability = null, initialize = false, repairAfter = null,
 } = {}) {
   if (lockCapability === STORE_LOCK_HELD) return callback(async () => {});
+  // u03 A24/A25b: a successor writer rebinds or tombstones the connections it left stale.
+  const run = repairAfter === null ? callback : async (assertHeld) => {
+    const result = await callback(assertHeld);
+    // The successor is already published: a failed repair leaves findings for the next locked write.
+    try {
+      await repairCrossPlanBindings(repoRoot, await readTodoStoreView({ repoRoot }),
+        { assertHeld, actor: repairAfter.actor, recordedAt: repairAfter.recordedAt ?? new Date().toISOString() });
+    } catch (error) {
+      if (!(error instanceof TodoStoreError || error instanceof StoreLockError)) throw error;
+    }
+    return result;
+  };
   try {
     if (!initialize) {
       const root = await lstat(path.join(repoRoot, STORE_ROOT_REF)).catch((error) => {
@@ -1921,7 +2038,7 @@ async function withLock(repoRoot, callback, {
       recoveryClaimsPath: path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF),
       onRecoveryClaim: typeof onProtocolStage === 'function'
         ? () => onProtocolStage('cross_plan_lock_recovery_mutex_acquired') : null,
-    }, callback);
+    }, run);
   } catch (error) {
     if (error instanceof StoreLockError) fail('STORE_WRITE_CONFLICT', error.reason, error.detail);
     throw error;
@@ -2076,11 +2193,9 @@ export async function appendTodoEvent(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async (assertHeld) => {
     const store = await readTodoStoreLocked({
-      repoRoot, forWrite: true, now: options.now,
-      // 修理扉は除去event（tombstone）の書込みだけに開く。それ以外の書込みは従来どおり
-      // binding_stale で fail closed する（validateMergedGraph の注記を参照）
-      tolerateStaleBindings: options.tolerateStaleBindings === true
-        && options.event.kind === 'cross_plan_dependency_removed',
+      repoRoot, forWrite: true, now: options.now, assertHeld,
+      repairContext: { assertHeld, actor: options.event.actor,
+        recordedAt: options.event.recorded_at ?? new Date().toISOString() },
     });
     const member = store.members.find(({ descriptor }) => descriptor.plan_key === options.planKey);
     if (!member) fail('STORE_INCONSISTENT', 'plan_not_active');
@@ -2254,8 +2369,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   return withLock(repoRoot, async () => {
     // The repair read must not publish derived state before the complete strict graph check.
-    const store = await readTodoStoreView({ repoRoot, now: options.now,
-      tolerateStaleBindings: true });
+    const store = await readTodoStoreView({ repoRoot, now: options.now });
     const owner = store.members.find(({ plan }) => plan.plan_key === options.planKey);
     const source = store.members.find(({ plan }) => plan.plan_key === options.sourcePlanKey);
     if (store.manifest.manifest_digest !== options.expectedManifestDigest
@@ -2499,7 +2613,7 @@ function prepareImportedArtifacts(repoRoot, options, projectId, memberPlans) {
   const tasks = replay(plan, events, {
     now: options.now ? new Date(options.now) : new Date(), verifyImportSource,
   });
-  validateMergedGraph([...memberPlans, { plan }]);
+  validateMergedGraph([...memberPlans, { plan }], undefined, { newPlanKey: plan.plan_key });
   return { plan, genesis, events, tasks, snapshot: snapshotFor(plan, events, tasks) };
 }
 
@@ -2938,7 +3052,7 @@ function prepareAuthoredArtifacts(repoRoot, options, store) {
   const genesis = buildPlanGenesis(plan, options.genesis);
   const events = [genesis];
   const tasks = replay(plan, events);
-  validateMergedGraph([...store.members, { plan }]);
+  validateMergedGraph([...store.members, { plan }], undefined, { newPlanKey: plan.plan_key });
   return { plan, genesis, events, tasks, snapshot: snapshotFor(plan, events, tasks) };
 }
 
@@ -3318,7 +3432,7 @@ export async function initializeAuthoredTodoStore(options = {}) {
   verifyPlanNarrativeAnchors(repoRoot, plan);
   const genesis = buildPlanGenesis(plan, options.genesis);
   const tasks = replay(plan, [genesis]);
-  validateMergedGraph([{ plan }]);
+  validateMergedGraph([{ plan }], undefined, { newPlanKey: plan.plan_key });
   const snapshot = snapshotFor(plan, [genesis], tasks);
   const base = `plans/${plan.plan_key}/${plan.plan_version}`;
   const planRef = `${STORE_ROOT_REF}/${base}/plan.json`;
@@ -4904,7 +5018,8 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     await fsyncDirectory(path.dirname(barrierAbsolute));
     await rm(transaction, { recursive: true, force: true });
     return commitReceipt;
-  }, { lockCapability: options[STORE_LOCK_HELD] });
+  }, { lockCapability: options[STORE_LOCK_HELD],
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
 }
 
 /** Native successor transaction for first-class Phase plans; no Markdown source inventory is involved. */
@@ -5014,7 +5129,8 @@ export async function applyPhaseTodoRevision(options = {}) {
     await protocolStage(options, 'phase_revision_manifest_activated');
     await rm(transaction, { recursive: true, force: true });
     return phaseRevisionResult(revision, genesis, false);
-  }, { lockCapability: options[STORE_LOCK_HELD] });
+  }, { lockCapability: options[STORE_LOCK_HELD],
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
 }
 
 /** G5 revision transaction: exact successor, state migration, and manifest-CAS activation. */
@@ -5202,7 +5318,8 @@ export async function applyTodoRevision(options = {}) {
     }
     await rm(transaction, { recursive: true, force: true });
     return revisionResult(revision, genesis, { recovered: recovering });
-  }, { lockCapability: options[STORE_LOCK_HELD] });
+  }, { lockCapability: options[STORE_LOCK_HELD],
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
 }
 
 function revisionSetResult(projectId, revisionSetDigest, entries, { recovered }) {
@@ -5509,7 +5626,8 @@ export async function applyTodoRevisionSet(options = {}) {
     }
     await rm(transaction, { recursive: true, force: true });
     return revisionSetResult(projectId, revisionSetDigest, prepared, { recovered: recovering });
-  }, { lockCapability: options[STORE_LOCK_HELD] });
+  }, { lockCapability: options[STORE_LOCK_HELD],
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
 }
 
 /** G5 revise primitive: topology changes only by publishing a successor version. */
@@ -5583,7 +5701,7 @@ export async function createSuccessorTodoPlan(options = {}) {
     store.manifest.manifest_digest = todoSelfDigest(store.manifest, 'manifest_digest');
     await atomicWrite(path.resolve(repoRoot, MANIFEST_REF), canonicalLine(store.manifest));
     return { plan, genesis, snapshot };
-  });
+  }, { repairAfter: { actor: options.genesis.actor, recordedAt: options.genesis.recorded_at } });
 }
 
 const INDEPENDENCE_ARTIFACT_NAME = 'independence.json';

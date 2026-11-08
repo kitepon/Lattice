@@ -21,6 +21,7 @@ import { projectTodoChainV1 } from '../src/todo-chain.mjs';
 import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { phaseTodoRevisionPlanVersion } from '../src/todo-revision.mjs';
 import { projectTodoStatus } from '../src/todo-status.mjs';
+import { projectTodoCrossPlanDependencies } from '../src/todo-store-view.mjs';
 import { withStoreLock } from '../src/store-lock.mjs';
 
 const NOW = '2026-07-18T00:00:00.000Z';
@@ -419,7 +420,7 @@ test('phase_todo_revision.v2はv4 planを分離型v5へ原子的に昇格する'
   assert.equal(revised.journal.events[0].schema, 'lattice.todo_event.v4');
 });
 
-test('phase revisionは変更したproducerへのunchanged consumer接続がstaleならpublish前に拒否する', async (context) => {
+test('phase revisionは変更したproducerへのconsumer接続を公開後にrebindしfindingを残さない', async (context) => {
   const { root } = await phaseRevisionFixture(context, { consumer: true });
   let store = await readTodoStore({ repoRoot: root, now: NOW });
   const producer = store.members.find(({ plan }) => plan.plan_key === 'main');
@@ -454,18 +455,72 @@ test('phase revisionは変更したproducerへのunchanged consumer接続がstal
     phase_migration: phaseMigration, revision_digest: '' };
   revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
 
-  const manifestBefore = await bytes(root, manifestRef);
-  const consumerChainBefore = await bytes(root, consumer.plan_scoped.ref);
-  const successorBase = path.join(root, '.lattice/todo/plans/main', desiredPlan.plan_version);
-  const marker = path.join(root, '.lattice/todo/transactions/phase-revisions/main',
-    desiredPlan.plan_version, 'marker.json');
-  await expectCode(applyPhaseTodoRevision({ repoRoot: root,
+  const result = await applyPhaseTodoRevision({ repoRoot: root,
     writer: createTodoStoreWriter({ caller: 'g5-authoring' }), revision, actor: ACTOR,
-    recordedAt: NOW, now: NOW }), 'STORE_INCONSISTENT', 'binding_stale');
-  assert.deepEqual(await bytes(root, manifestRef), manifestBefore);
-  assert.deepEqual(await bytes(root, consumer.plan_scoped.ref), consumerChainBefore);
-  await assert.rejects(lstat(successorBase), { code: 'ENOENT' });
-  await assert.rejects(lstat(marker), { code: 'ENOENT' });
+    recordedAt: NOW, now: NOW });
+  assert.equal(result.recovered, false);
+  store = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings, []);
+  const live = projectTodoCrossPlanDependencies(store.members);
+  assert.equal(live.length, 1);
+  assert.equal(live[0].from.task_id, 'T1');
+  assert.equal(live[0].from.expected_topology_digest, desiredPlan.topology_digest);
+  assert.equal(live[0].reason, 'producer topology binding');
+  const events = store.members.find(({ plan }) => plan.plan_key === 'consumer').plan_scoped.events;
+  assert.deepEqual(events.map(({ kind }) => kind),
+    ['cross_plan_dependency', 'cross_plan_dependency_removed', 'cross_plan_dependency']);
+  assert.notEqual(consumer.plan_scoped.events.length, events.length);
+});
+
+test('phase revisionがconsumer接続のsource taskを除去するとtombstoneされfindingを残さない', async (context) => {
+  const root = await bareWorkspace(context);
+  const phase = { phase_id: 'phase-1', title: 'Phase 1', gate_policy: 'heavy',
+    predecessor_phase_ids: [], required_evidence_slots: ['heavy'] };
+  const plans = [
+    { plan: buildTodoPlan({ schema: 'lattice.todo_plan.v4', project_id: 'project-1',
+      plan_key: 'main', plan_version: 'v1', predecessor_plan_digest: null,
+      tasks: [taskV4('T1', 'phase-1'), taskV4('T2', 'phase-1')], phases: [phase],
+      hard_dependencies: [], joins: [] }), genesis: { actor: ACTOR, recorded_at: NOW } },
+    { plan: buildTodoPlan({ schema: 'lattice.todo_plan.v1', project_id: 'project-1',
+      plan_key: 'consumer', plan_version: 'v1', predecessor_plan_digest: null,
+      tasks: [task('C1')], hard_dependencies: [], joins: [] }), genesis: { actor: ACTOR, recorded_at: NOW } },
+  ];
+  await initializeTodoStore({ repoRoot: root, writer: createTodoStoreWriter({ caller: 'g4-migration' }),
+    projectId: 'project-1', repositories: [{ repo_id: 'self', path: '.' }], plans, now: NOW });
+  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  let store = await readTodoStore({ repoRoot: root, now: NOW });
+  const producer = store.members.find(({ plan }) => plan.plan_key === 'main');
+  const consumer = store.members.find(({ plan }) => plan.plan_key === 'consumer');
+  await appendTodoEvent({ repoRoot: root, writer, planKey: 'consumer', now: NOW,
+    event: { kind: 'cross_plan_dependency', actor: ACTOR, recorded_at: NOW, payload: {
+      from: ref('T1', 'main', 'project-1', producer.plan.topology_digest),
+      to: ref('C1', 'consumer', 'project-1', consumer.plan.topology_digest),
+      reason: 'producer topology binding',
+    } } });
+  const predecessor = { plan_digest: producer.plan.plan_digest,
+    journal_head_digest: producer.journal.events.at(-1).event_digest, plan_version: producer.plan.plan_version };
+  const taskMigration = [
+    { from_task_id: 'T1', to_task_id: 'removed', state_policy: 'removed' },
+    { from_task_id: 'T2', to_task_id: 'T2', state_policy: 'reset_pending' }];
+  const phaseMigration = [{ from_phase_id: 'phase-1', to_phase_id: 'phase-1', state_policy: 'reset' }];
+  const desiredInput = structuredClone(producer.plan);
+  delete desiredInput.topology_digest; delete desiredInput.plan_digest;
+  desiredInput.schema = 'lattice.todo_plan.v5';
+  desiredInput.phase_accept_dependencies = [];
+  desiredInput.tasks = desiredInput.tasks.filter(({ task_id: id }) => id === 'T2');
+  desiredInput.predecessor_plan_digest = predecessor.plan_digest;
+  desiredInput.plan_version = phaseTodoRevisionPlanVersion({ projectId: 'project-1', planKey: 'main',
+    predecessor, desiredPlan: desiredInput, taskMigration, phaseMigration });
+  const revision = { schema: 'lattice.phase_todo_revision.v2', project_id: 'project-1',
+    plan_key: 'main', predecessor, desired_plan: buildTodoPlan(desiredInput), task_migration: taskMigration,
+    phase_migration: phaseMigration, revision_digest: '' };
+  revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
+  await applyPhaseTodoRevision({ repoRoot: root, writer, revision, actor: ACTOR, recordedAt: NOW, now: NOW });
+  store = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings, []);
+  assert.deepEqual(projectTodoCrossPlanDependencies(store.members), []);
+  assert.deepEqual(store.members.find(({ plan }) => plan.plan_key === 'consumer').plan_scoped.events
+    .map(({ kind }) => kind), ['cross_plan_dependency', 'cross_plan_dependency_removed']);
 });
 
 for (const stage of [
@@ -769,7 +824,7 @@ for (const [name, refValue] of [['manifest', manifestRef], ['plan', planRef]]) {
   });
 }
 
-test('cross-plan expected_topology_digest違反はdetail.reason=binding_stale', async (context) => {
+test('cross-plan expected_topology_digest違反は読めてbinding_stale findingになる', async (context) => {
   const planB = buildTodoPlan({ schema: 'lattice.todo_plan.v1', project_id: 'project-1', plan_key: 'b', plan_version: 'v1',
     predecessor_plan_digest: null, tasks: [task('B1')], hard_dependencies: [], joins: [] });
   const planA = { schema: 'lattice.todo_plan.v1', project_id: 'project-1', plan_key: 'a', plan_version: 'v1',
@@ -777,8 +832,10 @@ test('cross-plan expected_topology_digest違反はdetail.reason=binding_stale', 
       from: ref('B1', 'b', 'project-1', 'f'.repeat(64)), to: ref('A1', 'a'),
     }], joins: [] };
   const plans = [planA, planB].map((plan) => ({ plan, genesis: { actor: ACTOR, recorded_at: NOW } }));
-  await assert.rejects(workspace(context, { plans }), (error) => error instanceof TodoStoreError
-    && error.code === 'STORE_INCONSISTENT' && error.detail.reason === 'binding_stale');
+  const root = await workspace(context, { plans });
+  const { cross_plan_findings: findings } = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(findings.map(({ owner_plan_key: owner, event_digest: event, side, reason }) => (
+    [owner, event, side, reason])), [['a', null, 'from', 'binding_stale']]);
 });
 
 test('snapshot rebuildはcurrentでも同一canonical bytesを返す', async (context) => {

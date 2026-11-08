@@ -58,19 +58,16 @@ the complete prospective merged graph, including projected live plan-scoped
 connections, before publishing a marker, source change, successor artifact or
 manifest. Replaced members have the successor's initially empty plan-scoped
 chain; their predecessor chains remain immutable history. Untouched members keep
-their live connections. A stale incoming binding refuses before publication; the operation has no in-transaction automatic rebind.
-
-shortcut: a plan that is the source of a live connection owned by another plan
-cannot take a topology-changing revision while preserving a done-target
-connection; upgrade when the coordinator accepts explicit carried-source rebind
-inside the revision transaction. ADR0190 disconnect/reconnect cannot preserve
-that case. This recovery API repairs already-published stale bindings only.
+their live connections. Since u03 (A24/A25b/N6) a stale or removed cross-plan
+endpoint never refuses a read or a successor writer; see "Cross-plan binding
+findings and automatic repair" below. The recovery API below stays for bindings
+stale across more than one source revision.
 
 | Step / owner | Input and decision | Publication / failure and exit |
 |---|---|---|
 | Plan carry decision | Mandatory `validateBindingCarry({store,source,dependencies,predecessor})` callback supplies explicit same-task carry proof from the recorded source topology to the active successor; Store reads and validates the retained predecessor plan.json named by the active source revision under the same lock, checks its project/plan/version/digest binding, and supplies active `source` member plus separate `predecessor:{plan_version,plan_digest,topology_digest}`. Pure, read-only inputs; returns `{ok:true}` or `{ok:false,code,detail:{reason,...}}` | Store owns no continuity policy; correct refused proof/input before retry. This never admits a new dependency into a completed target. |
 | Store `rebindTodoCrossPlanDependencies` public recovery | g5 writer; owner `planKey`, `sourcePlanKey`, exact nonempty unique `eventDigests`, `expectedManifestDigest`, `expectedPlanScopedHeadDigest`, actor/time/reason and supplied Plan callback. Under shared lock, privately tolerate only digest-stale bindings while reading; all identity/hash/missing/dangling checks remain. Snapshot freshness and evidence availability do not gate this topology-only repair; no derived publication occurs. Manifest CAS pins the exact source topology. Require both CAS values and authenticate every selected live original connection on the same owner chain, with a stale source binding and unchanged project/plan/task endpoints. | CAS or original identity mismatch returns a typed conflict with no publication. Obtain current authenticated bindings and explicit intent before retry. No ordinary writer gains stale tolerance. |
-| Store staged repair | Keep original events; stage a tombstone for each original plus an existing-schema replacement connection. Change only its source expected_topology_digest to the manifest-bound source topology; retain endpoints/direction and original connection reason. Invoke Plan carry callback, then reject duplicate projected (from,to) identities in Store and strictly validate the complete resulting merged graph. | Any missing carry proof, unselected stale binding, cycle or malformed event refuses before any chain write. Correct selected proof/bindings; bytes stay unchanged. |
+| Store staged repair | Keep original events; stage a tombstone for each original plus an existing-schema replacement connection. Change only its source expected_topology_digest to the manifest-bound source topology; retain endpoints/direction and original connection reason. Invoke Plan carry callback, then reject duplicate projected (from,to) identities in Store and strictly validate the complete resulting merged graph. | Any missing carry proof, cycle or malformed event refuses before any chain write; an unselected stale binding stays a finding (u03). Correct selected proof/bindings; bytes stay unchanged. |
 | Store single-chain publication | Atomically publish all staged pairs to that one owner plan-scoped journal under lock; return original/replacement event identities and the new chain head. | `stale → locked/CAS → validated in memory → atomic published → clean`. A crash before rename leaves original chain; after rename leaves the complete repair, recoverable through existing dead-owner cleanup. No intermediate disconnect-only state, transaction marker, lifecycle/snapshot/manifest/version write, or historical rewrite. The executor records result.source_topology_digest against the authorized digest. Ordinary strict read confirms closure and existing locked reopen then republishes stale derived snapshots. A repeated successful request conflicts with dependency_rebind_binding_changed because the owner head advanced; confirm by strict read, never automatic retry. |
 
 The bounded shared recovery preserves the already committed successor and both
@@ -110,3 +107,19 @@ phase with changed membership accepted, v4 still refused; carry policy unchanged
 legacy from in-progress still refused, in-progress retire closes the binding; retire from done keeps a pending successor
 ready and lets an in-progress successor record done; retire from pending still
 blocks its successor.
+
+## Cross-plan binding findings and automatic repair (u03 A24/A25b/N6, Ludmila 2026-11-08)
+
+Protection kept: intra-plan graph shape (dangling, self edges, joins) and the
+merged cycle check still refuse; they guard the order the authors wrote.
+Removed refusals: `binding_stale` (read and every successor writer) and
+`dangling_dependency` for a cross-plan reference whose task is gone.
+
+| Step / owner | Input and decision | Output / exit |
+|---|---|---|
+| Store `validateMergedGraph` (every read, connect, successor writer) | Each cross-plan reference (authored `hard_dependencies`/`joins`/`phase_accept_dependencies` naming another plan, and live plan-scoped connections) is bound against the active members. Topology digest differs → finding `binding_stale`, edge kept. Task/phase absent → finding `endpoint_missing`, edge left out of the graph. Same-plan references keep the old refusals, and so does a plan being created (authored/initial/imported): its own foreign references must name existing endpoints at their current topology (`dangling_dependency` / `binding_stale`; the author corrects the input). | Returns findings; `readTodoStore` exposes them as top-level `cross_plan_findings` `[{owner_plan_key, event_digest (null for authored), side: 'from'|'to', ref, reason: 'binding_stale'|'endpoint_missing'}]`; `ref` is a copy of the recorded reference: task `{project_id, plan_key, task_id[, expected_topology_digest]}` or phase `{project_id, plan_key, phase_id[, expected_topology_digest]}` (phase refs are always side 'from'). One entry per identity, sorted by code units over (owner_plan_key, event_digest or '', side, ref.plan_key, ref.task_id or ref.phase_id, reason). Store replay checks only same-plan predecessors, which always exist, so it needs no endpoint rule; cross-plan prerequisites are Plan's readiness. No option toggles this (the old `tolerateStaleBindings` is gone). |
+| Store `repairCrossPlanBindings` (start of every locked write via `readTodoStoreLocked`, and at the end of each successor writer under the same lock) | For a live plan-scoped connection whose `from` plan P is active and whose recorded digest equals the topology of P's immediate predecessor (plan.json found by P's `predecessor_plan_digest`), map `from.task_id` through P's genesis `task_migration`. | Mapped → stage `cross_plan_dependency_removed` + replacement `cross_plan_dependency` (from task_id = mapped id, digest = P's topology; to/reason unchanged). `removed` → stage the tombstone only. Each owner chain is published once after `assertHeld`. Anything else stays a finding. Crash before publication leaves the findings, and the next locked write repairs them (self-exit). |
+| Plan (Alice) | `cross_plan_findings`; a predecessor whose endpoint is gone | Readiness counts a cross-plan predecessor that no longer exists as no prerequisite; status shows the findings. |
+
+Older stale bindings (more than one source revision behind) stay findings and are
+repaired by the explicit `rebindTodoCrossPlanDependencies` recovery.
