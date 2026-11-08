@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { StoreLockError, withStoreLock } from '../src/store-lock.mjs';
+import { observeStartIdentityRaw } from '../src/runtime-os-observation.mjs';
 
 const execFileAsync = promisify(execFile);
 const moduleUrl = new URL('../src/store-lock.mjs', import.meta.url).href;
@@ -74,6 +75,27 @@ test('PID reuse proves original owner death only when the start identity differs
     assert.notEqual(JSON.parse(await readFile(lockPath, 'utf8')).process_start.identity,
       'different-process-start');
   });
+});
+
+test('a PID reused by a process this account cannot open is judged by its real start identity', async (t) => {
+  if (process.platform !== 'win32') return t.skip('Windows handle access denial');
+  const { stdout } = await execFileAsync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    'Get-Process | Where-Object { $_.Id -gt 4 -and $(try { $null -eq $_.StartTime } catch { $true }) } | Select-Object -First 1 -ExpandProperty Id']);
+  const pid = Number(stdout.trim());
+  if (!pid) return t.skip('this account can open every process');
+  // The pre-repair fallback: an occupied PID that denies access looked alive for its whole lifetime.
+  assert.throws(() => process.kill(pid, 0), { code: 'EPERM' });
+  const { lockPath } = await fixture(t);
+  let owner;
+  await withStoreLock({ lockPath }, async () => { owner = JSON.parse(await readFile(lockPath, 'utf8')); });
+  const live = JSON.stringify({ ...owner, pid,
+    process_start: { platform: 'win32', identity: await observeStartIdentityRaw(pid) } });
+  await writeFile(lockPath, live);
+  await assert.rejects(withStoreLock({ lockPath }, () => assert.fail('live owner reclaimed')), busy('store_locked'));
+  assert.equal(await readFile(lockPath, 'utf8'), live);
+  await writeFile(lockPath, JSON.stringify({ ...owner, pid,
+    process_start: { platform: 'win32', identity: 'dead-owner-start' } }));
+  assert.equal(await withStoreLock({ lockPath }, () => 'recovered'), 'recovered');
 });
 
 for (const [name, bytes] of [['empty', ''], ['PID only', '{"pid":99999999}\n']]) {

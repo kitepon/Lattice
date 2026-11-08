@@ -40,7 +40,45 @@ export async function observeStartIdentityRaw(pid) {
     ? ['-NoProfile', '-NonInteractive', '-Command',
       `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks`]
     : ['-o', 'lstart=', '-p', String(pid)];
-  const { stdout } = await execFileAsync(executable, args, { encoding: 'utf8', env: osObservationEnvironment() });
+  try {
+    const { stdout } = await execFileAsync(executable, args, { encoding: 'utf8', env: osObservationEnvironment() });
+    return stdout.trim();
+  } catch (error) {
+    // Another account's process denies its handle; its PID may be a reused dead owner's.
+    if (process.platform === 'win32') return observeStartIdentitySnapshotRaw(pid);
+    throw error;
+  }
+}
+
+// SYSTEM_PROCESS_INFORMATION: CreateTime at 32, UniqueProcessId at 80 (64-bit) / 68 (32-bit).
+const WINDOWS_PROCESS_SNAPSHOT = `
+using System; using System.Runtime.InteropServices;
+public static class LatticeProcessSnapshot {
+  [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int c, IntPtr b, int l, out int r);
+  public static long CreateTime(long pid) {
+    for (int length = 1 << 20; ; length *= 2) {
+      IntPtr buffer = Marshal.AllocHGlobal(length);
+      try {
+        int needed; int status = NtQuerySystemInformation(5, buffer, length, out needed);
+        if (status == unchecked((int)0xC0000004)) continue;
+        if (status != 0) throw new InvalidOperationException("NtQuerySystemInformation " + status);
+        for (IntPtr entry = buffer; ; ) {
+          if (Marshal.ReadIntPtr(entry, IntPtr.Size == 8 ? 80 : 68).ToInt64() == pid) return Marshal.ReadInt64(entry, 32);
+          int next = Marshal.ReadInt32(entry); if (next == 0) break; entry = IntPtr.Add(entry, next);
+        }
+        throw new ArgumentException("process not running: " + pid);
+      } finally { Marshal.FreeHGlobal(buffer); }
+    }
+  }
+}`;
+
+/** win32: handle-free start identity, identical to StartTime UTC ticks (both are the kernel CreateTime). */
+export async function observeStartIdentitySnapshotRaw(pid) {
+  const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition '${WINDOWS_PROCESS_SNAPSHOT}'; `
+    + `[DateTime]::FromFileTimeUtc([LatticeProcessSnapshot]::CreateTime(${Number(pid)})).Ticks`;
+  // EncodedCommand keeps the C# quotes out of Windows command-line quoting.
+  const { stdout } = await execFileAsync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', env: osObservationEnvironment() });
   return stdout.trim();
 }
 

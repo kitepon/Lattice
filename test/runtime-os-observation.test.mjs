@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import {
   observeArgv,
   observeStartIdentityRaw,
+  observeStartIdentitySnapshotRaw,
   processStartIdentityEpochMs,
 } from '../src/runtime-os-observation.mjs';
 
@@ -17,6 +18,10 @@ nodeTest('start identityのepoch変換はps lstartとWindows UTC ticksを同じ�
   const ticks = (BigInt(expected) * 10_000n) + 621_355_968_000_000_000n;
   assert.equal(processStartIdentityEpochMs(String(ticks)), expected);
   assert.equal(processStartIdentityEpochMs('not a process start identity'), null);
+});
+
+nodeTest('Windowsのhandle不要snapshotはStartTimeと同じstart identityを返す', { skip: process.platform !== 'win32' }, async () => {
+  assert.equal(await observeStartIdentitySnapshotRaw(process.pid), await observeStartIdentityRaw(process.pid));
 });
 
 test('非ASCII argvを持つprocessの観測結果は、観測者自身のLC_ALLに依存しない', async (context) => {
