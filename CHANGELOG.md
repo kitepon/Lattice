@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
+
 ## 0.83.0 — 2026-11-08
 
 Latticeが作った「止まるだけで何も守らない拒否」を外す見直し（u03）と、工程表が一部の不整合で全体ごと見えなくなる停止の修理を中心にした版。
