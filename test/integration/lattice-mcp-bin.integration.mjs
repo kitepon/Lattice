@@ -16,7 +16,7 @@ import { evaluateNodeVersionGuard } from '../../src/node-version-guard.mjs';
 //      を受理する — daemon spawn（sensor/src/mcp/index.ts `spawnDetachedDaemon`）が
 //      `process.argv[1]` を再invokeするため、lattice-mcp.mjs経由でも同じ形で
 //      daemon化できることを実測する
-//   ③ 起動前usage違反=exit 2
+//   ③ 起動前usage違反(値の無い既知オプション)=exit 2。未知のargvは警告して無視(u03 F2)
 //
 // CLI 6面（bin/lattice.mjs）とは別の公理系であることが前提— このファイルは
 // lattice-mcp.mjs だけを対象にする。
@@ -144,14 +144,14 @@ async function stopPid(pid, timeoutMs = 5000) {
 // test/node-version-guard.test.mjsで固定している。
 const UNSAFE_NODE_ENV = { ...process.env, LATTICE_SENSOR_ALLOW_UNSAFE_NODE: '1' };
 
-test('lattice-mcp: 未知のフラグはstartup前のusage違反としてexit 2', () => {
-  const result = spawnSync(process.execPath, [MCP_BIN, '--totally-unknown-flag'], { encoding: 'utf8', env: UNSAFE_NODE_ENV });
-  assert.equal(result.status, 2);
+test('lattice-mcp: 未知のフラグは警告して無視し、startupを止めない(exit 2にしない)', () => {
+  // stdinを即閉じてMCPセッションを終わらせる。起動前にexit 2で止まらないことだけを見る。
+  const result = spawnSync(process.execPath, [MCP_BIN, '--totally-unknown-flag', 'extra'], {
+    encoding: 'utf8', env: UNSAFE_NODE_ENV, input: '', timeout: 30000,
+  });
+  assert.notEqual(result.status, 2, result.stderr);
   assert.equal(result.stdout, '');
-  // ホストNodeがサポート対象外の場合、override有効でも可視化のためbannerが
-  // 先に書かれる(sensor CLIと同一意味論)。よってusage違反メッセージが必ず
-  // stderrの絶対先頭に来るとは限らないため、行頭一致で見る。
-  assert.match(result.stderr, /^lattice-mcp:/m);
+  assert.match(result.stderr, /^lattice-mcp: ignoring unsupported argument\(s\): --totally-unknown-flag extra$/m);
 });
 
 test('lattice-mcp: --path に値が無いのはusage違反でexit 2', () => {
