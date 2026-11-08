@@ -645,7 +645,7 @@ const journalCorruptions = [
   ['duplicate_key', 'journal_non_canonical_or_duplicate_key', (line) => Buffer.from(`{"schema":"lattice.todo_event.v1",${line.slice(1)}`)],
   ['invalid_utf8', 'journal_invalid_utf8', () => Buffer.from([0xff, 0x0a])],
   ['bom', 'journal_byte_contract', (line) => Buffer.from(`\uFEFF${line}`)],
-  ['crlf', 'artifact_eol_converted', (line) => Buffer.from(line.replace(/\n$/u, '\r\n'))],
+  ['stray_cr', 'journal_non_canonical_or_duplicate_key', (line) => Buffer.from(line.replace(/\n$/u, '\r\r\n'))],
   ['truncated_write', 'journal_byte_contract', (line) => Buffer.from(line.slice(0, -2))],
   ['merge_marker', 'journal_json_invalid', () => Buffer.from('<<<<<<< HEAD\n')],
   ['schema_version_mixed', 'journal_schema_invalid', (line) => Buffer.from(line.replace('lattice.todo_event.v1', 'lattice.todo_event.v2'))],
@@ -670,18 +670,30 @@ test('genesis欠落はvalid event bytesでもSTORE_CORRUPT', async (context) => 
   await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_CORRUPT', 'genesis_missing_or_repeated');
 });
 
-test('clock reversalはtyped anomalyとしてSTORE_INCONSISTENT', async (context) => {
+test('clock reversalと未来のrecorded_atはrefuseせず読める', async (context) => {
   const root = await workspace(context); const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
   const events = (await bytes(root, journalRef)).toString('utf8').trimEnd().split('\n').map(JSON.parse);
-  events[1].recorded_at = '2026-07-17T23:59:59.999Z'; events[1].event_digest = todoSelfDigest(events[1], 'event_digest');
-  await writeFile(path.join(root, journalRef), `${events.map(canonicalizeTodoArtifact).join('\n')}\n`);
-  const manifest = JSON.parse((await bytes(root, manifestRef)).toString('utf8'));
-  manifest.members[0].journal_head_digest = events[1].event_digest;
-  manifest.manifest_digest = todoSelfDigest(manifest, 'manifest_digest');
-  await writeFile(path.join(root, manifestRef), `${canonicalizeTodoArtifact(manifest)}\n`);
-  await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_INCONSISTENT', 'clock_reversal');
+  for (const recordedAt of ['2026-07-17T23:59:59.999Z', '2026-07-18T00:05:00.001Z']) {
+    events[1].recorded_at = recordedAt; events[1].event_digest = todoSelfDigest(events[1], 'event_digest');
+    await writeFile(path.join(root, journalRef), `${events.map(canonicalizeTodoArtifact).join('\n')}\n`);
+    const manifest = JSON.parse((await bytes(root, manifestRef)).toString('utf8'));
+    manifest.members[0].journal_head_digest = events[1].event_digest;
+    manifest.manifest_digest = todoSelfDigest(manifest, 'manifest_digest');
+    await writeFile(path.join(root, manifestRef), `${canonicalizeTodoArtifact(manifest)}\n`);
+    const store = await readTodoStore({ repoRoot: root, now: NOW });
+    assert.equal(store.members[0].tasks.find(({ task_id }) => task_id === 'T1').status, 'in-progress');
+  }
+});
+
+test('journalの純粋なCRLF変換はメモリ上でLFへ戻して読める', async (context) => {
+  const root = await workspace(context);
+  const lf = await readTodoStore({ repoRoot: root, now: NOW });
+  const original = (await bytes(root, journalRef)).toString('utf8');
+  await writeFile(path.join(root, journalRef), original.replace(/\n/gu, '\r\n'));
+  const crlf = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(crlf.members[0].tasks, lf.members[0].tasks);
 });
 
 test('journal symlink escapeはSTORE_CORRUPTでhard rejectする', async (context) => {
@@ -735,16 +747,11 @@ for (const [name, mutate] of [
   });
 }
 
-test('snapshot単独CRLFはstaleへ丸めず正規repair導線付きで拒否する', async (context) => {
+test('snapshot単独CRLFはメモリ上でLFへ戻りstaleにならず読める', async (context) => {
   const root = await workspace(context);
   await writeFile(path.join(root, snapshotRef),
     (await bytes(root, snapshotRef)).toString('utf8').replace(/\n$/u, '\r\n'));
-  await assert.rejects(readTodoStore({ repoRoot: root, now: NOW }), (error) => (
-    error?.code === 'SNAPSHOT_INVALID'
-    && error.detail?.reason === 'artifact_eol_converted'
-    && error.detail?.ref === snapshotRef
-    && error.detail?.next_action === 'lattice todo repair-eol --json'
-  ));
+  assert.equal((await readTodoStore({ repoRoot: root, now: NOW })).snapshot_stale, false);
 });
 
 test('snapshot symlinkはsnapshot_staleへ丸めずhard rejectする', async (context) => {

@@ -135,9 +135,9 @@ in the subsequent store-recovery change when callers supply the validator.
 Plan owns pure readiness rules (fresh store view → ready/not-ready + reasons).
 Status consumes them; the Store transaction accepts a validator supplied by Plan
 and executes it after the locked re-read. Store retains schema/identity/chain,
-replay projection, locks and CAS; it imports no feature policy. Structure's
-phase_accept/close evidence validator is supplied the same way. For manual start
-only, observational structure failure becomes context/advice.
+replay projection, locks and CAS; it imports no feature policy. Store holds no
+structure gate (u03 A29/A30): structure source and finalization freshness are
+context/advice on start and phase status, never a lifecycle refusal.
 
 The prospective callback is `validateProspectiveEvent({store, member, event})`.
 `store` is the complete fresh locked read, treated read-only by Plan, so cross-plan

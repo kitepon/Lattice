@@ -426,7 +426,7 @@ test('v4追加planは要求したmemberを返し、既存の作業中状態とjo
   assert.equal(await readFile(manifestRef, 'utf8'), manifest);
 });
 
-test('Windows checkoutでCRLF化された旧storeは原因pathを案内し正規repairで復旧する', async (context) => {
+test('Windows checkoutでCRLF化された旧storeはそのまま読め、正規repairでworktreeもLFへ戻る', async (context) => {
   const root = await workspace(context);
   await writeFile(path.join(root, 'plan.json'), `${canonicalizeTodoArtifact(createInput())}\n`);
   await writeFile(path.join(root, 'user.txt'), 'baseline\n');
@@ -443,13 +443,7 @@ test('Windows checkoutでCRLF化された旧storeは原因pathを案内し正規
   await writeFile(planPath, canonical.replaceAll('\n', '\r\n'));
   await writeFile(path.join(root, 'user.txt'), 'user dirty change\n');
 
-  const invalid = run(root, ['status', '--json']);
-  assert.equal(invalid.status, 1, invalid.stderr);
-  const invalidResult = JSON.parse(invalid.stdout);
-  assert.equal(invalidResult.state, 'invalid');
-  assert.equal(invalidResult.next_action.command, 'lattice todo repair-eol --json');
-  assert.equal(invalidResult.next_action.reason,
-    `STORE_INCONSISTENT:artifact_eol_converted:${planRef}`);
+  assert.equal(JSON.parse(run(root, ['status', '--json']).stdout).state, 'ready');
 
   const repaired = run(root, ['todo', 'repair-eol', '--json']);
   assert.equal(repaired.status, 0, repaired.stderr);
@@ -577,7 +571,7 @@ test('repair-eolはstore root junctionを辿らずrepo外artifactを変更しな
   assert.deepEqual(await readFile(outsidePlan), outsideBefore);
 });
 
-test('snapshotとjournalのCRLF変換も原因path付きrepair導線を返す', async (context) => {
+test('snapshotとjournalのCRLF変換もそのまま読める', async (context) => {
   for (const ref of [
     '.lattice/todo/plans/main/v1/snapshot.json',
     '.lattice/todo/plans/main/v1/journal/active.jsonl',
@@ -592,12 +586,9 @@ test('snapshotとjournalのCRLF変換も原因path付きrepair導線を返す', 
     const absolute = path.join(root, ref);
     await writeFile(absolute, (await readFile(absolute, 'utf8')).replaceAll('\n', '\r\n'));
 
-    const invalid = run(root, ['status', '--json']);
-    assert.equal(invalid.status, 1, invalid.stderr);
-    const result = JSON.parse(invalid.stdout);
-    assert.equal(result.next_action.command, 'lattice todo repair-eol --json');
-    assert.equal(result.next_action.reason,
-      `${ref.endsWith('snapshot.json') ? 'SNAPSHOT_INVALID' : 'STORE_CORRUPT'}:artifact_eol_converted:${ref}`);
+    const status = run(root, ['status', '--json']);
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(JSON.parse(status.stdout).state, 'ready');
   }
 });
 
