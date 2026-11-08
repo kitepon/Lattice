@@ -93,7 +93,12 @@ async function removeJudged(lockPath, judged) {
   const quarantine = `${lockPath}.${randomBytes(8).toString('hex')}.stale`;
   try { await rename(lockPath, quarantine); }
   catch (error) { if (error?.code === 'ENOENT') return; throw error; }
-  const moved = await lstat(quarantine);
+  const moved = await lstat(quarantine).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
+  });
+  // Swept concurrently: only an entry older than LOCK_STALE_MS is swept, so it was abandoned too.
+  if (moved === null) return;
   if (moved.dev === judged.dev && moved.ino === judged.ino && moved.size === judged.size
     && moved.mtimeMs === judged.mtimeMs) {
     await rm(quarantine);
@@ -126,9 +131,10 @@ async function isStale(entryPath) {
 async function removeDeadTemporaries(lockPath, hostDigest) {
   const prefix = `${path.basename(lockPath)}.`;
   for (const name of await readdir(path.dirname(lockPath))) {
-    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
-    const parsed = name.slice(prefix.length, -4).match(CLAIM);
+    if (!name.startsWith(prefix) || !(name.endsWith('.tmp') || name.endsWith('.stale'))) continue;
+    const parsed = name.endsWith('.tmp') ? name.slice(prefix.length, -4).match(CLAIM) : null;
     const temporary = path.join(path.dirname(lockPath), name);
+    // A `.stale` quarantine's owner already fails assertHeld; it goes once older than LOCK_STALE_MS.
     const local = parsed && parsed[1] === hostDigest && Number.isSafeInteger(Number(parsed[2]));
     if (local ? await processIsDead(Number(parsed[2]), parsed[3]) : await isStale(temporary)) {
       const info = await lstat(temporary).catch((error) => {
