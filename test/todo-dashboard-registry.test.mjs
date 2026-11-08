@@ -11,6 +11,7 @@ import test from 'node:test';
 import { runTodoCli } from '../src/todo-cli.mjs';
 import { removeManagedDaemonFixture } from './helpers/managed-daemon-fixture.mjs';
 import {
+  writeTodoDashboardDaemonDescriptor,
   adoptTodoDashboardActivity,
   ensureTodoDashboardDaemon,
   ensureTodoDashboardActivity,
@@ -916,4 +917,15 @@ test('an invalid dashboard registry is moved aside and read as empty (u03 D22)',
     assert.equal((await readdir(runtime)).includes('projects.json'), false);
   }
   assert.equal((await readdir(runtime)).filter((name) => name.startsWith('projects.json.invalid-')).length, 2);
+});
+
+test('u07: without LATTICE_DASHBOARD_RUNTIME_DIR the dashboard registry lives under the seat root, like the bridge', async () => {
+  const seatRoot = await mkdtemp(path.join(tmpdir(), 'lattice-seat-root-'));
+  try {
+    await writeTodoDashboardDaemonDescriptor({ port: 4711, env: { LATTICE_CONFIG_DIR: seatRoot } });
+    const descriptor = JSON.parse(await readFile(path.join(seatRoot, 'dashboard', 'daemon.json'), 'utf8'));
+    assert.equal(descriptor.port, 4711);
+  } finally {
+    await rm(seatRoot, { recursive: true, force: true });
+  }
 });

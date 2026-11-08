@@ -3,6 +3,7 @@
 ## Unreleased
 
 - 工程表（gantt）の描画は、工程数・依存数の上限超え、依存の循環、独立性の投影のずれ、図に描けない依存、説明文の量、ページの大きさ、壊れた表示設定（presentation）で断らない。描ける所を描き、何を省いたかを図の上の注記に出す（u03 D-gantt）。注記のcodeは従来の拒否のcodeと同じ。
+- `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
 
 ## 0.83.0 — 2026-11-08
 

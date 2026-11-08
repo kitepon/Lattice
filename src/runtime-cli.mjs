@@ -807,20 +807,16 @@ async function durableReplaceBytes(directory, name, bytes) {
 async function withLifecycleLock(runDir, action) {
   // managed mutationの正本lockはdurable supervisorが所有する。これはunmanaged/launch CLI競合だけを塞ぐ。
   const lockPath = path.join(runDir, '.cli-lifecycle.lock');
-  let handle;
-  try {
-    handle = await open(lockPath, 'wx', 0o600);
-  } catch (error) {
-    if (error?.code === 'EEXIST') {
-      throw new CliContractError('RUN_BUSY', 'run lifecycle操作が既に進行中');
-    }
-    throw error;
-  }
+  const lock = await acquireRuntimeLifecycleLock({
+    lockPath,
+    sessionNonceDigest: digestArtifact({ run_dir: runDir, lock: '.cli-lifecycle.lock' }),
+    operation: 'cli-lifecycle',
+    requestId: randomUUID(),
+  });
   try {
     return await action();
   } finally {
-    await handle.close();
-    await unlink(lockPath).catch(() => {});
+    await lock.release();
   }
 }
 
