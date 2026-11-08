@@ -271,10 +271,9 @@ function normalizeInput(readModel) {
 
 /**
  * u03 D-gantt: a cycle is drawn, not refused. Nodes the topological pass cannot reach (the
- * cycle part, with what hangs off it) are taken in ref order, and each edge among them that
- * points back to an earlier one is left out, so the rest is acyclic and every later step
- * terminates. shortcut: an acyclic edge below a cycle that points back in ref order is left
- * out too; the notice names every cut edge, so upgrade only if that proves misleading.
+ * cycle part, with what hangs off it) are reduced to the tasks that can reach back into a
+ * cycle; among those, taken in ref order, each edge that points back to an earlier one is left
+ * out, so the rest is acyclic and every later step terminates. The notice names every cut edge.
  */
 function breakCycles(nodes, nodesByKey, edges, notices) {
   const indegree = new Map(nodes.map(({ key }) => [key, 0]));
@@ -291,7 +290,25 @@ function breakCycles(nodes, nodesByKey, edges, notices) {
     }
   }
   if (visited.size === nodes.length) return edges;
-  const rank = new Map(nodes.filter(({ key }) => !visited.has(key)).map(({ key }, index) => [key, index]));
+  // Peel what only hangs below a cycle (no way back into it), so only cycle tasks lose edges.
+  const core = new Set(nodes.filter(({ key }) => !visited.has(key)).map(({ key }) => key));
+  const outdegree = new Map([...core].map((key) => [key, 0]));
+  const incoming = new Map([...core].map((key) => [key, []]));
+  for (const edge of edges) {
+    if (core.has(edge.from) && core.has(edge.to)) {
+      outdegree.set(edge.from, outdegree.get(edge.from) + 1); incoming.get(edge.to).push(edge.from);
+    }
+  }
+  const leaves = [...core].filter((key) => outdegree.get(key) === 0);
+  while (leaves.length > 0) {
+    const leaf = leaves.pop();
+    core.delete(leaf);
+    for (const from of incoming.get(leaf)) {
+      outdegree.set(from, outdegree.get(from) - 1);
+      if (outdegree.get(from) === 0) leaves.push(from);
+    }
+  }
+  const rank = new Map(nodes.filter(({ key }) => core.has(key)).map(({ key }, index) => [key, index]));
   const cut = [];
   const kept = edges.filter((edge) => {
     if (!rank.has(edge.from) || !rank.has(edge.to) || rank.get(edge.from) < rank.get(edge.to)) return true;

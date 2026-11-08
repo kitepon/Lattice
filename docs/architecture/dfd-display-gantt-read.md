@@ -60,7 +60,7 @@ state banner) at the top of the diagram legend, and also returned as `rendered.n
 |---|---|
 | `TODO_SCALE_EXCEEDED` tasks > 2000 | first 2000 in task-ref order drawn; the rest and their edges dropped; notice counts and limit |
 | `TODO_SCALE_EXCEEDED` edges > 8000 | first 8000 in edge-key order drawn; notice counts and limit |
-| `TODO_LAYOUT_CYCLE` | tasks the topological pass cannot reach (cycle part) are taken in ref order and each edge among them pointing back is left out, so every later step sees a DAG; notice lists the cycle tasks and the cut edges |
+| `TODO_LAYOUT_CYCLE` | of the tasks the topological pass cannot reach, those that only hang below a cycle are peeled off; the remaining cycle tasks are taken in ref order and each edge among them pointing back is left out, so every later step sees a DAG; notice lists the cycle tasks and the cut edges |
 | `TODO_LAYOUT_INDEPENDENCE_DRIFT` | the task is left unmarked; notice lists it |
 | `TODO_LAYOUT_INVALID_INPUT` for an edge (endpoint missing, self edge, not a task ref, malformed join) | the edge is skipped; notice lists it. A malformed read-model or member shape still refuses: there is nothing to draw |
 | `TODO_SCALE_EXCEEDED` embedded prose > 8 MiB | the overflowing design memo / done condition is replaced by an "omitted" text, narrative bytes are not counted (never rendered), overflowing notes are left out; notice counts them |

@@ -601,7 +601,8 @@ test('a dependency cycle is drawn without the edges that point back, and named',
     assert.deepEqual(result.nodes.map((node) => node.ref.task_id).sort(), ['A', 'B', 'C', 'D']);
     const [notice] = result.notices;
     assert.equal(notice.code, 'TODO_LAYOUT_CYCLE');
-    assert.deepEqual(notice.detail.cycle_tasks.map((entry) => entry.task_id), ['B', 'C', 'D']);
+    // D only hangs below the cycle: it is not a cycle task and its edge C->D stays.
+    assert.deepEqual(notice.detail.cycle_tasks.map((entry) => entry.task_id), ['B', 'C']);
     assert.deepEqual(notice.detail.cut_edges.map(({ from, to }) => [from.task_id, to.task_id]), [['C', 'B']]);
     const wave = Object.fromEntries(result.nodes.map((node) => [node.ref.task_id, node.wave]));
     assert.ok(wave.A < wave.B && wave.B < wave.C && wave.C < wave.D);
@@ -610,6 +611,18 @@ test('a dependency cycle is drawn without the edges that point back, and named',
     [dependency(ref('A'), ref('B')), dependency(ref('B'), ref('A'))]), { scope: 'all' });
   assert.equal(selfContained.nodes.length, 2);
   assert.equal(selfContained.notices[0].code, 'TODO_LAYOUT_CYCLE');
+});
+
+test('a task below a cycle keeps its edge even when it sorts before the cycle', () => {
+  const tasks = ['A', 'B', 'C'].map((id) => ({ id, lane: 'lane' }));
+  const result = layoutOf(fixture([{ plan_key: 'plan', tasks }], [
+    dependency(ref('B'), ref('C')), dependency(ref('C'), ref('B')), dependency(ref('C'), ref('A')),
+  ]), { scope: 'all' });
+  const [notice] = result.notices;
+  assert.deepEqual(notice.detail.cycle_tasks.map((entry) => entry.task_id), ['B', 'C']);
+  assert.deepEqual(notice.detail.cut_edges.map(({ from, to }) => [from.task_id, to.task_id]), [['C', 'B']]);
+  const wave = Object.fromEntries(result.nodes.map((node) => [node.ref.task_id, node.wave]));
+  assert.ok(wave.C < wave.A);
 });
 
 test('an edge whose endpoint is not in the read model, a self edge and a bad join are skipped and named', () => {
