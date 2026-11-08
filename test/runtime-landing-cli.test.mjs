@@ -249,7 +249,7 @@ test.after(async () => {
   if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
 });
 
-test('moved HEADでも完了runをcloseし、未完了拒否・未着地投影・再close冪等性を維持する', async () => {
+test('moved HEADでも完了runをcloseし、未完了の放棄記録・未着地投影・再close冪等性を維持する', async () => {
   const runDir = path.dirname(eventsPath);
   await writeFile(path.join(repoRoot, 'unrelated.txt'), 'canonical main moved independently\n');
   run('git', ['-c', 'user.email=test@example.invalid', '-c', 'user.name=test',
@@ -265,10 +265,13 @@ test('moved HEADでも完了runをcloseし、未完了拒否・未着地投影�
   assert.equal(incompleteEvents.at(-1).kind, 'receipt_accepted');
   incompleteEvents.pop();
   await writeFile(eventsPath, `${JSON.stringify(incompleteEvents, null, 1)}\n`);
+  // u03 C18: 未完了のcloseは拒否せず、残りを放棄として記録して閉じる。
   const incomplete = runCli(['run', 'close', '--run', RUN_REF]);
-  assert.equal(incomplete.status, 1);
-  assert.equal(JSON.parse(incomplete.stderr).code, 'RUN_NOT_COMPLETE');
   await writeFile(eventsPath, acceptedEvents);
+  assert.equal(incomplete.status, 0, incomplete.stderr);
+  const incompleteOutput = JSON.parse(incomplete.stdout);
+  assert.equal(incompleteOutput.outcome, 'closed');
+  assert.equal(incompleteOutput.abandoned_todo_ids.length, 1);
 
   const closed = runCli(['run', 'close', '--run', RUN_REF]);
   assert.equal(closed.status, 0, closed.stderr);

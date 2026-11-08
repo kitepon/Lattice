@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fsyncDirectory as syncDirectory } from './fs-dir-sync.mjs';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, readFile, rename, rm, unlink } from 'node:fs/promises';
+import { link, lstat, open, readdir, readFile, rename, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import { canonicalizeArtifact } from './artifact-contracts.mjs';
@@ -11,6 +11,9 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const ID = /^[0-9A-Za-z](?:[0-9A-Za-z._-]{0,127})$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const LOCK_NAME = '.lifecycle.lock';
+// Pre-u03 binaries wrote after O_EXCL create; their write finishes well inside this window.
+const UNIDENTIFIED_GRACE_MS = 10_000;
+const NO_HARD_LINK = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS']);
 
 export class RuntimeLifecycleLockError extends Error {
   constructor(code, detail) {
@@ -84,22 +87,50 @@ async function defaultObserver(pid) {
   return observeManagedProcessStartIdentity(pid);
 }
 
+class UnidentifiedLock extends Error {
+  constructor(info) { super('unidentified lifecycle lock'); this.info = info; }
+}
+
+// nlink 2 is the publisher's window between link() and unlinking its temporary.
 async function readLockArtifact(lockPath) {
   const info = await lstat(lockPath);
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
-    fail('RUN_LOCK_INVALID', 'lifecycle lockが単一linkのregular fileでない');
+  if (!info.isFile() || info.isSymbolicLink()) {
+    fail('RUN_LOCK_INVALID', 'lifecycle lockがregular fileでない');
   }
   const bytes = await readFile(lockPath);
   let value;
-  try { value = JSON.parse(bytes.toString('utf8')); }
-  catch { fail('RUN_BUSY', 'lifecycle lock取得処理が進行中'); }
-  if (!validateRuntimeLifecycleLockArtifact(value)) {
-    fail('RUN_LOCK_INVALID', 'lifecycle lock artifact不正');
+  try { value = JSON.parse(bytes.toString('utf8')); } catch { throw new UnidentifiedLock(info); }
+  if (validateRuntimeLifecycleLockArtifact(value)
+    && bytes.toString('utf8') === `${canonicalizeArtifact(value)}\n`) return { value, info };
+  // Another schema may be a newer binary's live owner: identified but unsupported, never aged out.
+  if (plain(value) && value.schema !== 'lattice.runtime_lifecycle_lock.v1') {
+    fail('RUN_LOCK_INVALID', `未対応のlifecycle lock schema: ${String(value.schema)}`);
   }
-  if (bytes.toString('utf8') !== `${canonicalizeArtifact(value)}\n`) {
-    fail('RUN_LOCK_INVALID', 'lifecycle lockがcanonical bytesでない');
+  throw new UnidentifiedLock(info);
+}
+
+/** Empty/torn/invalid bytes name no owner; only their age can show the writer is gone. */
+export async function recoverUnidentifiedLock(lockPath, info) {
+  if (Date.now() - info.mtimeMs < UNIDENTIFIED_GRACE_MS) return false;
+  const quarantine = path.join(path.dirname(lockPath),
+    `.${path.basename(lockPath)}.${process.pid}.${randomUUID()}.stale`);
+  try { await rename(lockPath, quarantine); }
+  catch (error) { if (error?.code === 'ENOENT') return true; throw error; }
+  const moved = await lstat(quarantine);
+  if (moved.dev !== info.dev || moved.ino !== info.ino || moved.size !== info.size
+    || moved.mtimeMs !== info.mtimeMs) {
+    // Not the entry we judged (release + fresh acquire raced stat→rename): put it back untouched.
+    try { await link(quarantine, lockPath); }
+    catch (error) {
+      if (error?.code === 'EEXIST') fail('RUN_LOCK_INVALID', `回収競合artifactを保全した: ${quarantine}`);
+      throw error;
+    }
+    await unlink(quarantine);
+    return true;
   }
-  return { value, info };
+  await unlink(quarantine);
+  await syncDirectory(path.dirname(lockPath));
+  return true;
 }
 
 async function pidExists(pid) {
@@ -137,7 +168,13 @@ async function recoverStaleLock(lockPath, expectedDigest) {
     throw error;
   }
   try {
-    const moved = await readLockArtifact(quarantine);
+    const moved = await readLockArtifact(quarantine).catch((error) => {
+      // Anything but the judged owner (torn, other schema) goes back untouched.
+      if (error instanceof UnidentifiedLock || error instanceof RuntimeLifecycleLockError) {
+        return { value: { lock_digest: null } };
+      }
+      throw error;
+    });
     if (moved.value.lock_digest !== expectedDigest) {
       // stale判定後に別ownerが取得したfileをrenameしてしまった場合は破棄しない。
       try { await rename(quarantine, lockPath); }
@@ -157,29 +194,66 @@ async function recoverStaleLock(lockPath, expectedDigest) {
   }
 }
 
-async function createLock(lockPath, artifact) {
+const TEMPORARY = /^(\d+)\.[0-9a-f-]{36}\.tmp$/u;
+
+async function removeDeadTemporaries(lockPath) {
+  const prefix = `${path.basename(lockPath)}.`;
+  let names;
+  try { names = await readdir(path.dirname(lockPath)); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+  for (const name of names) {
+    const pid = name.startsWith(prefix) ? Number(name.slice(prefix.length).match(TEMPORARY)?.[1]) : NaN;
+    if (Number.isSafeInteger(pid) && pid !== process.pid && !await pidExists(pid)) {
+      await rm(path.join(path.dirname(lockPath), name), { force: true });
+    }
+  }
+}
+
+/** Pre-u03 publication, kept for filesystems without hard links; L2 recovers its crash window. */
+async function createLockInPlace(lockPath, artifact) {
   let handle;
-  let created = false;
   try {
-    handle = await open(lockPath,
-      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
-    created = true;
-    await handle.writeFile(Buffer.from(`${canonicalizeArtifact(artifact)}\n`, 'utf8'));
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await syncDirectory(path.dirname(lockPath));
-    return true;
+    handle = await open(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
   } catch (error) {
     if (error?.code === 'EEXIST') return false;
-    if (handle) {
-      await handle.close().catch(() => {});
-      handle = null;
-    }
-    if (created) await unlink(lockPath).catch(() => {});
+    throw error;
+  }
+  try {
+    await handle.writeFile(Buffer.from(`${canonicalizeArtifact(artifact)}\n`, 'utf8'));
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => {});
+    handle = null;
+    await unlink(lockPath).catch(() => {});
     throw error;
   } finally {
-    if (handle) await handle.close().catch(() => {});
+    if (handle) await handle.close();
+  }
+  await syncDirectory(path.dirname(lockPath));
+  return true;
+}
+
+/** The shared path only ever receives complete bytes: write a private temporary, then link it. */
+async function createLock(lockPath, artifact, publishLink = link) {
+  const temporary = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const handle = await open(temporary,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    try {
+      await handle.writeFile(Buffer.from(`${canonicalizeArtifact(artifact)}\n`, 'utf8'));
+      await handle.sync();
+    } finally { await handle.close(); }
+    try { await publishLink(temporary, lockPath); }
+    catch (error) {
+      if (error?.code === 'EEXIST') return false;
+      if (NO_HARD_LINK.has(error?.code)) return createLockInPlace(lockPath, artifact);
+      throw error;
+    }
+    await unlink(temporary);
+    await syncDirectory(path.dirname(lockPath));
+    return true;
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
   }
 }
 
@@ -202,6 +276,7 @@ export async function acquireRuntimeLifecycleLock({
   processStartIdentity = null,
   observeProcessStartIdentity = null,
   now = () => new Date(),
+  publishLink = link, // test seam: filesystems without hard links
 } = {}) {
   const resolvedLockPath = validateOptions({ lockPath, runDir, sessionNonceDigest, operation,
     requestId, timeoutMs, retryIntervalMs, processStartIdentity, observeProcessStartIdentity, now });
@@ -226,9 +301,10 @@ export async function acquireRuntimeLifecycleLock({
   };
   artifact.lock_digest = selfDigest(artifact, 'lock_digest');
   const deadline = Date.now() + timeoutMs;
+  await removeDeadTemporaries(resolvedLockPath);
 
   while (true) {
-    if (await createLock(resolvedLockPath, artifact)) {
+    if (await createLock(resolvedLockPath, artifact, publishLink)) {
       let released = false;
       return {
         artifact: structuredClone(artifact),
@@ -247,9 +323,11 @@ export async function acquireRuntimeLifecycleLock({
     try { existing = await readLockArtifact(resolvedLockPath); }
     catch (error) {
       if (error?.code === 'ENOENT') continue;
-      if (error instanceof RuntimeLifecycleLockError && error.code === 'RUN_BUSY'
-        && Date.now() < deadline) { await sleep(retryIntervalMs); continue; }
-      throw error;
+      if (!(error instanceof UnidentifiedLock)) throw error;
+      if (await recoverUnidentifiedLock(resolvedLockPath, error.info)) continue;
+      if (Date.now() >= deadline) fail('RUN_BUSY', 'lifecycle lock取得処理が進行中');
+      await sleep(Math.min(retryIntervalMs, Math.max(1, deadline - Date.now())));
+      continue;
     }
     if (!await ownerIsLive(existing.value, observer)) {
       await recoverStaleLock(resolvedLockPath, existing.value.lock_digest);
@@ -273,6 +351,7 @@ export async function releaseRuntimeLifecycleLock({ lockPath, ownerDigest } = {}
   try { existing = await readLockArtifact(lockPath); }
   catch (error) {
     if (error?.code === 'ENOENT') fail('RUN_LOCK_OWNER_MISMATCH', 'release対象lockなし');
+    if (error instanceof UnidentifiedLock) fail('RUN_LOCK_OWNER_MISMATCH', 'lifecycle lock owner digest不一致');
     throw error;
   }
   if (existing.value.lock_digest !== ownerDigest) {

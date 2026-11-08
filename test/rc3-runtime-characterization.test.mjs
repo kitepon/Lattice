@@ -315,16 +315,15 @@ function conflictScenarioSpecs(extraSpecs = []) {
   ];
 }
 
-test('carry-over witnessを欠く無関係TODOは継続せずholdになる', async () => {
+test('u03 C43: carry-over witnessを欠く無関係TODOもholdへ足さず継続する', async () => {
   const { recomputeHoldDecision } = await import(DECISION_VERIFIER_MODULE);
-  // ADR 0044 Decision 6.4／7.2: affected closure外のTODOでも、carry-over witnessが
-  // 保存bytesに存在しなければcontinueできない（fail closed）。
+  // 請求項10: 止めるのは影響群だけ。witnessは証明できた時の記録であり、継続の条件ではない。
   const plan = runtimePlan({ capacity: { executors: 3 } });
   const events = await chain(conflictScenarioSpecs());
 
   const decision = recomputeHoldDecision({ plan, events });
-  assert.deepEqual([...decision.hold_set].sort(), ['T1', 'T2', 'T3']);
-  assert.deepEqual(decision.continue_set, []);
+  assert.deepEqual([...decision.hold_set].sort(), ['T1', 'T2']);
+  assert.deepEqual(decision.continue_set, ['T3']);
 });
 
 test('carry-over witnessが保存された無関係TODOだけがcontinueできる', async () => {
@@ -491,10 +490,9 @@ test('intake resume後もfreeze後の旧epoch receiptはstaleのままである'
   assert.equal(stale.reason, 'stale_context');
 });
 
-test('schema・digest整合を実証できないwitness documentではcontinueできない', async () => {
+test('u03 C43: 破損したwitness documentでもclosure外TODOはholdへ足さない', async () => {
   const { recomputeHoldDecision } = await import(DECISION_VERIFIER_MODULE);
-  // witness eventの存在だけでcontinueを許さない（ADR 0044 Decision 7.2の
-  // fail closed）。自己digestの破壊されたdocumentは不成立として扱う。
+  // 破損witnessは不成立のまま（frozen prefix receiptはwitness_unproven）だが、holdは広げない。
   const plan = runtimePlan({ capacity: { executors: 3 } });
   const corrupted = carryOverWitnessDoc('T3');
   corrupted.witness_digest = placeholderDigest('f');
@@ -507,9 +505,9 @@ test('schema・digest整合を実証できないwitness documentではcontinue�
   ]));
 
   const decision = recomputeHoldDecision({ plan, events });
-  assert.deepEqual([...decision.hold_set].sort(), ['T1', 'T2', 'T3']);
-  assert.deepEqual(decision.continue_set, []);
-  assert.equal(decision.reasons.T3, 'carry_over_unprovable');
+  assert.deepEqual([...decision.hold_set].sort(), ['T1', 'T2']);
+  assert.deepEqual(decision.continue_set, ['T3']);
+  assert.equal(decision.reasons.T3, undefined);
 });
 
 test('conflict pairは同一ready frontierへ同時に載らない', async () => {

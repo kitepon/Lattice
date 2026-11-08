@@ -183,46 +183,37 @@ function startPull(root, runId = 'pull-run') {
   ]);
 }
 
-test('active intakeはstart撤回を拒否し、same actorのrelease後だけ撤回できる',
+test('u03 C11/X1: start撤回はruns/の迷いentryで止まらず、bound intakeを記録付きで解放する',
   async (context) => {
     const { root } = await workspace(context);
     parsed(startPull(root));
     await startTask(root, 'A', '2026-08-09T00:01:00.000Z');
-    parsed(runCli(root, [
+    const intake = parsed(runCli(root, [
       'run', 'intake', '--run', '.lattice/runs/pull-run', '--task', 'A',
     ]));
+    // 撤回と無関係な迷いentry: 通常file、識別子でない名前、壊れたrun。
+    await writeFile(path.join(root, '.lattice', 'runs', 'stray.txt'), 'x\n');
+    await mkdir(path.join(root, '.lattice', 'runs', 'not a run'));
+    await mkdir(path.join(root, '.lattice', 'runs', 'broken'));
+    await writeFile(path.join(root, '.lattice', 'runs', 'broken', 'run-meta.json'), '{');
 
-    const guarded = parsed(runCli(root, [
+    const retraction = runCli(root, [
       'todo', 'retract', '--plan', PLAN_KEY, '--task', 'A', '--reason', '誤着手',
-    ]), 1);
-    assert.equal(guarded.code, 'ACTIVE_PULL_INTAKE');
-
-    const otherActor = {
-      LATTICE_TODO_ACTOR_HOST: 'mac',
-      LATTICE_TODO_ACTOR_SESSION: 'seat-b',
-      LATTICE_TODO_ACTOR_AGENT: 'seat-b',
-    };
-    const foreign = parsed(runCli(root, [
-      'run', 'intake', 'release', '--run', '.lattice/runs/pull-run', '--task', 'A',
-    ], otherActor), 1);
-    assert.equal(foreign.code, 'INTAKE_BINDING_CONFLICT');
-
-    const released = parsed(runCli(root, [
-      'run', 'intake', 'release', '--run', '.lattice/runs/pull-run', '--task', 'A',
-    ]));
-    assert.equal(released.outcome, 'released');
+    ]);
+    const retracted = parsed(retraction);
+    assert.match(retraction.stderr, /LATTICE_RETRACT_RUNS_SKIPPED.*\.lattice\/runs\/broken/u);
+    assert.equal(retracted.kind, 'start_retracted');
+    assert.equal(retracted.status, 'pending');
+    const events = JSON.parse(await readFile(
+      path.join(root, '.lattice', 'runs', 'pull-run', 'pull-events.json'), 'utf8'));
+    const released = events.at(-1);
+    assert.equal(released.kind, 'intake_released');
     assert.equal(released.task_id, 'A');
+    assert.equal(released.payload.reason, 'start_retracted');
+    assert.equal(released.payload.target_start_digest, intake.activation_event_digest);
     assert.equal(parsed(runCli(root, [
       'run', 'intake', 'release', '--run', '.lattice/runs/pull-run', '--task', 'A',
     ]), 1).code, 'INTAKE_NOT_FOUND');
-
-    const retracted = parsed(runCli(root, [
-      'todo', 'retract', '--plan', PLAN_KEY, '--task', 'A', '--reason', '誤着手',
-    ]));
-    assert.equal(retracted.kind, 'start_retracted');
-    assert.equal(retracted.status, 'pending');
-    const store = await readTodoStore({ repoRoot: root });
-    assert.equal(store.members[0].tasks.find((entry) => entry.task_id === 'A').status, 'pending');
   });
 
 test('intake 0件のpull runは着地0件を明示してcloseでき、active listから外れる',
@@ -318,7 +309,7 @@ test('conversation planのpull startとboundary holdは同じtyped next action�
     );
   });
 
-test('後着planning conflictはhold/lease withheldとなり、未intake自動選択もclose成功もない',
+test('後着planning conflictはhold/lease withheldとなり、未intake自動選択は無く、closeは残りを記録して解放する',
   async (context) => {
     const { root, artifact } = await workspace(context, { conflict: true });
     parsed(startPull(root));
@@ -350,8 +341,9 @@ test('後着planning conflictはhold/lease withheldとなり、未intake自動�
     assert.equal(parsed(runCli(root, [
       'run', 'status', '--run', '.lattice/runs/pull-run',
     ])).event_count, eventCount + 1);
-    const close = parsed(runCli(root, ['run', 'close', '--run', '.lattice/runs/pull-run']), 1);
-    assert.equal(close.code, 'RUN_NOT_COMPLETE');
+    const close = parsed(runCli(root, ['run', 'close', '--run', '.lattice/runs/pull-run']));
+    assert.equal(close.outcome, 'closed');
+    assert.deepEqual(close.released_task_ids, ['A', 'B']);
   });
 
 test('compile baseが到達不能でもisolated worktreeを供給してversion drift holdへ閉じる',
@@ -764,9 +756,7 @@ test('解けないholdの席はdetachで解放でき、release→closeでrunを�
     'run', 'intake', 'intervention', '--run', '.lattice/runs/pull-run', '--task', 'A',
   ])).recovery, /run intake detach/u);
 
-  // 扉が3つとも閉まっていることを固定する。ここが緩むとまた出口を失う。
-  assert.equal(parsed(runCli(root, ['run', 'close', '--run', '.lattice/runs/pull-run']), 1).code,
-    'RUN_NOT_COMPLETE');
+  // releaseとabandonの扉は閉じたまま。出口はdetachと、u03以降のclose（別試験）。
   const blocked = parsed(runCli(root, [
     'run', 'intake', 'release', '--run', '.lattice/runs/pull-run', '--task', 'A',
   ]), 1);
@@ -799,6 +789,43 @@ test('解けないholdの席はdetachで解放でき、release→closeでrunを�
   assert.equal(released.outcome, 'released');
   const closed = parsed(runCli(root, ['run', 'close', '--run', '.lattice/runs/pull-run']));
   assert.equal(closed.outcome, 'closed');
+});
+
+test('u03 C18: holdで止まった席が残るpull runもcloseでき、再開・detach・解放を記録する', async (context) => {
+  const { root } = await workspace(context, { outcome: 'unknown' });
+  parsed(startPull(root));
+  await startTask(root, 'A', '2026-08-09T00:01:00.000Z');
+  parsed(runCli(root, ['run', 'intake', '--run', '.lattice/runs/pull-run', '--task', 'A']));
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    detached: true, stdio: 'ignore',
+  });
+  context.after(() => { try { process.kill(child.pid, 'SIGKILL'); } catch {} });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const identity = await observeManagedProcessStartIdentity(child.pid);
+  const argv = execFileSync('/bin/ps', ['-o', 'command=', '-p', String(child.pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
+  const attachPath = path.join(root, 'close-attach.json');
+  await writeFile(attachPath, `${JSON.stringify({
+    schema: 'lattice.pull_worker_attach_input.v1', name: ACTOR.agent, session: ACTOR.session,
+    pid: child.pid, started_identity: identity.started_identity,
+    argv_digest: createHash('sha256').update(argv, 'utf8').digest('hex'), recorded_at: NOW,
+  })}\n`);
+  assert.equal(parsed(runCli(root, [
+    'run', 'intake', 'attach', '--run', '.lattice/runs/pull-run', '--task', 'A', '--input', attachPath,
+  ])).stopped, true);
+  const stat = () => execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(child.pid)], {
+    encoding: 'utf8' }).trim();
+  assert.equal(stat().startsWith('T'), true);
+
+  const closed = parsed(runCli(root, ['run', 'close', '--run', '.lattice/runs/pull-run']));
+  assert.deepEqual([closed.outcome, closed.released_task_ids], ['closed', ['A']]);
+  assert.equal(stat().startsWith('T'), false, 'closeは止めた席を止めたまま手放さない');
+  const events = JSON.parse(await readFile(
+    path.join(root, '.lattice', 'runs', 'pull-run', 'pull-events.json'), 'utf8'));
+  assert.deepEqual(events.slice(-4).map((event) => event.kind),
+    ['worker_resumed', 'worker_detached', 'intake_released', 'run_closed']);
+  assert.deepEqual([events.at(-3).payload.reason, events.at(-3).payload.signal], ['run_closed', 'sent']);
+  assert.equal(events.at(-2).payload.reason, 'run_closed');
+  assert.deepEqual(events.at(-1).payload, { accepted_task_ids: [], released_task_ids: ['A'] });
 });
 
 test('detachはattach bindingと一致しないprocessへsignalを送らない', async (context) => {

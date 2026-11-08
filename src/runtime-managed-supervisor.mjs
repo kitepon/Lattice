@@ -976,16 +976,16 @@ async function activateManagedSupervisorController({ repoRoot, runDir, runId, ad
       if (!socketInfo.isSocket()) fail('ADAPTER_CONTROLLER_UNAVAILABLE', 'controller endpointがsocketでない');
       // exec後にも同じ実行image bytesを再検証する。PID生存も同時に要求する。
       try { process.kill(child.pid, 0); } catch { fail('ADAPTER_CONTROLLER_UNAVAILABLE', 'controller process不達'); }
-      let executedImage;
-      try {
-        executedImage = await observeProcessExecutablePath(child.pid);
-      } catch { fail('ADAPTER_BINARY_IDENTITY_MISMATCH', 'exec後image path観測失敗'); }
-      if (executedImage !== binaryReal || sha256Bytes(await readFile(executedImage)) !== launch.binary_digest) {
-        fail('ADAPTER_BINARY_IDENTITY_MISMATCH', 'exec後image path/bytes不一致');
-      }
-      if (launch.binary_identity !== null
-        && canonicalizeArtifact(await binaryIdentityObserver(executedImage)) !== canonicalizeArtifact(launch.binary_identity)) {
-        fail('ADAPTER_BINARY_IDENTITY_MISMATCH', 'exec後macOS identity不一致');
+      // u03 C25: 観測できない時はpre-exec検証だけで進む。観測できて食い違う時だけ止める。
+      const executedImage = await observeProcessExecutablePath(child.pid).catch(() => null);
+      if (executedImage !== null) {
+        if (executedImage !== binaryReal || sha256Bytes(await readFile(executedImage)) !== launch.binary_digest) {
+          fail('ADAPTER_BINARY_IDENTITY_MISMATCH', 'exec後image path/bytes不一致');
+        }
+        if (launch.binary_identity !== null
+          && canonicalizeArtifact(await binaryIdentityObserver(executedImage)) !== canonicalizeArtifact(launch.binary_identity)) {
+          fail('ADAPTER_BINARY_IDENTITY_MISMATCH', 'exec後macOS identity不一致');
+        }
       }
     } else {
       if (!path.isAbsolute(handshakeSocket) || await realpath(path.dirname(handshakeSocket)) !== path.dirname(handshakeSocket)) {

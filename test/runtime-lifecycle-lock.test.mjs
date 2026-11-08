@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import { selfDigest } from '../src/runtime-contracts.mjs';
 import {
   RuntimeLifecycleLockError,
   acquireRuntimeLifecycleLock,
+  recoverUnidentifiedLock,
   releaseRuntimeLifecycleLock,
   validateRuntimeLifecycleLockArtifact,
 } from '../src/runtime-lifecycle-lock.mjs';
@@ -109,4 +110,71 @@ test('待機期限切れはtyped RUN_BUSYで既存ownerを保持する', async (
   assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).lock_digest,
     first.artifact.lock_digest);
   await first.release();
+});
+
+test('u03 L1: 公開はtemp+linkで完全bytesだけを置き、temporaryを残さない', async (t) => {
+  const { runDir, lockPath } = await fixture(t);
+  const handle = await acquire(runDir);
+  assert.equal(validateRuntimeLifecycleLockArtifact(JSON.parse(await readFile(lockPath, 'utf8'))), true);
+  assert.deepEqual((await readdir(runDir)).filter((name) => name.endsWith('.tmp')), []);
+  await handle.release();
+  assert.deepEqual(await readdir(runDir), []);
+});
+
+test('u03 L1: 死んだ取得者のtemporaryは次の取得者が片付ける', async (t) => {
+  const { runDir, lockPath } = await fixture(t);
+  const dead = `${lockPath}.2147483646.00000000-0000-0000-0000-000000000000.tmp`;
+  await writeFile(dead, '{"partial":');
+  const handle = await acquire(runDir);
+  assert.deepEqual((await readdir(runDir)).filter((name) => name.endsWith('.tmp')), []);
+  await handle.release();
+});
+
+test('u03 L2: 空・破損lockは猶予内はRUN_BUSY、猶予後は自動回収して取得できる', async (t) => {
+  const { runDir, lockPath } = await fixture(t);
+  for (const bytes of ['', '{"schema":"lattice.runtime_lifecycle_lock.v1","owner_pid":']) {
+    await writeFile(lockPath, bytes);
+    await assert.rejects(acquire(runDir), (error) => error.code === 'RUN_BUSY');
+    assert.equal(await readFile(lockPath, 'utf8'), bytes, '猶予内の未識別bytesは保つ');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockPath, old, old);
+    const handle = await acquire(runDir);
+    assert.equal(validateRuntimeLifecycleLockArtifact(JSON.parse(await readFile(lockPath, 'utf8'))), true);
+    await handle.release();
+    assert.deepEqual(await readdir(runDir), []);
+  }
+});
+
+test('u03 L2: 別schemaのlockは新しい版のownerとみなし、古くても回収しない', async (t) => {
+  const { runDir, lockPath } = await fixture(t);
+  const bytes = '{"schema":"lattice.runtime_lifecycle_lock.v2","owner_pid":1}\n';
+  await writeFile(lockPath, bytes);
+  const old = new Date(Date.now() - 60_000);
+  await utimes(lockPath, old, old);
+  await assert.rejects(acquire(runDir), (error) => error.code === 'RUN_LOCK_INVALID');
+  assert.equal(await readFile(lockPath, 'utf8'), bytes);
+});
+
+test('u03 L2: 判定後に差し替わったlockはquarantineから戻し、消さない', async (t) => {
+  const { lockPath } = await fixture(t);
+  await writeFile(lockPath, '');
+  const old = new Date(Date.now() - 60_000);
+  await utimes(lockPath, old, old);
+  const judged = await lstat(lockPath);
+  // 判定(lstat)と回収(rename)の間に、解放と新しい取得が割り込んだ状況。
+  await rm(lockPath);
+  await writeFile(lockPath, 'fresh-owner');
+  assert.equal(await recoverUnidentifiedLock(lockPath, judged), true);
+  assert.equal(await readFile(lockPath, 'utf8'), 'fresh-owner');
+  assert.deepEqual((await readdir(path.dirname(lockPath))).sort(), ['.lifecycle.lock']);
+});
+
+test('u03 L1: hard linkの無いfilesystemでは従来の排他作成へ戻って取得できる', async (t) => {
+  const { runDir, lockPath } = await fixture(t);
+  const noLink = async () => { const error = new Error('no link'); error.code = 'EPERM'; throw error; };
+  const handle = await acquire(runDir, { publishLink: noLink });
+  assert.equal(validateRuntimeLifecycleLockArtifact(JSON.parse(await readFile(lockPath, 'utf8'))), true);
+  await assert.rejects(acquire(runDir, { publishLink: noLink }), (error) => error.code === 'RUN_BUSY');
+  await handle.release();
+  assert.deepEqual(await readdir(runDir), []);
 });
