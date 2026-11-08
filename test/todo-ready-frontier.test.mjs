@@ -84,7 +84,7 @@ async function workspace(context) {
 }
 
 // 切り出し前のprojectTodoStatusが出していたバイト列。挙動不変の錨。
-const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v7","project_id":"project-1",'
+const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v8","project_id":"project-1",'
   + '"active_set":[{"plan_key":"main","task_id":"A","label":"Active work",'
   + '"unmet_dependencies":[]}],'
   // u12: ready entryは作成者が書いた終了条件を足して載せる（欄なしplanはnull）。
@@ -108,6 +108,7 @@ const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v7","project_id":"p
   // ob05: 並列候補。呼び出し側が渡す欄で、このtestは明示の空を渡している。挿入位置は
   // coordinationとmember_headsの間で、dispatch側のバイトは1つも動いていない。
   + '"parallel_candidates":[],'
+  + '"cross_plan_findings":{"total":0,"entries":[]},'
   + '"member_heads":[__HEADS__],"result_digest":"__RESULT__"}';
 
 test('status v7の出力バイト列が加算列以外変わらない', async (context) => {

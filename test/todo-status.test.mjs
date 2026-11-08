@@ -12,6 +12,7 @@ import test from 'node:test';
 import { todoSelfDigest } from '../src/todo-contracts.mjs';
 import {
   TODO_STATUS_CAPTURE_LIMIT,
+  TODO_STATUS_FINDING_LIMIT,
   TODO_STATUS_LABEL_LIMIT,
   TODO_STATUS_LIST_LIMIT,
   TODO_STATUS_REASON_LIMIT,
@@ -131,10 +132,10 @@ test('todo statusはactive/next-ready/blockedを混在投影しstore bytesを変
   assertExactKeys(result, [
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
     'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
-    'coordination', 'parallel_candidates',
+    'coordination', 'parallel_candidates', 'cross_plan_findings',
     'member_heads', 'result_digest',
   ]);
-  assert.equal(result.schema, 'lattice.todo_status_result.v7');
+  assert.equal(result.schema, 'lattice.todo_status_result.v8');
   // このstoreはまだ全taskがdoneではない(Phaseはactive)ので監査待ちは無い。
   assert.deepEqual(result.audit_pending, []);
   assert.deepEqual(result.active_set, [{
@@ -257,7 +258,7 @@ function syntheticReadModel(activeCount) {
 
 function syntheticStatusResult(activeCount) {
   const result = {
-    schema: 'lattice.todo_status_result.v7',
+    schema: 'lattice.todo_status_result.v8',
     project_id: 'scale-project',
     active_set: Array.from({ length: activeCount }, (_, index) => ({
       plan_key: 'main', task_id: `t${String(index).padStart(4, '0')}`, label: 'x', unmet_dependencies: [],
@@ -278,6 +279,7 @@ function syntheticStatusResult(activeCount) {
     plan_notes: [],
     coordination: [],
     parallel_candidates: [],
+    cross_plan_findings: { total: 0, entries: [] },
     member_heads: [],
     result_digest: '',
   };
@@ -330,4 +332,25 @@ test('consumer境界はPython同様code point数・control拒否・safe integer�
   invalid.extra = true;
   invalid.result_digest = todoSelfDigest(invalid, 'result_digest');
   assert.equal(validateTodoStatusResult(invalid), false);
+});
+
+test('v8 cross_plan_findings: Store findings pass through, the body is cut at the limit, total stays exact', () => {
+  const finding = (index) => ({
+    owner_plan_key: 'p000', event_digest: index % 2 === 0 ? null : 'd'.repeat(64),
+    side: index % 3 === 0 ? 'from' : 'to', reason: index % 2 === 0 ? 'endpoint_missing' : 'binding_stale',
+    ref: index % 5 === 0
+      ? { project_id: 'other', plan_key: 'up', phase_id: 'ph', expected_topology_digest: 'e'.repeat(64) }
+      : { project_id: 'other', plan_key: 'up', task_id: `t${index}`, expected_topology_digest: 'e'.repeat(64) },
+  });
+  const readModel = syntheticReadModel(1);
+  readModel.cross_plan_findings = Array.from({ length: 40 }, (_, index) => finding(index * 3));
+  const result = projectTodoStatus(readModel, { planNotes: [], parallelCandidates: [] });
+  assert.equal(result.cross_plan_findings.total, 40);
+  assert.equal(result.cross_plan_findings.entries.length, TODO_STATUS_FINDING_LIMIT);
+  assert.deepEqual(result.cross_plan_findings.entries[0], readModel.cross_plan_findings[0]);
+  assert.equal(validateTodoStatusResult(result), true);
+  const broken = structuredClone(result);
+  broken.cross_plan_findings.entries[1].ref.phase_id = 'ph';
+  broken.result_digest = todoSelfDigest({ ...broken, result_digest: '' }, 'result_digest');
+  assert.equal(validateTodoStatusResult(broken), false);
 });
