@@ -46,7 +46,7 @@ if (help !== null) {
     });
   }
 } else if (args[0] === 'plan' && args[1] === 'create'
-  && args[2] !== '--schema' && args[2] !== '--schema-version') {
+  && args[2] !== '--schema' && args[2] !== '--schema-version' && args[2] !== '--template') {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
   const spec = { known: ['input', 'serialization-reviewed'], required: ['input'],
     booleans: ['serialization-reviewed'] };
@@ -70,6 +70,14 @@ if (help !== null) {
   const { projectCliFailure, runPlanCreateSchema } = await import('../src/project-cli.mjs');
   try {
     process.exitCode = await runPlanCreateSchema({ stdout: process.stdout });
+  } catch (error) {
+    process.exitCode = projectCliFailure(process.stderr, error);
+  }
+} else if (args.length === 4 && args[0] === 'plan' && args[1] === 'create'
+  && args[2] === '--template' && args[3] === '--json') {
+  const { projectCliFailure, runPlanCreateTemplate } = await import('../src/project-cli.mjs');
+  try {
+    process.exitCode = await runPlanCreateTemplate({ stdout: process.stdout });
   } catch (error) {
     process.exitCode = projectCliFailure(process.stderr, error);
   }

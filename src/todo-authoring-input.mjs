@@ -187,25 +187,84 @@ export function repairAuthoringArtifact(value) {
  * input_digestは再計算。作成入力でない値と、レコードでない値はそのまま返す。
  */
 export const DEFAULT_EVIDENCE_SLOT = 'acceptance';
+export const DEFAULT_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v5';
+const DEFAULT_LANE = 'main';
+const DEFAULT_GATE_POLICY = 'heavy';
+const ISO_DATE_PREFIX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/u;
+const absent = (value) => value === undefined || value === null;
+
+// a11: 辺の参照が同じplanを指すなら、作成者はtask_id/phase_idだけ書けばよい。レコードでない参照はvalidatorへ。
+function fillRef(ref, projectId, planKey) {
+  if (!isRecord(ref)) return ref;
+  const filled = { ...ref };
+  if (filled.project_id === undefined && projectId !== undefined) filled.project_id = projectId;
+  if (filled.plan_key === undefined && planKey !== undefined) filled.plan_key = planKey;
+  return filled;
+}
+
+// 配列の各レコードだけを補う。配列でない値・レコードでない要素は触らず、validatorの指摘に任せる。
+function fillEach(next, key, fill) {
+  if (!Array.isArray(next[key])) return;
+  next[key] = next[key].map((entry) => (isRecord(entry) ? fill(entry) : entry));
+}
 
 export function completeCreateInput(value, { env, now }) {
-  if (!isRecord(value) || !CREATE_INPUT_SCHEMA.test(value.schema)) return value;
+  if (!isRecord(value)) return value;
   const next = { ...value };
-  if (next.actor === undefined || next.actor === null) next.actor = resolveTodoActor(env);
-  if (next.recorded_at === undefined || next.recorded_at === null) next.recorded_at = now.toISOString();
-  if (['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5'].includes(next.schema)
-    && Array.isArray(next.tasks)) {
-    next.tasks = next.tasks.map((task) => (isRecord(task)
-      && (task.design_memo === undefined || task.design_memo === null
-        || (typeof task.design_memo === 'string' && task.design_memo.trim() === ''))
-      ? { ...task, design_memo: 'NO_PLAN' } : task));
+  // a11: schemaを書かなければ現行のcreate入力(v5)。他のschemaを持つ値は作成入力でないのでそのまま返す。
+  if (absent(next.schema)) next.schema = DEFAULT_CREATE_INPUT_SCHEMA;
+  if (typeof next.schema !== 'string' || !CREATE_INPUT_SCHEMA.test(next.schema)) return value;
+  const fillNode = (ref) => fillRef(ref, next.project_id, next.plan_key);
+  const phaseInput = next.schema !== 'lattice.plan_create_input.v1';
+  const memoInput = ['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5'].includes(next.schema);
+  const decoupled = !['lattice.plan_create_input.v1', 'lattice.plan_create_input.v2'].includes(next.schema);
+  if (absent(next.actor)) next.actor = resolveTodoActor(env);
+  if (absent(next.recorded_at)) next.recorded_at = now.toISOString();
+  else if (typeof next.recorded_at === 'string' && ISO_DATE_PREFIX.test(next.recorded_at)) {
+    // 厳密形でなくても読める時刻はUTCミリ秒へ寄せる。読めない文字列はvalidatorが拒否する。
+    const parsed = new Date(next.recorded_at);
+    if (!Number.isNaN(parsed.getTime())) next.recorded_at = parsed.toISOString();
   }
-  // 段が要求する証拠の種類を書かなければ、受入の証拠1つ（acceptance）を求める。
-  if (Array.isArray(next.phases)) {
-    next.phases = next.phases.map((phase) => (isRecord(phase)
-      && (phase.required_evidence_slots === undefined || phase.required_evidence_slots === null
-        || (Array.isArray(phase.required_evidence_slots) && phase.required_evidence_slots.length === 0))
-      ? { ...phase, required_evidence_slots: [DEFAULT_EVIDENCE_SLOT] } : phase));
+  if (absent(next.hard_dependencies)) next.hard_dependencies = [];
+  if (absent(next.joins)) next.joins = [];
+  if (decoupled && absent(next.phase_accept_dependencies)) next.phase_accept_dependencies = [];
+  fillEach(next, 'hard_dependencies', (edge) => ({ ...edge, from: fillNode(edge.from), to: fillNode(edge.to) }));
+  fillEach(next, 'joins', (join) => ({
+    ...join,
+    ...(Array.isArray(join.after) ? { after: join.after.map(fillNode) } : {}),
+    ...('before' in join ? { before: fillNode(join.before) } : {}),
+  }));
+  if (decoupled) {
+    fillEach(next, 'phase_accept_dependencies',
+      (edge) => ({ ...edge, from: fillNode(edge.from), to: fillNode(edge.to) }));
+  }
+  fillEach(next, 'tasks', (task) => {
+    const filled = { ...task };
+    for (const key of ['narrative_anchor', 'compile_binding', 'parent_task_id', 'narrative_ref']) {
+      if (filled[key] === undefined) filled[key] = null;
+    }
+    if (absent(filled.lane)) filled.lane = DEFAULT_LANE;
+    if (next.schema === DEFAULT_CREATE_INPUT_SCHEMA && filled.done_condition === undefined) {
+      filled.done_condition = null;
+    }
+    if (memoInput && (absent(filled.design_memo)
+      || (typeof filled.design_memo === 'string' && filled.design_memo.trim() === ''))) {
+      filled.design_memo = 'NO_PLAN';
+    }
+    return filled;
+  });
+  if (phaseInput) {
+    fillEach(next, 'phases', (phase) => {
+      const filled = { ...phase };
+      if (absent(filled.gate_policy)) filled.gate_policy = DEFAULT_GATE_POLICY;
+      if (absent(filled.predecessor_phase_ids)) filled.predecessor_phase_ids = [];
+      // 段が要求する証拠の種類を書かなければ、受入の証拠1つ（acceptance）を求める。
+      if (absent(filled.required_evidence_slots)
+        || (Array.isArray(filled.required_evidence_slots) && filled.required_evidence_slots.length === 0)) {
+        filled.required_evidence_slots = [DEFAULT_EVIDENCE_SLOT];
+      }
+      return filled;
+    });
   }
   return repairAuthoringArtifact(next);
 }

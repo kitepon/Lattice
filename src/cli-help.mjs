@@ -27,14 +27,15 @@ const NAMESPACE_HELP = Object.freeze({
 Commands:
   create --input <file> [--serialization-reviewed]
       # 結果へdispatch_shapeを載せる。--serialization-reviewedは互換のため受理するだけで門ではない
-  create --schema --json             # 既定は最新版（v4）のJSON Schemaを返す
+  create --schema --json             # 既定は最新版（v5）のJSON Schemaを返す
   create --schema-version <1|2|3|4|5> --json
+  create --template --json           # 作者が書くkeyだけの最小のv5入力（そのままplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
   revise --input <file> [--dry-run] --json  # 工程の全体と明示した状態移行から改訂する
   revise --schema --json
   backchain --input <file> [--dry-run] --json
       # 各工程の必要・提供機能を照合し、初回又は既存storeへのplan登録まで行う
-  show <plan_key> --json             # task・依存・phase・状態をplan本体から1コマンドで投影する
+  show <plan_key> --json             # task・依存辺・phase・状態をplan本体から1コマンドで投影する
   compile --request <request.json>
   compile --schema --json            # lattice.run_request.v1 の JSON Schema を出す
   verify --request <request.json> --plan <plan.json>
@@ -233,7 +234,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'setup status': 'setup status [--host <claude|codex|grok|cursor|all>] [--json]',
   status: 'status --json',
   'session-context': 'session-context --json',
-  'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5> --json',
+  'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5> --json | --template --json',
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
   'plan backchain': 'plan backchain --input <file> [--dry-run] --json | --schema --json',

@@ -225,8 +225,8 @@ lattice status --json
 
 `state`は`uninitialized | ready | active_run | invalid`のいずれかです。`uninitialized`は
 正常な未初期化状態で、`next_action`が正規の初期authoring入口を返します。新規planはPhase監査と
-ToDo schedulingを分離し、全ToDoに設計メモを持つ`lattice.plan_create_input.v4`の
-repo内JSONを用意し、次で作成します。既存のv1〜v3は互換契約として維持され、`--schema-version`で取得できます。
+ToDo schedulingを分離し、全ToDoに設計メモを持つ`lattice.plan_create_input.v5`の
+repo内JSONを用意し、次で作成します。既存のv1〜v4は互換契約として維持され、`--schema-version`で取得できます。
 
 AIへ「Latticeで工程作って」と頼むと、製品hookが機能逆算の入口を示します。AIは最終成果と
 受入条件から必要な機能を逆向きにたどり、各ToDoが必要とする機能と作る機能を定義します。
@@ -244,7 +244,8 @@ lattice plan backchain --input .lattice/backchain.json --json
 旧planは従来どおり読めます。
 
 ```bash
-lattice plan create --schema-version 4 --json   # v4のJSON Schemaを取る（作成はしない）
+lattice plan create --schema-version 5 --json   # v5のJSON Schemaを取る（作成はしない）
+lattice plan create --template --json           # 作者が書くkeyだけの最小のv5入力（そのまま作成できる）
 ```
 
 ```bash
@@ -357,7 +358,7 @@ lattice todo phase baseline --reason <text> --except <監査したいplan_key>  
 error detailの`violation_path`へ載ります（配列のソート違反は`/tasks/1`のようにindexまで名指しします）。
 
 ```bash
-lattice plan create --schema --json            # 既定は最新v4
+lattice plan create --schema --json            # 既定は最新v5
 lattice todo revise-phase --schema --json
 lattice plan show <plan_key> --json            # planのtask・依存・phase・状態を1コマンドで読む
 ```Phase状態は

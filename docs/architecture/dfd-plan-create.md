@@ -132,6 +132,63 @@ content, graph cycles), each with pointer/rule/next_action.
 `plan create --schema` and `docs/schemas/lattice.plan_create_input.v5.schema.json`
 no longer list `actor`, `recorded_at`, `input_digest` or `design_memo` as required.
 
+## First plan in one or two tries (a11, 2026-11-08)
+
+Seat walkthrough: a 5-task plan took 13 `plan create` attempts. The author writes
+intent (ids, titles, phases, edges); every key whose value is constant or
+null is the machine's. Extends the u03p table above, same function
+(`completeCreateInput`), same callers (`plan create`, `plan revise` desired):
+
+| Field | Completion |
+|---|---|
+| `schema` | absent or null → `lattice.plan_create_input.v5` (the current create input) |
+| `recorded_at` | any string `Date` parses that starts `YYYY-MM-DDT` → its UTC `toISOString()` (milliseconds, `Z`); other strings stay and refuse |
+| `hard_dependencies`, `joins`, `phase_accept_dependencies` (v3–v5) | absent or null → `[]` |
+| `tasks[].narrative_anchor`, `compile_binding`, `parent_task_id`, `narrative_ref` | absent → `null` |
+| `tasks[].lane` | absent or null → `main` (no product branch reads the lane name) |
+| `tasks[].done_condition` (v5) | absent → `null` (no condition written) |
+| `phases[].gate_policy` | absent or null → `heavy` (display name only, schema note) |
+| `phases[].predecessor_phase_ids` | absent or null → `[]` |
+| edge refs: `hard_dependencies[].from/to`, `joins[].after[]/before`, `phase_accept_dependencies[].from/to` | absent `project_id`/`plan_key` → the input's own; an author only writes `task_id`/`phase_id` for an in-plan edge |
+
+Edge direction (schema text and `--template`): `from` is the prerequisite,
+`to` starts after `from` is done.
+
+All problems at once: `validatePlanCreateInput` collects every independent
+violation (top-level keys, schema, identifiers, actor, timestamp, each task's
+keys/identifiers/design memo/done condition/phase reference, each phase's
+keys/identifiers) before the graph build. The refusal keeps its code, reason
+and the first violation's `violation_kind`/`pointer`/`expected`/`actual`
+(guidance unchanged) and adds `problems`: every violation, grouped as top-level
+keys and values, design memos, done conditions, non-authorable keys, then each
+task, each phase and unknown phase references. The first violation keeps the
+existing priority (design memo, done condition, then the rest).
+A key-shape violation names `missing_keys` and `unexpected_keys`. The graph
+build (cycles, unknown edge targets) runs only when no shape problem was found
+and reports its one violation as before.
+
+`lattice plan create --template --json`: deterministic, exit 0, no store or
+repository read. Prints a minimal v5 input (two phases, three tasks, one edge,
+only author-written keys) that `plan create` accepts after the author renames
+ids and titles.
+
+`plan show` (`lattice.plan_show_result.v1`, additive) adds
+`hard_dependencies`, `joins` and `phase_accept_dependencies` exactly as the
+plan stores them.
+
+Guidance pointers move to v5: `CURRENT_CREATE_INPUT_SCHEMA`, status
+`next_action.schema_command` and refusal `next_action` name
+`lattice plan create --schema-version 5 --json`; `plan create --schema --json`
+defaults to v5. Accepted schemas and builders are unchanged (v1–v4 still
+accepted; backchain `authoring_ref` and scope-review keep their own input gates;
+a backchain `authoring_ref` without `schema` now reads as v5 through the same
+completion, and its gate decides as before).
+
+Failure/recovery: everything still refused is a value the author wrote (an
+unreadable id, a phase or edge naming nothing, same key with different content,
+a cycle); the author fixes every listed pointer and resubmits. No store write
+happens on refusal.
+
 ## Refusal guidance (u05, 2026-11-08)
 
 Every refusal printed by `lattice plan create|revise|backchain` and

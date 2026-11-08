@@ -64,8 +64,8 @@ test('status --jsonは未初期化repoを成功として発見し実在する次
   assert.equal(result.store.ref, '.lattice/todo');
   assert.equal(result.can_create_plan, true);
   assert.equal(result.next_action.command, 'lattice plan create --input .lattice/plan-create.json');
-  assert.equal(result.next_action.input_schema, 'lattice.plan_create_input.v4');
-  assert.equal(result.next_action.schema_command, 'lattice plan create --schema-version 4 --json');
+  assert.equal(result.next_action.input_schema, 'lattice.plan_create_input.v5');
+  assert.equal(result.next_action.schema_command, 'lattice plan create --schema-version 5 --json');
   assert.equal(result.result_digest, todoSelfDigest(result, 'result_digest'));
   assert.equal(validateProjectStatus(result), true);
 
@@ -74,12 +74,12 @@ test('status --jsonは未初期化repoを成功として発見し実在する次
   assert.equal(JSON.parse(schemaExecution.stdout).title, 'lattice.plan_create_input.v4');
 });
 
-test('plan create --schema --jsonは版指定なしで最新v4を返し、旧schemaは参照用に取得できる', async (context) => {
+test('plan create --schema --jsonは版指定なしで最新v5を返し、旧schemaは参照用に取得できる', async (context) => {
   const root = await workspace(context);
   const bare = run(root, ['plan', 'create', '--schema', '--json']);
   assert.equal(bare.status, 0, bare.stderr);
   assert.equal(bare.stderr, '');
-  assert.equal(JSON.parse(bare.stdout).title, 'lattice.plan_create_input.v4');
+  assert.equal(JSON.parse(bare.stdout).title, 'lattice.plan_create_input.v5');
 
   const legacy = run(root, ['plan', 'create', '--schema-version', '1', '--json']);
   assert.equal(legacy.status, 0, legacy.stderr);
@@ -386,7 +386,7 @@ test('空のstore directoryは未初期化と案内し、初期authoringへ戻�
   const result = JSON.parse(status.stdout);
   assert.equal(result.state, 'uninitialized');
   assert.equal(result.can_create_plan, true);
-  assert.equal(result.next_action.input_schema, 'lattice.plan_create_input.v4');
+  assert.equal(result.next_action.input_schema, 'lattice.plan_create_input.v5');
   await writeFile(path.join(root, 'plan.json'), JSON.stringify(createInput()));
   const created = run(root, ['plan', 'create', '--input', 'plan.json']);
   assert.equal(created.status, 0, created.stderr);
