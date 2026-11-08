@@ -33,8 +33,6 @@ async function legacyBindingFixture(context) {
   const env = { ...process.env, LATTICE_CONFIG_DIR: root,
     LATTICE_BRIDGE_INSTANCE_TOKEN: 'c'.repeat(64) };
   context.after(() => rm(root, { recursive: true, force: true }));
-  const reserved = await configureBridge({ address: DHCP_REBOUND, env,
-    upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' } });
   const server = createServer((request, response) => {
     if (request.url !== '/__lattice/bridge-health'
       || request.headers['x-lattice-bridge-instance-token'] !== env.LATTICE_BRIDGE_INSTANCE_TOKEN) {
@@ -46,10 +44,21 @@ async function legacyBindingFixture(context) {
       version: '0.68.1', node_path: process.execPath, node_version: process.version,
       bridge_path: '/old/lattice-bridge.mjs', last_heartbeat: null })}\n`);
   });
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen({ host: '::1', port: reserved.listen.port, exclusive: true }, resolve);
-  });
+  // The bridge reserves an IPv4 port; Windows excludes IPv6 port ranges separately, so the
+  // same port on ::1 can be EACCES there. Reserve again until ::1 accepts it.
+  for (let attempt = 1; ; attempt += 1) {
+    const reserved = await configureBridge({ address: DHCP_REBOUND, env,
+      upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' } });
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen({ host: '::1', port: reserved.listen.port, exclusive: true }, resolve);
+      });
+      break;
+    } catch (error) {
+      if (attempt >= 10 || !['EACCES', 'EADDRINUSE'].includes(error.code)) throw error;
+    }
+  }
   context.after(() => closeServer(server));
   const config = {
     schema: BRIDGE_CONFIG_SCHEMA, enabled: true,
