@@ -73,6 +73,17 @@ describe('index self-repair (u03 E15)', () => {
     expect(moveIndexAside(dbFile())).toBeNull();
   });
 
+  it('keeps only the newest 3 damaged copies, with their sidecars', () => {
+    const stamps = [1, 2, 3, 4, 5].map((d) => new Date(Date.UTC(2026, 10, d)));
+    for (const at of stamps) {
+      fs.writeFileSync(dbFile(), 'db');
+      fs.writeFileSync(`${dbFile()}-wal`, 'wal');
+      moveIndexAside(dbFile(), at);
+    }
+    const kept = fs.readdirSync(sensorDir()).filter((f) => f.startsWith('sensor.db.broken-')).sort();
+    expect(kept).toEqual(['03', '04', '05'].flatMap((d) => [`sensor.db.broken-2026-11-${d}T00-00-00-000Z`, `sensor.db.broken-2026-11-${d}T00-00-00-000Z-wal`]).sort());
+  });
+
   it('rebuilds a damaged default index on the next request and keeps the damaged files', async () => {
     engine = new BuiltMCPEngine({ watch: false });
     await engine.ensureInitialized(root);
