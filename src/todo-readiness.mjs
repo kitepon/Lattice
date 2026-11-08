@@ -4,6 +4,7 @@ import {
   isPhaseTodoPlanSchema,
   projectTodoCrossPlanDependencies,
 } from './todo-store-view.mjs';
+import { TodoStoreError } from './todo-store.mjs';
 
 function taskKey(ref) {
   return `${ref.project_id}\0${ref.plan_key}\0${ref.task_id}`;
@@ -153,12 +154,19 @@ export function validateProspectiveEvent({ store, member, event }) {
     && status !== undefined && status !== 'in-progress') {
     return refused('invalid_done_transition', 'task_state');
   }
-  // 読込とappendの間に状態が変わったretireは再試行できる競合であり、破損ではない（u12）。
-  if (event.kind === 'retire' && typeof event.payload.prior_status === 'string'
-    && status !== undefined && status !== event.payload.prior_status) {
-    return { ok: false, code: 'STORE_WRITE_CONFLICT', detail: { reason: 'retire_state_changed',
-      task_id: event.task_id, expected: { status: event.payload.prior_status }, actual: { status },
-      next_action: `lattice todo retire --plan ${member.plan.plan_key} --task ${event.task_id} --reason <text>` } };
-  }
   return { ok: true };
+}
+
+/**
+ * `todo retire`はlock外で読んだ状態をprior_statusに入れる。append時にStore replayが
+ * prior_status不一致や不正遷移で拒否したなら、読込とappendの間に状態が変わった
+ * 再試行できる競合であり、破損ではない（u12）。それ以外のerrorはそのまま返す。
+ */
+export function retireStateConflict(error, { planKey, taskId, priorStatus }) {
+  if (!(error instanceof TodoStoreError)
+    || !['retire_prior_status_mismatch', 'invalid_retire_transition'].includes(error.detail?.reason)) return error;
+  return new TodoStoreError('STORE_WRITE_CONFLICT', 'retire_state_changed', undefined, {
+    task_id: taskId, expected: { status: priorStatus },
+    next_action: `lattice todo retire --plan ${planKey} --task ${taskId} --reason <text>`,
+  });
 }

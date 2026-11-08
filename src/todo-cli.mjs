@@ -1,4 +1,4 @@
-import { validateProspectiveEvent } from './todo-readiness.mjs';
+import { retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
@@ -747,8 +747,12 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
       next_action: `lattice todo retract --plan ${planKey} --task ${taskId} --reason <text>`,
     });
   }
-  return mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
-    payload: { reason, prior_status: state.status }, evidenceRef: null });
+  try {
+    return await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
+      payload: { reason, prior_status: state.status }, evidenceRef: null });
+  } catch (error) {
+    throw retireStateConflict(error, { planKey, taskId, priorStatus: state.status });
+  }
 }
 
 async function startStructureContext({ repoRoot, store, planKey, taskId }) {

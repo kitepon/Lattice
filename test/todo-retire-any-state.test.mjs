@@ -112,18 +112,16 @@ test('retiring an already retired task succeeds without a new event', async (con
   assert.equal((await retireEvents(root)).length, 1);
 });
 
-test('a retire whose prior_status went stale is a retryable write conflict', async (context) => {
-  const root = await fixture(context);
-  const { readTodoStore } = await import('../src/todo-store.mjs');
-  const { validateProspectiveEvent } = await import('../src/todo-readiness.mjs');
-  const store = await readTodoStore({ repoRoot: root });
-  const member = store.members[0];
-  const event = { kind: 'retire', task_id: 'c', payload: { reason: '不要', prior_status: 'blocked' } };
-  const result = validateProspectiveEvent({ store, member, event });
-  assert.equal(result.ok, false);
-  assert.equal(result.code, 'STORE_WRITE_CONFLICT');
-  assert.equal(result.detail.reason, 'retire_state_changed');
-  assert.deepEqual(result.detail.actual, { status: 'pending' });
-  assert.equal(validateProspectiveEvent({ store, member,
-    event: { ...event, payload: { ...event.payload, prior_status: 'pending' } } }).ok, true);
+test('a retire refused for a stale prior_status is reported as a retryable write conflict', async () => {
+  const { TodoStoreError } = await import('../src/todo-store.mjs');
+  const { retireStateConflict } = await import('../src/todo-readiness.mjs');
+  const ids = { planKey: 'work', taskId: 'c', priorStatus: 'blocked' };
+  for (const reason of ['retire_prior_status_mismatch', 'invalid_retire_transition']) {
+    const mapped = retireStateConflict(new TodoStoreError('STORE_INCONSISTENT', reason), ids);
+    assert.equal(mapped.code, 'STORE_WRITE_CONFLICT');
+    assert.equal(mapped.detail.reason, 'retire_state_changed');
+    assert.deepEqual(mapped.detail.expected, { status: 'blocked' });
+  }
+  const other = new TodoStoreError('STORE_INCONSISTENT', 'unknown_task');
+  assert.equal(retireStateConflict(other, ids), other);
 });
