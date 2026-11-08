@@ -891,3 +891,17 @@ test('design_memoもaggregate prose limitへ計上する', { timeout: 15_000 }, 
     (error) => error instanceof TodoGanttRenderError && error.code === 'TODO_SCALE_EXCEEDED'
       && error.detail.prose_bytes === TODO_GANTT_PROSE_MAX_BYTES + 1);
 });
+
+test('a successor of a retired, never-done task is not drawn ready (the drawing uses Lattice readiness)', () => {
+  // T0000 -> T0001. T0000 was retired without finishing; Lattice readiness never counts a
+  // retired predecessor as done, so T0001 must not be marked next-ready even though the
+  // retired task and its edge are hidden from the drawing.
+  const read = readFixture(2, [{ from: ref('T0000'), to: ref('T0001') }]);
+  read.members[0].tasks[0].status = 'retired';
+  const layout = layoutTodoGantt(read);
+  assert.deepEqual(layout.nodes.filter(({ visibility }) => visibility.next_ready)
+    .map(({ ref: taskRef }) => taskRef.task_id), []);
+  read.members[0].tasks[0].status = 'done';
+  assert.deepEqual(layoutTodoGantt(read).nodes.filter(({ visibility }) => visibility.next_ready)
+    .map(({ ref: taskRef }) => taskRef.task_id), ['T0001']);
+});
