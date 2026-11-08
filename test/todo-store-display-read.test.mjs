@@ -280,6 +280,8 @@ test('checkpoint publication failure still returns the verified view without thr
 
 test('an untyped strict-read error degrades to unverified instead of throwing', async (context) => {
   if (process.getuid?.() === 0) return context.skip('root ignores file modes');
+  // chmod 0o000 does not deny reads on Windows, so the barrier stays readable there.
+  if (process.platform === 'win32') return context.skip('Windows ignores POSIX read modes');
   const w = await workspace(context);
   // An unreadable cutover barrier makes the strict reader's readFile throw a plain EACCES
   // Error (not a TodoStoreError); the raw reader never touches the barrier.
