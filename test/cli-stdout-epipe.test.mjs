@@ -66,7 +66,7 @@ test('通常実行のJSON出力とexit codeは変わらない', async (t) => {
   const { code, stdout } = await runCollected(root, ['todo', 'status', '--json']);
   assert.equal(code, 0);
   const result = JSON.parse(stdout);
-  assert.equal(result.schema, 'lattice.todo_status_result.v8');
+  assert.equal(result.schema, 'lattice.todo_status_result.v9');
   assert.equal(result.project_id, 'project-1');
 });
 

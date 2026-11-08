@@ -8,7 +8,7 @@
 // (b) 調整方式が未宣言 → 宣言 → 表出とguidanceの変化
 // (c) 逐次判定: 候補提示（未判定）→ 判定の反映 → 残候補
 // (d) **上記すべての操作でdispatchが動かない**（next_ready・dispatch_frontier・frontier_digest）
-// (e) v8契約: 上位キーexact 14・result_digestの自証・旧形の拒否
+// (e) v9契約: 上位キーexact 15・result_digestの自証・旧形の拒否
 //
 // 実storeを実CLI（bin/lattice.mjs）で駆動する。publish前なのでinstalled CLIでは
 // plan note（note chain v2）も調整方式（plan-scoped chain）も読めない——検証はrepo buildで行う。
@@ -217,16 +217,16 @@ test('(d) note書込・方式宣言・判定記録のどれもdispatchを動か�
   assert.deepEqual(afterJudgement.parallel_candidates[0].unjudged_task_ids, []);
 });
 
-test('(e) v8契約: 上位キーexact 14・result_digestの自証・旧形の拒否', async (context) => {
+test('(e) v9契約: 上位キーexact 15・result_digestの自証・旧形の拒否', async (context) => {
   const root = await workspace(context);
   const status = json(root, ['todo', 'status', '--json']);
 
-  assert.equal(status.schema, 'lattice.todo_status_result.v8');
+  assert.equal(status.schema, 'lattice.todo_status_result.v9');
   assert.deepEqual(Object.keys(status), [
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
     'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
     'coordination', 'parallel_candidates', 'cross_plan_findings',
-    'member_heads', 'result_digest',
+    'member_heads', 'truncated', 'result_digest',
   ]);
   // 応答が自分で自分を証明する。消費者は再計算で検証できる。
   assert.equal(status.result_digest, todoSelfDigest(status, 'result_digest'));

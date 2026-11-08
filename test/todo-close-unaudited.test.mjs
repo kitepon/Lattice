@@ -193,7 +193,7 @@ test('closed_unauditedはacceptedと機械的に区別され、gantt上は畳ま
   assert.equal(accepted.phases[0].status, 'accepted');
 });
 
-test('closed_unauditedの後はtask単独reopenが拒否され、phase_reopenを先に打てば通る(task_reopen_requires_phase_reopen)', async (t) => {
+test('closed_unauditedの後のtask単独reopenは通り、phaseの記録は残ったまま受入が古いと示される（u03 A15）', async (t) => {
   const root = await workspace(t);
   const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
   await doTask(root, writer, 'A', evidenceFor(root, 'a'));
@@ -204,23 +204,67 @@ test('closed_unauditedの後はtask単独reopenが拒否され、phase_reopenを
     event: { kind: 'phase_close_unaudited', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
       payload: { reason: '過去分は監査しない' } } });
 
-  // ADR 0148: closed_unauditedの後にtask単独reopenで裏から作業を再開できてしまうと、
-  // 「監査なしで閉じた」ことになっている(gantt上も畳まれたまま)のに中身が変わる抜け道になる。
-  // acceptedと同じ規律で、phase_reopenを先に通させる(replayのtask_reopen_requires_phase_reopen)。
-  await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
-    event: { kind: 'reopen', task_id: 'C', actor: ACTOR, recorded_at: NOW,
-      payload: { reason: 'こっそり直したい', override_reason: null } } }),
-  'STORE_INCONSISTENT', 'task_reopen_requires_phase_reopen');
-
-  // 対比: phase_reopenを先に打てば、taskのreopenは通常どおり通る(acceptedの既存挙動と同型)。
-  await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
-    event: { kind: 'phase_reopen', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
-      payload: { reason: '本当に直す', override_reason: null } } });
+  // 旧: task_reopen_requires_phase_reopenで拒否していた。task単独reopenは利用者の変更なので通す。
+  // phaseの決定は記録のまま残り(closed_unaudited)、taskだけがin-progressへ戻る。
   const reopened = await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
     event: { kind: 'reopen', task_id: 'C', actor: ACTOR, recorded_at: NOW,
       payload: { reason: '直す', override_reason: null } } });
   const taskC = reopened.snapshot.tasks.find(({ task_id }) => task_id === 'C');
   assert.equal(taskC.status, 'in-progress');
+  assert.equal(reopened.phases[0].status, 'closed_unaudited');
+
+  // 対比: phase_reopenを先に打つ従来の経路も通る。
+  await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+    event: { kind: 'phase_reopen', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
+      payload: { reason: '本当に直す', override_reason: null } } });
+});
+
+test('acceptedのphaseでtaskをreopenするとadvisoryとphase statusのacceptance_staleが立ち、受入し直すと消える（u03 A15）', async (t) => {
+  const root = await workspace(t);
+  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  await doTask(root, writer, 'A', evidenceFor(root, 'a'));
+  await doTask(root, writer, 'B', evidenceFor(root, 'b'));
+  await doTask(root, writer, 'C', evidenceFor(root, 'c'));
+  const phaseEntry = () => JSON.parse(run(root, ['todo', 'phase', 'status', '--plan', 'audited'], ACTOR_ENV)
+    .stdout).phases[0];
+  const review = () => appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+    event: { kind: 'phase_review', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
+      payload: { reason: '監査' } } });
+  const accept = async (label) => {
+    const reviewed = await review();
+    return appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+      event: { kind: 'phase_accept', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
+        payload: { review_event_digest: reviewed.event.event_digest,
+          decision_evidence: evidenceFor(root, `decision-${label}`),
+          evidence_slots: [{ slot_id: 'terminal-audit', evidence: evidenceFor(root, `slot-${label}`) }] } } });
+  };
+  await accept('1');
+  assert.equal(phaseEntry().status, 'accepted');
+  assert.equal(phaseEntry().acceptance_stale, false);
+
+  const reopen = run(root, ['todo', 'reopen', '--plan', 'audited', '--task', 'C', '--reason', '受入後に直す'], ACTOR_ENV);
+  assert.equal(reopen.status, 0, reopen.stderr);
+  const result = JSON.parse(reopen.stdout);
+  assert.equal(result.status, 'in-progress');
+  assert.equal(result.advisory.phase_acceptance_stale, true);
+  assert.equal(result.advisory.phase_id, 'terminal-audit');
+  assert.equal(result.advisory.status, 'accepted');
+  assert.match(result.advisory.guidance, /todo phase reopen --plan audited --phase terminal-audit/u);
+  const stale = phaseEntry();
+  assert.equal(stale.status, 'accepted');
+  assert.equal(stale.acceptance_stale, true);
+  assert.match(stale.guidance, /todo phase reopen --plan audited --phase terminal-audit/u);
+
+  // 自分で抜ける: phase reopen → taskを終える → review → accept で新しい決定が記録され、旗が消える。
+  await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+    event: { kind: 'phase_reopen', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
+      payload: { reason: '受け直す', override_reason: null } } });
+  await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+    event: { kind: 'done', task_id: 'C', actor: ACTOR, recorded_at: NOW,
+      payload: { evidence: evidenceFor(root, 'c2') } } });
+  await accept('2');
+  assert.equal(phaseEntry().status, 'accepted');
+  assert.equal(phaseEntry().acceptance_stale, false);
 });
 
 test('closed_unauditedはphase_accept_dependenciesを解錠しない(ADR 0148裁定2。ここが核心)', async (t) => {

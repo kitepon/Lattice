@@ -142,7 +142,6 @@ import {
   TodoIndependenceError,
 } from './todo-independence.mjs';
 import {
-  independenceStartRefusal,
   selectIndependenceGuidance,
   selectWitnessScaffoldGuidance,
   selectSeamProposalGuidance,
@@ -188,11 +187,8 @@ import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 const DEFAULT_GANTT_SCOPE = 'live';
 const MAX_NOTE_INPUT_BYTES = 16_384;
-const ACTOR_ENV_KEYS = Object.freeze([
-  'LATTICE_TODO_ACTOR_HOST',
-  'LATTICE_TODO_ACTOR_SESSION',
-  'LATTICE_TODO_ACTOR_AGENT',
-]);
+/** u03 A58: `todo done` without --evidence/--message records this text as its evidence. */
+const DONE_WITHOUT_EVIDENCE_MESSAGE = '証拠の指定なしで完了した。\n';
 
 /**
  * `revise` / `revise-set` / `revise-phase` / `migrate`が配布する名前付き入力契約のJSON
@@ -577,19 +573,8 @@ function defaultActorHost(env) {
   return terminalId === null ? 'host' : terminalPublicLabel(terminalId);
 }
 
+// u03 A57: a set but non-identifier value is treated exactly like an unset one.
 function mutationActor(env) {
-  const provided = ACTOR_ENV_KEYS.map((key) => ({ key, value: env[key] }));
-  const invalidEnvironment = provided
-    .filter(({ value }) => typeof value === 'string' && value.length > 0 && !isTodoIdentifier(value))
-    .map(({ key }) => key);
-  if (invalidEnvironment.length > 0) {
-    throw new TodoStoreError('ACTOR_UNRESOLVED', 'actor_environment_invalid', undefined, {
-      required_environment: ACTOR_ENV_KEYS,
-      missing_environment: [],
-      invalid_environment: invalidEnvironment,
-      next_action: 'set_required_actor_environment_and_retry',
-    });
-  }
   return {
     host: isTodoIdentifier(env.LATTICE_TODO_ACTOR_HOST)
       ? env.LATTICE_TODO_ACTOR_HOST
@@ -640,6 +625,37 @@ function terminalAuditDoneAdvisory(plan, phases) {
   };
 }
 
+/** Task ids of a phase; a phaseless plan's implicit terminal-audit phase holds every task. */
+function phaseTaskIds(plan, phaseId) {
+  return new Set(plan.tasks.filter((task) => isPhaselessTodoPlanSchema(plan.schema)
+    || task.phase_id === phaseId).map(({ task_id: id }) => id));
+}
+
+function staleAcceptanceGuidance(planKey, phaseId) {
+  return '受入後にこのphaseの工程が再開された。記録された受入は古い。受入し直すなら: '
+    + `todo phase reopen --plan ${planKey} --phase ${phaseId} --reason <text> → todo phase review → todo phase accept。`;
+}
+
+/**
+ * u03 A15: an accepted/closed_unaudited phase whose task was reopened after the decision.
+ * Derived from the journal, never persisted. A carried decision (not in this journal) precedes it all.
+ */
+function phaseAcceptanceStale(plan, events, phase) {
+  if (!['accepted', 'closed_unaudited'].includes(phase.status)) return false;
+  const decided = events.findIndex(({ event_digest: digest }) => digest === phase.decision_event_digest);
+  const taskIds = phaseTaskIds(plan, phase.phase_id);
+  return events.slice(decided + 1).some((event) => event.kind === 'reopen' && taskIds.has(event.task_id));
+}
+
+function reopenAdvisory(plan, phases, taskId) {
+  const phase = phases.find((entry) => ['accepted', 'closed_unaudited'].includes(entry.status)
+    && phaseTaskIds(plan, entry.phase_id).has(taskId));
+  return phase === undefined ? null : {
+    phase_acceptance_stale: true, phase_id: phase.phase_id, status: phase.status,
+    guidance: staleAcceptanceGuidance(plan.plan_key, phase.phase_id),
+  };
+}
+
 async function mutate({
   repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
@@ -682,10 +698,11 @@ async function mutate({
   const authoredTask = plan.tasks.find(({ task_id: current }) => current === event.task_id);
   if (authoredTask === undefined) throw new TypeError('mutation task content is missing');
   // advisoryは呼び出し側(startTask)がstart用に既に組んでいればそれを尊重し、無ければ
-  // done時だけ終端監査の要否を調べる。block/unblock/reopenはnullのまま(既存挙動を変えない)。
+  // done時は終端監査の要否、reopen時は受入が古くなったphase(u03 A15)を返す。block/unblockはnull。
   // Phase状態はsnapshot(v1にはphasesキーが無い)でなく、appendTodoEventが別途返す
   // 導出ビュー`phases`から読む。
-  const resolvedAdvisory = advisory ?? (kind === 'done' ? terminalAuditDoneAdvisory(plan, phases) : null);
+  const resolvedAdvisory = advisory ?? (kind === 'done' ? terminalAuditDoneAdvisory(plan, phases)
+    : kind === 'reopen' ? reopenAdvisory(plan, phases, event.task_id) : null);
   const includesNoteContext = kind === 'start';
   if (includesNoteContext && noteContext === null) {
     throw new TypeError('start mutation requires note context');
@@ -719,8 +736,9 @@ async function mutate({
 }
 
 /**
- * 恒久除去（u12）。pending/blocked/doneから`{reason, prior_status}`で閉じる。
- * in-progressはRuntimeに解放経路が無いので従来どおり拒否する（先にretract/blockする）。
+ * 恒久除去（u12）。どの状態からでも`{reason, prior_status}`で閉じる。
+ * in-progressは、最新のauthored startに束ねられた未acceptのintakeをRuntimeの解放手順で
+ * 先に解放してから閉じる（u03 A14r）。
  * 既にretiredなら成功を返しeventは足さない（応答を失った再試行をエラーにしない）。
  */
 async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
@@ -745,18 +763,23 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     result.result_digest = todoSelfDigest(result, 'result_digest');
     return result;
   }
-  if (state.status === 'in-progress') {
-    throw new TodoStoreError('STORE_INCONSISTENT', 'invalid_retire_transition', undefined, {
-      task_id: taskId, status: state.status,
-      next_action: `lattice todo retract --plan ${planKey} --task ${taskId} --reason <text>`,
-    });
-  }
-  try {
-    return await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
-      payload: { reason, prior_status: state.status }, evidenceRef: null });
-  } catch (error) {
-    throw retireStateConflict(error, { planKey, taskId, priorStatus: state.status });
-  }
+  const append = async () => {
+    try {
+      return await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
+        payload: { reason, prior_status: state.status }, evidenceRef: null });
+    } catch (error) {
+      throw retireStateConflict(error, { planKey, taskId, priorStatus: state.status });
+    }
+  };
+  if (state.status !== 'in-progress') return append();
+  // Runtime binds an intake to the latest literal start and ignores later done/reopen, so the
+  // release targets that start (a reopened task keeps it; a retracted start left in-progress never).
+  const start = member.journal.events.findLast((event) => event.task_id === taskId && event.kind === 'start');
+  if (start === undefined || start.payload.start_mode === 'historical_import') return append();
+  return withStartRetractionGuard({
+    repoRoot, planKey, taskId, activationEventDigest: start.event_digest,
+    releaseReason: 'task_retired', action: append,
+  });
 }
 
 async function startStructureContext({ repoRoot, store, planKey, taskId }) {
@@ -819,7 +842,21 @@ function designMemoProjection(task) {
  * silent degradeせず、呼び出し側でstart自体を止める。
  */
 async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
-  const artifact = await readTodoIndependenceArtifact({ repoRoot, store, planKey });
+  // u03 B16/B7: an unreadable record or an unresolved HEAD makes the record unusable for this
+  // start; the start is recorded with the no-record advisory and a warning naming why.
+  let unusable = null;
+  let artifact = null;
+  let currentBaseSha = null;
+  try {
+    artifact = await readTodoIndependenceArtifact({ repoRoot, store, planKey });
+    if (artifact !== null) currentBaseSha = currentHeadSha(repoRoot);
+  } catch (error) {
+    if (!['INDEPENDENCE_ARTIFACT_INVALID', 'INDEPENDENCE_BASE_UNRESOLVED'].includes(error?.code)) throw error;
+    unusable = error.code === 'INDEPENDENCE_ARTIFACT_INVALID' ? 'independence_record_unreadable' : 'git_head_unresolved';
+    process.emitWarning(`todo start: independence record not used (${unusable}: ${error.detail?.reason ?? error.message})`,
+      { code: 'LATTICE_START_INDEPENDENCE_UNUSABLE' });
+    artifact = null;
+  }
   // 調整方式の宣言（ob03）。未宣言はnullで、「まだ選んでいない」を意味する。
   const coordinationMode = store.members
     .find(({ descriptor }) => descriptor.plan_key === planKey)?.coordination?.mode ?? null;
@@ -833,15 +870,12 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
       scope_expansion_recommendations: [],
       uncovered_active_task_ids: projection.active_set
         .filter((task) => task.plan_key === planKey).map(({ task_id: id }) => id),
-      self_unknowns: [{ kind: 'witness_missing', ref: 'no_independence_record' }],
+      self_unknowns: [{ kind: 'witness_missing', ref: unusable ?? 'no_independence_record' }],
       guidance: selectIndependenceGuidance({
         coverage: 'missing', taskDeclared: false, taskStale: false, coordinationMode,
       }),
     };
   }
-  // 記録があるなら鮮度の判定にHEADが要る。ここで読めないのは判定不能であり、
-  // 助言なしで通してよい状態ではない。
-  const currentBaseSha = currentHeadSha(repoRoot);
   const changedPaths = artifact.base_sha !== null && artifact.base_sha !== currentBaseSha
     ? changedPathsSince(repoRoot, artifact.base_sha) : null;
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
@@ -893,7 +927,7 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
 }
 
 async function startTask({
-  repoRoot, env, planKey, taskId, overrideReason, parallelFrontier,
+  repoRoot, env, planKey, taskId, overrideReason,
 }) {
   const store = await readTodoStore({ repoRoot });
   // startはready判定にしかprojectionを使わず、resultを出力しない。
@@ -901,12 +935,7 @@ async function startTask({
   const readyTask = projection.next_ready.find((task) => (
     task.plan_key === planKey && task.task_id.toLowerCase() === taskId.toLowerCase()
   ));
-  const targetReady = readyTask !== undefined;
-  // `--parallel-frontier`は方針の記録口で、対象がreadyでないときにだけ用法誤り。
-  // 複数readyのplain startや直列理由の文言審査で着手を止めない（ADR 0180）。
-  if (parallelFrontier && !targetReady) {
-    throw new TodoStoreError('PARALLEL_DISPATCH_INVALID', 'parallel_frontier_not_applicable');
-  }
+  // u03 B8: `--parallel-frontier` is a policy flag; on a non-ready target it is simply ignored.
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active');
   const taskMatches = member.plan.tasks.filter(({ task_id: candidate }) => (
@@ -944,24 +973,24 @@ async function startTask({
       next_action: `lattice todo note list --plan ${planKey} --json`,
     };
   }
-  // 助言はjournalへ書く前に確定させる。計算できないならstart自体を止める。
+  // 助言はjournalへ書く前に確定させる。助言はstartを止めない（u03 B1–B6）。
   const advisory = await startAdvisory({
     repoRoot, store, projection, planKey, taskId: resolvedTaskId,
   });
-  const refusal = independenceStartRefusal(advisory.guidance);
-  if (refusal !== null) {
-    throw new TodoStoreError('INDEPENDENCE_UNVERIFIED', refusal.code, refusal.message, {
-      plan_key: planKey,
-      task_id: resolvedTaskId,
-      next_action: refusal.next_action,
-    });
-  }
   const structureContext = await startStructureContext({
     repoRoot, store, planKey, taskId: resolvedTaskId,
   });
-  const featureContext = await readTaskBackchainContext({
-    repoRoot, plan: member.plan, taskId: resolvedTaskId,
-  });
+  // u03 A88: feature context is advisory; an unusable backchain degrades to the v5 result.
+  let featureContext = null;
+  try {
+    featureContext = await readTaskBackchainContext({
+      repoRoot, plan: member.plan, taskId: resolvedTaskId,
+    });
+  } catch (error) {
+    if (error?.code !== 'PLAN_BACKCHAIN_INVALID') throw error;
+    process.emitWarning(`todo start: backchain not used (${error.detail?.reason ?? error.message}: ${error.detail?.pointer ?? ''})`,
+      { code: 'LATTICE_START_BACKCHAIN_UNUSABLE' });
+  }
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, evidenceRef: null, advisory, noteContext,
     structureContext, featureContext });
@@ -1280,7 +1309,10 @@ async function phaseStatus({ repoRoot, planKey }) {
   // v4/v5の実Phaseがgate_readyになった場合も同じ理由で同じ案内が要る。
   const phases = member.phases.map((phase) => ({
     ...phase,
-    guidance: phase.status === 'gate_ready'
+    acceptance_stale: phaseAcceptanceStale(member.plan, member.journal.events, phase),
+    guidance: phaseAcceptanceStale(member.plan, member.journal.events, phase)
+      ? staleAcceptanceGuidance(member.plan.plan_key, phase.phase_id)
+      : phase.status === 'gate_ready'
       ? [
         auditGateGuidance(member.plan.plan_key, phase.phase_id),
         ...(structureFinalization.required && structureFinalization.status !== 'fresh'
@@ -4290,7 +4322,6 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       action = (repoRoot) => startTask({
         repoRoot, env, planKey: flags.plan, taskId: flags.task,
         overrideReason: typeof flags['override-reason'] === 'string' ? flags['override-reason'] : null,
-        parallelFrontier: flags['parallel-frontier'] === true,
       });
     }
   } else if (argv[0] === 'done') {
@@ -4300,16 +4331,31 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     });
     const hasEvidence = isAuthoringPathToken(flags?.evidence);
     const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
+    // u03 A58: both, one or neither of --evidence/--message is accepted.
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
-      && hasEvidence !== hasMessage
+      && (flags.evidence === undefined || hasEvidence)
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
-      action = (repoRoot) => mutate({
-        repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'done', payload: 'authored',
-        evidenceRef: hasEvidence ? flags.evidence : null,
-        evidenceMessage: hasMessage ? flags.message : null,
-        testResultRef: flags['test-result'] ?? null,
-      });
+      action = async (repoRoot) => {
+        let evidenceMessage = hasMessage ? flags.message : null;
+        if (hasEvidence && hasMessage) {
+          // The message is the record; it names the resolved file so nothing given is lost.
+          const file = await resolveDoneEvidence({
+            repoRoot, evidenceRef: flags.evidence, evidenceMessage: null,
+            planKey: flags.plan, taskId: flags.task,
+          });
+          evidenceMessage = `${flags.message}\n\nevidence: ${file.repo_id}:${file.path}`
+            + ` (git blob ${file.git_blob_oid}, sha256 ${file.content_digest})\n`;
+        } else if (!hasEvidence && !hasMessage) {
+          evidenceMessage = DONE_WITHOUT_EVIDENCE_MESSAGE;
+        }
+        return mutate({
+          repoRoot, env, planKey: flags.plan, taskId: flags.task,
+          kind: 'done', payload: 'authored',
+          evidenceRef: evidenceMessage === null ? flags.evidence : null,
+          evidenceMessage,
+          testResultRef: flags['test-result'] ?? null,
+        });
+      };
     }
   }
   if (action === null && argv[0] === 'retract') {

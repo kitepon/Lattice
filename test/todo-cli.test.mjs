@@ -571,23 +571,32 @@ test('authoring CLIはactor欠落をdefaultで通し、順序違反・blocked中
   assert.equal(await storeDigest(root), blockedBefore);
 });
 
-test('authoring CLIは不正actor環境だけを拒否し、欠落はdefaultする', async (context) => {
+test('authoring CLIは不正actor環境を未設定と同じに扱い、defaultのactorで記録する（u03 A57）', async (context) => {
   const root = await workspace(context);
-  const env = {
-    ...process.env,
-    LATTICE_TODO_ACTOR_HOST: 'host-1',
-    LATTICE_TODO_ACTOR_SESSION: 'invalid session',
-  };
-  delete env.LATTICE_TODO_ACTOR_AGENT;
-  const result = spawnSync(process.execPath, [CLI, 'todo', 'start', '--plan', 'main', '--task', 'T1'], {
-    cwd: root, env, encoding: 'utf8',
+  const result = runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'], {
+    extraEnv: {
+      LATTICE_TODO_ACTOR_HOST: 'bad host',
+      LATTICE_TODO_ACTOR_SESSION: 'invalid session',
+      LATTICE_TODO_ACTOR_AGENT: 'bad/agent',
+      USER: 'qa user',
+      LATTICE_CONFIG_DIR: TERMINAL_CONFIG_DIR,
+    },
   });
-  assert.equal(result.status, 1);
-  const error = JSON.parse(result.stderr);
-  assert.equal(error.code, 'ACTOR_UNRESOLVED');
-  assert.deepEqual(error.detail.missing_environment, []);
-  assert.deepEqual(error.detail.invalid_environment, ['LATTICE_TODO_ACTOR_SESSION']);
-  assert.equal(error.detail.next_action, 'set_required_actor_environment_and_retry');
+  assert.equal(successJson(result).status, 'in-progress');
+  const actor = (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+  assert.match(actor.host, /^terminal-[0-9a-f]{12}$/u);
+  assert.equal(actor.session, 'session');
+  assert.equal(actor.agent, 'qa-user');
+
+  // 一部だけ不正でも、正しい値はそのまま使い、不正な欄だけがdefaultになる。
+  const mixed = runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'], {
+    extraEnv: { LATTICE_TODO_ACTOR_SESSION: 'invalid session' },
+  });
+  assert.equal(successJson(mixed).status, 'blocked');
+  const blocked = (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+  assert.equal(blocked.host, ACTOR.host);
+  assert.equal(blocked.session, 'session');
+  assert.equal(blocked.agent, ACTOR.agent);
 });
 
 test('flag順と証拠本文・repo内絶対pathでstart/doneが通る', async (context) => {
@@ -659,6 +668,58 @@ test('--messageはcontent-addressed evidence fileをstoreへ保存してcommit�
   assert.equal((await readFile(path.join(root, descriptor.path), 'utf8')), '完了証拠');
   assert.equal(committed.commit.paths.includes(descriptor.path), true);
   assert.equal(gitOutput(root, ['rev-parse', `HEAD:${descriptor.path}`]), descriptor.git_blob_oid);
+  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
+});
+
+test('--parallel-frontierはreadyでないtargetでも用法誤りにならず、Storeの依存判定だけが残る（u03 B8）', async (context) => {
+  const root = await workspace(context);
+  const before = await storeDigest(root);
+  // T2はT1に依存して未readyだが、旧PARALLEL_DISPATCH_INVALID/parallel_frontier_not_applicableは返さない。
+  const refused = runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T2', '--parallel-frontier']);
+  assert.equal(refused.status, 1);
+  const error = JSON.parse(refused.stderr);
+  assert.equal(error.code, 'STORE_INCONSISTENT');
+  assert.equal(error.detail.reason, 'invalid_start_transition');
+  assert.equal(await storeDigest(root), before);
+
+  // 利用者が理由を付ければ未readyのtargetも着手でき、flagはただ無視される。
+  const started = successJson(runCli(root, [
+    'todo', 'start', '--plan', 'main', '--task', 'T2', '--parallel-frontier', '--override-reason', '先行して進める',
+  ]));
+  assert.equal(started.status, 'in-progress');
+});
+
+test('todo doneは--evidenceと--messageの両方・どちらも無しを受け、証拠の記録を残す（u03 A58）', async (context) => {
+  const root = await workspace(context);
+  const evidenceText = (descriptor) => readFile(path.join(root, descriptor.path), 'utf8');
+  const descriptorOf = async (taskId) => (await readTodoStore({ repoRoot: root })).members[0]
+    .tasks.find(({ task_id: id }) => id === taskId).evidence;
+
+  // 両方: 本文の後ろに、解決したファイルのrepo_id:path・blob oid・sha256を1行で足す。
+  const bodyRef = 'proof.md';
+  const bytes = Buffer.from('# 証明\n', 'utf8');
+  await writeFile(path.join(root, bodyRef), bytes);
+  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
+  const both = successJson(runCli(root, [
+    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', bodyRef, '--message', '手で確認した',
+  ]));
+  assert.equal(both.status, 'done');
+  const oid = gitOutput(root, ['hash-object', bodyRef]);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const bothDescriptor = await descriptorOf('T1');
+  assert.equal(await evidenceText(bothDescriptor),
+    `手で確認した\n\nevidence: self:${bodyRef} (git blob ${oid}, sha256 ${digest})\n`);
+
+  // どちらも無し: 固定文を証拠として記録し、完了は通る。
+  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T2']));
+  const neither = successJson(runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T2']));
+  assert.equal(neither.status, 'done');
+  assert.equal(await evidenceText(await descriptorOf('T2')), '証拠の指定なしで完了した。\n');
+  // 証拠はcommit済みのblobへ束縛されるので、commit後にhard verifyを通す。
+  gitOutput(root, ['config', 'user.email', 'fixture@example.invalid']);
+  gitOutput(root, ['config', 'user.name', 'Fixture']);
+  gitOutput(root, ['add', '.']);
+  gitOutput(root, ['commit', '--quiet', '-m', 'commit evidence']);
   successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
 });
 
@@ -1117,7 +1178,7 @@ test('todo namespaceの未知subcommandと不正引数は別codeのtyped exit 2'
     ['todo', 'start', '--plan', 'main', '--task', 'T1', '--override-reason'],
     ['todo', 'block', '--plan', 'main', '--task', 'T1'],
     ['todo', 'unblock', '--plan', 'main', '--task', 'T1', 'extra'],
-    ['todo', 'done', '--plan', 'main', '--task', 'T1'],
+    ['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence'],
     ['todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'why', '--override-reason'],
   ];
   for (const args of malformed) {
