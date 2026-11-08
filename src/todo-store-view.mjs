@@ -1,12 +1,31 @@
 /* Pure projections shared by Store and Plan; no I/O or lifecycle mutation. */
 import { canonicalizeTodoArtifact } from './todo-contracts.mjs';
 
+/**
+ * u03 A6: undo a Git autocrlf checkout of canonical LF bytes in memory. Only a pure
+ * conversion (every CR directly precedes LF) is undone; callers still check canonical
+ * bytes and digests on the result, so any other CR keeps failing as non-canonical.
+ */
+export function normalizeCheckoutEol(bytes) {
+  if (!bytes.includes(0x0d)) return bytes;
+  for (let index = bytes.indexOf(0x0d); index !== -1; index = bytes.indexOf(0x0d, index + 1)) {
+    if (bytes[index + 1] !== 0x0a) return bytes;
+  }
+  return Buffer.from(bytes.toString('latin1').replaceAll('\r\n', '\n'), 'latin1');
+}
+
 export function isPhaseTodoPlanSchema(schema) {
-  return ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(schema);
+  return ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(schema);
+}
+
+/** One finished-predecessor predicate for Store replay and readiness: done, or retired from done (u12). */
+export function isFinishedTodoTaskState(state) {
+  return state?.status === 'done'
+    || (state?.status === 'retired' && (state.done_at !== null || state.imported === true));
 }
 
 export function isDecoupledPhaseTodoPlanSchema(schema) {
-  return ['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(schema);
+  return ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(schema);
 }
 
 // CLI側(migrate/plan create/最後のdone)が「終端重監査が要る」ことを通知するために

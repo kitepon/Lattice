@@ -21,7 +21,8 @@
  *      `lattice-mcp`), rejecting that re-invoke would leave the daemon
  *      unable to ever start, silently pinning every session to direct mode
  *      (the exact silent-degradation trap the ADR calls out).
- *   ③ Exit semantics: usage violation before startup = exit 2; startup
+ *   ③ Exit semantics: usage violation before startup (a known option without
+ *      its value) = exit 2; unknown argv tokens are ignored with a warning; startup
  *      scrutiny failure = exit 1 + one `lattice.cli_error.v2` line on
  *      stderr; normal session end = exit 0 (delegated entirely to
  *      MCPServer, which calls process.exit on every one of its lifecycle
@@ -69,7 +70,9 @@ function startupFailure(code, message) {
  *   - `-p <path>` / `--path <path>` — explicit project root. The daemon
  *     re-invoke form always supplies this; a direct MCP-host launch may
  *     omit it and rely on `rootUri` reported by the client at `initialize`.
- * Any other token is a usage violation (exit 2) — no implicit fallback.
+ * Any other token is ignored with one stderr warning naming it (u03 sweep F2);
+ * it protects nothing, so it never stops startup. A known option missing its
+ * value stays a usage violation (exit 2).
  */
 function parseArgs(argv) {
   let path;
@@ -89,7 +92,7 @@ function parseArgs(argv) {
     unknown.push(arg);
   }
   if (unknown.length > 0) {
-    return { error: `unsupported argument(s): ${unknown.join(' ')}` };
+    process.stderr.write(`lattice-mcp: ignoring unsupported argument(s): ${unknown.join(' ')}\n`);
   }
   return { path };
 }

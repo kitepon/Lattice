@@ -342,11 +342,27 @@ async function verifyExistingFeatureReferences(repoRoot, chain) {
   }
 }
 
-export function planSeed(authoring, predecessorPlanDigest) {
+const DONE_CONDITION_PLAN_SCHEMA = 'lattice.todo_plan.v8';
+
+/**
+ * authoring（create入力またはplan本体）から後継planの種を作る。
+ * 作る版: v5入力か先行planがv8ならv8（v8→v7へ戻さない）、それ以外はv7。
+ * v8でdone_conditionを書いていないtask（v4入力）は、先行planの同じtaskの値を引き継ぐ
+ * （書き換えも消去もしていないので意味を変えない）。新規taskはnull。
+ */
+export function planSeed(authoring, predecessorPlanDigest, predecessorPlan = null) {
+  const v8 = authoring.schema === 'lattice.plan_create_input.v5'
+    || authoring.schema === DONE_CONDITION_PLAN_SCHEMA
+    || predecessorPlan?.schema === DONE_CONDITION_PLAN_SCHEMA;
+  const inherited = new Map(predecessorPlan?.schema === DONE_CONDITION_PLAN_SCHEMA
+    ? predecessorPlan.tasks.map(({ task_id: id, done_condition: value }) => [id, value]) : []);
   return {
-    schema: 'lattice.todo_plan.v7', project_id: authoring.project_id,
+    schema: v8 ? DONE_CONDITION_PLAN_SCHEMA : 'lattice.todo_plan.v7', project_id: authoring.project_id,
     plan_key: authoring.plan_key, predecessor_plan_digest: predecessorPlanDigest,
-    tasks: authoring.tasks, phases: authoring.phases,
+    tasks: v8 ? authoring.tasks.map((task) => ({ ...task,
+      done_condition: Object.hasOwn(task, 'done_condition')
+        ? task.done_condition : inherited.get(task.task_id) ?? null })) : authoring.tasks,
+    phases: authoring.phases,
     hard_dependencies: authoring.hard_dependencies, joins: authoring.joins,
     phase_accept_dependencies: authoring.phase_accept_dependencies,
   };
@@ -434,7 +450,7 @@ export function compilePhaseMigration(previousPlan, desiredSeed, taskMigration) 
 }
 
 async function compileBackchainRevision({ repoRoot, member, chain, authoring }) {
-  if (member.plan.schema !== 'lattice.todo_plan.v7') {
+  if (!['lattice.todo_plan.v7', DONE_CONDITION_PLAN_SCHEMA].includes(member.plan.schema)) {
     fail('predecessor_plan_schema_unsupported', '/plan_key', {
       actual: member.plan.schema, next_action: 'author_a_new_backchain_plan',
     });
@@ -447,7 +463,7 @@ async function compileBackchainRevision({ repoRoot, member, chain, authoring }) 
     journal_head_digest: member.journal.events.at(-1).event_digest,
     plan_version: member.plan.plan_version,
   };
-  const seed = planSeed(amended, predecessor.plan_digest);
+  const seed = planSeed(amended, predecessor.plan_digest, member.plan);
   const taskMigration = compileTaskMigration(member.plan, previousChain, seed, chain);
   const phaseMigration = compilePhaseMigration(member.plan, seed, taskMigration);
   const version = phaseTodoRevisionPlanVersion({
@@ -477,12 +493,13 @@ async function compileBackchainRevision({ repoRoot, member, chain, authoring }) 
 }
 
 async function activeIntentUnchanged({ repoRoot, member, chain, authoring }) {
-  if (member.plan.schema !== 'lattice.todo_plan.v7') return false;
+  if (!['lattice.todo_plan.v7', DONE_CONDITION_PLAN_SCHEMA].includes(member.plan.schema)) return false;
   const binding = await readPlanBackchainBinding({ repoRoot, plan: member.plan });
   if (binding === null || featureGraphDigest(binding.chain) !== featureGraphDigest(chain)) return false;
   const amended = attachBackchainMemos(chain, authoring, { previousChain: binding.chain });
-  return canonicalizeTodoArtifact({
-    tasks: amended.tasks, phases: amended.phases,
+  const seed = planSeed(amended, null, member.plan);
+  return seed.schema === member.plan.schema && canonicalizeTodoArtifact({
+    tasks: seed.tasks, phases: amended.phases,
     hard_dependencies: amended.hard_dependencies, joins: amended.joins,
     phase_accept_dependencies: amended.phase_accept_dependencies,
   }) === canonicalizeTodoArtifact({

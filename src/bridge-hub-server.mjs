@@ -26,7 +26,7 @@ import { isIP } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import {
-  mkdir, open, readFile, rename, rm, writeFile,
+  mkdir, open, readdir, readFile, rename, rm, writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { domainToASCII } from 'node:url';
@@ -373,12 +373,40 @@ export async function readBridgeHubPublicVisibility({ env = process.env } = {}) 
   };
 }
 
+const QUARANTINE_KEEP = 3;
+
+/**
+ * u03 D20: an unreadable registry is moved aside (`terminals.json.invalid-<UTC>`, newest 3
+ * kept) and read as empty, so the hub keeps serving and terminals register again. A failed
+ * move leaves the file; the next read retries.
+ */
+async function quarantineRegistry(ref) {
+  // The random tail keeps two moves in the same millisecond from overwriting each other.
+  const stamp = `${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomBytes(4).toString('hex')}`;
+  try { await rename(ref, `${ref}.invalid-${stamp}`); } catch { return; }
+  process.emitWarning(`hub registry was invalid and moved aside: ${ref}.invalid-${stamp}`,
+    { code: 'LATTICE_BRIDGE_HUB_REGISTRY_QUARANTINED' });
+  const prefix = `${path.basename(ref)}.invalid-`;
+  const names = (await readdir(path.dirname(ref)).catch(() => []))
+    .filter((name) => name.startsWith(prefix)).sort().reverse();
+  for (const name of names.slice(QUARANTINE_KEEP)) {
+    await rm(path.join(path.dirname(ref), name), { force: true }).catch(() => {});
+  }
+}
+
 /** Read the persisted registry. A missing file is an empty registry, not an error. */
 export async function readBridgeHubRegistry({ env = process.env } = {}) {
   const refs = hubRuntimePaths(env);
-  const document = await readJsonDocument(refs.registry, { schema: HUB_REGISTRY_DOCUMENT_SCHEMA, entries: [] });
-  if (!validRegistryDocument(document)) {
-    throw new BridgeHubServerError('BRIDGE_HUB_REGISTRY_FILE_INVALID', 'hub registry file is invalid');
+  let document;
+  try {
+    document = await readJsonDocument(refs.registry, { schema: HUB_REGISTRY_DOCUMENT_SCHEMA, entries: [] });
+  } catch (error) {
+    if (error?.code !== 'BRIDGE_HUB_REGISTRY_FILE_INVALID') throw error;
+    document = null;
+  }
+  if (document === null || !validRegistryDocument(document)) {
+    await quarantineRegistry(refs.registry);
+    return [];
   }
   return document.entries;
 }
@@ -482,14 +510,22 @@ export async function startBridgeHubServer({
       return;
     }
     const entries = await store.read();
-    const visibility = await readBridgeHubPublicVisibility({ env });
-    const hiddenProjects = new Set(visibility.hidden_project_ids);
-    const hiddenTerminals = new Set(visibility.hidden_terminal_ids);
+    let visibility;
+    try { visibility = await readBridgeHubPublicVisibility({ env }); } catch (error) {
+      if (error?.code !== 'BRIDGE_HUB_VISIBILITY_FILE_INVALID') throw error;
+      // u03 D20: the operator's hide list is unreadable. Never publish what it may hide, never
+      // stop the hub: list nothing until the file is fixed (hot-read, no restart needed).
+      process.emitWarning(`hub public-visibility file is invalid; the listing is empty until it is fixed`,
+        { code: 'LATTICE_BRIDGE_HUB_VISIBILITY_INVALID' });
+      visibility = null;
+    }
+    const hiddenProjects = new Set(visibility?.hidden_project_ids ?? []);
+    const hiddenTerminals = new Set(visibility?.hidden_terminal_ids ?? []);
     // The visibility filter applies to the listing only (both HTML and JSON);
     // `/projects/<hidden>/` keeps proxying — hidden is not private (ADR 0164
     // Decision 3, deliberately: smoke tests fetch their own page, operators
     // keep the direct URL).
-    const projected = projectBridgeHubRegistry({ registry: entries, now: now(), ttlMs })
+    const projected = visibility === null ? [] : projectBridgeHubRegistry({ registry: entries, now: now(), ttlMs })
       .filter((entry) => !hiddenProjects.has(entry.project_id) && !hiddenTerminals.has(entry.terminal_id));
     // Only the fields humans need for the public index are exposed; internal
     // routing fields (terminal_id, address, port) stay server-side, matching
@@ -517,7 +553,8 @@ export async function startBridgeHubServer({
       response.end(`${JSON.stringify(view)}\n`);
       return;
     }
-    const html = renderBridgeHubLanding({ projects: view, lang, displayNames: visibility.display_names });
+    const html = renderBridgeHubLanding({ projects: view, lang,
+      displayNames: visibility?.display_names ?? EMPTY_VISIBILITY.display_names });
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
       'x-content-type-options': 'nosniff' });
     response.end(html);

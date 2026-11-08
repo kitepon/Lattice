@@ -905,3 +905,15 @@ test('読み取りのtodo commandはproject登録もdaemon起動もしない', a
       (error) => error.code === 'ENOENT', `${argv[0]}はdaemonを起こしてはならない`);
   }
 });
+
+test('an invalid dashboard registry is moved aside and read as empty (u03 D22)', async (context) => {
+  const runtime = await mkdtemp(path.join(tmpdir(), 'lattice-dashboard-registry-invalid-'));
+  context.after(() => rm(runtime, { recursive: true, force: true }));
+  const env = { LATTICE_DASHBOARD_RUNTIME_DIR: runtime };
+  for (const bytes of ['{not json', JSON.stringify({ schema: 'other', projects: [] })]) {
+    await writeFile(path.join(runtime, 'projects.json'), bytes, { mode: 0o600 });
+    assert.deepEqual(await readActiveTodoDashboardProjects({ env }), []);
+    assert.equal((await readdir(runtime)).includes('projects.json'), false);
+  }
+  assert.equal((await readdir(runtime)).filter((name) => name.startsWith('projects.json.invalid-')).length, 2);
+});

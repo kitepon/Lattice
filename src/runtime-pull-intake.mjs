@@ -562,13 +562,13 @@ function packetFor({ meta, taskId, baseSha, manifest }) {
   return packet;
 }
 
-async function acquirePullLock(runDir, operation, requestId) {
+async function acquirePullLock(runDir, operation, requestId, timeoutMs = 0) {
   return acquireRuntimeLifecycleLock({
     lockPath: path.join(runDir, '.pull-intake.lock'),
     sessionNonceDigest: digestArtifact({ run_dir: runDir, schema: PULL_RUN_META_SCHEMA }),
     operation,
     requestId,
-    timeoutMs: 0,
+    timeoutMs,
   });
 }
 
@@ -582,54 +582,94 @@ async function acquireStartBindingLock(repoRoot, operation) {
   });
 }
 
-async function activePullIntakesForStart(repoRoot, { planKey, taskId, activationEventDigest }) {
-  const root = path.join(repoRoot, '.lattice', 'runs');
-  let entries;
-  try { entries = await readdir(root, { withFileTypes: true }); }
-  catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    fail('INVALID_RUN_STORE', 'run store一覧を読めない');
-  }
-  const active = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory() || !identifier(entry.name)) {
-      fail('INVALID_RUN_STORE', `不正なrun store entry: ${entry.name}`);
-    }
-    const runDir = path.join(root, entry.name);
-    const mode = await inspectRunMode(runDir);
-    if (mode.mode !== 'pull') continue;
-    const stored = await readPullStore(runDir);
-    const state = project(stored.events, stored.meta);
-    if (state.closed || state.plan_key !== planKey) continue;
-    const intake = state.intakes.find((candidate) => candidate.task_id === taskId
-      && candidate.activation_event_digest === activationEventDigest
-      && candidate.accepted === null);
-    if (intake !== undefined) active.push({
-      run_id: state.run_id,
-      run_ref: `.lattice/runs/${entry.name}`,
-      activation_event_digest: intake.activation_event_digest,
-    });
-  }
-  return active;
+function boundIntake(state, { planKey, taskId, activationEventDigest }) {
+  if (state.closed || state.plan_key !== planKey) return undefined;
+  return state.intakes.find((candidate) => candidate.task_id === taskId
+    && candidate.activation_event_digest === activationEventDigest
+    && candidate.accepted === null);
 }
 
+/** Only readable open pull runs can hold an intake; anything else under runs/ is skipped (u03 X1). */
+async function pullRunsBoundToStart(repoRoot, binding) {
+  const root = path.join(repoRoot, '.lattice', 'runs');
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const bound = [];
+  const unreadable = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory() || !identifier(entry.name)) continue;
+    const runDir = path.join(root, entry.name);
+    try {
+      if ((await inspectRunMode(runDir)).mode !== 'pull') continue;
+      const stored = await readPullStore(runDir);
+      if (boundIntake(project(stored.events, stored.meta), binding) !== undefined) bound.push(runDir);
+    } catch { unreadable.push(`.lattice/runs/${entry.name}`); }
+  }
+  // An unreadable run may still hold an intake for this start: make the leftover visible.
+  if (unreadable.length > 0) {
+    process.emitWarning(`start撤回で読めないrunを飛ばした: ${unreadable.join(', ')}`,
+      { code: 'LATTICE_RETRACT_RUNS_SKIPPED' });
+  }
+  return bound;
+}
+
+/**
+ * Detach (resuming a stopped worker first) and release one unaccepted intake under the
+ * caller's pull lock, recording each step. A worker that cannot be re-authenticated is
+ * not signalled (u03 C25) and the record says so.
+ */
+async function releaseIntakeRecorded(runDir, current, intake, actor, reason, detail = {}) {
+  if (intake.worker !== null) {
+    let resumed = false;
+    let signal = intake.worker.stopped ? 'sent' : 'not_needed';
+    if (intake.worker.stopped) {
+      try { resumed = await signalAttachedWorker(intake, 'SIGCONT'); }
+      catch { signal = 'unavailable'; }
+      if (signal === 'sent' && !resumed) signal = 'worker_gone';
+    }
+    if (resumed) {
+      current = await appendEvent(runDir, current, buildEvent({
+        events: current.events, meta: current.meta, kind: 'worker_resumed', taskId: intake.task_id,
+        payload: { released_by: reason },
+      }));
+    }
+    current = await appendEvent(runDir, current, buildEvent({
+      events: current.events, meta: current.meta, kind: 'worker_detached', taskId: intake.task_id,
+      payload: { detached_by: actor, pid: intake.worker.pid, resumed, reason, signal },
+    }));
+  }
+  return appendEvent(runDir, current, buildEvent({
+    events: current.events, meta: current.meta, kind: 'intake_released', taskId: intake.task_id,
+    payload: { released_by: actor, reason, ...detail },
+  }));
+}
+
+/**
+ * Retracting a start releases every unaccepted intake bound to it and records that (u03 C11).
+ * Release happens before Plan's event, so a failed append leaves a start that can be intaken again.
+ */
 export async function withStartRetractionGuard({
-  repoRoot, planKey, taskId, activationEventDigest, action,
+  repoRoot, planKey, taskId, activationEventDigest, action, environment = process.env,
 }) {
   if (!identifier(planKey) || !identifier(taskId) || !sha256(activationEventDigest)
     || typeof action !== 'function') {
     fail('INVALID_START_RETRACTION', 'start retraction guard入力が不正');
   }
+  const binding = { planKey, taskId, activationEventDigest };
+  const actor = optionalActorFromEnvironment(environment);
   const lock = await acquireStartBindingLock(repoRoot, 'start-retract');
   try {
-    const active = await activePullIntakesForStart(repoRoot, {
-      planKey, taskId, activationEventDigest,
-    });
-    if (active.length > 0) {
-      fail('ACTIVE_PULL_INTAKE', 'active intakeをreleaseしてからstartを撤回すること', {
-        plan_key: planKey, task_id: taskId, active_intakes: active,
-        next_action: 'lattice run intake release --run <run_ref> --task <task_id>',
-      });
+    for (const runDir of await pullRunsBoundToStart(repoRoot, binding)) {
+      // intake takes pull then binding lock with zero wait, so waiting here cannot deadlock.
+      const runLock = await acquirePullLock(runDir, 'retract-release', `retract-${randomUUID()}`, 5000);
+      try {
+        const current = await readPullStore(runDir);
+        const intake = boundIntake(project(current.events, current.meta), binding);
+        if (intake !== undefined) {
+          await releaseIntakeRecorded(runDir, current, intake, actor, 'start_retracted', {
+            target_start_digest: activationEventDigest,
+          });
+        }
+      } finally { await runLock.release(); }
     }
     return await action();
   } finally { await lock.release(); }
@@ -1426,7 +1466,7 @@ export async function landingPullRun({ repoRoot, runDir }) {
   output.result_digest = digestArtifact(output); return output;
 }
 
-export async function closePullRun({ repoRoot, runDir }) {
+export async function closePullRun({ repoRoot, runDir, environment = process.env }) {
   const lock = await acquirePullLock(runDir, 'close', `close-${randomUUID()}`);
   try {
     let current = await readPullStore(runDir);
@@ -1437,18 +1477,22 @@ export async function closePullRun({ repoRoot, runDir }) {
         landing: await landingPullRun({ repoRoot, runDir }) };
       output.result_digest = digestArtifact(output); return output;
     }
+    // u03 C18: close releases what is still open and records it instead of refusing.
     const incomplete = state.intakes.filter((entry) => entry.accepted === null);
-    if (incomplete.length > 0) {
-      fail('RUN_NOT_COMPLETE', 'pending/hold中intakeが残っている', {
-        task_ids: incomplete.map((entry) => entry.task_id),
-      });
+    const actor = optionalActorFromEnvironment(environment);
+    for (const intake of incomplete) {
+      current = await releaseIntakeRecorded(runDir, current, intake, actor, 'run_closed');
     }
+    const releasedTaskIds = incomplete.map((entry) => entry.task_id).sort();
+    const payload = { accepted_task_ids: state.intakes.filter((entry) => entry.accepted !== null)
+      .map((entry) => entry.task_id).sort() };
+    if (releasedTaskIds.length > 0) payload.released_task_ids = releasedTaskIds;
     current = await appendEvent(runDir, current, buildEvent({
-      events: current.events, meta: current.meta, kind: 'run_closed',
-      payload: { accepted_task_ids: state.intakes.map((entry) => entry.task_id).sort() },
+      events: current.events, meta: current.meta, kind: 'run_closed', payload,
     }));
     const output = { schema: 'lattice.pull_run_close_result.v1', outcome: 'closed',
       run_id: state.run_id, already_closed: false, intake_count: state.intakes.length,
+      released_task_ids: releasedTaskIds,
       landing: await landingPullRun({ repoRoot, runDir }) };
     output.result_digest = digestArtifact(output); return output;
   } finally { await lock.release(); }

@@ -119,3 +119,23 @@ test('Windowsで共有拒否が続けば有限に失敗し旧記録と元error�
       assert.equal(pending.length, 1);
     } finally { await locker.release(); }
   });
+
+test('an invalid lifecycle record is moved aside and the rest still read (u03 D-lifecycle)', async (t) => {
+  const { root, run } = await fixture(t);
+  const second = await createLifecycleRun(root, 'fixture');
+  const bad = path.join(root, 'lifecycle', `${second.run_id}.json`);
+  await writeFile(bad, '{not json\n', { mode: 0o600 });
+  await writeFile(path.join(root, 'lifecycle', 'ensure.json'), '{"schema":"other"}\n', { mode: 0o600 });
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning.code);
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
+  assert.deepEqual((await readLifecycleRuns(root)).map(({ run_id }) => run_id), [run.run_id]);
+  const status = await readDashboardLifecycleStatus(root);
+  assert.equal(status.last_ensure, null);
+  const names = await readdir(path.join(root, 'lifecycle'));
+  assert.ok(names.includes(`${second.run_id}.json.invalid`));
+  assert.ok(names.includes('ensure.json.invalid'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(warnings.includes('LATTICE_DASHBOARD_LIFECYCLE_QUARANTINED'));
+});

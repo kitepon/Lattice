@@ -87,6 +87,33 @@ function validateRegistry(value) {
   return value;
 }
 
+const QUARANTINE_KEEP = 3;
+
+/**
+ * u03 D22: the registry is rebuilt by every `todo start/done` and `dashboard ensure`, so an
+ * invalid one (not JSON, wrong schema, duplicate project) is moved aside as
+ * `projects.json.invalid-<UTC>` (newest 3 kept) and read as empty instead of stopping the
+ * dashboard. A failed move leaves the file; the next read retries.
+ */
+async function readRegistry(ref) {
+  try {
+    return validateRegistry(await readJson(ref, { schema: REGISTRY_SCHEMA, projects: [] }));
+  } catch (error) {
+    if (error?.code !== 'DASHBOARD_REGISTRY_INVALID') throw error;
+  }
+  // The random tail keeps two moves in the same millisecond from overwriting each other.
+  const stamp = `${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomBytes(4).toString('hex')}`;
+  try {
+    await rename(ref, `${ref}.invalid-${stamp}`);
+    process.emitWarning(`dashboard registry was invalid and moved aside: ${ref}.invalid-${stamp}`,
+      { code: 'LATTICE_DASHBOARD_REGISTRY_QUARANTINED' });
+    const prefix = `${path.basename(ref)}.invalid-`;
+    const names = (await readdir(path.dirname(ref))).filter((name) => name.startsWith(prefix)).sort().reverse();
+    for (const name of names.slice(QUARANTINE_KEEP)) await rm(path.join(path.dirname(ref), name), { force: true });
+  } catch { /* best-effort: the next read tries again */ }
+  return { schema: REGISTRY_SCHEMA, projects: [] };
+}
+
 async function readJson(ref, missing) {
   let bytes;
   try { bytes = await readFile(ref, 'utf8'); } catch (error) {
@@ -152,7 +179,7 @@ async function withLock(lockRef, action) {
 
 export async function readActiveTodoDashboardProjects({ env = process.env, now = Date.now() } = {}) {
   const ref = paths(env).registry;
-  const document = validateRegistry(await readJson(ref, { schema: REGISTRY_SCHEMA, projects: [] }));
+  const document = await readRegistry(ref);
   return document.projects.filter((entry) => now - Date.parse(entry.last_seen_at) <= TODO_DASHBOARD_STALE_MS)
     .sort((left, right) => left.display_name.localeCompare(right.display_name, 'ja')
       || left.project_id.localeCompare(right.project_id, 'en'));
@@ -163,7 +190,7 @@ export async function readVisibleTodoDashboardProjects({
 } = {}) {
   if (typeof projectHasActiveRun !== 'function') throw new TypeError('projectHasActiveRun required');
   const ref = paths(env).registry;
-  const document = validateRegistry(await readJson(ref, { schema: REGISTRY_SCHEMA, projects: [] }));
+  const document = await readRegistry(ref);
   const visible = [];
   for (const entry of document.projects) {
     if (now - Date.parse(entry.last_seen_at) <= TODO_DASHBOARD_STALE_MS
@@ -226,7 +253,7 @@ export async function registerTodoDashboardActivity({
   await mkdir(refs.root, { recursive: true, mode: 0o700 });
   const pruned = [];
   await withLock(refs.lock, async () => {
-    const current = validateRegistry(await readJson(refs.registry, { schema: REGISTRY_SCHEMA, projects: [] }));
+    const current = await readRegistry(refs.registry);
     const existing = current.projects.find((entry) => entry.project_id === projectId);
     if (existing !== undefined && existing.repo_root !== canonicalRoot && !adopt) {
       const error = new Error('project id is already owned by another canonical root');
@@ -266,7 +293,7 @@ export async function removeTodoDashboardProject({ projectId, env = process.env 
   const refs = paths(env);
   await mkdir(refs.root, { recursive: true, mode: 0o700 });
   await withLock(refs.lock, async () => {
-    const current = validateRegistry(await readJson(refs.registry, { schema: REGISTRY_SCHEMA, projects: [] }));
+    const current = await readRegistry(refs.registry);
     const projects = current.projects.filter((entry) => entry.project_id !== projectId);
     if (projects.length === current.projects.length) {
       const error = new Error('dashboard project is not registered');

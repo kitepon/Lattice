@@ -230,6 +230,23 @@ test('phase_todo_revision.v3 validatorはruntime migrationとreconciliationをex
   delete missingMemo.desired_plan.tasks[0].design_memo;
   missingMemo.revision_digest = todoSelfDigest(missingMemo, 'revision_digest');
   assert.equal(validatePhaseTodoRevision(missingMemo), false);
+  // u12: v3 also accepts a v8 desired plan (task = v7 keys + done_condition).
+  const doneRevision = structuredClone(memoRevision);
+  const doneDesiredInput = structuredClone(doneRevision.desired_plan);
+  delete doneDesiredInput.topology_digest; delete doneDesiredInput.plan_digest;
+  doneDesiredInput.schema = 'lattice.todo_plan.v8';
+  doneDesiredInput.tasks = doneDesiredInput.tasks.map((task) => ({ ...task, done_condition: null }));
+  doneDesiredInput.plan_version = phaseTodoRevisionPlanVersion({
+    projectId: doneRevision.project_id, planKey: doneRevision.plan_key,
+    predecessor: doneRevision.predecessor, desiredPlan: doneDesiredInput,
+    taskMigration: doneRevision.task_migration, phaseMigration: doneRevision.phase_migration,
+  });
+  doneRevision.desired_plan = buildTodoPlan(doneDesiredInput);
+  doneRevision.reconciliation.desired_plan_digest = doneRevision.desired_plan.plan_digest;
+  doneRevision.reconciliation.reconciliation_digest = todoSelfDigest(
+    doneRevision.reconciliation, 'reconciliation_digest');
+  doneRevision.revision_digest = todoSelfDigest(doneRevision, 'revision_digest');
+  assert.equal(validatePhaseTodoRevision(doneRevision), true);
   const missingRuntime = structuredClone(revision);
   delete missingRuntime.runtime_task_migration;
   missingRuntime.revision_digest = todoSelfDigest(missingRuntime, 'revision_digest');

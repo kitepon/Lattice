@@ -23,6 +23,7 @@ function desired(ids = ['a', 'b', 'c']) {
 }
 function member() {
   return { plan: buildTodoPlan({ ...planSeed(desired(), null), plan_version: 'v1' }),
+    tasks: ['a', 'b', 'c'].map((task_id) => ({ task_id, status: 'pending' })),
     journal: { events: [{ schema: 'lattice.todo_event.v3', event_digest: 'a'.repeat(64) }] } };
 }
 function intent(ids = ['a', 'b', 'c']) {

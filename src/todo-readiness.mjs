@@ -1,8 +1,10 @@
 import {
   isDecoupledPhaseTodoPlanSchema,
+  isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
   projectTodoCrossPlanDependencies,
 } from './todo-store-view.mjs';
+import { TodoStoreError } from './todo-store.mjs';
 
 function taskKey(ref) {
   return `${ref.project_id}\0${ref.plan_key}\0${ref.task_id}`;
@@ -22,13 +24,15 @@ export function createTodoReadiness(store) {
   const acceptanceOutgoing = new Map();
   for (const member of store.members) {
     const { plan } = member;
-    const states = new Map(member.tasks.map((state) => [state.task_id, state.status]));
+    const states = new Map(member.tasks.map((state) => [state.task_id, state]));
     const phaseStates = new Map((member.phases ?? []).map((phase) => [phase.phase_id, phase.status]));
     for (const phase of member.phases ?? []) phases.set(phaseKey({ ...plan, ...phase }), phase.status);
     for (const task of plan.tasks) {
       const key = taskKey({ ...plan, ...task });
       nodes.set(key, {
-        status: states.get(task.task_id),
+        status: states.get(task.task_id)?.status,
+        // retired from doneも先行として完了扱い（u12）。判定はStore replayと同じ一つの述語。
+        finished: isFinishedTodoTaskState(states.get(task.task_id)),
         schema: plan.schema,
         plan_key: plan.plan_key,
         phase_id: isPhaseTodoPlanSchema(plan.schema) ? task.phase_id : null,
@@ -46,12 +50,13 @@ export function createTodoReadiness(store) {
     outgoing.get(source)?.add(target);
   };
   for (const member of store.members) {
-    for (const edge of member.plan.hard_dependencies) connect(edge.from, edge.to);
-    for (const join of member.plan.joins) {
+    // `?? []`: the display reads unverified members too and must not stop on a missing list (u01).
+    for (const edge of member.plan.hard_dependencies ?? []) connect(edge.from, edge.to);
+    for (const join of member.plan.joins ?? []) {
       for (const after of join.after) connect(after, join.before);
     }
     if (isDecoupledPhaseTodoPlanSchema(member.plan.schema)) {
-      for (const edge of member.plan.phase_accept_dependencies) {
+      for (const edge of member.plan.phase_accept_dependencies ?? []) {
         const source = phaseKey(edge.from);
         const target = taskKey(edge.to);
         acceptanceIncoming.get(target)?.add(source);
@@ -73,7 +78,7 @@ export function createTodoReadiness(store) {
 
   function prerequisites(key) {
     const predecessors = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source));
-    const predecessorsDone = predecessors.every((node) => node?.status === 'done');
+    const predecessorsDone = predecessors.every((node) => node?.finished === true);
     const predecessorPhasesReady = predecessors.every((node) => dependencyPhaseReady(node, nodes.get(key)));
     const taskDependenciesDone = predecessorsDone && predecessorPhasesReady;
     const phaseAcceptReady = [...(acceptanceIncoming.get(key) ?? [])]
@@ -151,4 +156,18 @@ export function validateProspectiveEvent({ store, member, event }) {
     return refused('invalid_done_transition', 'task_state');
   }
   return { ok: true };
+}
+
+/**
+ * `todo retire`はlock外で読んだ状態をprior_statusに入れる。append時にStore replayが
+ * prior_status不一致や不正遷移で拒否したなら、読込とappendの間に状態が変わった
+ * 再試行できる競合であり、破損ではない（u12）。それ以外のerrorはそのまま返す。
+ */
+export function retireStateConflict(error, { planKey, taskId, priorStatus }) {
+  if (!(error instanceof TodoStoreError)
+    || !['retire_prior_status_mismatch', 'invalid_retire_transition'].includes(error.detail?.reason)) return error;
+  return new TodoStoreError('STORE_WRITE_CONFLICT', 'retire_state_changed', undefined, {
+    task_id: taskId, expected: { status: priorStatus },
+    next_action: `lattice todo retire --plan ${planKey} --task ${taskId} --reason <text>`,
+  });
 }

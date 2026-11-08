@@ -3,7 +3,7 @@
  * stale-dead-pid / live-holder refusal.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -125,15 +125,25 @@ describe('writer lock (#1740)', () => {
     expect(fs.existsSync(getWriterPidPath(root))).toBe(false);
   });
 
-  it('rejects a fallback engine before opening when another process owns writer.pid', () => {
+  it('starts a fallback engine read-only, without claiming writer.pid, when another process owns it (u03 E15)', async () => {
     const root = makeProject();
     holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
     if (!holder.pid) throw new Error('Failed to spawn writer-lock holder');
-    fs.writeFileSync(
-      getWriterPidPath(root),
-      JSON.stringify({ pid: holder.pid, mode: 'daemon', startedAt: Date.now() }) + '\n',
-    );
+    const held = JSON.stringify({ pid: holder.pid, mode: 'daemon', startedAt: Date.now() }) + '\n';
+    fs.writeFileSync(getWriterPidPath(root), held);
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((c: string | Uint8Array) => { writes.push(String(c)); return true; }) as typeof process.stderr.write);
 
-    expect(() => new MCPEngine({ writerLockRoot: root })).toThrow(/writer lock held/i);
+    let engine: MCPEngine;
+    try {
+      engine = new MCPEngine({ writerLockRoot: root });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(writes.join('')).toMatch(/Serving reads in-process without auto-sync: .*writer lock held/is);
+    await engine.stop();
+    // The holder keeps ownership: a read-only engine never releases a lock it does not hold.
+    expect(fs.readFileSync(getWriterPidPath(root), 'utf8')).toBe(held);
   });
 });

@@ -203,7 +203,7 @@ test('v4 companion edgeはreasonをedgeへ保持し、target側chainとready fro
   }]);
   assert.equal(target.plan_scoped.events.length, 1);
   assert.equal(target.plan_scoped.events[0].payload.reason, 'repairを先に完了する');
-  assert.deepEqual(computeReadyFrontier(store), [{ plan_key: 'companion', task_id: 'R', label: 'repair' }]);
+  assert.deepEqual(computeReadyFrontier(store), [{ plan_key: 'companion', task_id: 'R', label: 'repair', done_condition: null }]);
 });
 
 test('v3 reasoned companion edgeは既存契約のままtarget側chainへcompileする', async (context) => {
@@ -233,7 +233,7 @@ test('companion repair完了後はtargetがreadyへ戻る', async (context) => {
       payload: { done_mode: 'authored', imported: false, evidence: await evidence(root) } },
   });
   const store = await readTodoStore({ repoRoot: root, now: NOW });
-  assert.deepEqual(computeReadyFrontier(store), [{ plan_key: 'main', task_id: 'T', label: 'T' }]);
+  assert.deepEqual(computeReadyFrontier(store), [{ plan_key: 'main', task_id: 'T', label: 'T', done_condition: null }]);
 });
 
 for (const stage of ['manifest_activated', 'cross_plan_dependencies_activated']) {
@@ -277,7 +277,7 @@ test('migrate resultはcompanionの接続、frontier、次の操作をtypedに�
   assert.equal(result.companion.target.task_id, 'T');
   assert.equal(result.companion.reason, 'repairを先に完了する');
   assert.deepEqual(result.companion.connected_frontier, [
-    { plan_key: 'companion', task_id: 'R', label: 'repair' },
+    { plan_key: 'companion', task_id: 'R', label: 'repair', done_condition: null },
   ]);
   assert.equal(result.companion.next_action,
     'lattice todo revise-phase --plan companion --input <phase-revision.json>');

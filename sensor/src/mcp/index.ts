@@ -54,7 +54,6 @@ import {
   assertNoRebuild,
   releaseWriterLock,
   tryAcquireWriterLock,
-  writerLockHeldMessage,
 } from './writer-lock';
 import {
   canProbeDaemonIdentity,
@@ -473,21 +472,25 @@ export class MCPServer {
       process.stderr.write(`[LatticeSensor MCP] Direct mode: ${reason}.\n`);
     }
 
-    // #1740: refuse a second direct writer on an initialized project. Daemon
-    // mode multiplexes clients; direct mode is single-writer-per-project.
+    // #1740: direct mode is single-writer-per-project; daemon mode multiplexes
+    // clients. A second direct session does not exit (u03 sweep E4): the
+    // single-writer protection is kept by serving it read-only.
     const writerRoot = resolveDaemonRoot(this.projectPath);
+    let engine: MCPEngine | null = null;
     if (writerRoot) {
       assertNoRebuild(writerRoot);
       const writer = tryAcquireWriterLock(writerRoot, 'direct');
       if (writer.kind === 'taken') {
-        const msg = writerLockHeldMessage(writer.existing, writer.pidPath);
-        process.stderr.write(`[LatticeSensor MCP] ${msg}\n`);
-        process.exit(1);
+        const who = writer.existing && writer.existing.pid > 0
+          ? `PID ${writer.existing.pid} (${writer.existing.mode || 'unknown'} mode)`
+          : 'another process';
+        engine = readOnlyFallback(`writer lock held by ${who}; this session is read-only`);
+      } else {
+        this.writerLockRoot = writerRoot;
       }
-      this.writerLockRoot = writerRoot;
     }
 
-    this.engine = new MCPEngine({ queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
+    this.engine = engine ?? new MCPEngine({ queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
     // ADR 0049 Decision 5④: record the machine-readable direct-mode reason so
     // lattice_sensor_status can report it without relying on stderr prose.
     this.engine.setExecutionMode('direct', mapDirectReason(reason));

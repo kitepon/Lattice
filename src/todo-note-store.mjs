@@ -6,6 +6,7 @@ import {
 import path from 'node:path';
 import { StoreLockError, withStoreLock } from './store-lock.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
+import { normalizeCheckoutEol } from './todo-store-view.mjs';
 
 import {
   TODO_LIMITS,
@@ -88,7 +89,7 @@ async function readOptionalBounded(ref, { missing = false } = {}) {
     if (!metadata.isFile() || metadata.size > TODO_LIMITS.journalSegmentBytes) {
       fail('NOTE_LOG_CORRUPT', 'note_segment_invalid', { ref });
     }
-    return await readFile(ref);
+    return normalizeCheckoutEol(await readFile(ref));
   } catch (error) {
     if (error instanceof TodoNoteStoreError) throw error;
     if (missing && error?.code === 'ENOENT') return null;
@@ -263,7 +264,7 @@ export async function appendTodoNote(options = {}) {
   const planScoped = options.taskId === null;
   const scope = planScoped ? 'plan' : 'task';
   const repoRoot = path.resolve(options.repoRoot);
-  return withNoteLock(repoRoot, async () => {
+  return withNoteLock(repoRoot, async (assertHeld) => {
     // sequenceとprevious_digestはchainごとに独立。note系の起点は1（journal系の0ではない）。
     const chain = await readTodoNoteEvents({ repoRoot, planKey: options.planKey, scope });
     if (options.supersedes !== null) {
@@ -299,6 +300,8 @@ export async function appendTodoNote(options = {}) {
     const paths = chainRefs(repoRoot, options.planKey, scope);
     await ensureNoteDirectory(path.dirname(paths.active));
     const eventBytes = canonicalLine(event);
+    // A holder that lost its lock while suspended must not overwrite the new owner's chain.
+    await assertHeld();
     if (chain.active_bytes.length > 0
       && chain.active_bytes.length + eventBytes.length > TODO_LIMITS.journalSegmentBytes) {
       const activeEvents = parseCanonicalSegment(chain.active_bytes, paths.active);
@@ -471,7 +474,7 @@ async function readCanonicalJson(ref, { missing = false } = {}) {
     if (!metadata.isFile() || metadata.size > TODO_LIMITS.snapshotBytes) {
       fail('NOTE_PROJECTION_INVALID', 'note_projection_artifact_invalid', { ref });
     }
-    bytes = await readFile(ref);
+    bytes = normalizeCheckoutEol(await readFile(ref));
   } catch (error) {
     if (error instanceof TodoNoteStoreError) throw error;
     if (missing && error?.code === 'ENOENT') return null;

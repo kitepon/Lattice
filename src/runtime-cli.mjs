@@ -52,6 +52,7 @@ import {
   adjudicatePendingReceipts,
   buildNextRunEvent,
   buildExecutorPackets,
+  closeRunAbandoningRemaining,
   closeRunIfComplete,
   dispatchReadyFrontier,
   initializeRunEvents,
@@ -877,6 +878,7 @@ async function readScriptedControllerReceipt({
 async function reapRunWorkerProcesses({ events }) {
   const reaped = [];
   const skipped = [];
+  const unavailable = [];
   const seen = new Set();
   for (const event of events) {
     if (event.kind !== 'executor_dispatched') continue;
@@ -886,14 +888,18 @@ async function reapRunWorkerProcesses({ events }) {
     if (!Number.isSafeInteger(pid) || typeof recorded !== 'string' || seen.has(pid)) continue;
     seen.add(pid);
     const observed = await observeManagedProcessStartIdentity(pid).catch(() => null);
-    if (observed === null) continue; // 既に居ない
+    if (observed === null) {
+      // 居ないか、居るのに再認証できない。後者には送らず記録する（u03 C25）。
+      try { process.kill(pid, 0); unavailable.push(pid); } catch { /* 既に居ない */ }
+      continue;
+    }
     if (observed.identity_digest !== recorded) {
       skipped.push({ pid, reason: 'start identity不一致（pid再利用）' });
       continue;
     }
     try { process.kill(pid, 'SIGKILL'); reaped.push(pid); } catch { /* 競合で既に消えた */ }
   }
-  return { reaped, skipped };
+  return { reaped, skipped, unavailable };
 }
 
 async function driveScriptedManagedEpoch({
@@ -1817,20 +1823,15 @@ async function runClose({ runDir, repoRoot, stdout, requestId = null }) {
     if (alreadyClosed && existingClose?.payload?.outcome === 'abandoned') {
       throw new CliContractError('RUN_ABANDONED', 'abandoned runは正常closeへ変更できない');
     }
+    let abandonedTodoIds = [];
     if (!alreadyClosed) {
-      const closed = closeRunIfComplete({
+      const closed = closeRunAbandoningRemaining({
         runId: meta.run_id,
         plan: compileArtifact.plan,
         events,
         recordedAt: canonicalNow(),
       });
-      if (!closed.closed) {
-        throw new CliContractError(
-          'RUN_NOT_COMPLETE',
-          '全TODOのreceipt accepted前はrunを正常closeできない',
-          { guidance: 'run statusで未完了TODOを確認するか、run abandonを明示実行する' },
-        );
-      }
+      abandonedTodoIds = closed.abandoned_todo_ids;
       if (managed !== null) {
         await runManagedControl({ runDir, runRef: path.relative(repoRoot, runDir),
           operation: 'close', artifactDigest: null, stdout, shutdownReason: 'normal-close',
@@ -1846,6 +1847,7 @@ async function runClose({ runDir, repoRoot, stdout, requestId = null }) {
       outcome: 'closed',
       run_id: meta.run_id,
       already_closed: alreadyClosed,
+      ...(abandonedTodoIds.length > 0 ? { abandoned_todo_ids: abandonedTodoIds } : {}),
       event_count: next.length,
       events_digest: digestArtifact(next.map(({ event_digest: digest }) => digest)),
       landing: await buildRunLandingReport({
@@ -3650,9 +3652,8 @@ export async function runManagedSupervisorDaemon({
         }
         let proposed;
         if (controlRequest.operation === 'close') {
-          proposed = closeRunIfComplete({ runId: request.request_id, plan: active.bundle.plan,
+          proposed = closeRunAbandoningRemaining({ runId: request.request_id, plan: active.bundle.plan,
             events, recordedAt: canonicalNow() });
-          if (!proposed.closed) throw new ManagedRuntimeError('RUN_NOT_COMPLETE', '全TODO完了前はcloseできない');
         }
         const shutdown = await managedSupervisor.shutdownManaged({ mode: controlRequest.operation,
           reason: shutdownReason, barrierId: `shutdown-${randomUUID()}`,
@@ -3667,19 +3668,26 @@ export async function runManagedSupervisorDaemon({
         }
         await replaceEventsAtomically(runDir, events);
         // **abandonは成果を捨てる決定である。** worker processの終了はcleanupではなく
-        // その決定の一部なので、誰を止めたかを記録へ残す。closeでは何もしない——
-        // 完走したrunのworkerは既にterminalであり、生きていればそれは欠陥である
-        // （`closeRunIfComplete`が全TODO accepted を要求するので、そもそもcloseへ来ない）。
-        if (controlRequest.operation === 'abandon') {
+        // その決定の一部なので、誰を止めたかを記録へ残す。完走したcloseでは何もしない。
+        // u03 C18: 未完了TODOを放棄して閉じるcloseはworkerも止める。作業木はrunの成果なので残す。
+        // SIGKILLは停止中(SIGSTOP)のworkerにも届く。
+        const stopsWorkers = controlRequest.operation === 'abandon'
+          || proposed?.abandoned_todo_ids.length > 0;
+        if (stopsWorkers) {
           const reaped = await reapRunWorkerProcesses({ events }).catch(() => null);
-          if (reaped !== null && (reaped.reaped.length > 0 || reaped.skipped.length > 0)) {
+          if (reaped !== null && (reaped.reaped.length > 0 || reaped.skipped.length > 0
+            || reaped.unavailable.length > 0)) {
             await appendControl({ run_id: request.request_id, kind: 'worker_processes_terminated',
               session_nonce_digest: digestArtifact(sessionNonce), payload: {
                 reason: shutdownReason,
                 terminated_pids: [...reaped.reaped].sort((left, right) => left - right),
                 skipped_count: reaped.skipped.length,
+                ...(reaped.unavailable.length > 0
+                  ? { signal_unavailable_pids: [...reaped.unavailable].sort((left, right) => left - right) } : {}),
               } });
           }
+        }
+        if (controlRequest.operation === 'abandon') {
           // 木も畳む。closeでは畳まない——木そのものがrunの成果であり、着地させる前に
           // 消したら受理した内容が残らない。
           await removeScriptedWorktrees({ repoRoot, runDir }).catch(() => null);

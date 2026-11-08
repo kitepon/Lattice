@@ -49,6 +49,15 @@ const stop = () => {
 process.once('SIGINT', stop);
 process.once('SIGTERM', stop);
 
+// Self-exit for a duplicate launch on the same descriptor: the pidfile names the one
+// supervisor that owns it; one that finds another identity there was superseded and leaves
+// (otherwise it respawns a bridge that cannot bind, forever). A missing pidfile changes nothing.
+const supersededCheck = setInterval(() => {
+  let recorded;
+  try { recorded = readFileSync(descriptor.pidPath, 'utf8'); } catch { return; }
+  if (recorded !== identity) stop();
+}, RESTART_DELAY_MS);
+
 const bridgePath = path.resolve(descriptor.bridgePath);
 while (!stopping) {
   child = spawn(process.execPath, [bridgePath], {
@@ -61,3 +70,4 @@ while (!stopping) {
   if (stopping) break;
   await new Promise((resolve) => setTimeout(resolve, RESTART_DELAY_MS));
 }
+clearInterval(supersededCheck);

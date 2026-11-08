@@ -87,8 +87,10 @@ function normalizeSections(readModel, narratives, anchorOutcomes, noteContexts) 
       const narrative = supplied.get(refKey(ref));
       const markdown = narrative?.markdown ?? '';
       const narrativeRef = narrative?.narrative_ref ?? task.narrative_ref;
-      if (typeof task.design_memo === 'string') {
-        proseBytes += Buffer.byteLength(task.design_memo, 'utf8');
+      // 終了条件（u12）も設計メモと同じ埋め込み散文として数える。
+      for (const prose of [task.design_memo, task.done_condition]) {
+        if (typeof prose !== 'string') continue;
+        proseBytes += Buffer.byteLength(prose, 'utf8');
         if (proseBytes > TODO_GANTT_PROSE_MAX_BYTES) {
           throw new TodoGanttRenderError('TODO_SCALE_EXCEEDED', 'todo gantt embedded prose limit exceeded', {
             prose_bytes: proseBytes, prose_limit: TODO_GANTT_PROSE_MAX_BYTES,

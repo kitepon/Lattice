@@ -14,9 +14,10 @@ import * as os from 'os';
 import * as path from 'path';
 import type LatticeSensor from '../index';
 import { resolveServerRoot } from '../directory';
-import { ToolHandler } from './tools';
+import { IndexOpenError, ToolHandler } from './tools';
+import { isIndexCorruption, moveIndexAside } from './index-repair';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
-import { assertNoRebuild, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
+import { assertNoRebuild, readWriterLock, RebuildInProgressError, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 import { QueryPool, resolvePoolSize } from './query-pool';
 import { acquireProject, ProjectLease } from './project-lifecycle';
 
@@ -118,13 +119,18 @@ export class MCPEngine {
     this.toolHandler.setOnDatabaseReopened((cg) => {
       if (cg === this.cg && cg.isWatching()) this.catchUpSync(true);
     });
+    this.toolHandler.setDefaultIndexRepair(() => this.repairDefaultIndex());
     if (opts.writerLockRoot && !this.opts.readOnly) {
       assertNoRebuild(opts.writerLockRoot);
       const writer = tryAcquireWriterLock(opts.writerLockRoot, 'fallback');
       if (writer.kind === 'taken') {
-        throw new Error(writerLockHeldMessage(writer.existing, writer.pidPath));
+        // u03 E15: the single-writer protection is kept by serving read-only
+        // (as direct mode does for E4) instead of refusing to start.
+        process.stderr.write(`[LatticeSensor MCP] Serving reads in-process without auto-sync: ${writerLockHeldMessage(writer.existing, writer.pidPath)}\n`);
+        this.opts = { ...this.opts, readOnly: true };
+      } else {
+        this.writerLockRoot = opts.writerLockRoot;
       }
-      this.writerLockRoot = opts.writerLockRoot;
     }
   }
 
@@ -259,7 +265,7 @@ export class MCPEngine {
       this.maybeStartPool(resolvedRoot);
     } catch (err) {
       // Still failing — caller will try again on the next tool call.
-      this.toolHandler.setDefaultOpenFailure(err instanceof WslSharedIndexError ? err : null);
+      this.recordOpenFailure(err);
     }
   }
 
@@ -387,7 +393,67 @@ export class MCPEngine {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[LatticeSensor MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
       // The agent otherwise hears only "no project loaded" (#995).
-      this.toolHandler.setDefaultOpenFailure(err instanceof WslSharedIndexError ? err : null);
+      this.recordOpenFailure(err);
+    }
+  }
+
+  private recordOpenFailure(err: unknown): void {
+    this.toolHandler.setDefaultOpenFailure(err instanceof WslSharedIndexError ? err : null);
+    // u03 E15: only a damaged database is repairable (it is derived data). A
+    // busy/locked or newer-schema database belongs to someone else, so it is
+    // never moved aside.
+    if (!this.opts.readOnly && isIndexCorruption(err)) this.toolHandler.setOpenFailure(err as Error);
+  }
+
+  private repairing: Promise<void> | null = null;
+
+  /**
+   * u03 E15: move the damaged default index aside and rebuild it from the source
+   * tree (the `lattice sensor index` path: rebuild lock, writer lock, fresh
+   * database, full index). Concurrent calls share one rebuild. A failure leaves no
+   * half-built database behind and the recorded open failure in place, so the next
+   * request simply tries again.
+   */
+  private repairDefaultIndex(): Promise<void> {
+    return (this.repairing ??= this.doRepairDefaultIndex().finally(() => { this.repairing = null; }));
+  }
+
+  private async doRepairDefaultIndex(): Promise<void> {
+    const root = this.projectPath;
+    if (!root || this.closed || this.opts.readOnly) throw new IndexOpenError('The default index is damaged and this session is read-only; another session owns the repair.');
+    assertNoRebuild(root);
+    const rebuild = tryAcquireWriterLock(root, 'repair', 'rebuild.pid');
+    if (rebuild.kind === 'taken') throw new RebuildInProgressError();
+    const ownedWriter = readWriterLock(root)?.pid === process.pid;
+    const { getDatabasePath, removeDatabaseFiles } = require('../db') as typeof import('../db');
+    const dbPath = getDatabasePath(root);
+    let writer: ReturnType<typeof tryAcquireWriterLock> | null = null;
+    try {
+      writer = tryAcquireWriterLock(root, 'repair');
+      if (writer.kind === 'taken') {
+        throw new IndexOpenError(`The default index is damaged but another process owns it; it will be retried on the next request. ${writerLockHeldMessage(writer.existing, writer.pidPath)}`);
+      }
+      const cause = this.toolHandler.getOpenFailureMessage();
+      const aside = moveIndexAside(dbPath);
+      process.stderr.write(`[LatticeSensor MCP] The index at ${root} could not be opened (${cause}); moved it to ${aside ?? '(already gone)'} and rebuilding it from the source tree.\n`);
+      let fresh: LatticeSensor | null = null;
+      try {
+        fresh = await loadLatticeSensor().init(root);
+        const result = await fresh.indexAll();
+        if (!result.success) throw new Error(result.errors[0]?.message ?? 'indexing did not complete');
+      } catch (err) {
+        try { fresh?.destroy(); } catch { /* best-effort */ }
+        try { removeDatabaseFiles(dbPath); } catch { /* best-effort: the next attempt starts from whatever is left */ }
+        throw new IndexOpenError(`The default index was damaged and the automatic rebuild failed: ${err instanceof Error ? err.message : String(err)}. The next request will retry the rebuild; the damaged files were kept at ${aside ?? 'n/a'}.`);
+      }
+      if (this.closed) { fresh.close(); return; }
+      this.cg = fresh;
+      this.toolHandler.setDefaultLatticeSensor(this.cg);
+      this.startWatching();
+      this.maybeStartPool(root);
+    } finally {
+      if (writer?.kind === 'acquired' && !ownedWriter) releaseWriterLock(root);
+      releaseWriterLock(root, 'rebuild.pid');
     }
   }
 

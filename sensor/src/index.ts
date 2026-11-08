@@ -386,9 +386,14 @@ export class LatticeSensor {
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
     const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
-    const queries = new QueryBuilder(db.getDb());
-
-    const instance = new LatticeSensor(db, queries, resolvedRoot);
+    let instance: LatticeSensor;
+    try {
+      instance = new LatticeSensor(db, new QueryBuilder(db.getDb()), resolvedRoot);
+    } catch (err) {
+      // u03 E15: release the damaged file so Windows can move it aside.
+      try { db.close(); } catch { /* already unusable */ }
+      throw err;
+    }
 
     // Sync if requested
     if (options.sync && !options.readOnly) {

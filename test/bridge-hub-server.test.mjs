@@ -361,10 +361,12 @@ test('terminal_display_namesの無い旧public-visibility.jsonはそのまま読
 
   await writeTmp(ref, JSON.stringify({ ...base, terminal_display_names: { [terminalPublicLabel('term-old')]: '' } }));
   const broken = await fetch(`http://127.0.0.1:${hub.port}/projects/`, { headers: { accept: 'application/json' } });
-  assert.equal(broken.status, 500);
+  // u03 D20: an unreadable hide list lists nothing (never unfiltered) instead of a 500.
+  assert.equal(broken.status, 200);
+  assert.deepEqual(await broken.json(), []);
 });
 
-test('壊れたpublic-visibility.jsonは黙って非フィルタにせずtyped 500を返す', async (context) => {
+test('壊れたpublic-visibility.jsonは黙って非フィルタにせず、一覧を空にして200で返す (u03 D20)', async (context) => {
   const { mkdtemp, writeFile: writeTmp } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -375,10 +377,27 @@ test('壊れたpublic-visibility.jsonは黙って非フィルタにせずtyped 5
     env: { LATTICE_HUB_RUNTIME_DIR: runtimeDir },
   });
   context.after(() => hub.close());
-  const response = await fetch(`http://127.0.0.1:${hub.port}/projects/`);
-  assert.equal(response.status, 500);
-  const body = await response.json();
-  assert.equal(body.code, 'BRIDGE_HUB_VISIBILITY_FILE_INVALID');
+  await registerTerminal(hub, { project_ids: ['maybe-hidden'], port: 9 });
+  const response = await fetch(`http://127.0.0.1:${hub.port}/projects/`, { headers: { accept: 'application/json' } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), []);
+  const html = await fetch(`http://127.0.0.1:${hub.port}/projects/`);
+  assert.equal(html.status, 200);
+  assert.doesNotMatch(await html.text(), /maybe-hidden/u);
+});
+
+test('壊れたhub登録簿は脇へ移して空として読み、止まらない (u03 D20)', async (context) => {
+  const { mkdtemp, writeFile: writeTmp, readdir: readdirTmp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'hub-registry-broken-'));
+  await writeTmp(join(runtimeDir, 'terminals.json'), '{not json');
+  const env = { LATTICE_HUB_RUNTIME_DIR: runtimeDir };
+  assert.deepEqual(await readBridgeHubRegistry({ env }), []);
+  const names = await readdirTmp(runtimeDir);
+  assert.equal(names.includes('terminals.json'), false);
+  assert.equal(names.filter((name) => name.startsWith('terminals.json.invalid-')).length, 1);
+  assert.deepEqual(await readBridgeHubRegistry({ env }), []);
 });
 
 test('heartbeatが途絶えTTLを超えた端末は503で配信元オフラインを明示する', async (context) => {

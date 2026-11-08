@@ -1956,6 +1956,9 @@ export class ToolHandler {
   // NotIndexedError's success-shaped guidance). Cleared on a successful
   // {@link setDefaultLatticeSensor}.
   private openFailure: Error | null = null;
+  // u03 E15: rebuilds a damaged default index. The index is derived from the
+  // source tree, so a recorded open failure is repaired on the next call.
+  private defaultIndexRepair: (() => Promise<void>) | null = null;
   // ADR 0049 Decision 5④: this session's execution mode, reported by
   // lattice_sensor_status as a machine-readable field. Defaults to a direct/
   // no-daemon placeholder — every real caller (MCPServer.startDirect, the
@@ -2012,6 +2015,15 @@ export class ToolHandler {
    */
   setOpenFailure(err: Error | null): void {
     this.openFailure = err;
+  }
+
+  /** Engine-only: the repair that rebuilds a damaged default index (u03 E15). */
+  setDefaultIndexRepair(repair: (() => Promise<void>) | null): void {
+    this.defaultIndexRepair = repair;
+  }
+
+  getOpenFailureMessage(): string {
+    return this.openFailure?.message ?? 'unknown error';
   }
 
   /**
@@ -2216,9 +2228,8 @@ export class ToolHandler {
           throw new IndexOpenError(
             `The default project's LatticeSensor index failed to open: ${this.openFailure.message}\n` +
             'This is a genuine malfunction (corrupt/locked database, schema mismatch, or ' +
-            'similar) — NOT a missing index. Retry the call once; if it persists, the index ' +
-            'may need to be rebuilt (`lattice sensor init . --json` after removing `.lattice/sensor/`) or a ' +
-            'stale lock cleared.'
+            'similar) — NOT a missing index. Retry the call once; a damaged index is moved aside and ' +
+            'rebuilt automatically by the serving engine on the next request.'
           );
         }
         const searched = this.defaultProjectHint ?? process.cwd();
@@ -2732,6 +2743,9 @@ export class ToolHandler {
         if (typeof check === 'object' && check !== undefined) return check;
       }
 
+      if (!args.projectPath && !this.cg && this.openFailure && this.defaultIndexRepair) {
+        await this.defaultIndexRepair();
+      }
       const project = await this.getLatticeSensor(args.projectPath as string | undefined);
       // Recover a watcher disabled by prolonged lock contention on the next call.
       // The stale banner remains until the watcher finishes its full scan;
@@ -2784,19 +2798,27 @@ export class ToolHandler {
       if (!raw.isError && answeredFrom && (wasDegraded || project.isWatcherDegraded?.())) {
         const validation = await validateAnswerFiles(project.getProjectRoot(), answeredFrom);
         if (validation.stale.length || validation.unchecked.length) {
-          // Rejected source must not enter the session's emission history.
-          const lines = ['⚠️ LatticeSensor cannot answer from this index:'];
+          // u03 sweep E13: answer from the index and annotate it as stale or
+          // unchecked instead of refusing. Annotated source is not recorded as
+          // shown to the session, so a later fresh answer still includes it.
+          const lines = ['⚠️ LatticeSensor served this answer from a degraded index; part of it may be out of date.'];
           if (validation.stale.length) {
-            lines.push('These files changed or became unavailable after their last sync:',
+            lines.push('These files changed or became unavailable after their last sync (stale):',
               ...validation.stale.map(file => `- ${file}`));
           }
           if (validation.unchecked.length) {
-            lines.push(`Freshness could not be verified within the validation budget for ${validation.unchecked.length} files:`,
+            lines.push(`Freshness was not verified within the validation budget for ${validation.unchecked.length} files (unchecked):`,
               ...validation.unchecked.slice(0, 20).map(file => `- ${file}`));
             if (validation.unchecked.length > 20) lines.push(`- … ${validation.unchecked.length - 20} more (narrow the query)`);
           }
-          lines.push('Retry after a successful lattice sensor sync, or narrow the query.');
-          return { ...this.textResult(lines.join('\n')), structuredContent: { freshness: validation } };
+          lines.push('Read the files directly for current content, or retry after a successful lattice sensor sync.');
+          delete raw[EXPLORE_EMISSION_KEY];
+          const head = raw.content[0];
+          raw.content = [
+            { type: 'text', text: `${lines.join('\n')}\n\n${head && head.type === 'text' ? head.text : ''}` },
+            ...raw.content.slice(1),
+          ];
+          raw.structuredContent = { ...raw.structuredContent, freshness: validation };
         }
       }
       // Record + STRIP before anything else touches the result: the emission is

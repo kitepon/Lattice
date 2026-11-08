@@ -30,7 +30,9 @@ import {
 } from './todo-revision.mjs';
 
 const TODO_SPLIT_SCHEMA = 'lattice.todo_split.v1';
-const SUPPORTED_PLAN_SCHEMAS = new Set(['lattice.todo_plan.v6', 'lattice.todo_plan.v7']);
+const SUPPORTED_PLAN_SCHEMAS = new Set(['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']);
+// v8 = v7 + task.done_condition。分割で生まれる子は終了条件を持たない（null）。
+const isPhasedMemoPlan = (plan) => ['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema);
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 
 export class TodoSplitError extends Error {
@@ -226,7 +228,7 @@ async function compileSourceCutover(repoRoot, proposal, {
 
 function compileTasks(plan, proposal, archivedByTask) {
   const residual = plan.tasks.find(({ task_id: taskId }) => taskId === proposal.task_id);
-  const phasePlan = plan.schema === 'lattice.todo_plan.v7';
+  const phasePlan = isPhasedMemoPlan(plan);
   const existing = plan.tasks.map((task) => {
     const updated = task.task_id === proposal.task_id ? {
       ...task,
@@ -249,6 +251,7 @@ function compileTasks(plan, proposal, archivedByTask) {
       compile_binding: null,
       parent_task_id: proposal.task_id,
       ...(phasePlan ? { phase_id: residual.phase_id } : {}),
+      ...(plan.schema === 'lattice.todo_plan.v8' ? { done_condition: null } : {}),
     }));
   return [...existing, ...children]
     .sort((left, right) => left.task_id < right.task_id ? -1 : left.task_id > right.task_id ? 1 : 0);
@@ -329,7 +332,7 @@ export async function compileTodoSplit({ repoRoot, member, proposal }) {
     plan_version: plan.plan_version,
   };
   const previousInventory = await existingSourceInventory(repoRoot, member);
-  const phasePlan = plan.schema === 'lattice.todo_plan.v7';
+  const phasePlan = isPhasedMemoPlan(plan);
   // phase revisionのgenesisではpredecessor inventoryがまだrevisionへ保存されていない。
   // apply側は全既存sourceのarchive移送を差分として要求するため、既存taskも同じbatchへ載せる。
   const cutoverExistingTasks = phasePlan && !previousInventory.inherited ? plan.tasks : [];

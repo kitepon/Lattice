@@ -86,3 +86,40 @@ validation gap is Rudmira's; this section owns only the Plan continuity semantic
 Protected state: connection history (both originals and tombstones stay on the owner
 chain), endpoints, direction, task lifecycle and evidence. No new connect allowance,
 no disconnect-only intermediate state.
+
+## Authored change at any state (u12, agreed 2026-11-08)
+
+Owner rulings 2026-11-08 (u12/u03 notes): an authored task (title, lane, design memo,
+done condition, dependencies, joins, phase) may be revised at any state, including
+in-progress and done, and may be removed; Lattice records the change with its reason.
+The revised procedure is then enforced as written.
+
+Invariant (Plan lifecycle owns it): carried in-progress/done/blocked task state is
+never re-validated against the revised readiness; there is no retroactive start
+check. A done task that gains an unfinished predecessor stays done. An in-progress
+task that gains one stays in-progress, and its `done` refuses `predecessor_unfinished`
+until the predecessor finishes or a revision drops the edge. Store merged-graph
+validation checks graph shape only and never flags these states.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: continuity | `plan_revise_input.v1`; `desired` is create v4 or v5 | `carry` → carry_reconciled_metadata whatever authored fields/edges changed; the Plan pre-check `carry_semantics_changed` is removed. `retire` → removed at any state (unchanged). | Missing/unknown/duplicate policy and retire/desired mismatch still refuse at `/continuity` (intent cannot be derived). |
+| Plan: phase migration (light route only) | Predecessor phases/tasks, desired seed, task migration with carried states | Per phase: `reset` when its definition changed (title, gate_policy, predecessor_phase_ids, required_evidence_slots) or it gains a task whose carried state is not done/retired (it must be re-reviewed under the new procedure); otherwise `carry` (losing tasks, or gaining only done/retired tasks, keeps an accepted phase). Backchain keeps its existing compilePhaseMigration behaviour. | None added. |
+| Store: light carry (Ludmila) | phase_todo_revision.v5 | Task carry_reconciled_metadata compares only mapped task_id and `compile_binding`; carried phases compare only id mapping and carry what phase_migration says. Stays: compile_binding → `carry_semantics_changed` (the claim 1–4 impact binding must not carry onto another compiled spec); merged-graph validation; v1–v4 and plain todo_revision checks; predecessor CAS. Relaxed for v5 only: title/lane/memo/done_condition/phase_id/edges/joins on carried tasks, `carry_outgoing_edge_removed`, `phase_carry_semantics_changed`. | compile_binding change: author uses reset or the source/backchain route that recompiles. |
+| Plan: history notes | Applied revision, continuity reasons | A task "changed" when any of title, lane, design_memo, done_condition, narrative_ref, parent_task_id, phase_id, incoming/outgoing hard_dependencies, join memberships or phase_accept_dependencies differ. After publication, one task note per changed carried task on the successor version, and one plan note on the successor per removed task naming its task_id, via `appendTodoNote`; body starts `plan revise <from_version>→<to_version> <task_id>:` then the reason. | A note failure after publication returns `revision_applied: true` with `pending_history_notes: [{task_id, body}]` (only the ones not yet appended in this run) and the exact `lattice todo note add` commands; the author runs exactly those. No automatic retry. |
+
+Named limit (Store DFD, PR55; Snow White 2026-11-08): revising a plan that is the
+`from` of another plan's live cross-plan connection still refuses before publication
+with `STORE_INCONSISTENT/binding_stale`, because topology_digest includes
+plan_version and every revision moves it. The same class covers removing a task
+that is a live connection endpoint. Protection: meaning of live connections to the
+predecessor topology (including done targets). Exit: Snow's separate Store+Plan unit
+on u03 after u12 (the revision rebinds carried-source connections in its
+transaction); until then the existing carried-source rebind recovery applies. The
+u12 acceptance plan `lattice-usability-20261108` is not a live source (checked
+2026-11-08; only lattice-refactor-20261107 is), so the acceptance revision does
+not hit it.
+
+Plan migration of `lattice-usability-20261108` (u12 acceptance): after the release,
+one light revision to create-v5 moves each task's trailing `終了条件: …` line from
+design_memo into done_condition, policy carry for every task.

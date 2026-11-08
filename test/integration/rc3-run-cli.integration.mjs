@@ -158,15 +158,25 @@ test('既存run storeへのrun startはtyped rejectされる', () => {
   assert.equal(JSON.parse(dup.stderr).code, 'RUN_EXISTS');
 });
 
-test('resumeはbase bindingを検証し、未完了closeはfail closedに拒否する', () => {
+test('resumeはbase bindingを検証し、未完了closeは残りTODOを記録して閉じる', async () => {
   const runRef = path.join('.lattice', 'runs', 'run-cli-01');
   const resume = runCli(['run', 'resume', '--run', runRef], repoRoot);
   assert.equal(resume.status, 0, resume.stderr);
   assert.equal(JSON.parse(resume.stdout).outcome, 'resumable');
 
-  const close = runCli(['run', 'close', '--run', runRef], repoRoot);
-  assert.equal(close.status, 1);
-  assert.equal(JSON.parse(close.stderr).code, 'RUN_NOT_COMPLETE');
+  // C18: close no longer refuses an incomplete run; a separate run keeps run-cli-01 open for the abandon test.
+  const { readFile } = await import('node:fs/promises');
+  const request = { ...JSON.parse(await readFile(requestPath, 'utf8')), request_id: 'run-cli-close' };
+  request.request_digest = selfDigest(request, 'request_digest');
+  const closeRequestPath = path.join(temporaryRoot, 'run-request-close.json');
+  await writeFile(closeRequestPath, `${JSON.stringify(request)}\n`);
+  const started = runCli(['run', 'start', '--request', closeRequestPath, '--executor', 'scripted'], repoRoot);
+  assert.equal(started.status, 0, started.stderr);
+  const closeRef = path.join('.lattice', 'runs', 'run-cli-close');
+  const close = runCli(['run', 'close', '--run', closeRef], repoRoot);
+  assert.equal(close.status, 0, close.stderr);
+  assert.deepEqual(JSON.parse(close.stdout).abandoned_todo_ids, ['T1', 'T2']);
+  assert.equal(JSON.parse(runCli(['run', 'status', '--run', closeRef], repoRoot).stdout).closed, true);
 });
 
 test('stale baseはresumeを止めるが明示abandonでrunを閉じられる', async () => {

@@ -436,15 +436,31 @@ export function recomputeHoldDecision(options = {}) {
   const holdSet = new Set();
   const continueSet = new Set();
   const reasons = {};
+  // u03 C43 (claim 10): hold only the affected group. Outside the closure, only a TODO whose
+  // declared writes or frozen observed paths touch the finding paths is affected.
+  const findingPaths = new Set(frozenConflicts.flatMap((conflict) => (
+    typeof conflict.path === 'string' ? [conflict.path] : (conflict.paths ?? []))));
+  const touchesFinding = (todoId) => {
+    const declared = manifests?.[todoId]?.writes ?? [];
+    const observed = new Set(state.checkpoints
+      .filter((entry) => entry.todo_id === todoId && entry.sequence <= freezeSequence)
+      .flatMap((entry) => (entry.payload?.diff?.entries ?? []).map((entry2) => entry2.path)));
+    for (const findingPath of findingPaths) {
+      if (observed.has(findingPath)) return true;
+      if (declared.some((write) => write === findingPath
+        || (write.endsWith('/') && findingPath.startsWith(write)))) return true;
+    }
+    return false;
+  };
   for (const todoId of frozenRunning) {
     if (closure.has(todoId)) {
       holdSet.add(todoId);
       reasons[todoId] = 'affected_closure';
-    } else if (witnessedForContinue(state.witnesses[todoId], todoId)) {
-      continueSet.add(todoId);
-    } else {
+    } else if (touchesFinding(todoId)) {
       holdSet.add(todoId);
-      reasons[todoId] = 'carry_over_unprovable';
+      reasons[todoId] = 'finding_scope_overlap';
+    } else {
+      continueSet.add(todoId);
     }
   }
   for (const todoId of closure) {
@@ -529,9 +545,7 @@ export function recomputeReceiptDecisions(options = {}) {
     const originBindingRetained = (() => {
       if (!Number.isSafeInteger(receipt.plan_epoch) || receipt.plan_epoch >= plan.plan_epoch) return false;
       for (let epoch = receipt.plan_epoch; epoch < plan.plan_epoch; epoch += 1) {
-        const witnessed = events.some((event) => event.sequence < receipt.sequence
-          && event.kind === 'carry_over_witnessed' && event.plan_epoch === epoch
-          && event.subject?.kind === 'todo' && event.subject.ref === receipt.todo_id);
+        // u03 C43: continue_set membership carries the origin binding; no witness required.
         const continued = events.some((event) => event.sequence < receipt.sequence
           && event.kind === 'hold_decided' && event.plan_epoch === epoch
           && event.payload?.continue_set?.includes(receipt.todo_id));
@@ -540,7 +554,7 @@ export function recomputeReceiptDecisions(options = {}) {
         const invalidated = events.some((event) => event.sequence < receipt.sequence
           && event.kind === 'context_invalidated' && event.plan_epoch === epoch + 1
           && event.subject?.kind === 'todo' && event.subject.ref === receipt.todo_id);
-        if (!witnessed || !continued || !recompiled || invalidated) return false;
+        if (!continued || !recompiled || invalidated) return false;
       }
       return true;
     })();
@@ -612,6 +626,11 @@ export function recomputeReceiptDecisions(options = {}) {
     // receipt_bindingsが当該receiptをbindする場合だけ有効になる（Decision 7.5）。
     const witnessRecord = state.witnesses[receipt.todo_id];
     if (!witnessedForContinue(witnessRecord, receipt.todo_id)) {
+      // u03 C43: without any witness, this epoch's continue_set decides.
+      const continued = witnessRecord?.payload?.witness?.predecessor_epoch !== plan.plan_epoch && events.some((event) => (
+        event.kind === 'hold_decided' && event.plan_epoch === plan.plan_epoch
+        && event.payload?.continue_set?.includes(receipt.todo_id)));
+      if (continued) return { ...base, decision: 'accepted', reason: null, detail: null };
       return reject('witness_unproven');
     }
     const bound = witnessRecord.payload.witness.receipt_bindings.some((binding) => (

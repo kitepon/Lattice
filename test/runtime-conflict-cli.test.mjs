@@ -778,3 +778,27 @@ test('activate後もdaemonが生存しfinding→conflict→hold receiptとdispat
     (error) => error.code === 'ENOENT');
   worker = null;
 });
+
+test('u03 C18: 未完了のmanaged runもcloseでき、放棄したTODOを記録してsupervisorを止める', managedDaemon, async (t) => {
+  const fixture = await createUnmanagedRun(t);
+  await installManagedControllerFixture(fixture);
+  exec(process.execPath, [CLI, 'run', 'activate', '--run', fixture.runRef], fixture.repo);
+  const runDir = path.join(fixture.repo, fixture.runRef);
+  const supervisor = JSON.parse(await readFile(path.join(runDir, 'supervisor', 'descriptor.json')));
+  const closed = JSON.parse(exec(process.execPath, [CLI, 'run', 'close', '--run', fixture.runRef],
+    fixture.repo).stdout);
+  assert.equal(closed.outcome, 'closed');
+  assert.ok(closed.abandoned_todo_ids.length > 0);
+  const events = JSON.parse(await readFile(path.join(runDir, 'events.json'), 'utf8'));
+  assert.deepEqual(events.at(-1).payload.abandoned_todo_ids, closed.abandoned_todo_ids);
+  assert.equal(events.at(-1).payload.outcome, undefined, '明示abandonとは区別する');
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    try { process.kill(supervisor.pid, 0); } catch { break; }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.throws(() => process.kill(supervisor.pid, 0));
+  const again = JSON.parse(exec(process.execPath, [CLI, 'run', 'close', '--run', fixture.runRef],
+    fixture.repo).stdout);
+  assert.equal(again.already_closed, true);
+});

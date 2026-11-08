@@ -34,7 +34,7 @@ function initialPlan() {
   });
 }
 
-function revisionFor(member, { changedTitle = false } = {}) {
+function revisionFor(member, { changedTitle = false, changedBinding = false } = {}) {
   const predecessor = { plan_digest: member.plan.plan_digest,
     journal_head_digest: member.journal.events.at(-1).event_digest,
     plan_version: member.plan.plan_version };
@@ -46,7 +46,10 @@ function revisionFor(member, { changedTitle = false } = {}) {
   const desired = { ...member.plan, plan_version: 'pending',
     predecessor_plan_digest: predecessor.plan_digest,
     tasks: member.plan.tasks.map((task) => ({ ...task, design_memo: 'Revised design',
-      title: changedTitle && task.task_id === 'a' ? 'Changed identity semantics' : task.title })) };
+      title: changedTitle && task.task_id === 'a' ? 'Changed identity semantics' : task.title,
+      compile_binding: changedBinding && task.task_id === 'a'
+        ? { boundary_manifest_digest: 'a'.repeat(64), compiled_plan_digest: 'b'.repeat(64),
+          topology_digest: 'c'.repeat(64), base_sha: 'd'.repeat(40) } : task.compile_binding })) };
   delete desired.plan_digest;
   delete desired.topology_digest;
   desired.plan_version = phaseTodoRevisionPlanVersion({ projectId: 'project', planKey: 'main',
@@ -129,14 +132,18 @@ test('v5 generic apply reopens, carries and resets state while preserving predec
   assert.equal((await apply(root, revision)).recovered, true);
 });
 
-test('v5 keeps locked carry refusal and predecessor bytes on a changed task title', async (t) => {
+test('v5 light carry accepts a changed task title but keeps the compile_binding refusal and predecessor bytes', async (t) => {
   const { root, member } = await fixture(t);
   const manifestPath = path.join(root, '.lattice/todo/manifest.json');
   const before = await readFile(manifestPath);
-  const revision = revisionFor(member, { changedTitle: true });
-  assert.equal(validatePhaseTodoRevision(revision), true);
-  await assert.rejects(apply(root, revision), reason('REVISION_INVALID', 'carry_semantics_changed'));
+  const bound = revisionFor(member, { changedBinding: true });
+  assert.equal(validatePhaseTodoRevision(bound), true);
+  await assert.rejects(apply(root, bound), reason('REVISION_INVALID', 'carry_semantics_changed'));
   assert.deepEqual(await readFile(manifestPath), before);
+  const renamed = revisionFor(member, { changedTitle: true });
+  assert.equal((await apply(root, renamed)).recovered, false);
+  assert.equal((await readTodoStore({ repoRoot: root })).members[0].tasks
+    .find(({ task_id }) => task_id === 'a').status, 'in-progress');
 });
 
 test('v5 marker retry uses the existing generic transaction validator and finishes publication', async (t) => {

@@ -84,3 +84,29 @@ done target and strict reopen; manifest/head CAS, original identity and Plan
 refusals retain bytes; incomplete selection and duplicate edges refuse; retry
 conflicts; stale snapshots coexist with repair and recover on ordinary reopen.
 DFD, function-map, source and these checks ship together.
+
+## u12 authored changes: plan v8, light carry, retire at any state (Store, 2026-11-08)
+
+Owner rulings 2026-11-08 (u12/u03): an author may change or delete any task at
+any state and Lattice records it; the revised procedure is then enforced as
+written. Plan's contract rows live in dfd-plan-create.md "Authored done
+condition", dfd-plan-revise.md "Authored change at any state" and
+dfd-todo-start.md "Retire at any state"; this section is Store's half.
+
+| Step / owner | Input and decision | Output / failure and exit |
+|---|---|---|
+| Store plan v8 registration | `lattice.todo_plan.v8` = v7 plan keys; task = v7 task keys + `done_condition` (always present: null or the design-memo text rule). validateTodoPlan/explainTodoPlan, isPhaseTodoPlanSchema/isDecoupledPhaseTodoPlanSchema and every Store v7 list (parent graph, plan-scoped/trusted-plan checks, active reader) include v8. Successor rank 5 (v7 lineage). | Old readers refuse v8 with UNSUPPORTED_SCHEMA. A v8 predecessor with a non-v8 desired plan refuses REVISION_INVALID `done_condition_schema_downgrade` (same place as design_memo_schema_downgrade); the successor-plan writer refuses the same regression with the same typed code (design_memo_schema_downgrade there is typed too). Author resubmits as v8. |
+| Store revision desired-plan lists | phase_todo_revision.v3 desired v5/v7/v8, v4 desired v7/v8, v5 desired v7/v8; all other checks unchanged | Every revision route stays open after a plan becomes v8; v7→v8 is allowed, v8→v7 is the downgrade refusal above. |
+| Store light task carry | phase_todo_revision.v5 + `carry_reconciled_metadata` only: compare mapped task_id and compile_binding. Title, lane, memo, done_condition, phase, incoming/outgoing edges and joins may change; state and evidence carry. | compile_binding change → existing REVISION_INVALID carry_semantics_changed (claim 1–4 binding must not silently move); author uses reset or the recompile route. `carry` policy, v1–v4 revisions, plain todo_revision and acquire_phase keep their existing comparisons. Merged-graph validation unchanged. |
+| Store light phase carry | phase_todo_revision.v5: a `carry` phase migration compares only its id mapping (from → to); definition and task membership may change | Store carries exactly what phase_migration says. Plan (compilePhaseMigration, light route) chooses reset when the definition changed or the phase gains a task whose carried state is not done/retired, else carry (Alice, 2026-11-08). v1–v4 keep phase_carry_semantics_changed. |
+| Store retire replay | `retire` payload legacy `{reason}` or new `{reason, prior_status}` with prior_status ∈ pending/blocked/in-progress/done | Legacy: pending/blocked only, as before. New: prior_status must equal the replayed status, else STORE_INCONSISTENT `retire_prior_status_mismatch` (the event would record a false fact). Result state is the retired shape: blocked_reason = reason; evidence, test_result null; started_at kept; done_at and imported kept only when retired from done (else null/false). An in-progress authored start binding is closed; a done task's completion record and pending evidence verification are dropped from state; the done event and its evidence stay in the journal. Already retired → existing invalid_retire_transition. Old readers refuse the new payload shape (event validation). |
+| Store/readiness: retired from done | Retired state with done_at !== null or imported === true (only reachable by retiring a done task, including a historical_import done with unknown time) | `isFinishedTodoTaskState(state)` in todo-store-view.mjs is the single predicate; it counts as a finished predecessor in Store replay dependenciesDone and in readiness predecessorsDone (todo-readiness.mjs, Plan/lifecycle-owned; Alice changes it in the u12 PR) (Alice, 2026-11-08). A task retired from pending/blocked/in-progress (done_at null) keeps today's rule: successors wait for a revision that drops or replaces the edge. Phase gate_ready counts every retired task as finished, as today. Snapshot validation allows retired done_at null or a strict timestamp and imported true or false. |
+
+
+Changed-range checks: v8 accept/refuse + explain pointer; v7→v8 revision and
+v8→v7 downgrade refusal; v4/v3 desired v8 accepted; v5 light carry accepting an
+edge/title/phase-field change and refusing a compile_binding change; v5 carried
+phase with changed membership accepted, v4 still refused; carry policy unchanged; retire new payload from each of the four states, mismatch refusal,
+legacy from in-progress still refused, in-progress retire closes the binding; retire from done keeps a pending successor
+ready and lets an in-progress successor record done; retire from pending still
+blocks its successor.

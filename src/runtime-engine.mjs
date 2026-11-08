@@ -594,12 +594,17 @@ function witnessProvenReceiptBinding(state, receipt) {
   ));
 }
 
+// u03 C43: an unwitnessed closure-external TODO continued by this epoch's hold decision.
+function continuedWithoutWitness(events, receipt, currentEpoch) {
+  return events.some((event) => event.kind === 'hold_decided' && event.plan_epoch === currentEpoch
+    && event.payload?.continue_set?.includes(receipt.todo_id));
+}
+
 function retainsOriginBinding(events, receipt, currentEpoch) {
   if (!Number.isSafeInteger(receipt.plan_epoch) || receipt.plan_epoch >= currentEpoch) return false;
+  // u03 C43: continue_set membership (durable in hold_decided) carries the origin binding;
+  // the witness is evidence when provable, not a condition.
   for (let epoch = receipt.plan_epoch; epoch < currentEpoch; epoch += 1) {
-    const witnessed = events.some((event) => event.sequence < receipt.sequence
-      && event.kind === 'carry_over_witnessed' && event.plan_epoch === epoch
-      && event.subject?.kind === 'todo' && event.subject.ref === receipt.todo_id);
     const continued = events.some((event) => event.sequence < receipt.sequence
       && event.kind === 'hold_decided' && event.plan_epoch === epoch
       && event.payload?.continue_set?.includes(receipt.todo_id));
@@ -608,7 +613,7 @@ function retainsOriginBinding(events, receipt, currentEpoch) {
     const invalidated = events.some((event) => event.sequence < receipt.sequence
       && event.kind === 'context_invalidated' && event.plan_epoch === epoch + 1
       && event.subject?.kind === 'todo' && event.subject.ref === receipt.todo_id);
-    if (!witnessed || !continued || !recompiled || invalidated) return false;
+    if (!continued || !recompiled || invalidated) return false;
   }
   return true;
 }
@@ -710,7 +715,9 @@ export function adjudicatePendingReceipts(options = {}) {
       // 実証済みcarry-over witnessのbindingがある場合だけ受理（Decision 7.5）。
       if (receipt.sequence > freezeBoundary) {
         rejection = 'post_freeze';
-      } else if (!witnessProvenReceiptBinding(state, receipt)) {
+      } else if (!witnessProvenReceiptBinding(state, receipt)
+        && !(state.witnesses[receipt.todo_id]?.payload?.witness?.predecessor_epoch !== plan.plan_epoch
+          && continuedWithoutWitness(events, receipt, plan.plan_epoch))) {
         rejection = 'witness_unproven';
       }
     }
@@ -768,4 +775,26 @@ export function closeRunIfComplete(options = {}) {
     recordedAt,
   }));
   return { events: next, closed: true };
+}
+
+/**
+ * u03 C18: closeはrunを必ず閉じる。完了済みなら従来と同じbytes、未完了TODOは
+ * `abandoned_todo_ids`として記録する（明示`run abandon`の作業木削除は行わない）。
+ */
+export function closeRunAbandoningRemaining({ runId, plan, events, recordedAt }) {
+  const complete = closeRunIfComplete({ runId, plan, events, recordedAt });
+  const state = projectRuntimeState({ events });
+  if (complete.closed || state.closed) return { ...complete, abandoned_todo_ids: [] };
+  const abandoned = sortedText(plan.nodes.map((node) => node.todo_id)
+    .filter((todoId) => !state.accepted.includes(todoId)));
+  const next = [...events, buildNextRunEvent({
+    events,
+    runId,
+    kind: 'run_closed',
+    planEpoch: plan.plan_epoch,
+    subject: { kind: 'runtime_plan', ref: plan.plan_ref },
+    payload: { accepted: sortedText(state.accepted), abandoned_todo_ids: abandoned },
+    recordedAt,
+  })];
+  return { events: next, closed: true, abandoned_todo_ids: abandoned };
 }

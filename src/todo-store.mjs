@@ -4,11 +4,14 @@ import {
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
   localTaskRef,
+  normalizeCheckoutEol,
   removedTaskRef,
+  isFinishedTodoTaskState,
   todoTaskCarrySemantics as taskSemantics,
 } from './todo-store-view.mjs';
 export {
   isDecoupledPhaseTodoPlanSchema,
+  isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
@@ -81,7 +84,6 @@ const CROSS_PLAN_IMPORT_TRANSACTION_SCHEMA = 'lattice.todo_cross_plan_import_tra
 const SOURCE_CUTOVER_BARRIER_REF = `${STORE_ROOT_REF}/source-cutover-recovery.json`;
 const SOURCE_CUTOVER_RECOVERY_CAPABILITY = Symbol('lattice.todo.source-cutover-recovery');
 const STORE_LOCK_HELD = Symbol('lattice.todo.lock-held');
-const MAX_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const WRITER_CALLERS = new Set(['g4-migration', 'g5-authoring']);
 const TODO_REVISION_SCHEMAS = Object.freeze([
   'lattice.todo_revision.v1', 'lattice.todo_revision.v2',
@@ -162,11 +164,6 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
     fail(code, bytes.length > maxBytes ? 'size_limit_exceeded' : reason, detail);
   }
   const text = decodeUtf8(bytes, code, 'invalid_utf8');
-  if (text.includes('\r')) {
-    fail(code, 'artifact_eol_converted', {
-      ...detail, next_action: 'lattice todo repair-eol --json',
-    });
-  }
   if (text.startsWith('\uFEFF')) fail(code, reason, detail);
   const body = text.endsWith('\n') ? text.slice(0, -1) : text;
   let value;
@@ -182,7 +179,7 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
 async function readArtifact(repoRoot, ref, { code, maxBytes, validate, missing = false }) {
   const state = await pathState(repoRoot, ref, code, { missing });
   if (state === null) return null;
-  const bytes = await readFile(state.absolute);
+  const bytes = normalizeCheckoutEol(await readFile(state.absolute));
   return parseCanonicalJsonLine(bytes, {
     code, reason: 'artifact_truncated_or_trailing_bytes', maxBytes, validate, ref,
   });
@@ -191,7 +188,7 @@ async function readArtifact(repoRoot, ref, { code, maxBytes, validate, missing =
 async function readSnapshotArtifact(repoRoot, ref) {
   const state = await pathState(repoRoot, ref, 'STORE_INCONSISTENT', { missing: true });
   if (state === null) return null;
-  const bytes = await readFile(state.absolute);
+  const bytes = normalizeCheckoutEol(await readFile(state.absolute));
   return parseCanonicalJsonLine(bytes, {
     code: 'SNAPSHOT_INVALID', reason: 'snapshot_truncated_or_trailing_bytes',
     maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoSnapshot, ref,
@@ -205,11 +202,6 @@ function parseJournalSegment(bytes, ref = null) {
       ? 'journal_segment_limit_exceeded' : 'journal_empty', detail);
   }
   const text = decodeUtf8(bytes, 'STORE_CORRUPT', 'journal_invalid_utf8');
-  if (text.includes('\r')) {
-    fail('STORE_CORRUPT', 'artifact_eol_converted', {
-      ...detail, next_action: 'lattice todo repair-eol --json',
-    });
-  }
   if (!text.endsWith('\n') || text.startsWith('\uFEFF')) fail('STORE_CORRUPT', 'journal_byte_contract', detail);
   const lines = text.slice(0, -1).split('\n');
   if (lines.some((line) => line.length === 0)) fail('STORE_CORRUPT', 'journal_truncated_or_empty_line');
@@ -239,7 +231,7 @@ async function readJournal(repoRoot, journalRef) {
       }
       const ref = path.posix.join(path.posix.dirname(journalRef), 'sealed', name);
       const sealed = await pathState(repoRoot, ref, 'STORE_CORRUPT');
-      const bytes = await readFile(sealed.absolute);
+      const bytes = normalizeCheckoutEol(await readFile(sealed.absolute));
       const [, startText, endText, previousDigest, segmentDigest] = name.match(
         /^(\d{12})-(\d{12})-([0-9a-f]{64})-([0-9a-f]{64})\.jsonl$/u,
       );
@@ -257,7 +249,7 @@ async function readJournal(repoRoot, journalRef) {
     if (error instanceof TodoStoreError) throw error;
     if (error?.code !== 'ENOENT') fail('STORE_CORRUPT', 'sealed_segment_read_failed');
   }
-  const activeBytes = await readFile(state.absolute);
+  const activeBytes = normalizeCheckoutEol(await readFile(state.absolute));
   const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
   if (!duplicateActive) {
     segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef) });
@@ -326,7 +318,7 @@ async function readPlanScopedJournal(repoRoot, journalRef) {
   try {
     const state = await lstat(absolute);
     if (state.isSymbolicLink() || !state.isFile()) fail('STORE_CORRUPT', 'plan_scoped_journal_unsafe');
-    bytes = await readFile(absolute);
+    bytes = normalizeCheckoutEol(await readFile(absolute));
   } catch (error) {
     if (error instanceof TodoStoreError) throw error;
     if (error?.code === 'ENOENT') return { ref, events: [], activeBytes: Buffer.alloc(0) };
@@ -484,7 +476,7 @@ function localSuccessors(plan, taskId) {
   return plan.tasks.map(({ task_id }) => task_id).filter((candidate) => localPredecessors(plan, candidate).includes(taskId));
 }
 
-function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSource } = {}) {
+function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
   const states = new Map(plan.tasks.map(({ task_id }) => [task_id, taskState(task_id)]));
   const phaseStates = new Map(phasesOf(plan).map(({ phase_id }) => [phase_id, emptyPhaseState(phase_id)]));
   const doneDigest = new Map();
@@ -496,22 +488,12 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
   // storeを恒久的に書き込み不能へ落とす（2026-08-22実被弾: reopen済み旧doneのdangling blob）。
   const pendingVerifications = new Map();
   const importedGenesis = events[0]?.payload.historical_import === true;
-  let previousTime = null;
   for (const event of events) {
     if (event.project_id !== plan.project_id || event.plan_key !== plan.plan_key || event.plan_version !== plan.plan_version) {
       fail('STORE_CORRUPT', 'journal_identity_mismatch');
     }
     if (!isStrictTodoTimestamp(event.recorded_at)) fail('STORE_CORRUPT', 'timestamp_invalid');
-    const time = Date.parse(event.recorded_at);
-    if (previousTime !== null && time < previousTime) fail('STORE_INCONSISTENT', 'clock_reversal');
-    if (time > now.valueOf() + MAX_FUTURE_SKEW_MS) {
-      fail('STORE_INCONSISTENT', 'future_clock_skew', {
-        recorded_at: event.recorded_at,
-        current_time: now.toISOString(),
-        max_future_skew_ms: MAX_FUTURE_SKEW_MS,
-      });
-    }
-    previousTime = time;
+    // u03 A4/A5: order is the sequence + hash chain; recorded_at is a shown fact, never an integrity key.
     if (event.kind === 'plan_genesis') {
       if (event.payload.plan_digest !== plan.plan_digest || event.payload.topology_digest !== plan.topology_digest
         || event.payload.predecessor_plan_digest !== plan.predecessor_plan_digest) {
@@ -657,7 +639,8 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
     }
     const state = states.get(event.task_id);
     if (state === undefined) fail('STORE_INCONSISTENT', 'event_task_missing');
-    const dependenciesDone = localPredecessors(plan, event.task_id).every((id) => states.get(id)?.status === 'done');
+    const dependenciesDone = localPredecessors(plan, event.task_id)
+      .every((id) => isFinishedTodoTaskState(states.get(id)));
     if (event.kind === 'start') {
       if (event.payload.start_mode === 'rebind') {
         // 改訂でcarryされたin-progressの再束縛。状態・開始時刻は動かさず、start束縛だけを
@@ -726,9 +709,26 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
       if (state.status !== 'blocked') fail('STORE_INCONSISTENT', 'invalid_unblock_transition');
       state.status = 'in-progress'; state.blocked_reason = null;
     } else if (event.kind === 'retire') {
-      // 恒久除去はpending/blockedからだけ。in-progressは保持者がretractしてから、doneは撤去対象でない。
-      if (!['pending', 'blocked'].includes(state.status)) fail('STORE_INCONSISTENT', 'invalid_retire_transition');
+      const priorStatus = event.payload.prior_status;
+      if (priorStatus === undefined) {
+        // legacy payload: pending/blocked only.
+        if (!['pending', 'blocked'].includes(state.status)) fail('STORE_INCONSISTENT', 'invalid_retire_transition');
+      } else {
+        if (state.status === 'retired') fail('STORE_INCONSISTENT', 'invalid_retire_transition');
+        if (priorStatus !== state.status) fail('STORE_INCONSISTENT', 'retire_prior_status_mismatch');
+      }
+      const wasDone = state.status === 'done';
       state.status = 'retired'; state.blocked_reason = event.payload.reason;
+      state.done_at = wasDone ? state.done_at : null;
+      // done_at and imported survive a retire from done so the finished mark stays (isFinishedTodoTaskState).
+      state.evidence = null; state.test_result = null; state.imported = wasDone ? state.imported : false;
+      state.evidence_unverified = false;
+      authoredStartBindings.delete(event.task_id);
+      if (wasDone) {
+        completion.delete(event.task_id);
+        pendingVerifications.delete(`task:${event.task_id}`);
+      }
+      // a retired task is unreachable by promotion/reopen (both require status done), so doneDigest is left as is.
     } else if (event.kind === 'done') {
       if (event.payload.done_mode === 'authored') {
         if (state.status !== 'in-progress' || !dependenciesDone) fail('STORE_INCONSISTENT', 'invalid_done_transition');
@@ -1329,9 +1329,9 @@ function materializeImportedNarrativeAnchors(repoRoot, planInput, sources, cache
 
 function verifyPlanNarrativeAnchors(repoRoot, plan, trustedPlan = null, cache = null) {
   if (!['lattice.todo_plan.v2', 'lattice.todo_plan.v3', 'lattice.todo_plan.v4',
-    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(plan.schema)) return;
+    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) return;
   const trusted = new Map((['lattice.todo_plan.v2', 'lattice.todo_plan.v3', 'lattice.todo_plan.v4',
-    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(trustedPlan?.schema)
+    'lattice.todo_plan.v5', 'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(trustedPlan?.schema)
     ? trustedPlan.tasks : [])
     .map((task) => [task.task_id, task.narrative_anchor]));
   for (const task of plan.tasks) {
@@ -1529,8 +1529,8 @@ async function readTodoStoreView(options = {}) {
       snapshotStale = snapshot === null || canonicalizeTodoArtifact(snapshot) !== canonicalizeTodoArtifact(expectedSnapshot);
     } catch (error) {
       if (error instanceof TodoStoreError && error.code === 'SNAPSHOT_INVALID'
-        && !['unsafe_artifact_path', 'path_alias_or_escape', 'path_outside_store',
-          'artifact_eol_converted'].includes(error.detail.reason)) snapshotStale = true;
+        && !['unsafe_artifact_path', 'path_alias_or_escape', 'path_outside_store']
+          .includes(error.detail.reason)) snapshotStale = true;
       else throw error;
     }
     if (options.forWrite === true && snapshotStale && !options.recovery) fail('STORE_WRITE_REFUSED', 'snapshot_stale');
@@ -1899,7 +1899,7 @@ async function atomicWriteMode(absolute, bytes, mode) {
 async function withLock(repoRoot, callback, {
   onProtocolStage = null, lockCapability = null, initialize = false,
 } = {}) {
-  if (lockCapability === STORE_LOCK_HELD) return callback();
+  if (lockCapability === STORE_LOCK_HELD) return callback(async () => {});
   try {
     if (!initialize) {
       const root = await lstat(path.join(repoRoot, STORE_ROOT_REF)).catch((error) => {
@@ -2068,77 +2068,13 @@ function resolveCanonicalTaskId(plan, requestedTaskId) {
   return matches[0].task_id;
 }
 
-async function enforceTodoStructureLifecycleGate(repoRoot, member, eventInput) {
-  if (eventInput.kind === 'done') return;
-  const binding = await readTodoStructureBinding({
-    repoRoot, planKey: member.plan.plan_key, planVersion: member.plan.plan_version,
-  });
-  if (binding === null) return;
-  const source = await readTodoStructureSource({ repoRoot, planKey: member.plan.plan_key });
-  if (source === null || source.structure_set_digest !== binding.structure_set_digest) {
-    fail('STRUCTURE_LIFECYCLE_GATE_FAILED', 'enabled_structure_source_unreadable');
-  }
-  if (!['phase_accept', 'phase_close_unaudited'].includes(eventInput.kind)
-    || member.tasks.some(({ status }) => status !== 'done')) return;
-  const finalization = await readTodoStructureFinalization({
-    repoRoot, planKey: member.plan.plan_key, planVersion: member.plan.plan_version,
-  });
-  if (finalization === null) {
-    fail('STRUCTURE_FINALIZATION_REQUIRED', 'fresh_consistent_finalization_missing', {
-      plan_key: member.plan.plan_key,
-      next_action: `lattice todo structure finalize --plan ${member.plan.plan_key} --json`,
-    });
-  }
-  let currentHead;
-  try {
-    currentHead = gitSync(['rev-parse', '--verify', 'HEAD^{commit}'], {
-      cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    fail('STRUCTURE_GIT_HEAD_UNAVAILABLE', 'current_head_unavailable');
-  }
-  const realizationHeads = [];
-  for (const task of source.tasks.filter(({ applicability }) => applicability === 'graph')) {
-    const chain = await readTodoStructureRealizationChain({
-      repoRoot, structureSet: source, taskId: task.task_id,
-    });
-    const head = chain.at(-1);
-    if (head !== undefined) realizationHeads.push({
-      task_id: task.task_id, sequence: head.sequence,
-      realization_digest: head.realization_digest,
-    });
-  }
-  const staleReasons = [];
-  if (finalization.project_id !== member.plan.project_id) staleReasons.push('project_id');
-  if (finalization.plan_key !== member.plan.plan_key) staleReasons.push('plan_key');
-  if (finalization.plan_version !== member.plan.plan_version) staleReasons.push('plan_version');
-  if (finalization.topology_digest !== member.plan.topology_digest) {
-    staleReasons.push('topology_digest');
-  }
-  if (finalization.structure_set_digest !== source.structure_set_digest) {
-    staleReasons.push('structure_set_digest');
-  }
-  if (finalization.current_head_sha !== currentHead) staleReasons.push('current_head_sha');
-  if (finalization.realization_head_digest
-    !== digestTodoStructureRealizationHeads(realizationHeads)) {
-    staleReasons.push('realization_head_digest');
-  }
-  if (finalization.overlay.verdict !== 'consistent') staleReasons.push('verdict');
-  if (staleReasons.length > 0) {
-    fail('STRUCTURE_FINALIZATION_REQUIRED', 'finalization_stale', {
-      plan_key: member.plan.plan_key, stale_reasons: staleReasons.sort(),
-      next_action: `lattice todo structure finalize --plan ${member.plan.plan_key} --json`,
-    });
-  }
-}
-
 export async function appendTodoEvent(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
   if (typeof options.validateProspectiveEvent !== 'function') {
     throw new TypeError('appendTodoEvent requires a Plan-supplied validateProspectiveEvent');
   }
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
-  return withLock(repoRoot, async () => {
+  return withLock(repoRoot, async (assertHeld) => {
     const store = await readTodoStoreLocked({
       repoRoot, forWrite: true, now: options.now,
       // 修理扉は除去event（tombstone）の書込みだけに開く。それ以外の書込みは従来どおり
@@ -2169,7 +2105,7 @@ export async function appendTodoEvent(options = {}) {
         }
       }
       return appendPlanScopedEvent({
-        repoRoot, member,
+        repoRoot, member, assertHeld,
         input: { ...options.event, recorded_at: options.event.recorded_at ?? new Date().toISOString() },
       });
     }
@@ -2178,7 +2114,6 @@ export async function appendTodoEvent(options = {}) {
       task_id: resolveCanonicalTaskId(member.plan, options.event.task_id),
       recorded_at: options.event.recorded_at ?? new Date().toISOString(),
     }, member);
-    await enforceTodoStructureLifecycleGate(repoRoot, member, input);
     const event = nextEvent(input, member);
     if ((event.kind === 'start' && event.payload.start_mode === 'historical_import')
       || (event.kind === 'done' && event.payload.done_mode === 'historical_import')) {
@@ -2215,6 +2150,8 @@ export async function appendTodoEvent(options = {}) {
     const eventBytes = canonicalLine(event);
     const activeRef = member.descriptor.journal_ref;
     const activeAbsolute = path.resolve(repoRoot, activeRef);
+    // A holder that lost its lock while suspended must not overwrite the new owner's journal.
+    await assertHeld();
     if (member.journal.activeBytes.length + eventBytes.length > TODO_LIMITS.journalSegmentBytes) {
       const activeEvents = member.journal.segments.at(-1).events;
       const previousSegmentDigest = member.journal.segments.length > 1
@@ -2287,9 +2224,10 @@ function planScopedEventBytes(member, event) {
   return bytes;
 }
 
-async function appendPlanScopedEvent({ repoRoot, member, input }) {
+async function appendPlanScopedEvent({ repoRoot, member, input, assertHeld }) {
   const event = buildPlanScopedEvent(member, input);
   const bytes = planScopedEventBytes(member, event);
+  await assertHeld();
   await atomicWrite(path.resolve(repoRoot, member.plan_scoped.ref),
     Buffer.concat([member.plan_scoped.activeBytes, bytes]));
   const events = [...member.plan_scoped.events, event];
@@ -2833,7 +2771,7 @@ async function finalizeVisibleCrossPlanImport(repoRoot, transaction, { removeTra
       fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.staged_ref });
     }
     const target = await pathState(repoRoot, artifact.ref, 'STORE_INCONSISTENT', { missing: true });
-    const current = target === null ? Buffer.alloc(0) : await readFile(target.absolute);
+    const current = target === null ? Buffer.alloc(0) : normalizeCheckoutEol(await readFile(target.absolute));
     const before = bytes.subarray(0, bytes.length - eventBytes.length);
     if (!current.equals(before) && !current.equals(bytes)) {
       fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.ref });
@@ -3232,7 +3170,7 @@ const sameDirectoryIdentity = (left, right) => left !== null && right !== null
 
 async function transientStoreDirectory(root, allowNotes = true) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.tmp$/u.test(entry.name))) continue;
+    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.(?:tmp|stale)$/u.test(entry.name))) continue;
     if (!entry.isDirectory()) return false;
     const child = path.join(root, entry.name);
     if (allowNotes && entry.name === 'notes') {
@@ -3818,9 +3756,16 @@ function validateAcquirePhaseCarry(previous, revision, migration, idMap) {
 }
 
 function stateMigrationFor(previous, revision) {
-  if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(previous.plan.schema)
-    && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(revision.desired_plan.schema)) {
+  if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(previous.plan.schema)
+    && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']
+      .includes(revision.desired_plan.schema)) {
     fail('REVISION_INVALID', 'design_memo_schema_downgrade', {
+      predecessor_schema: previous.plan.schema, desired_schema: revision.desired_plan.schema,
+    });
+  }
+  if (previous.plan.schema === 'lattice.todo_plan.v8'
+    && revision.desired_plan.schema !== 'lattice.todo_plan.v8') {
+    fail('REVISION_INVALID', 'done_condition_schema_downgrade', {
       predecessor_schema: previous.plan.schema, desired_schema: revision.desired_plan.schema,
     });
   }
@@ -3858,6 +3803,16 @@ function stateMigrationFor(previous, revision) {
         if (canonicalizeTodoArtifact(before) !== canonicalizeTodoArtifact(after)) {
           fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
         }
+      }
+    } else if (revision.schema === 'lattice.phase_todo_revision.v5' && reconciliationMetadata) {
+      // u12 light carry: only the task_id mapping and compile_binding bind carried state.
+      const predecessorTask = previous.plan.tasks
+        .find(({ task_id }) => task_id === migration.from_task_id);
+      const desiredTask = revision.desired_plan.tasks
+        .find(({ task_id }) => task_id === migration.to_task_id);
+      if (!desiredTask || canonicalizeTodoArtifact(predecessorTask?.compile_binding)
+        !== canonicalizeTodoArtifact(desiredTask.compile_binding)) {
+        fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
       }
     } else if (revision.schema === 'lattice.phase_todo_revision.v3') {
       validatePhaseV3Carry(previous, revision, migration, idMap, state);
@@ -3915,7 +3870,10 @@ function phaseStateMigrationFor(previous, revision) {
         .map(({ task_id }) => taskIdMap.get(task_id) ?? 'removed').filter((id) => id !== 'removed').sort();
       const afterTaskIds = revision.desired_plan.tasks
         .filter(({ phase_id }) => phase_id === migration.to_phase_id).map(({ task_id }) => task_id).sort();
-      if (canonicalizeTodoArtifact({ phase: mappedBefore, task_ids: beforeTaskIds })
+      // u12 light carry (revision v5): Plan chose carry vs reset; Store checks only the id mapping.
+      if (revision.schema === 'lattice.phase_todo_revision.v5') {
+        if (!after) fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
+      } else if (canonicalizeTodoArtifact({ phase: mappedBefore, task_ids: beforeTaskIds })
         !== canonicalizeTodoArtifact({ phase: after, task_ids: afterTaskIds })) {
         fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
       }
@@ -5572,7 +5530,7 @@ export async function createSuccessorTodoPlan(options = {}) {
       ['lattice.todo_plan.v1', 1], ['lattice.todo_plan.v2', 2], ['lattice.todo_plan.v3', 3],
       // v6はphase無しv3へdesign_memoを追加した枝であり、phase世代より後という意味ではない。
       ['lattice.todo_plan.v4', 4], ['lattice.todo_plan.v5', 5], ['lattice.todo_plan.v6', 3],
-      ['lattice.todo_plan.v7', 5],
+      ['lattice.todo_plan.v7', 5], ['lattice.todo_plan.v8', 5],
     ]);
     if (schemaRank.get(plan.schema) < schemaRank.get(previous.plan.schema)) {
       throw new TypeError(previous.plan.schema === 'lattice.todo_plan.v2'
@@ -5580,9 +5538,16 @@ export async function createSuccessorTodoPlan(options = {}) {
         ? 'todo plan schema cannot regress from v2 to v1'
         : 'todo plan schema cannot regress');
     }
-    if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(previous.plan.schema)
-      && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7'].includes(plan.schema)) {
-      throw new TypeError('todo plan design_memo cannot be removed by successor schema');
+    if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(previous.plan.schema)
+      && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) {
+      fail('REVISION_INVALID', 'design_memo_schema_downgrade', {
+        predecessor_schema: previous.plan.schema, desired_schema: plan.schema,
+      });
+    }
+    if (previous.plan.schema === 'lattice.todo_plan.v8' && plan.schema !== 'lattice.todo_plan.v8') {
+      fail('REVISION_INVALID', 'done_condition_schema_downgrade', {
+        predecessor_schema: previous.plan.schema, desired_schema: plan.schema,
+      });
     }
     verifyPlanNarrativeAnchors(repoRoot, plan, previous.plan);
     const migration = options.genesis.task_migration ?? [];
@@ -6235,7 +6200,7 @@ export async function readTodoStructureRealizationChain(options = {}) {
     missing: true,
   });
   if (state === null) return [];
-  return parseTodoStructureRealizationChain(await readFile(state.absolute), {
+  return parseTodoStructureRealizationChain(normalizeCheckoutEol(await readFile(state.absolute)), {
     structureSet: options.structureSet, taskId: options.taskId,
   });
 }

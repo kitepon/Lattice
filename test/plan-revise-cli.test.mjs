@@ -64,24 +64,17 @@ test('light CLI revises ordinary v7 work, retains done evidence and rebinds in-p
   success(root, ['todo', 'done', '--plan', 'work', '--task', 'b', '--evidence', 'evidence.md']);
 });
 
-test('light CLI identifies changed carry at its policy pointer and dry-run does not publish', async (context) => {
+test('light CLI carries a changed authored title (no carry pre-check) and dry-run does not publish', async (context) => {
   const { root } = await fixture(context);
   const input = intent();
   input.desired.tasks[0].title = 'changed meaning';
   await writeFile(path.join(root, 'revise.json'), JSON.stringify(input));
   const manifestRef = path.join(root, '.lattice/todo/manifest.json');
   const before = await readFile(manifestRef, 'utf8');
-  const refused = run(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
-  assert.notEqual(refused.status, 0);
-  const error = JSON.parse(refused.stderr);
-  assert.equal(error.code, 'REVISION_INVALID');
-  assert.equal(error.detail.pointer, '/continuity/0');
-  assert.equal(error.detail.expected.policy, 'reset');
-  input.continuity[0].policy = 'reset';
-  await writeFile(path.join(root, 'revise.json'), JSON.stringify(input));
   const preview = success(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
   assert.equal(preview.dry_run, true);
   assert.equal(preview.revision.schema, 'lattice.phase_todo_revision.v5');
+  assert.equal(preview.revision.task_migration[0].state_policy, 'carry_reconciled_metadata');
   assert.equal(await readFile(manifestRef, 'utf8'), before);
 });
 
