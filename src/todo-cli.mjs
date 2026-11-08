@@ -772,9 +772,10 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     }
   };
   if (state.status !== 'in-progress') return append();
-  const start = member.journal.events.findLast((event) => event.task_id === taskId
-    && ['start', 'done', 'start_retracted'].includes(event.kind));
-  if (start?.kind !== 'start' || start.payload.start_mode === 'historical_import') return append();
+  // Runtime binds an intake to the latest literal start and ignores later done/reopen, so the
+  // release targets that start (a reopened task keeps it; a retracted start left in-progress never).
+  const start = member.journal.events.findLast((event) => event.task_id === taskId && event.kind === 'start');
+  if (start === undefined || start.payload.start_mode === 'historical_import') return append();
   return withStartRetractionGuard({
     repoRoot, planKey, taskId, activationEventDigest: start.event_digest,
     releaseReason: 'task_retired', action: append,

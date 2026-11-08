@@ -242,6 +242,32 @@ test('u03 A14r: in-progressのretireはbound intakeをtask_retiredで解放し�
     ]), 1).code, 'INTAKE_NOT_FOUND');
   });
 
+test('u03 A14r: reopen後のin-progressのretireも元のstartに束ねたintakeをtask_retiredで解放する',
+  async (context) => {
+    const { root } = await workspace(context);
+    parsed(startPull(root));
+    await startTask(root, 'A', '2026-08-09T00:01:00.000Z');
+    const intake = parsed(runCli(root, [
+      'run', 'intake', '--run', '.lattice/runs/pull-run', '--task', 'A',
+    ]));
+    assert.equal(parsed(runCli(root, [
+      'todo', 'done', '--plan', PLAN_KEY, '--task', 'A', '--message', '一度終えた',
+    ])).status, 'done');
+    assert.equal(parsed(runCli(root, [
+      'todo', 'reopen', '--plan', PLAN_KEY, '--task', 'A', '--reason', 'やり直す',
+    ])).status, 'in-progress');
+
+    assert.equal(parsed(runCli(root, [
+      'todo', 'retire', '--plan', PLAN_KEY, '--task', 'A', '--reason', '不要になった',
+    ])).status, 'retired');
+    const events = JSON.parse(await readFile(
+      path.join(root, '.lattice', 'runs', 'pull-run', 'pull-events.json'), 'utf8'));
+    const released = events.at(-1);
+    assert.equal(released.kind, 'intake_released');
+    assert.equal(released.payload.reason, 'task_retired');
+    assert.equal(released.payload.target_start_digest, intake.activation_event_digest);
+  });
+
 test('intake 0件のpull runは着地0件を明示してcloseでき、active listから外れる',
   async (context) => {
     const { root } = await workspace(context);
