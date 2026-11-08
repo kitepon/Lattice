@@ -4,7 +4,9 @@ Owner: Lattice Runtime. Read with the [function map](function-map.md) and
 [manual start flow](dfd-todo-start.md). Baseline source:
 `5bb40eba2988695ea7b7e91bc83632a7803c5801` (0.79.5).
 This document records current connections and the proposed recovery/service
-boundary for t11. It changes no code. Target rows are not implementation evidence.
+boundary for t11. Target rows are not implementation evidence. The
+[u03 guard self-exit](#u03-guard-self-exit-implemented) section is implemented
+and supersedes older rows where it names them.
 
 ## Public contract and state ownership
 
@@ -35,7 +37,7 @@ claim map. Evidence below names source paths, not newly passed tests.
 | R1 Observe / Runtime | Actual worktree, base SHA, task manifests and current attempt bindings; `captureWorktreeDiff`, `detectCheckpointFindings`, `classifyObservedDiff` | Checkpoint with changed resources, HEAD and digest; compare actual range with predicted own range and other running tasks' ranges **[9]** | Include committed `base..HEAD`, tracked modifications and untracked non-ignored files. A descendant commit is allowed; reset/branch/rebase outside base ancestry is rejected. Worker self-report does not replace observation. |
 | R2 Current classification / Runtime | R1 checkpoint and current relevant tasks | Own-range excess is recorded as `undeclared_write` / `prediction_excess`; overlap with another task becomes a pair finding. Resource/state/effect/line witnesses can also produce findings. | Current managed `conflict` rejects fewer than two tasks with `FINDING_NOT_A_CONFLICT`. Single excess is recorded without the singleton hold/replan path. This current behavior does not meet the claim-9/10 target below (Snow White ruling, 2026-11-07). |
 | R3 Bind finding and freeze intake / Runtime | Valid finding bound to current run/epoch | Persist `conflict_found` and `intake_frozen` with frozen prefix. Select affected closure from finding task IDs, plan and manifests. **[7,8,10]** | `run conflict` / daemon control validates finding digest and epoch. New dispatch pauses; unrelated running attempts keep their binding and writes. Stale finding does not authorize a new stop. |
-| R4 Quiesce selected attempts / Runtime supervisor + controllers | R3 closure, controller registration, packet/lease and frozen event digest | `holdConflict` → `barrierSelected`; direct process observation plus quiescence acknowledgements; append final checkpoints, `hold_decided` and carry witnesses. **[7,8,10]** | Hold receipt is emitted only after requested quiescence. Closure-external running work continues only with witnessed carry-over; unproved carry goes to hold. Restart/startup/shutdown and unreconstructable process recovery retain their explicit whole-run barrier. |
+| R4 Quiesce selected attempts / Runtime supervisor + controllers | R3 closure, controller registration, packet/lease and frozen event digest | `holdConflict` → `barrierSelected`; direct process observation plus quiescence acknowledgements; append final checkpoints, `hold_decided` and carry witnesses. **[7,8,10]** | Hold receipt is emitted only after requested quiescence. Closure-external running work always continues with its origin binding; a carry witness is recorded when provable and is never a reason to enlarge the hold (u03 C43). Restart/startup/shutdown and unreconstructable process recovery retain their explicit whole-run barrier. |
 | R5a Current serial treatment / operating AI + Runtime | R4 finding, `intentional_serial` treatment and current source | `routeConflictTreatment`, serial resource/finding binding and frontier decisions select serialized execution. Current resume uses complete prepare/rebind acknowledgements and central gate commit. | Current `finalizeRecompileActivation` / `isActiveSupervisorGateCommitted` do not require observing the winner's source Git commit before resuming the stopped work. Finding/epoch checks are not source-commit evidence. This is an implementation gap against target R5aT **[7]**, not verified claim-7 completion. |
 | R5b Limited seam treatment / seam service, invoked by Runtime | R4 finding, AI-authored concern symbols/path names, task migration and treatment | Stop the related pair; `resolveRuntimeSeam` → `applySeamConflict` → isolated transformation, behavior verification and `commitSeamTransform`; re-observe the transformed source. Limit transformation to elements needed to remove the conflict. **[8]** | Bound accepted transformation and successor base must contain the real change. `verifySeamSplitSuccessor` checks ownership/edge deltas and transformed source, not declarations alone. Failed verification leaves the affected work held for corrected treatment; it is not reported as resumed. |
 | R6 Compile affected successor / Runtime consumes Plan + seam public services | Frozen prefix, hold decision, R5 treatment, successor request/base, accepted checkpoints and task migration | Fresh compile; new plan reference/epoch and packets for affected successor work; invalidate held contexts/partial patches/boundary evidence. Continue-set retains origin context/packet/process. **[8,10]** | `recompileNextEpochPlan` calculates invalidation/diff; daemon validates the fresh compiled successor, treatment and migration before staging. Whole plan envelope/version may be republished; only the affected work is stopped/replanned/redispatched. |
@@ -106,8 +108,8 @@ the real source-commit/held-worker trace in t12.
 
 | Lock / callers | Current ownership publication | Current recovery / limitation |
 |---|---|---|
-| `<run>/.lifecycle.lock`: managed daemon operations and activation | `acquireRuntimeLifecycleLock`: exclusive create, then canonical v1 owner record with PID/start identity, nonce digest, operation/request/time and lock digest | Complete dead/reused PID owner is reclaimed after identity observation. Empty/truncated initialization can remain `RUN_BUSY` or `RUN_LOCK_INVALID`; no identifying owner survives that window. |
-| `<run>/.pull-intake.lock`, `.lattice/todo/.start-binding.lock`: pull mutations/start binding | Same lifecycle-lock implementation, explicit lock path | Same initialization limitation. Start-binding file protects Runtime's plan-start/attempt binding; it grants no ownership over TODO Store semantics. |
+| `<run>/.lifecycle.lock`: managed daemon operations and activation | `acquireRuntimeLifecycleLock`: complete canonical v1 owner record (PID/start identity, nonce digest, operation/request/time, lock digest) written to a private temporary and hard-linked into place (u03 L1) | Complete dead/reused PID owner is reclaimed after identity observation. Unidentified (empty/torn/invalid) bytes left by pre-u03 binaries are recovered automatically after the 10 s grace (u03 L2). |
+| `<run>/.pull-intake.lock`, `.lattice/todo/.start-binding.lock`: pull mutations/start binding | Same lifecycle-lock implementation, explicit lock path | Same publication/recovery. Start-binding file protects Runtime's plan-start/attempt binding; it grants no ownership over TODO Store semantics. |
 | `<run>/.cli-lifecycle.lock`: unmanaged/launch CLI path | `withLifecycleLock`: empty exclusive-create file | Normal finally unlinks; a killed process leaves no identity for automatic recovery. Existing error is `RUN_BUSY`. |
 | `.lattice/runtime/adapter-registry/.registry.lock`: registry writer | Exclusive create, then PID line | Normal release removes; no process-start identity/dead-owner recovery. Existing error is `ADAPTER_REGISTRY_BUSY`. |
 | Common Git directory `lattice-todo-store-commit.lock`: `todo-store-git-transaction.mjs:commitTodoStoreMutation` | Store calls Runtime's `acquireRuntimeLifecycleLock` with `lockPath/sessionNonceDigest/operation/requestId/timeoutMs`; it catches `RuntimeLifecycleLockError` and later awaits the returned `release()` | Store agrees in principle to unchanged arguments, awaited helper-finally completion and error code/string-detail compatibility. This explicit Git common-dir path stays fixed across worktrees. Runtime does not edit this Store caller. |
@@ -127,7 +129,11 @@ manual-confirmation path; do not delete it as a migration step.
 
 ## Proposed lock recovery state transitions
 
-This target table is the contract for later implementation, not a completed
+The u03 section below implements atomic publication and automatic exit for the
+lifecycle-lock family inside `runtime-lifecycle-lock.mjs`, keeping v1 bytes. The
+wrapper over `withStoreLock` below stays a held t12 proposal; its
+legacy/empty/torn manual-confirmation row is superseded by u03 L2 for this
+family. This target table is the contract for later implementation, not a completed
 repair. The selected proposal uses `store-lock.mjs:withStoreLock` unchanged:
 exclusive atomically linked bytes have exactly `{pid, process_start, host}`.
 Runtime adapts the callback lifetime to its existing acquire/`release()` handle
@@ -198,6 +204,30 @@ implementation of runtime observation/hold/resume, not an exemption from claims
 | P2 observation and `acceptPullTask` | Actual checkpoints + manifests → findings; blocking findings → `intervention_changed` with hold and attached worker `SIGSTOP` | Apply R2T's two detection alternatives. Singleton own-scope growth currently passes through `acceptFindings`; target singleton stop/replan is R3T/R6T, with group `{A}`. |
 | P3 `remainingRuntimeConflictFindings` / acceptance | Accepted source task removes its related findings; empty remaining findings → intervention cleared and attached worker `SIGCONT` | Empty remaining findings alone must not bypass R5aT's committed-source/resolution evidence on a serial pair. Share the target decision contract with managed execution, retaining pull's own event/signal transport. |
 | P4 resume observation | PID/start/worker binding and intervention changes are Runtime state | Keep process identity and own-origin receipt binding; t12 compares pull and managed behavior at the shared target contracts without pretending their durable state formats are identical. |
+| P5 retract/close cleanup (u03 C11/C18) | Plan `todo retract` → `withStartRetractionGuard`; `run close` on a pull run | Unaccepted intakes are released and recorded instead of refusing; see u03 R1/R2. |
+
+## u03 guard self-exit (implemented)
+
+Snow White's u03 sweep (plan `lattice-usability-20261108`, ruling table in the
+supervisor's `guard-sweep-u03.md`) and the Owner criteria: a guard stays only
+when it names a protected asset and the system leaves it by itself; claim
+elements stay. Kept unchanged: C7/C15 planning-conflict hold, C16, C19, C21,
+C22, C29, C42 and C35b (a schedule the verifier rejects is not executed).
+
+| Row / owner | Before | After (data flow and state) | Protection and self-exit |
+|---|---|---|---|
+| L1 lifecycle-lock publication (C1, X2) / Runtime | `open(O_EXCL)` then write: a crash between create and write left an empty or torn shared lock; readers required `nlink === 1` | Free → Preparing: canonical v1 artifact is written and fsynced to `<lock>.<pid>.<uuid>.tmp` in the same directory → `link(tmp, lock)` (EEXIST = contended) → unlink tmp, fsync directory → Owned. The shared path only ever holds complete v1 bytes. A reader accepts the transient `nlink` 2 window. The next acquirer removes temporaries whose PID is gone. Filesystems without hard links (`EPERM`/`ENOTSUP`/`EOPNOTSUPP`/`EXDEV`/`ENOSYS`) fail with `RUN_LOCK_INVALID` and publish nothing. | Exclusive mutation of the named run/pull/start-binding/Store-commit scope. v1 schema, Store caller arguments, `RuntimeLifecycleLockError` codes/string detail and awaited `release()` are unchanged. Live identified owners are never reclaimed. A pre-u03 binary may report `RUN_LOCK_INVALID` during the `nlink` 2 window; it clears when the owner removes its temporary. |
+| L2 unidentified lock bytes (C1, X2) / Runtime | Unparsable bytes → `RUN_BUSY` forever; invalid/non-canonical → `RUN_LOCK_INVALID` forever | A regular file whose bytes are not a canonical valid v1 artifact is unidentified. Younger than 10 s (mtime) → busy, using the caller's existing wait or `RUN_BUSY`. Older → rename to a private quarantine name, check the same inode, unlink → Free → retry. | Only pre-u03 binaries (or storage loss) produce such bytes; a pre-u03 writer finishes its write within the grace. Time is the only signal because the bytes name no owner. Symlinks and non-regular entries still fail `RUN_LOCK_INVALID` (wrong target). Recovering a lock does not authorize writes: R7–R10 still reread authoritative evidence. |
+| X1 retract scan / Runtime | Any stray entry, unknown name, legacy or malformed run under `.lattice/runs/` → `INVALID_RUN_STORE`, retract refused | Scan only identifier-named directories that read as valid pull runs; skip every other entry without error. | Nothing is written to skipped entries. Unreadable runs cannot be cleaned and are left as they are. |
+| R1 retract releases bound intake (C11) / Runtime, called by Plan | Unaccepted intake bound to the start digest → `ACTIVE_PULL_INTAKE`; manual detach + release | Under the start-binding lock, for each matching unaccepted intake: take that run's pull lock (bounded 5 s wait; intake takes pull then binding lock with zero wait, so no deadlock), reread, then the shared release step: an attached stopped worker is re-authenticated and sent `SIGCONT` (`worker_resumed`), `worker_detached`, then `intake_released` with `reason: start_retracted` and the start digest. Then Plan appends `start_retracted`. Release first: a failed Plan append leaves an in-progress start that can be intaken again. | Each step is recorded in the run's pull event chain with the acting actor when present. Signalling follows C25: when the worker cannot be re-authenticated it is not signalled; `signal: unavailable` is recorded. Plan's retract result schema is unchanged. |
+| R2 run close abandons remaining work (C18) / Runtime | Pull, legacy and managed `run close` with unaccepted intakes/TODOs → `RUN_NOT_COMPLETE` (ADR 0060) | Pull: every unaccepted intake goes through the R1 release step with `reason: run_closed`, then `run_closed {accepted_task_ids, released_task_ids}`; result adds `released_task_ids`. Legacy/managed: `run_closed {accepted, abandoned_todo_ids}` (key only when non-empty) via `closeRunAbandoningRemaining`; managed close of an incomplete run also terminates the run's worker processes (`worker_processes_terminated`) and keeps worktrees. Result adds `abandoned_todo_ids`. Complete runs produce the same bytes as before. | Worktrees are the run's product and are not removed by close (explicit `run abandon` keeps its removal). Abandoned TODO IDs are recorded. Supersedes ADR 0060's `RUN_NOT_COMPLETE` for close. |
+| C25 unobservable controller image / Runtime supervisor | Post-exec image path unobservable (win32 or observation failure) → `ADAPTER_BINARY_IDENTITY_MISMATCH`, managed runtime refused | Process-start identity uses PR61's handle-free observation. Post-exec image: observed mismatch still refuses; unobservable continues on the pre-exec path/digest verification. | Wrong-binary protection holds whenever the OS can show the image. Retract/close cleanup does not signal a process it cannot re-authenticate. |
+| C43 scoped hold (claim 10) / Runtime producer + verifier | Closure-external running TODO whose carry witness cannot be built → held with `carry_over_unprovable` | Hold set = affected closure only. Closure-external running TODOs always continue; a witness and its `carry_over_witnessed` event are recorded when provable. Origin-binding receipt acceptance needs `hold_decided.continue_set` membership, without a witness. A frozen-prefix pending receipt is accepted when the witness binds it or when there is no witness; a witness that does not bind it still rejects (`unbound_receipt`). Rebind packets exist only for witnessed carry. | Producer and verifier compute the same sets and the self-check stays. Stale-context protection for held work (invalidation, redispatch, R8–R10 gate) is unchanged. Shortcut: an unwitnessed carry has no rebind packet for restart recovery; it keeps its origin binding. |
+
+Alice's in-progress retire (Plan u12) connects here: Runtime retirement
+reconciliation keyed by plan/task/start digest reuses the R1 release step and
+checks retired state before intake refresh/resume. That connection is a later
+Runtime change, coordinated with Plan; this section does not ship it.
 
 ## Proposed supervisor service boundary
 
@@ -236,6 +266,12 @@ execution.
 
 For the subsequent code change, select only touched rows:
 
+- u03: `test/runtime-lifecycle-lock.test.mjs` (atomic publication, dead
+  temporary, unidentified-lock grace/recovery, concurrent exclusion),
+  `test/runtime-pull-intake-cli.test.mjs` (stray entry + retract auto-release,
+  close release), `test/runtime-landing-cli.test.mjs` (legacy close abandon),
+  `test/rc3-hold-recompile.test.mjs` / `test/rc3-runtime-characterization.test.mjs`
+  (scoped hold).
 - Lock states: `test/runtime-lifecycle-lock.test.mjs`, adapter registry and pull
   callers; crash during publication/claim/release, dead/reused/live PID, observer
   failure, replacement owner and concurrent recovery. Preserve typed errors.
