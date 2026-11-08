@@ -60,7 +60,7 @@ function withExternalPane(html, pane) {
   ).replace('</body>', `${externalPaneController(pane)}</body>`);
 }
 
-function liveHtml(html, headDigest, eventsPath, externalPane = null) {
+function liveHtml(html, headDigest, eventsPath, externalPane = null, bannerHtml = null) {
   const controller = `<script>(()=>{const badge=document.createElement('div');badge.setAttribute('role','status');badge.style.cssText='position:fixed;right:12px;bottom:12px;z-index:99;padding:6px 10px;border:1px solid #d9d8d4;border-radius:4px;background:#fcfcfb;font:600 12px system-ui';badge.textContent='進捗: 接続中';document.body.append(badge);const head=${JSON.stringify(headDigest)};let lastReceipt=Date.now();let stream=null;const receive=event=>{const next=JSON.parse(event.data);if(typeof next.head_digest!=='string')return;lastReceipt=Date.now();badge.textContent='進捗: 最新';if(next.head_digest!==head){badge.textContent='進捗: 更新を反映中';location.reload();}};const connect=()=>{if(stream)stream.close();badge.textContent='進捗: 接続中';stream=new EventSource(${JSON.stringify(eventsPath)});stream.onopen=()=>{lastReceipt=Date.now();};stream.addEventListener('state',receive);stream.addEventListener('ping',receive);stream.addEventListener('lattice-error',event=>{lastReceipt=Date.now();const detail=JSON.parse(event.data);badge.textContent='進捗: エラー '+detail.code;badge.style.borderColor='#d03b3b';});stream.onerror=()=>{badge.textContent='進捗: 再接続中';};};connect();setInterval(()=>{if(Date.now()-lastReceipt>${SSE_STALE_MS})connect();},${SSE_WATCHDOG_MS});})();</script>`;
   const publicMetadata = '<meta name="description" content="Latticeで管理しているプロジェクトの依存工程と進捗を確認できます。"><meta name="theme-color" content="#f7f3ea">';
   const publicStyle = '<style>body[data-gantt-root]{grid-template-rows:auto minmax(0,1fr)}.lattice-live-brand{z-index:10;display:flex;align-items:center;gap:8px;min-width:0;padding:10px 16px;border-bottom:1px solid #d8d0c5;background:#f7f3ea;color:#6c655d;font:600 12px/1.5 system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif}.lattice-live-brand a{color:#201d19;text-decoration:none}.lattice-live-brand a:hover{color:#315cbe}.lattice-live-brand strong{color:#201d19}.lattice-live-brand-note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lattice-live-back{margin-left:auto!important;color:#315cbe!important;font-weight:750}@media(max-width:560px){.lattice-live-brand{padding:9px 12px}.lattice-live-brand-note{display:none}}</style>';
@@ -68,7 +68,9 @@ function liveHtml(html, headDigest, eventsPath, externalPane = null) {
   const live = html
     .replace("default-src 'none';", "default-src 'none'; connect-src 'self';")
     .replace('</head>', `${publicMetadata}${publicStyle}</head>`)
-    .replace(/<body([^>]*)>/u, `<body$1>${publicHeader}`)
+    .replace(/<body([^>]*)>/u, `<body$1>${bannerHtml === null ? publicHeader
+      // The banner shares the header's grid row so the page's row layout is unchanged.
+      : `<div>${publicHeader}${bannerHtml}</div>`}`)
     .replace('</body>', `${controller}</body>`);
   return externalPane === null ? live : withExternalPane(live, externalPane);
 }
@@ -286,7 +288,8 @@ export async function startTodoGanttDashboardServer({
       lastHeads.set(project.projectId, rendered.head_digest);
       // 外部ペイン設定は描画のたびにrender側が読み直す。差した／外した側は再起動を要さない。
       const html = liveHtml(rendered.html, rendered.head_digest,
-        `${projectPath(project.projectId)}events`, rendered.external_pane ?? null);
+        `${projectPath(project.projectId)}events`, rendered.external_pane ?? null,
+        rendered.banner_html ?? null);
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
       response.end(html);

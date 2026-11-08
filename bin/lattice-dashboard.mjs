@@ -2,8 +2,7 @@
 
 import { TODO_STATUS_DISPATCH_ONLY, projectTodoStatus } from '../src/todo-status.mjs';
 import { createTodoStoreCache, todoStoreReadFailurePhase } from '../src/todo-store-cache.mjs';
-import { ganttLiveHeadDigest, renderTodoGanttForProject } from '../src/todo-cli.mjs';
-import { readProjectExternalPane } from '../src/project-identity.mjs';
+import { createTodoGanttDisplayServing } from '../src/todo-cli.mjs';
 import {
   forgetTodoDashboardDaemonRecord,
   readVisibleTodoDashboardProjects,
@@ -80,22 +79,8 @@ async function synchronize() {
     registry.register({
       projectId: entry.project_id,
       displayName: entry.display_name,
-      render: async ({ displayName }) => {
-        const store = await readCachedStore(entry.repo_root);
-        const result = await renderTodoGanttForProject({ repoRoot: entry.repo_root,
-          stable: true, displayName, readModel: store });
-        return {
-          html: result.rendered.html,
-          head_digest: await ganttLiveHeadDigest({ repoRoot: entry.repo_root, store }),
-          // 配信のたびに読む。外部ペインを差した／外した側にdaemon再起動を要求しない。
-          external_pane: await readProjectExternalPane({
-            repoRoot: entry.repo_root, projectId: entry.project_id,
-          }),
-        };
-      },
-      readHead: async () => ganttLiveHeadDigest({
-        repoRoot: entry.repo_root, store: await readCachedStore(entry.repo_root),
-      }),
+      // 描画とheadは型付きの表示結果を読む（不整合でも500にせず、状態として出す）。
+      ...createTodoGanttDisplayServing({ repoRoot: entry.repo_root, projectId: entry.project_id }),
     });
     roots.set(entry.project_id, binding);
   }
