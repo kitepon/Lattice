@@ -25,3 +25,13 @@ can no longer be accepted. Main pushes and dispatches are grouped by their own r
 id and are never cancelled or replaced, so main keeps per-commit evidence. Job
 timeouts stay near twice the normal duration so a hang does not stay
 `in_progress`. Cancellation is not a consumer-lifetime guarantee.
+
+## 各jobのNode
+
+| job | Nodeの出どころ | Latticeが持つもの | Latticeが持たないもの |
+| --- | --- | --- | --- |
+| `full (macos-native)` | 工場のhost copy `/usr/local/libexec/dotagents/factory-node-runtime.sh <version> <sha256>`（契約: dotagents `docs/feature-map/mac-node-runtime.md`）。step `macos_runtime`が受領JSONをlogへ出し、`directory=`/`node=`を`GITHUB_OUTPUT`へ書く | 版とSHA-256（`publish.yml`の`node-version`と同じ版）、`steps.macos_runtime.outputs.directory`の`bin`をPATHの先頭に置くこと | 置き場の選択（`/Users/Shared/factory-node/...`）、世代の作成・退役、ESETの許可。baseは渡さず、runner homeへは入れない |
+| `full (linux-workstation)` | `scripts/ci-linux-node-runtime.sh`がjob専有の一時folderへ公式archiveを入れる | 取得・SHA照合・展開 | — |
+| `full (windows-native)` | `scripts/ci-windows-node-runtime.ps1`がjob専有の一時folderへ入れる | 取得・SHA照合・展開 | — |
+
+macOSで工場のスクリプトが失敗すると、そのjobだけが失敗する。次の通常jobは工場の状態から選び直す。

@@ -113,11 +113,11 @@ jobs:
         id: linux_runtime
         shell: bash
         run: bash scripts/ci-linux-node-runtime.sh "$RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
-      - name: owned macOS Node in the product job
+      - name: factory macOS Node (dotagents host copy)
         if: matrix.environment == 'macos-native'
         id: macos_runtime
         shell: bash
-        run: bash scripts/ci-macos-node-runtime.sh "$RUNNER_TEMP/lattice-node-${{ github.run_id }}-${{ github.run_attempt }}"
+        run: /usr/local/libexec/dotagents/factory-node-runtime.sh 24.22.0 6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5
       - name: logical CPU parallelism
         if: matrix.environment != 'windows-native'
         shell: bash
