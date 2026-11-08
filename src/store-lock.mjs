@@ -38,14 +38,16 @@ function identified(owner) {
 }
 
 async function processIsDead(pid, startDigest) {
+  // Existence first: a PID freed after a failed observation may be reused before a later check.
+  try { process.kill(pid, 0); }
+  catch (error) { if (error?.code === 'ESRCH') return true; }
   try {
     const observed = await observeStartIdentityRaw(pid);
     if (observed) return hash(`${process.platform}:${observed}`) !== startDigest;
   } catch {
     // A failed observation cannot turn an existing PID into a dead owner.
   }
-  try { process.kill(pid, 0); return false; }
-  catch (error) { return error?.code === 'ESRCH'; }
+  return false;
 }
 
 async function readOwner(lockPath) {
