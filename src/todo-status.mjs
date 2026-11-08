@@ -76,6 +76,24 @@ function displayText(value, fallback, limit) {
   return result.length > 0 ? result : fallback;
 }
 
+/**
+ * 一覧が使う1工程の表示欄。`todo status`と`session-context`の`turn.own`が同じ文字列を返すための共有点。
+ * u12: done_conditionは1行・512文字までの表示用で、全文は`todo show`が返す。v7以前は欄が無くnull。
+ */
+export function todoStatusTaskDisplay(task) {
+  return {
+    label: displayText(task.title, task.task_id, TODO_STATUS_LABEL_LIMIT),
+    done_condition: typeof task.done_condition === 'string' && task.done_condition.trim().length > 0
+      ? displayText(task.done_condition.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim(), '', TODO_STATUS_REASON_LIMIT)
+      : null,
+  };
+}
+
+/** `todo status`のblocked欄と同じ表示のblocked理由。 */
+export function todoStatusBlockedReason(reason) {
+  return displayText(reason, 'blocked', TODO_STATUS_REASON_LIMIT);
+}
+
 function taskKey(projectId, planKey, taskId) {
   return `${projectId}\0${planKey}\0${taskId}`;
 }
@@ -481,12 +499,7 @@ function buildTodoGraph(readModel) {
         project_id: member.plan.project_id,
         plan_key: member.plan.plan_key,
         task_id: task.task_id,
-        label: displayText(task.title, task.task_id, TODO_STATUS_LABEL_LIMIT),
-        // u12: 作成者が書いた終了条件。一覧は1行・512文字までの表示用で、全文は`todo show`が返す。
-        // v7以前は欄が無くnull。
-        done_condition: typeof task.done_condition === 'string' && task.done_condition.trim().length > 0
-          ? displayText(task.done_condition.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim(), '', TODO_STATUS_REASON_LIMIT)
-          : null,
+        ...todoStatusTaskDisplay(task),
         status: state.status,
         finished: isFinishedTodoTaskState(state),
         blocked_reason: state.blocked_reason,
@@ -630,7 +643,7 @@ export function projectTodoStatus(readModel, options = undefined) {
       blocked.push({
         plan_key: node.plan_key,
         task_id: node.task_id,
-        reason: displayText(node.blocked_reason, 'blocked', TODO_STATUS_REASON_LIMIT),
+        reason: todoStatusBlockedReason(node.blocked_reason),
       });
     }
   }
