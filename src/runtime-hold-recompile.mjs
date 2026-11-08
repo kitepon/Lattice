@@ -407,13 +407,8 @@ export function decideHoldAndCarryOver(options = {}) {
       holdSet.add(todoId);
       continue;
     }
-    // closure外のin-flight TODO: witnessを構築・実証できた場合だけcontinue。
+    // u03 C43 (claim 10): closure外は影響群でない限りcontinue。witnessは実証できた時だけ記録する。
     const packet = packets[todoId];
-    if (packet === undefined || manifests[todoId] === undefined) {
-      holdSet.add(todoId);
-      witnessFailures[todoId] = ['missing_packet_or_manifest'];
-      continue;
-    }
     // freeze後に当該TODOの未取り込みdiff／receipt eventが存在するなら
     // carry-over不能（Decision 7.2「freeze後に未取り込みdiff eventが存在しない」）。
     const postFreezeEvents = events.some((event) => (
@@ -423,14 +418,9 @@ export function decideHoldAndCarryOver(options = {}) {
       && ['checkpoint_observed', 'receipt_recorded'].includes(event.kind)
       && event.payload?.barrier_final !== true
     ));
-    if (postFreezeEvents) {
-      holdSet.add(todoId);
-      witnessFailures[todoId] = ['post_freeze_events'];
-      continue;
-    }
+    const declaredWrites = manifests[todoId]?.writes ?? [];
     // 競合finding pathと当該TODOのdeclared write／観測pathが交差するなら
     // 非交差を証明できない（Decision 7.2の changed scope 非交差条件）。
-    const declaredWrites = manifests[todoId].writes ?? [];
     const observedPaths = state.checkpoints
       .filter((entry) => entry.todo_id === todoId && entry.sequence <= freezeSequence)
       .flatMap((entry) => (entry.payload?.diff?.entries ?? []).map(({ path }) => path));
@@ -443,6 +433,17 @@ export function decideHoldAndCarryOver(options = {}) {
     if (intersects) {
       holdSet.add(todoId);
       witnessFailures[todoId] = ['finding_scope_overlap'];
+      continue;
+    }
+    // witnessを作れない理由はcontinueを妨げない。記録だけ返す。
+    if (packet === undefined || manifests[todoId] === undefined) {
+      continueSet.add(todoId);
+      witnessFailures[todoId] = ['missing_packet_or_manifest'];
+      continue;
+    }
+    if (postFreezeEvents) {
+      continueSet.add(todoId);
+      witnessFailures[todoId] = ['post_freeze_events'];
       continue;
     }
     const receiptBindings = state.receipts
@@ -480,7 +481,7 @@ export function decideHoldAndCarryOver(options = {}) {
       receiptBindings,
     });
     if (built.witness === null) {
-      holdSet.add(todoId);
+      continueSet.add(todoId);
       witnessFailures[todoId] = built.reasons;
       continue;
     }
@@ -800,8 +801,11 @@ export function recompileNextEpochPlan(options = {}) {
     const packet = packets[todoId];
     const dispatch = state.dispatches[todoId];
     const witnessRecord = state.witnesses[todoId];
-    if (packet === undefined || dispatch === undefined || witnessRecord === undefined) {
-      fail(`carried-over TODOのpacket／dispatch／witnessが欠落: ${todoId}`);
+    // shortcut: unwitnessed carry has no rebind packet; it keeps its origin binding, and
+    // hold_decided.continue_set (durable) still accepts its receipts after a restart.
+    if (witnessRecord?.payload?.witness?.predecessor_epoch !== plan.plan_epoch) continue;
+    if (packet === undefined || dispatch === undefined) {
+      fail(`carried-over TODOのpacket／dispatchが欠落: ${todoId}`);
     }
     // authorized checkpointはfrozen prefix内の最後の観測checkpoint。checkpointが
     // 一件もないcarry-overはgenesis sentinel（64桁ゼロ、RC3-J ADRで正式裁定予定）。

@@ -187,7 +187,13 @@ export function validateRuntimeControlEventPayload(kind, value) {
   // 停止したworkerの行き先は「再開」か「破棄」の二択であり、破棄を選んだなら
   // 誰を止めたかが残っていなければ、後から何が捨てられたか説明できない。
   if (kind === 'worker_processes_terminated') {
-    return exact(value, ['reason', 'terminated_pids', 'skipped_count'])
+    // signal_unavailable_pids (u03 C25): alive but not re-authenticated, so not signalled.
+    const pidList = (pids) => Array.isArray(pids) && pids.length > 0 && pids.length <= 4096
+      && pids.every((pid, index) => Number.isSafeInteger(pid) && pid > 0
+        && (index === 0 || pids[index - 1] < pid));
+    return (exact(value, ['reason', 'terminated_pids', 'skipped_count'])
+      || (exact(value, ['reason', 'terminated_pids', 'skipped_count', 'signal_unavailable_pids'])
+        && pidList(value.signal_unavailable_pids)))
       && typeof value.reason === 'string' && value.reason.length > 0
       && Array.isArray(value.terminated_pids) && value.terminated_pids.length <= 4096
       && value.terminated_pids.every((pid) => Number.isSafeInteger(pid) && pid > 0)

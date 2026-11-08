@@ -339,28 +339,47 @@ test('非affected TODOのvN receiptはorigin bindingの成果としてvN+1で受
   assert.equal(t3Decision.decision, 'accepted');
 });
 
-test('packet欠落のclosure外TODOはwitness構築不能としてholdへ戻る', async () => {
-  const { fixture, packets, events } = await (async () => {
-    const scenario = await runLateConflictScenario();
-    return { fixture: scenario.fixture, packets: scenario.packets, events: scenario.events };
-  })();
-  void events;
-  const { request, plan, manifests } = fixture;
-  // T3のpacketを欠落させた状態でhold裁定をやり直す（events はfreeze直後まで再構築）。
+test('u03 C43: witnessを作れないclosure外TODOもcontinueし、origin receiptは再読込後の次epochで受理される', async () => {
   const partial = await runLateConflictScenario();
+  const { request, plan, manifests } = partial.fixture;
   const eventsBeforeHold = partial.events.slice(
     0,
     partial.events.findIndex((e) => e.kind === 'carry_over_witnessed'),
   );
-  const brokenPackets = { ...packets };
+  const brokenPackets = { ...partial.packets };
   delete brokenPackets.T3;
   const held = decideHoldAndCarryOver({
     runId: RUN_ID, request, plan, manifests, packets: brokenPackets,
     events: eventsBeforeHold, recordedAt: AT,
   });
-  assert.deepEqual(held.holdDecision.hold_set, ['T1', 'T2', 'T3']);
-  assert.deepEqual(held.holdDecision.continue_set, []);
+  assert.deepEqual(held.holdDecision.hold_set, ['T1', 'T2']);
+  assert.deepEqual(held.holdDecision.continue_set, ['T3']);
   assert.deepEqual(held.witnessFailures.T3, ['missing_packet_or_manifest']);
+  assert.equal(held.events.some((e) => e.kind === 'carry_over_witnessed'), false);
+
+  const recompiled = recompileNextEpochPlan({
+    runId: RUN_ID, request, plan, manifests, packets: partial.packets, events: held.events,
+    holdDecision: held.holdDecision,
+    additionalConflicts: [{ todo_ids: ['T1', 'T2'], resource_id: 'late-src-t2' }],
+    recordedAt: AT,
+  });
+  assert.deepEqual(recompiled.planDiff.carried_over, ['T3']);
+  assert.deepEqual(Object.keys(recompiled.rebindPackets), []);
+  let events = recompiled.events;
+  events.push(buildNextRunEvent({ events, runId: RUN_ID, kind: 'intake_resumed', planEpoch: 2,
+    subject: { kind: 'runtime_plan', ref: recompiled.newPlan.plan_ref },
+    payload: { plan_diff_digest: recompiled.planDiff.diff_digest }, recordedAt: AT }));
+  for (let step = 0; step < 2; step += 1) {
+    events = (await observeExecutor({ runId: RUN_ID, plan: recompiled.newPlan, events,
+      adapter: partial.adapter, todoId: 'T3', recordedAt: AT })).events;
+  }
+  // restart相当: 耐久bytesだけから再構成しても、hold_decided.continue_setが受理を支える。
+  const reread = JSON.parse(JSON.stringify(events));
+  const adjudicated = adjudicatePendingReceipts({ runId: RUN_ID, plan: recompiled.newPlan,
+    events: reread, recordedAt: AT });
+  assert.deepEqual(adjudicated.decisions, [{ receipt_id: 'T3-r1', decision: 'accepted' }]);
+  const verified = recomputeReceiptDecisions({ plan: recompiled.newPlan, events: reread });
+  assert.equal(verified.decisions.find((d) => d.receipt_id === 'T3-r1').decision, 'accepted');
 });
 
 test('routeConflictTreatmentはpredeclared seamだけをtransform laneへ送る', () => {
