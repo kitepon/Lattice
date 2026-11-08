@@ -10,7 +10,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { parseTree } from 'jsonc-parser';
 
-import { todoSelfDigest } from './todo-contracts.mjs';
+import { canonicalizeTodoArtifact, todoSelfDigest } from './todo-contracts.mjs';
 import { TodoStoreError } from './todo-store.mjs';
 
 const MAX_AUTHORING_INPUT_BYTES = 8_388_608;
@@ -29,6 +29,7 @@ export const AUTHORING_DIGEST_FIELDS = Object.freeze({
   'lattice.plan_create_input.v2': 'input_digest',
   'lattice.plan_create_input.v3': 'input_digest',
   'lattice.plan_create_input.v4': 'input_digest',
+  'lattice.plan_create_input.v5': 'input_digest',
   'lattice.todo_revision.v1': 'revision_digest',
   'lattice.todo_revision.v2': 'revision_digest',
   'lattice.phase_todo_revision.v1': 'revision_digest',
@@ -85,11 +86,64 @@ export function parseAuthoringJson(text, { invalidCode = 'INVALID_JSON' } = {}) 
   return null;
 }
 
+// todo-contractsのcompareText/refKey/phaseRefKeyと同じ比較。validatorが要求する正準順そのもの。
+const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+const refKey = (value) => `${value?.project_id}\0${value?.plan_key}\0${value?.task_id}`;
+const phaseRefKey = (value) => `${value?.project_id}\0${value?.plan_key}\0${value?.phase_id}`;
+
+/** 正準順へ整列し、完全一致の重複だけを落とす。同じkeyで内容が違うものは残し、validatorに拒否させる。 */
+function sortUnique(list, key) {
+  if (!Array.isArray(list)) return list;
+  const seen = new Set();
+  const kept = [];
+  for (const entry of list) {
+    const identity = canonicalizeTodoArtifact(entry);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    kept.push({ entry, sortKey: key(entry), index: kept.length });
+  }
+  return kept.sort((left, right) => compareText(left.sortKey, right.sortKey) || left.index - right.index)
+    .map(({ entry }) => entry);
+}
+
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * plan_create_input.v5だけ: 並びに作成者の意味が無い集合を、入力順に依らず正準形へ寄せる。
+ * tasksと他の配列は並べ替えない。形が壊れていれば触らず、validatorの指摘に任せる。
+ */
+function normalizeCreateInputV5(value) {
+  const normalizers = {
+    hard_dependencies: (list) => sortUnique(list, (edge) => `${refKey(edge?.from)}\0${refKey(edge?.to)}`),
+    phase_accept_dependencies: (list) => sortUnique(list,
+      (edge) => `${phaseRefKey(edge?.from)}\0${refKey(edge?.to)}`),
+    joins: (list) => (Array.isArray(list)
+      ? sortUnique(list.map((join) => (isRecord(join)
+        ? { ...join, after: sortUnique(join.after, refKey) } : join)), (join) => join?.id) : list),
+    phases: (list) => (Array.isArray(list)
+      ? sortUnique(list.map((phase) => (isRecord(phase) ? {
+        ...phase,
+        predecessor_phase_ids: sortUnique(phase.predecessor_phase_ids, (id) => id),
+        required_evidence_slots: sortUnique(phase.required_evidence_slots, (id) => id),
+      } : phase)), (phase) => phase?.phase_id) : list),
+  };
+  try {
+    const next = { ...value };
+    for (const [field, normalize] of Object.entries(normalizers)) {
+      if (field in next) next[field] = normalize(next[field]);
+    }
+    return next;
+  } catch {
+    return value;
+  }
+}
+
 export function repairAuthoringArtifact(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   const field = AUTHORING_DIGEST_FIELDS[value.schema];
   if (field === undefined) return value;
-  const next = { ...value, [field]: typeof value[field] === 'string' ? value[field] : '' };
+  const base = value.schema === 'lattice.plan_create_input.v5' ? normalizeCreateInputV5(value) : value;
+  const next = { ...base, [field]: typeof base[field] === 'string' ? base[field] : '' };
   next[field] = todoSelfDigest(next, field);
   return next;
 }

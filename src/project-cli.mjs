@@ -32,6 +32,7 @@ import {
   createTodoStoreWriter,
   initializeAuthoredTodoStore,
   isUninitializedTodoStore,
+  isPhaseTodoPlanSchema,
   isPhaselessTodoPlanSchema,
   readTodoIndependenceArtifact,
   readTodoStore,
@@ -52,9 +53,19 @@ const CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v1';
 const PHASE_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v2';
 const DECOUPLED_PHASE_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v3';
 const MEMO_PHASE_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v4';
+// v5 = v4 + 作成者が書く終了条件`done_condition`（u12）。planはv8になる。既定入力はv4のまま。
+const DONE_CONDITION_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v5';
 const CURRENT_CREATE_INPUT_SCHEMA = MEMO_PHASE_CREATE_INPUT_SCHEMA;
 const CURRENT_CREATE_SCHEMA_COMMAND = 'lattice plan create --schema-version 4 --json';
 const CREATE_RESULT_SCHEMA = 'lattice.plan_create_result.v1';
+
+/** create入力schemaが作るplan schema。v4→v7、v5→v8。 */
+function planSchemaForCreateInput(schema) {
+  return schema === DONE_CONDITION_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v8'
+    : schema === MEMO_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v7'
+      : schema === DECOUPLED_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v5'
+        : schema === PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v4' : 'lattice.todo_plan.v3';
+}
 
 function resolveRepoRoot(cwd) {
   try {
@@ -424,7 +435,8 @@ async function readCanonicalInput(repoRoot, inputRef) {
  */
 function describePlanShapeViolation(value, { phaseInput }) {
   const TASK_KEYS = ['task_id', 'title', 'lane', 'design_memo', 'narrative_ref',
-    'narrative_anchor', 'compile_binding', 'parent_task_id', 'phase_id'];
+    'narrative_anchor', 'compile_binding', 'parent_task_id', 'phase_id',
+    ...(value.schema === DONE_CONDITION_CREATE_INPUT_SCHEMA ? ['done_condition'] : [])];
   const PHASE_KEYS = ['phase_id', 'title', 'gate_policy', 'predecessor_phase_ids',
     'required_evidence_slots'];
 
@@ -512,9 +524,9 @@ function describePlanShapeViolation(value, { phaseInput }) {
  */
 function describeCreateInputViolation(value) {
   const phaseInput = [PHASE_CREATE_INPUT_SCHEMA, DECOUPLED_PHASE_CREATE_INPUT_SCHEMA,
-    MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(value?.schema);
+    MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(value?.schema);
   const decoupledPhaseInput = [DECOUPLED_PHASE_CREATE_INPUT_SCHEMA,
-    MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(value?.schema);
+    MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(value?.schema);
   const keys = [
     'schema', 'project_id', 'plan_key', 'plan_version', 'actor', 'recorded_at',
     'tasks', 'hard_dependencies', 'joins', 'input_digest',
@@ -530,7 +542,8 @@ function describeCreateInputViolation(value) {
       expected: { keys: [...keys].sort() }, actual };
   }
   const schemas = [CREATE_INPUT_SCHEMA, PHASE_CREATE_INPUT_SCHEMA,
-    DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA];
+    DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA,
+    DONE_CONDITION_CREATE_INPUT_SCHEMA];
   if (!schemas.includes(value.schema)) {
     return { violation_kind: 'const_mismatch', pointer: '/schema',
       expected: { one_of: schemas }, actual: value.schema };
@@ -578,9 +591,7 @@ function describeCreateInputViolation(value) {
   }
   try {
     buildTodoPlan({
-      schema: value.schema === MEMO_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v7'
-        : decoupledPhaseInput ? 'lattice.todo_plan.v5'
-        : phaseInput ? 'lattice.todo_plan.v4' : 'lattice.todo_plan.v3', project_id: value.project_id,
+      schema: planSchemaForCreateInput(value.schema), project_id: value.project_id,
       plan_key: value.plan_key, plan_version: value.plan_version,
       predecessor_plan_digest: null, tasks: value.tasks,
       hard_dependencies: value.hard_dependencies, joins: value.joins,
@@ -602,10 +613,10 @@ function describeCreateInputViolation(value) {
 }
 
 export function validatePlanCreateInput(input) {
-  if (input?.schema !== MEMO_PHASE_CREATE_INPUT_SCHEMA) {
+  if (![MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input?.schema)) {
     throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_retired', undefined, {
       violation_kind: 'const_mismatch', pointer: '/schema',
-      expected: MEMO_PHASE_CREATE_INPUT_SCHEMA,
+      expected: { one_of: [MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA] },
       actual: typeof input?.schema === 'string' ? input.schema : { type: typeof input?.schema },
       next_action: CURRENT_CREATE_SCHEMA_COMMAND,
     });
@@ -625,6 +636,19 @@ export function validatePlanCreateInput(input) {
       expected: explained.expected, actual: explained.actual,
       prompt: TODO_DESIGN_MEMO_PROMPT, next_action: CURRENT_CREATE_SCHEMA_COMMAND,
     });
+  }
+  if (input.schema === DONE_CONDITION_CREATE_INPUT_SCHEMA) {
+    // design_memoと同じ本文規則。違いはnull（終了条件なし）を許すことだけ。
+    const invalidIndex = input.tasks.findIndex((task) => task?.done_condition !== null
+      && !isTodoDesignMemo(task?.done_condition));
+    if (invalidIndex >= 0) {
+      const explained = explainTodoDesignMemo(input.tasks[invalidIndex]?.done_condition);
+      throw new TodoStoreError('INPUT_INVALID', 'plan_create_done_condition_invalid', undefined, {
+        violation_kind: explained.reason, pointer: `/tasks/${invalidIndex}/done_condition`,
+        expected: { ...explained.expected, nullable: true }, actual: explained.actual,
+        next_action: 'correct_the_reported_pointer_then_rerun_plan_create',
+      });
+    }
   }
   const violation = describeCreateInputViolation(input);
   if (violation !== null) {
@@ -651,16 +675,15 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
   const options = {
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
     plan: buildTodoPlan({
-      schema: input.schema === MEMO_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v7'
-        : input.schema === DECOUPLED_PHASE_CREATE_INPUT_SCHEMA ? 'lattice.todo_plan.v5'
-        : input.schema === PHASE_CREATE_INPUT_SCHEMA
-          ? 'lattice.todo_plan.v4' : 'lattice.todo_plan.v3', project_id: input.project_id,
+      schema: planSchemaForCreateInput(input.schema), project_id: input.project_id,
       plan_key: input.plan_key, plan_version: input.plan_version,
       predecessor_plan_digest: null, tasks: input.tasks,
       hard_dependencies: input.hard_dependencies, joins: input.joins,
       ...([PHASE_CREATE_INPUT_SCHEMA, DECOUPLED_PHASE_CREATE_INPUT_SCHEMA,
-        MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(input.schema) ? { phases: input.phases } : {}),
-      ...([DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA].includes(input.schema)
+        MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input.schema)
+        ? { phases: input.phases } : {}),
+      ...([DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA,
+        DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input.schema)
         ? { phase_accept_dependencies: input.phase_accept_dependencies } : {}),
     }),
     genesis: { actor: input.actor, recorded_at: input.recorded_at, provenance: null },
@@ -707,8 +730,8 @@ export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, 
  * 既に機械可読に持っている。壊さずに追加のkeyを足す理由が無いので足さない。
  */
 export async function runPlanCreateSchema({ stdout, version = 4 }) {
-  if (![1, 2, 3, 4].includes(version)) throw new TypeError('unsupported plan create schema version');
-  const expected = version === 4 ? MEMO_PHASE_CREATE_INPUT_SCHEMA
+  if (![1, 2, 3, 4, 5].includes(version)) throw new TypeError('unsupported plan create schema version');
+  const expected = version === 5 ? DONE_CONDITION_CREATE_INPUT_SCHEMA : version === 4 ? MEMO_PHASE_CREATE_INPUT_SCHEMA
     : version === 3 ? DECOUPLED_PHASE_CREATE_INPUT_SCHEMA
     : version === 2 ? PHASE_CREATE_INPUT_SCHEMA : CREATE_INPUT_SCHEMA;
   const schemaUrl = new URL(`../docs/schemas/lattice.plan_create_input.v${version}.schema.json`, import.meta.url);
@@ -745,8 +768,7 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
     });
   }
   const { plan, tasks, phases } = member;
-  const phaseInput = ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7']
-    .includes(plan.schema);
+  const phaseInput = isPhaseTodoPlanSchema(plan.schema);
   const stateByTaskId = new Map(tasks.map((state) => [state.task_id, state]));
   // snapshot artifactの形式(v1にはphasesキーが無い)には縛られない導出ビューを読む
   // (readTodoStoreが常に member.phases として埋める。ADR 0147)。
