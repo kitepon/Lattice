@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as guidanceModule from '../src/todo-independence-guidance.mjs';
+
 import {
-  INDEPENDENCE_START_REFUSAL_CODES,
   SEAM_PROPOSAL_GUIDANCE_CODES,
   TODO_INDEPENDENCE_GUIDANCE_CODES,
   TODO_INDEPENDENCE_WORKFLOW,
-  independenceStartRefusal,
   selectIndependenceGuidance,
   selectSeamProposalGuidance,
   scopeExpansionRecommendations,
@@ -31,16 +31,17 @@ test('未知のcodeは黙って通さない', () => {
   assert.throws(() => todoIndependenceGuidance('probably_fine'), TypeError);
 });
 
-test('記録がある未検証だけをstart拒否にし、記録無しと競合は助言のまま残す', () => {
-  for (const code of INDEPENDENCE_START_REFUSAL_CODES) {
-    const guidance = todoIndependenceGuidance(code);
-    assert.equal(independenceStartRefusal(guidance)?.code, code, code);
+test('記録がある未検証も助言のままで、start拒否の入口はもう無い（u03 B1-B6）', () => {
+  assert.equal(guidanceModule.independenceStartRefusal, undefined);
+  assert.equal(guidanceModule.INDEPENDENCE_START_REFUSAL_CODES, undefined);
+  // 旧拒否の5 codeは助言として残り、本文は「startは拒否する」と言わない。
+  for (const code of [
+    'independence_task_undeclared', 'independence_stale_for_task', 'independence_superseded',
+    'independence_contract_superseded', 'independence_verdicts_absent',
+  ]) {
+    assert.ok(TODO_INDEPENDENCE_GUIDANCE_CODES.includes(code), code);
+    assert.doesNotMatch(todoIndependenceGuidance(code).message, /拒否/u, code);
   }
-  assert.equal(independenceStartRefusal(todoIndependenceGuidance('independence_unrecorded')), null);
-  assert.equal(independenceStartRefusal(todoIndependenceGuidance('coordination_conversation')), null);
-  assert.equal(independenceStartRefusal(todoIndependenceGuidance('independence_verified')), null);
-  assert.equal(independenceStartRefusal(todoIndependenceGuidance('independence_conflict_with_active')), null);
-  assert.throws(() => independenceStartRefusal(null), TypeError);
 });
 
 test('宣言膨張は既知の回数だけを分割検討の助言へ写す', () => {
@@ -242,7 +243,7 @@ test('作業手順は宣言からcompileを経て読むまでを順に述べる'
   assert.match(numbered[1], /independence compile/u);
   assert.match(numbered[2], /todo independence --plan/u);
   assert.match(numbered[3], /witness migrate/u);
-  assert.match(numbered[4], /todo start は拒否する/u);
+  assert.match(numbered[4], /todo start は止まらず/u);
 });
 
 test('宣言の手順はconcern_anchorsを宣言できる欄として挙げる', () => {

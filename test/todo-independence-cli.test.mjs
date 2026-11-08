@@ -154,11 +154,12 @@ test('既知の旧artifactはsupersededとしてindependence・session-context�
       encoding: 'utf8',
       env: { ...process.env, ...actorEnv, LATTICE_DASHBOARD_AUTOSTART: '0' },
     });
-    assert.equal(started.status, 1, started.stdout);
-    const refused = parse(started.stderr);
-    assert.equal(refused.code, 'INDEPENDENCE_UNVERIFIED');
-    assert.equal(refused.detail.reason, 'independence_contract_superseded');
-    assert.deepEqual(refused.detail.next_action, projection.guidance.next_action);
+    // u03 B1-B6: 失効した記録は助言に載るだけで、startは拒否しない。
+    assert.equal(started.status, 0, started.stderr);
+    const startResult = parse(started.stdout);
+    assert.equal(startResult.kind, 'start');
+    assert.equal(startResult.advisory.guidance.code, 'independence_contract_superseded');
+    assert.deepEqual(startResult.advisory.guidance.next_action, projection.guidance.next_action);
 
     const session = spawnSync(process.execPath, [CLI, 'session-context', '--json'], {
       cwd: root, encoding: 'utf8', env: { ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0' },
@@ -939,8 +940,8 @@ test('next_ready が witness に無い compile は拒否する', async (context)
   assert.equal(error.detail.next_action, 'add_task_to_witness_set_then_compile');
 });
 
-test('記録がある未宣言 task の start は拒否し、宣言済みは通す', async (context) => {
-  const root = await workspace(context);
+// T1だけを宣言したcompiled記録をstoreへ書く（baseは現在のHEAD）。
+async function writeCompiledArtifact(root) {
   const head = git(root, ['rev-parse', 'HEAD']);
   const artifact = {
     schema: TODO_INDEPENDENCE_SCHEMA,
@@ -968,16 +969,59 @@ test('記録がある未宣言 task の start は拒否し、宣言済みは通�
   }];
   artifact.result_digest = todoSelfDigest(artifact, 'result_digest');
   await writeTodoIndependenceArtifact({ repoRoot: root, artifact, now: NOW });
+}
 
-  const refused = runCli(root, ['start', '--plan', 'main', '--task', 'T2']);
-  assert.equal(refused.status, 1, refused.stderr);
-  const error = parse(refused.stderr);
-  assert.equal(error.code, 'INDEPENDENCE_UNVERIFIED');
-  assert.equal(error.detail.reason, 'independence_task_undeclared');
-  assert.equal(error.detail.task_id, 'T2');
-  assert.equal(error.detail.next_action, 'add_task_to_witness_set_then_compile');
+test('記録がある未宣言 task の start も止めず、未宣言は助言に載せ、宣言済みはその助言を載せない（u03 B1-B6）', async (context) => {
+  const root = await workspace(context);
+  await writeCompiledArtifact(root);
+
+  const undeclared = runCli(root, ['start', '--plan', 'main', '--task', 'T2']);
+  assert.equal(undeclared.status, 0, undeclared.stderr);
+  const startedT2 = parse(undeclared.stdout);
+  assert.equal(startedT2.kind, 'start');
+  assert.equal(startedT2.task_id, 'T2');
+  assert.equal(startedT2.advisory.guidance.code, 'independence_task_undeclared');
+  assert.equal(startedT2.advisory.guidance.next_action, 'add_task_to_witness_set_then_compile');
+
+  const declared = runCli(root, ['start', '--plan', 'main', '--task', 'T1']);
+  assert.equal(declared.status, 0, declared.stderr);
+  const startedT1 = parse(declared.stdout);
+  assert.equal(startedT1.kind, 'start');
+  assert.notEqual(startedT1.advisory.guidance.code, 'independence_task_undeclared');
+});
+
+const NO_RECORD_SELF_UNKNOWN = (ref) => [{ kind: 'witness_missing', ref }];
+
+test('記録があってもHEADを解決できないstartは通り、記録なしの助言と警告を返す（u03 B7）', async (context) => {
+  const root = await workspace(context);
+  await writeCompiledArtifact(root);
+  // HEADを存在しないbranchへ向けて`git rev-parse HEAD`だけを失敗させる（storeは読める）。
+  await writeFile(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/no-such-branch\n');
+  assert.throws(() => git(root, ['rev-parse', 'HEAD']));
 
   const started = runCli(root, ['start', '--plan', 'main', '--task', 'T1']);
   assert.equal(started.status, 0, started.stderr);
-  assert.equal(parse(started.stdout).kind, 'start');
+  assert.match(started.stderr, /LATTICE_START_INDEPENDENCE_UNUSABLE/u);
+  assert.match(started.stderr, /git_head_unresolved/u);
+  const result = parse(started.stdout);
+  assert.equal(result.kind, 'start');
+  assert.equal(result.advisory.coverage, 'missing');
+  assert.deepEqual(result.advisory.self_unknowns, NO_RECORD_SELF_UNKNOWN('git_head_unresolved'));
+  assert.equal(result.advisory.guidance.code, 'coordination_mode_undeclared');
+});
+
+test('読めない独立性記録があってもstartは通り、記録なしの助言と警告を返す（u03 B16）', async (context) => {
+  const root = await workspace(context);
+  await writeCompiledArtifact(root);
+  const recordRef = path.join(root, '.lattice/todo/plans/main/v1/independence.json');
+  await writeFile(recordRef, `${await readFile(recordRef, 'utf8')} `);
+
+  const started = runCli(root, ['start', '--plan', 'main', '--task', 'T1']);
+  assert.equal(started.status, 0, started.stderr);
+  assert.match(started.stderr, /LATTICE_START_INDEPENDENCE_UNUSABLE/u);
+  assert.match(started.stderr, /independence_record_unreadable/u);
+  const result = parse(started.stdout);
+  assert.equal(result.kind, 'start');
+  assert.equal(result.advisory.coverage, 'missing');
+  assert.deepEqual(result.advisory.self_unknowns, NO_RECORD_SELF_UNKNOWN('independence_record_unreadable'));
 });

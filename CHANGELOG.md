@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `todo start`は、守るもののない理由で止まらない（u03）。独立性記録があって工程が未宣言・失効でも`INDEPENDENCE_UNVERIFIED`で拒否せず、`advisory.guidance`で示す。記録が読めない・HEADを解決できない時は記録なしと同じ助言で通し、警告`LATTICE_START_INDEPENDENCE_UNUSABLE`を出す。壊れた`backchain.json`は`feature_context`を付けない結果（v5）と警告`LATTICE_START_BACKCHAIN_UNUSABLE`になる。readyでない工程への`--parallel-frontier`は無視する。不正な`LATTICE_TODO_ACTOR_*`は未設定と同じに扱う。
+- `todo retire`は進行中の工程も外せる。外す前に、その着手に結び付いた未受理intakeを`task_retired`として解放して記録する。
+- 受入済み・監査なしで閉じたphaseの工程も`todo reopen`できる。phaseの記録はそのまま残し、再開結果の`advisory`と`todo phase status`の`acceptance_stale`で、受入が古くなったことを示す。
+- `todo done`は`--evidence`と`--message`の両方、どちらも無し、を受ける。両方ならmessageへevidence fileの場所とdigestを添え、無しなら「証拠の指定なしで完了した。」を証拠として記録する。
+- `todo status`は件数・大きさの上限で拒否せず切り詰める。版9（`lattice.todo_status_result.v9`）になり、`truncated: [{list, total, shown}]`で切った所を示す。
+
 ## 0.83.0 — 2026-11-08
 
 Latticeが作った「止まるだけで何も守らない拒否」を外す見直し（u03）と、工程表が一部の不整合で全体ごと見えなくなる停止の修理を中心にした版。

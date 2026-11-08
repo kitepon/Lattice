@@ -216,6 +216,32 @@ test('u03 C11/X1: start撤回はruns/の迷いentryで止まらず、bound intak
     ]), 1).code, 'INTAKE_NOT_FOUND');
   });
 
+test('u03 A14r: in-progressのretireはbound intakeをtask_retiredで解放してから閉じる',
+  async (context) => {
+    const { root } = await workspace(context);
+    parsed(startPull(root));
+    await startTask(root, 'A', '2026-08-09T00:01:00.000Z');
+    const intake = parsed(runCli(root, [
+      'run', 'intake', '--run', '.lattice/runs/pull-run', '--task', 'A',
+    ]));
+
+    const retired = parsed(runCli(root, [
+      'todo', 'retire', '--plan', PLAN_KEY, '--task', 'A', '--reason', '不要になった',
+    ]));
+    assert.equal(retired.kind, 'retire');
+    assert.equal(retired.status, 'retired');
+    const events = JSON.parse(await readFile(
+      path.join(root, '.lattice', 'runs', 'pull-run', 'pull-events.json'), 'utf8'));
+    const released = events.at(-1);
+    assert.equal(released.kind, 'intake_released');
+    assert.equal(released.task_id, 'A');
+    assert.equal(released.payload.reason, 'task_retired');
+    assert.equal(released.payload.target_start_digest, intake.activation_event_digest);
+    assert.equal(parsed(runCli(root, [
+      'run', 'intake', 'release', '--run', '.lattice/runs/pull-run', '--task', 'A',
+    ]), 1).code, 'INTAKE_NOT_FOUND');
+  });
+
 test('intake 0件のpull runは着地0件を明示してcloseでき、active listから外れる',
   async (context) => {
     const { root } = await workspace(context);
