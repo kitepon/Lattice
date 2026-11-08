@@ -337,7 +337,9 @@ describe('Shared MCP daemon (issue #411)', () => {
         CG_TEST_BIND_MARKER: marker, CG_TEST_BIND_DELAY_MS: String(delayMs) } : {}) };
     const nodeArgs = delayMs ? ['--require', path.resolve(__dirname, 'fixtures/delay-daemon-bind.cjs')] : [];
     const bindEvents = (): { phase: string; pid: number; at: number; startedAt: number }[] => {
-      try { return fs.readFileSync(marker, 'utf8').trim().split('\n').map((line) => JSON.parse(line)); }
+      // The fixture appends from another process: parse only newline-terminated
+      // records, so a just-created or half-written last line is not yet an event.
+      try { return fs.readFileSync(marker, 'utf8').split('\n').slice(0, -1).map((line) => JSON.parse(line)); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
         throw error;
@@ -741,11 +743,11 @@ describe('Shared MCP daemon (issue #411)', () => {
       // Despite the mismatched daemon, the client still gets an initialize
       // response — the proxy answers the handshake locally and, refusing to
       // attach across the version mismatch, serves the session in-process.
-      const resp = await waitFor(() => findResponse(server.stdout, 1), 10000);
+      const resp = await waitFor(() => findResponse(server.stdout, 1), 10000, 25, 'version-mismatch initialize');
       expect(resp.result.serverInfo.name).toBe('lattice-sensor');
       await waitFor(
         () => server.stderr.some((l) => l.includes('serving this session in-process')),
-        6000,
+        6000, 25, 'version-mismatch in-process fallback',
       );
 
       sendMessage(server.child, {
@@ -754,14 +756,14 @@ describe('Shared MCP daemon (issue #411)', () => {
         method: 'tools/call',
         params: { name: 'lattice_sensor_status', arguments: {} },
       });
-      const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 5000);
+      const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 5000, 25, 'version-mismatch status tool response');
       expect(toolResponse.error).toBeUndefined();
       expect(toolResponse.result?.isError).not.toBe(true);
       expect(JSON.stringify(toolResponse.result)).toContain('Lattice Sensor Status');
       expect(fs.existsSync(writerPath)).toBe(mode !== null);
       expect(server.stderr.some((l) => l.includes('Serving reads in-process without auto-sync:'))).toBe(true);
       server.child.stdin.end();
-      await waitFor(() => server.child.exitCode !== null, 5000);
+      await waitFor(() => server.child.exitCode !== null, 5000, 25, 'version-mismatch server exit after stdin end');
       expect(fs.readFileSync(path.join(realRoot, '.lattice/sensor', 'sensor.db'))).toEqual(before);
       expect(readLockPid(realRoot)).toBe(process.pid);
       if (mode) expect(fs.readFileSync(writerPath, 'utf8')).toBe(writer);
