@@ -10,7 +10,7 @@ export interface AnswerFile {
   contentHash: string | null;
 }
 
-/** Limits apply to the entire answer; exceeding any of them refuses it. */
+/** Limits apply to the entire answer; exceeding any of them marks the rest unchecked (the answer is annotated, not refused: u03 sweep E13). */
 const MAX_FILES = 200;
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_MS = 250;

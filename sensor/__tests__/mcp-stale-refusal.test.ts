@@ -9,7 +9,7 @@ import { QueryPool } from '../src/mcp/query-pool';
 import { Worker } from 'worker_threads';
 import { __setFsWatchForTests } from '../src/sync/watcher';
 
-describe('a degraded index refuses answers from changed files (#1959)', () => {
+describe('a degraded index annotates answers from changed files instead of refusing (#1959, u03 E13)', () => {
   let root: string;
   let cg: LatticeSensor;
   let handler: ToolHandler;
@@ -49,7 +49,7 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('names a changed file without serving its result, but keeps unaffected source available', async () => {
+  it('serves the answer annotated with the changed file, and keeps unaffected source unannotated', async () => {
     const alphaPath = path.join(root, 'alpha.ts');
     const primed = await handler.execute('lattice_sensor_explore', { query: 'alphaOnly' });
     expect(primed.content[0].text).toContain('export function alphaOnly');
@@ -60,11 +60,13 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     fs.utimesSync(alphaPath, before.atime, before.mtime);
 
     const session = new ExploreSessionState();
-    const refused = await handler.execute('lattice_sensor_explore', { query: 'alphaOnly' }, session);
-    expect(refused.isError).toBeFalsy();
-    expect(refused.content[0].text).toContain('alpha.ts');
-    expect(refused.content[0].text).toContain('cannot answer from this index');
-    expect(refused.content[0].text).not.toContain('export function alphaOnly');
+    const annotated = await handler.execute('lattice_sensor_explore', { query: 'alphaOnly' }, session);
+    expect(annotated.isError).toBeFalsy();
+    expect(annotated.content[0].text).toContain('served this answer from a degraded index');
+    expect(annotated.content[0].text).toContain('- alpha.ts');
+    expect(annotated.content[0].text).toContain('alphaOnly');
+    expect((annotated.structuredContent!.freshness as { stale: string[] }).stale).toEqual(['alpha.ts']);
+    // Annotated source is not recorded as shown to the session.
     expect(session.view().projects).toEqual([]);
 
     const unaffected = await handler.execute('lattice_sensor_explore', { query: 'betaOnly' }, session);
@@ -78,10 +80,10 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     const refreshed = await handler.execute('lattice_sensor_explore', { query: 'alphaOnly' }, session);
     expect(refreshed.content[0].text).toContain('export function alphaOnly');
     expect(refreshed.content[0].text).toContain('return 9');
-    expect(refreshed.content[0].text).not.toContain('cannot answer from this index');
+    expect(refreshed.content[0].text).not.toContain('served this answer from a degraded index');
   });
 
-  it('refuses a graph answer that names a changed file, and serves one that does not', async () => {
+  it('annotates a graph answer that names a changed file, and leaves one that does not unannotated', async () => {
     const callers = await handler.execute('lattice_sensor_callers', { symbol: 'alphaOnly' });
     expect(callers.content[0].text).toContain('gammaUses');
 
@@ -90,18 +92,18 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
       "import { alphaOnly } from './alpha';\nexport function gammaUses() { return 0; }\n"
     );
 
-    const refused = await handler.execute('lattice_sensor_callers', { symbol: 'alphaOnly' });
-    expect(refused.isError).toBeFalsy();
-    expect(refused.content[0].text).toContain('cannot answer from this index');
-    expect(refused.content[0].text).toContain('- gamma.ts');
-    expect(refused.content[0].text).not.toContain('gammaUses');
+    const annotated = await handler.execute('lattice_sensor_callers', { symbol: 'alphaOnly' });
+    expect(annotated.isError).toBeFalsy();
+    expect(annotated.content[0].text).toContain('served this answer from a degraded index');
+    expect(annotated.content[0].text).toContain('- gamma.ts');
+    expect(annotated.content[0].text).toContain('gammaUses');
 
     const search = await handler.execute('lattice_sensor_search', { query: 'gammaUses' });
-    expect(search.content[0].text).toContain('cannot answer from this index');
+    expect(search.content[0].text).toContain('served this answer from a degraded index');
 
     const unaffected = await handler.execute('lattice_sensor_search', { query: 'betaOnly' });
     expect(unaffected.content[0].text).toContain('beta.ts');
-    expect(unaffected.content[0].text).not.toContain('cannot answer from this index');
+    expect(unaffected.content[0].text).not.toContain('served this answer from a degraded index');
   });
   it.each([false, true])('preserves spaces and Unicode through provenance (pooled=%s)', async pooled => {
     if (pooled) {
@@ -120,23 +122,24 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     fs.utimesSync(path.join(root, relative), before.atime, before.mtime);
     const result = await handler.execute('lattice_sensor_search', { query: 'unicodeSymbol' });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain('cannot answer from this index');
-    expect(result.structuredContent).toEqual({ freshness: { stale: [relative], unchecked: [] } });
+    expect(result.content[0].text).toContain('served this answer from a degraded index');
+    expect(result.content[0].text).toContain(relative);
+    expect(result.structuredContent).toMatchObject({ freshness: { stale: [relative], unchecked: [] } });
     expect(result).not.toHaveProperty('_cgAnswerFiles');
   });
 
   it.each(['lattice_sensor_search', 'lattice_sensor_explore', 'lattice_sensor_callers', 'lattice_sensor_callees', 'lattice_sensor_impact'])(
-    'refuses deleted contributing files in %s', async tool => {
+    'annotates deleted contributing files in %s', async tool => {
       fs.unlinkSync(path.join(root, 'alpha.ts'));
       const result = await handler.execute(tool, { query: 'alphaOnly', symbol: 'alphaOnly' });
       expect(result.isError).toBeFalsy();
-      expect(result.content[0].text).toContain('cannot answer from this index');
+      expect(result.content[0].text).toContain('served this answer from a degraded index');
       expect(result.content[0].text).toContain('alpha.ts');
       expect(result).not.toHaveProperty('_cgExploreEmission');
     },
   );
 
-  it('refuses rather than silently validating only the first 200 contributing files', async () => {
+  it('annotates rather than silently validating only the first 200 contributing files', async () => {
     for (let i = 0; i < 201; i++) {
       fs.writeFileSync(path.join(root, `caller${i}.ts`),
         `import { alphaOnly } from './alpha'; export function caller${i}() { return alphaOnly(); }\n`);
@@ -148,7 +151,7 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain('validation budget');
     expect((result.structuredContent!.freshness as { unchecked: string[] }).unchecked.length).toBeGreaterThan(0);
-    expect(result.content[0].text).not.toContain('**Impact');
+    expect(result.content[0].text).toContain('**Impact');
   });
 
 });

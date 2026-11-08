@@ -168,7 +168,16 @@ export class DatabaseConnection {
     }
 
     const { db, backend } = createDatabase(dbPath, options);
+    // u03 E15: a damaged file throws below; close it so Windows can move it aside.
+    try {
+      return DatabaseConnection.finishOpen(db, dbPath, backend, options);
+    } catch (err) {
+      try { db.close(); } catch { /* already unusable */ }
+      throw err;
+    }
+  }
 
+  private static finishOpen(db: SqliteDatabase, dbPath: string, backend: SqliteBackend, options: { readOnly?: boolean }): DatabaseConnection {
     configureConnection(db, options.readOnly);
 
     // Detect FTS5 availability for search fallback (#1532)

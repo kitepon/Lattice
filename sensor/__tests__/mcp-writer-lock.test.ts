@@ -1,6 +1,7 @@
 /**
- * Issue #1740 — concurrent direct-mode serve --mcp must fail fast on the
- * second writer instead of silently degrading auto-sync.
+ * Issue #1740 — concurrent direct-mode serve --mcp must never run a second
+ * writer. u03 sweep E4: the second session does not exit; it serves read-only
+ * and says so on stderr.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -122,7 +123,7 @@ describe('issue #1740 — direct-mode writer lock', () => {
 
   afterEach(cleanup, 45_000);
 
-  it('second LATTICE_SENSOR_NO_DAEMON serve --mcp exits with writer-lock error', async () => {
+  it('second LATTICE_SENSOR_NO_DAEMON serve --mcp serves read-only instead of exiting', async () => {
     const env = {
       LATTICE_SENSOR_NO_DAEMON: '1',
       LATTICE_SENSOR_MCP_DEBUG: '1',
@@ -146,17 +147,12 @@ describe('issue #1740 — direct-mode writer lock', () => {
     const second = spawnMcp(realRoot, env);
     children.push(second.child);
 
-    const code = await new Promise<number | null>((resolve) => {
-      const timer = setTimeout(() => resolve(second.child.exitCode), 10000);
-      second.child.on('close', (c) => {
-        clearTimeout(timer);
-        resolve(c);
-      });
-    });
-
-    expect(code).toBe(1);
-    expect(second.getStderr()).toMatch(/writer lock held/i);
-    expect(second.getStderr()).toMatch(/LATTICE_SENSOR_NO_DAEMON/);
+    const readOnlyDeadline = Date.now() + 10000;
+    while (Date.now() < readOnlyDeadline && !/read-only/i.test(second.getStderr())) {
+      await sleep(50);
+    }
+    expect(second.getStderr()).toMatch(/Serving reads in-process without auto-sync: writer lock held by PID \d+ \(direct mode\); this session is read-only/);
+    expect(second.child.exitCode).toBeNull();
     expect(first.child.exitCode).toBeNull();
     const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number };
     expect(lock.pid).toBe(first.child.pid);
