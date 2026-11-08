@@ -40,6 +40,12 @@ and exited non-zero although the lifecycle write had already succeeded.
 | disable | attempt authenticated supervisor stop → rm descriptor + pidfile → `{removed: snapshot.installed, stopped: confirmedTermination}`; no signal or unobservable outcome → `stopped:false` | remove |
 | restore | attempt identified supervisor stop → if snapshot installed: rewrite descriptor, await launch again, optionally await readiness for rollback config | rewrite |
 
+Supervisor loop (`bin/lattice-bridge-supervisor.mjs`, all OSes): write own identity to the
+pidfile → spawn bridge → on exit wait 3 s and respawn. Every 3 s it re-reads the pidfile;
+another identity there means a second launch on the same descriptor took ownership, so this
+supervisor stops its bridge and exits (self-exit for a duplicate launch). A missing pidfile
+changes nothing.
+
 Shared helper ownership: `bridge-startup-folder.mjs` is the canonical owner of
 `supervisorDescriptor` (descriptor schema, forwarded registrar/config environment)
 and `waitForBridgeStartupReady` (5 s token-authenticated health wait). Linux imports
