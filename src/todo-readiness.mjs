@@ -153,5 +153,12 @@ export function validateProspectiveEvent({ store, member, event }) {
     && status !== undefined && status !== 'in-progress') {
     return refused('invalid_done_transition', 'task_state');
   }
+  // 読込とappendの間に状態が変わったretireは再試行できる競合であり、破損ではない（u12）。
+  if (event.kind === 'retire' && typeof event.payload.prior_status === 'string'
+    && status !== undefined && status !== event.payload.prior_status) {
+    return { ok: false, code: 'STORE_WRITE_CONFLICT', detail: { reason: 'retire_state_changed',
+      task_id: event.task_id, expected: { status: event.payload.prior_status }, actual: { status },
+      next_action: `lattice todo retire --plan ${member.plan.plan_key} --task ${event.task_id} --reason <text>` } };
+  }
   return { ok: true };
 }

@@ -111,3 +111,19 @@ test('retiring an already retired task succeeds without a new event', async (con
   assert.equal(result.event_digest, before[0].event_digest);
   assert.equal((await retireEvents(root)).length, 1);
 });
+
+test('a retire whose prior_status went stale is a retryable write conflict', async (context) => {
+  const root = await fixture(context);
+  const { readTodoStore } = await import('../src/todo-store.mjs');
+  const { validateProspectiveEvent } = await import('../src/todo-readiness.mjs');
+  const store = await readTodoStore({ repoRoot: root });
+  const member = store.members[0];
+  const event = { kind: 'retire', task_id: 'c', payload: { reason: '不要', prior_status: 'blocked' } };
+  const result = validateProspectiveEvent({ store, member, event });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'STORE_WRITE_CONFLICT');
+  assert.equal(result.detail.reason, 'retire_state_changed');
+  assert.deepEqual(result.detail.actual, { status: 'pending' });
+  assert.equal(validateProspectiveEvent({ store, member,
+    event: { ...event, payload: { ...event.payload, prior_status: 'pending' } } }).ok, true);
+});
