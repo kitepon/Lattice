@@ -228,3 +228,17 @@ test('readiness uses canonical phases even with a contradictory snapshot and nev
   assert.equal(computeReadyFrontier(input.store).some((task) => task.plan_key === 'target'), true);
   assert.deepEqual(input.store, before);
 });
+
+test('u03 A24: a cross-plan predecessor task or acceptance phase that no longer exists does not block', () => {
+  for (const kind of ['hard', 'join', 'dynamic']) {
+    const input = fixture();
+    connect(input, kind);
+    input.store.members = [input.target];
+    assert.deepEqual(validate(input), { ok: true }, kind);
+    assert.equal(createTodoReadiness(input.store).prerequisites('project-1\0target\0B').cause, null, kind);
+  }
+  const input = fixture('lattice.todo_plan.v5');
+  input.target.plan.phase_accept_dependencies.push({ from: phaseRef('source'), to: ref('target', 'B') });
+  input.store.members = [input.target];
+  assert.equal(createTodoReadiness(input.store).prerequisites('project-1\0target\0B').phaseAcceptReady, true);
+});

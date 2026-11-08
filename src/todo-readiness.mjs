@@ -77,12 +77,14 @@ export function createTodoReadiness(store) {
   }
 
   function prerequisites(key) {
-    const predecessors = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source));
+    // u03 A24: 消えた端点（Storeのendpoint_missing finding）は後続を止めない。Store replayも同じ規則。
+    const predecessors = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source))
+      .filter((node) => node !== undefined);
     const predecessorsDone = predecessors.every((node) => node?.finished === true);
     const predecessorPhasesReady = predecessors.every((node) => dependencyPhaseReady(node, nodes.get(key)));
     const taskDependenciesDone = predecessorsDone && predecessorPhasesReady;
     const phaseAcceptReady = [...(acceptanceIncoming.get(key) ?? [])]
-      .every((source) => phases.get(source) === 'accepted');
+      .every((source) => !phases.has(source) || phases.get(source) === 'accepted');
     return {
       taskDependenciesDone,
       phaseAcceptReady,
