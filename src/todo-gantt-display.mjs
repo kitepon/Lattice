@@ -5,7 +5,7 @@
  * Store owns the read, the checkpoint and the typed result; this module owns the
  * tolerant projection, the banner/empty-state markup and the per-project memo.
  */
-import * as todoStore from './todo-store.mjs';
+import { readTodoStoreDisplaySource, readTodoStoreForDisplay } from './todo-store.mjs';
 import { digestTodoArtifact } from './todo-contracts.mjs';
 import { escapeHtmlText } from './todo-gantt-html-shared.mjs';
 
@@ -23,49 +23,58 @@ const SLUG = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/u;
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value) => (typeof value === 'string' && value.length > 0 ? value : null);
 
-// The Store exports land with the Store row; resolve at call time so this module loads before then.
-function storeExport(name) {
-  const fn = todoStore[name];
-  if (typeof fn !== 'function') {
-    throw Object.assign(new Error(`Store display export missing: ${name}`),
-      { code: 'DISPLAY_READER_UNAVAILABLE' });
-  }
-  return fn;
-}
-const defaultReadForDisplay = (options) => storeExport('readTodoStoreForDisplay')(options);
-const defaultReadDisplaySource = (options) => storeExport('readTodoStoreDisplaySource')(options);
-
 /**
- * Raw `{project_id, manifest, members:[{descriptor, snapshot}]}` -> the renderer's
- * read model. The raw snapshot carries task states and phase states but no plan
- * (titles, lanes, edges), so tasks render by id in one lane without dependencies.
- * Whatever cannot be projected is dropped and named; this never throws.
+ * Raw `{project_id, manifest, members:[{descriptor, plan, snapshot}]}` -> the renderer's
+ * read model. Task states and phase states come from the snapshot; titles, lanes, phases
+ * and dependency edges from `plan` when the Store could read it (`plan:null` falls back to
+ * ids in one lane without edges). Whatever cannot be projected is dropped and named; this
+ * never throws, and no edge that would make the layout fail (unknown endpoint, self edge,
+ * cycle) is kept.
  */
 export function projectUnverifiedStore(raw) {
   const dropped = [];
   const members = [];
   const projectId = text(raw?.project_id) ?? text(raw?.manifest?.project_id) ?? 'unknown';
+  const taskKey = (planKey, taskId) => JSON.stringify([planKey, taskId]);
+  const known = new Set();
+  const edgesOf = []; // {planKey, from, to, kind}
+  const refKeyOf = (ref) => (plain(ref) && ref.project_id === projectId && text(ref.plan_key) !== null
+    && text(ref.task_id) !== null ? taskKey(ref.plan_key, ref.task_id) : null);
   for (const entry of Array.isArray(raw?.members) ? raw.members : []) {
     const planKey = text(entry?.descriptor?.plan_key);
+    const drop = (reason, extra = {}) => dropped.push({ plan_key: planKey,
+      code: 'DISPLAY_PROJECTION_DROPPED', reason, ...extra });
     try {
-      const drop = (reason, extra = {}) => dropped.push({ plan_key: planKey, code: 'DISPLAY_PROJECTION_DROPPED', reason, ...extra });
       if (planKey === null) { drop('descriptor_plan_key_invalid'); continue; }
       const snapshot = entry.snapshot;
       if (!plain(snapshot) || !Array.isArray(snapshot.tasks)) { drop('snapshot_tasks_invalid'); continue; }
-      const seen = new Set();
-      const tasks = [];
+      const states = new Map();
       for (const task of snapshot.tasks) {
         const taskId = text(task?.task_id);
         if (taskId === null || !TASK_STATUSES.includes(task.status)) {
           drop('task_invalid', { task_id: taskId }); continue;
         }
-        if (seen.has(taskId)) { drop('task_duplicate', { task_id: taskId }); continue; }
-        seen.add(taskId);
-        tasks.push({ task_id: taskId, status: task.status, started_at: text(task.started_at),
+        if (states.has(taskId)) { drop('task_duplicate', { task_id: taskId }); continue; }
+        states.set(taskId, { task_id: taskId, status: task.status, started_at: text(task.started_at),
           done_at: text(task.done_at), blocked_reason: text(task.blocked_reason), evidence: null,
           evidence_unverified: false, imported: false, test_result: null });
       }
-      if (tasks.length === 0) { drop('no_projectable_task'); continue; }
+      const plan = plain(entry.plan) && Array.isArray(entry.plan.tasks) ? entry.plan : null;
+      const planTasks = new Map();
+      for (const task of plan?.tasks ?? []) {
+        const taskId = text(task?.task_id);
+        if (taskId === null || planTasks.has(taskId)) { drop('plan_task_invalid', { task_id: taskId }); continue; }
+        if (!states.has(taskId)) { drop('task_state_missing', { task_id: taskId }); continue; }
+        planTasks.set(taskId, { task_id: taskId, title: text(task.title) ?? taskId,
+          lane: text(task.lane) ?? 'unverified', narrative_ref: null,
+          ...(text(task.phase_id) === null ? {} : { phase_id: task.phase_id }) });
+      }
+      // snapshot states the plan does not name still show, by id
+      for (const taskId of states.keys()) {
+        if (!planTasks.has(taskId)) planTasks.set(taskId, { task_id: taskId, title: taskId,
+          lane: 'unverified', narrative_ref: null });
+      }
+      if (planTasks.size === 0) { drop('no_projectable_task'); continue; }
       const phases = [];
       for (const phase of Array.isArray(snapshot.phases) ? snapshot.phases : []) {
         const phaseId = text(phase?.phase_id);
@@ -75,6 +84,20 @@ export function projectUnverifiedStore(raw) {
         phases.push({ phase_id: phaseId, status: phase.status, review_event_digest: null,
           decision_event_digest: null, decision_evidence: null });
       }
+      const phaseMeta = [];
+      for (const phase of Array.isArray(plan?.phases) ? plan.phases : []) {
+        const phaseId = text(phase?.phase_id);
+        if (phaseId === null) { drop('plan_phase_invalid'); continue; }
+        phaseMeta.push({ phase_id: phaseId, title: text(phase.title) ?? phaseId,
+          gate_policy: text(phase.gate_policy) ?? 'heavy' });
+      }
+      for (const taskId of planTasks.keys()) known.add(taskKey(planKey, taskId));
+      for (const edge of Array.isArray(plan?.hard_dependencies) ? plan.hard_dependencies : []) {
+        edgesOf.push({ planKey, kind: 'hard', from: edge?.from, to: edge?.to });
+      }
+      for (const join of Array.isArray(plan?.joins) ? plan.joins : []) {
+        edgesOf.push({ planKey, kind: 'join', join, from: join?.after, to: join?.before });
+      }
       const descriptor = entry.descriptor;
       members.push({
         descriptor: { plan_key: planKey, active_plan_version: text(descriptor.active_plan_version),
@@ -82,14 +105,41 @@ export function projectUnverifiedStore(raw) {
         plan: { schema: 'lattice.todo_plan.v1', project_id: projectId, plan_key: planKey,
           plan_version: text(snapshot.plan_version) ?? text(descriptor.active_plan_version) ?? 'unknown',
           topology_digest: text(descriptor.topology_digest), hard_dependencies: [], joins: [],
-          tasks: tasks.map(({ task_id: taskId }) => ({ task_id: taskId, title: taskId,
-            lane: 'unverified', narrative_ref: null })) },
-        tasks, phases, journal: { events: [] }, plan_scoped: { events: [] }, revision: null,
+          phases: phaseMeta, tasks: [...planTasks.values()] },
+        tasks: [...planTasks.keys()].map((taskId) => states.get(taskId)), phases,
+        journal: { events: [] }, plan_scoped: { events: [] }, revision: null,
         coordination: null, snapshot_stale: false,
       });
     } catch {
-      dropped.push({ plan_key: planKey, code: 'DISPLAY_PROJECTION_DROPPED', reason: 'projection_failed' });
+      drop('projection_failed');
     }
+  }
+  // Edges last: an endpoint must be a projected task, and no edge may close a cycle.
+  const successors = new Map();
+  const reaches = (from, to, seen = new Set()) => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (successors.get(from) ?? []).some((next) => reaches(next, to, seen));
+  };
+  const byPlan = new Map(members.map((member) => [member.plan.plan_key, member.plan]));
+  for (const { planKey, kind, join, from, to } of edgesOf) {
+    const targetKey = refKeyOf(to);
+    const sources = (kind === 'join' ? (Array.isArray(from) ? from : [null]) : [from]).map(refKeyOf);
+    const refOf = (ref) => ({ project_id: ref.project_id, plan_key: ref.plan_key, task_id: ref.task_id });
+    const valid = targetKey !== null && known.has(targetKey)
+      && sources.every((key) => key !== null && known.has(key) && key !== targetKey)
+      && (kind !== 'join' || text(join?.id) !== null);
+    // a join with any bad endpoint is dropped whole; a cycle drops only the closing edge
+    if (!valid || sources.some((key) => reaches(targetKey, key))) {
+      dropped.push({ plan_key: planKey, code: 'DISPLAY_PROJECTION_DROPPED',
+        reason: kind === 'join' ? 'join_invalid' : 'dependency_invalid', task_id: text(to?.task_id) });
+      continue;
+    }
+    for (const key of sources) successors.set(key, [...(successors.get(key) ?? []), targetKey]);
+    const plan = byPlan.get(planKey);
+    if (kind === 'hard') plan.hard_dependencies.push({ from: refOf(from), to: refOf(to) });
+    else plan.joins.push({ id: join.id, after: from.map(refOf), before: refOf(to) });
   }
   return {
     store: { schema: 'lattice.todo_store_read.v1', project_id: projectId,
@@ -170,7 +220,7 @@ export function displayResultBinding(result) {
  * one full read, then reuse until the revalidation ceiling.
  */
 export function createTodoGanttDisplayReader({
-  repoRoot, readForDisplay = defaultReadForDisplay, readDisplaySource = defaultReadDisplaySource,
+  repoRoot, readForDisplay = readTodoStoreForDisplay, readDisplaySource = readTodoStoreDisplaySource,
   revalidateMs = GANTT_DISPLAY_REVALIDATE_MS, now = Date.now,
 }) {
   let memo = null;

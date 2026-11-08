@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -39,8 +39,9 @@ async function workspace(context) {
 }
 
 // The raw shape the Store's display reader returns for `unverified`.
-const rawOf = (store) => ({ project_id: store.project_id, manifest: store.manifest,
-  members: store.members.map(({ descriptor, snapshot }) => ({ descriptor, snapshot })) });
+const rawOf = (store, { withPlan = true } = {}) => ({ project_id: store.project_id,
+  manifest: store.manifest, members: store.members.map(({ descriptor, plan, snapshot }) => (
+    { descriptor, plan: withPlan ? plan : null, snapshot })) });
 const SOURCE = { project_id: 'project-1', manifest_digest: 'm1', members: [] };
 const typed = (state, extra) => ({ state, store: null, verified_at: null, source: SOURCE,
   inconsistency: state === 'verified' ? null : INCONSISTENCY, dropped_members: [], ...extra });
@@ -364,4 +365,82 @@ test('Store readerのthrow(型付き結果の外の故障)は同じtokenなら�
   harness.source = { ...SOURCE, manifest_digest: 'm2' };
   await assert.rejects(reader.read(), fault);
   assert.equal(harness.fullReads, 3);
+});
+
+test('unverified: planが在ればtitle・lane・依存辺を使い、壊れた辺だけを名指しで落とす。plan:nullはidのみ', async (context) => {
+  const root = await workspace(context);
+  const store = await readTodoStoreStable({ repoRoot: root });
+  const raw = rawOf(store);
+  const [member] = raw.members;
+  const edge = member.plan.hard_dependencies[0];
+  member.plan = { ...member.plan, tasks: [...member.plan.tasks, task('GHOST')],
+    hard_dependencies: [edge,
+      { from: ref('T1'), to: ref('NOPE') }, // unknown endpoint
+      { from: ref('T2'), to: ref('T2') }, // self edge
+      { from: ref('T2'), to: ref('T1') }, // closes a cycle with T1 -> T2
+      { from: 'garbage', to: ref('T2') }],
+    joins: [{ id: 'j1', after: [ref('T1')], before: ref('T2') }, { id: 'j2', after: 'x', before: ref('T2') }] };
+  const projected = projectUnverifiedStore(raw);
+  const plan = projected.store.members[0].plan;
+  assert.deepEqual(plan.tasks.map((entry) => [entry.task_id, entry.title, entry.lane]),
+    [['T1', 'title T1', 'dev'], ['T2', 'title T2', 'dev']]);
+  assert.equal(plan.hard_dependencies.length, 1);
+  assert.deepEqual(plan.joins.map((join) => join.id), ['j1']);
+  const reasons = projected.dropped.map(({ reason }) => reason).sort();
+  assert.deepEqual(reasons, ['dependency_invalid', 'dependency_invalid', 'dependency_invalid',
+    'dependency_invalid', 'join_invalid', 'task_state_missing']);
+  const live = await serve(context, serving(root, typed('unverified', { store: raw })));
+  const response = await fetch(live.url);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /title T1/u);
+  assert.match(html, /task_state_missing/u);
+
+  const bare = projectUnverifiedStore(rawOf(store, { withPlan: false })).store.members[0].plan;
+  assert.deepEqual(bare.tasks.map((entry) => [entry.title, entry.lane]), [['T1', 'unverified'], ['T2', 'unverified']]);
+  assert.deepEqual(bare.hard_dependencies, []);
+});
+
+test('bannerはplan_ref/snapshot_refを出さず、plan_key・code・reason slugだけを名指す', async (context) => {
+  const root = await workspace(context);
+  const store = await readTodoStoreStable({ repoRoot: root });
+  const live = await serve(context, serving(root, typed('unverified', {
+    store: rawOf(store, { withPlan: false }),
+    dropped_members: [
+      { plan_key: 'p1', plan_ref: '.lattice/todo/p1/plan.json', code: 'PLAN_INVALID', reason: 'json_unparsable' },
+      { plan_key: 'p2', snapshot_ref: '.lattice/todo/p2/snapshot.json', code: 'SNAPSHOT_INVALID', reason: 'file_missing' }],
+  })));
+  const html = await (await fetch(live.url)).text();
+  assert.match(html, /<code>p1<\/code>: <code>PLAN_INVALID<\/code> \/ <code>json_unparsable<\/code>/u);
+  assert.match(html, /<code>p2<\/code>: <code>SNAPSHOT_INVALID<\/code> \/ <code>file_missing<\/code>/u);
+  assert.doesNotMatch(html, /plan\.json|snapshot\.json|\.lattice\/todo/u);
+});
+
+test('実Store: 壊れたjournalは500でなくunverifiedの200で描かれ、直ると検証済みへ戻る', async (context) => {
+  const root = await workspace(context);
+  // locate the active journal of the only plan and damage it
+  const files = [];
+  const walk = async (dir) => { for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) await walk(full); else files.push(full);
+  } };
+  await walk(path.join(root, '.lattice', 'todo'));
+  const active = files.find((file) => file.endsWith(`${path.sep}active.jsonl`) && !file.includes('plan-scoped'));
+  assert.ok(active, `no active journal: ${files.join(',')}`);
+  const original = await readFile(active);
+  await appendFile(active, '{not json\n');
+  const served = createTodoGanttDisplayServing({ repoRoot: root, projectId: 'project-1' });
+  const live = await serve(context, served);
+  const response = await fetch(live.url);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /data-display-state="unverified"/u);
+  assert.match(html, /data-task-id="T1"/u);
+  assert.match(html, /title T1/u);
+  await writeFile(active, original);
+  // a fresh reader stands in for the next full read after the repair
+  const healed = createTodoGanttDisplayServing({ repoRoot: root, projectId: 'project-1' });
+  const verified = await (await fetch((await serve(context, healed)).url)).text();
+  assert.doesNotMatch(verified, /data-display-state/u);
+  assert.match(verified, /title T1/u);
 });
