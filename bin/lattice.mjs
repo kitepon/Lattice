@@ -65,7 +65,7 @@ if (help !== null) {
         cwd: process.cwd(), inputRef: flags.input, stdout: process.stdout,
       });
     } catch (error) {
-      process.exitCode = projectCliFailure(process.stderr, error);
+      process.exitCode = projectCliFailure(process.stderr, error, { command: 'create', flags });
     }
   }
 } else if (args.length === 4 && args[0] === 'plan' && args[1] === 'create'
@@ -137,7 +137,7 @@ if (help !== null) {
       process.exitCode = await runPlanRevise({ cwd: process.cwd(), inputRef: flags.input,
         dryRun: flags['dry-run'] === true, stdout: process.stdout, env: process.env });
     } catch (error) {
-      process.exitCode = projectCliFailure(process.stderr, error);
+      process.exitCode = projectCliFailure(process.stderr, error, { command: 'revise', flags });
     }
   }
 } else if (args.length === 4 && args[0] === 'plan' && args[1] === 'backchain'
@@ -168,7 +168,7 @@ if (help !== null) {
         stdout: process.stdout, env: process.env,
       });
     } catch (error) {
-      process.exitCode = projectCliFailure(process.stderr, error);
+      process.exitCode = projectCliFailure(process.stderr, error, { command: 'backchain', flags });
     }
   }
 } else if (args.length === 2 && args[0] === 'factory-diagnostics' && args[1] === '--json') {

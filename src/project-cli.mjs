@@ -42,6 +42,7 @@ import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
 import { readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
 const STORE_REF = '.lattice/todo';
 const MANIFEST_REF = `${STORE_REF}/manifest.json`;
@@ -861,12 +862,13 @@ export function projectStatusFailure({ cwd, stdout, cliVersion, error }) {
   return 1;
 }
 
-export function projectCliFailure(stderr, error) {
+export function projectCliFailure(stderr, error, context = {}) {
+  const code = error?.code ?? 'INTERNAL_FAILURE';
+  const message = error?.message ?? 'project command failed';
   const payload = {
-    schema: 'lattice.cli_error.v2', code: error?.code ?? 'INTERNAL_FAILURE',
-    message: error?.message ?? 'project command failed',
+    schema: 'lattice.cli_error.v2', code, message,
+    detail: withRefusalGuidance({ code, message, detail: error?.detail }, { family: 'plan', ...context }),
   };
-  if (error?.detail && Object.keys(error.detail).length > 0) payload.detail = error.detail;
   stderr.write(`${JSON.stringify(payload)}\n`);
   return 1;
 }

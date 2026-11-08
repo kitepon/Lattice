@@ -268,3 +268,22 @@ export function matchFlagCommand(argv, head, { known, required = [], booleans = 
   }
   return flags;
 }
+
+/**
+ * matchFlagCommand が null を返す理由を、最初に落ちた flag と規則で返す。通るなら null。
+ * 規則は matchFlagCommand と同じ順で判定する（未知flag・位置引数、必須flag、boolean）。
+ */
+export function explainFlagCommand(argv, head, { known, required = [], booleans = [] } = {}) {
+  if (!Array.isArray(argv) || !Array.isArray(head) || head.some((token, index) => argv[index] !== token)) {
+    return null;
+  }
+  const { flags, rest } = parseFlagMap(argv.slice(head.length));
+  if (rest.length > 0) return { pointer: String(rest[0]), rule: 'flag_unknown' };
+  const unknown = Object.keys(flags).find((key) => !known.includes(key));
+  if (unknown !== undefined) return { pointer: `--${unknown}`, rule: 'flag_unknown' };
+  const missing = required.find((key) => typeof flags[key] !== 'string' || flags[key].length === 0);
+  if (missing !== undefined) return { pointer: `--${missing}`, rule: 'flag_missing' };
+  const valued = booleans.find((key) => flags[key] !== undefined && flags[key] !== true);
+  if (valued !== undefined) return { pointer: `--${valued}`, rule: 'flag_unknown' };
+  return null;
+}

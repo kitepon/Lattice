@@ -108,6 +108,31 @@ index.
 ADR 0181 canonicalization covers formatting/BOM/CRLF/digest/path normalization;
 it does not sort arrays. Ordering failures require explicit author correction.
 
+## Refusal guidance (u05, 2026-11-08)
+
+Every refusal printed by `lattice plan create|revise|backchain` and
+`lattice todo revise|revise-set|revise-phase|migrate|done` (and every other
+todo command that shares the two printers) states, in one `lattice.cli_error.v2`
+`detail`, the three keys of the seat contract (boundaries.md, error shape):
+
+| key | value |
+|---|---|
+| `pointer` | Where to change: the existing pointer; else `violation_path` (`''` is `/`); else the input pointer registered for the rule; `--<flag>` for an argument refusal; `null` when the refusal is about current store/plan state rather than an input field. Always present. |
+| `rule` | Which rule refused: `violation_kind`, else `violation_reason`, else `reason`, else `message`. |
+| `next_action` | How to fix: one concrete sentence naming the value, order, key, flag or state step (built from the rule and the existing `expected`/`actual`/`cause`/`task_id` values), or a runnable `lattice ...` command. An existing concrete `next_action` is kept; a placeholder token (`^[a-z_]+$`, e.g. `correct_the_reported_pointer_then_rerun_plan_create`) is replaced by the registered repair. |
+
+Flow: refusal site (Plan or Store, unchanged) → `todo-cli` `typedFailure` /
+`typedArgumentFailure` or `project-cli` `projectCliFailure` →
+`cli-refusal-guidance.mjs` `withRefusalGuidance(error, context)` (pure,
+Plan-owned; `context` = command and the `--plan`/`--task` values the CLI
+parsed) → stderr. Other detail keys, codes and exit codes are unchanged. A rule
+without a registered repair keeps its existing `next_action`, else gets the
+command's `--help`. `todo-cli` keeps a TypeError's `detail` on
+`CONTRACT_VIOLATION` (it was dropped), and `todo done` argument refusals name
+the failing flag. Store refusal sites are not edited; their guidance is derived
+at the printer from the keys they already carry. Bridge, runtime and sensor
+printers are outside this flow.
+
 ## Authored done condition (u12, agreed 2026-11-08)
 
 Owner ruling 2026-11-08: each task's author defines its own done condition; Lattice

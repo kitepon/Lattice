@@ -587,7 +587,8 @@ test('authoring CLIは不正actor環境だけを拒否し、欠落はdefaultす�
   assert.equal(error.code, 'ACTOR_UNRESOLVED');
   assert.deepEqual(error.detail.missing_environment, []);
   assert.deepEqual(error.detail.invalid_environment, ['LATTICE_TODO_ACTOR_SESSION']);
-  assert.equal(error.detail.next_action, 'set_required_actor_environment_and_retry');
+  assert.match(error.detail.next_action, /LATTICE_TODO_ACTOR_SESSION/u);
+  assert.equal(error.detail.rule, 'actor_environment_invalid');
 });
 
 test('flag順と証拠本文・repo内絶対pathでstart/doneが通る', async (context) => {
