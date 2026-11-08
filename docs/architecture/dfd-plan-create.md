@@ -105,8 +105,62 @@ Migrate retains explainTodoExtraction for input/provenance/ordering errors. A
 subsequent derived-plan failure reports pointer_space=todo_plan plus task_id when
 the path refers to a task; it never claims a filtered plan index is an extraction
 index.
-ADR 0181 canonicalization covers formatting/BOM/CRLF/digest/path normalization;
-it does not sort arrays. Ordering failures require explicit author correction.
+ADR 0181 canonicalization covers formatting/BOM/CRLF/digest/path normalization.
+Create input arrays are sorted by the machine-completed create input step below
+(u03p); other authoring artifacts are not sorted.
+
+## Machine-completed create input (u03p, 2026-11-08)
+
+Seat contract (boundaries.md): the AI writes intent; the machine derives facts.
+Before validation, `plan create` and `plan revise` (its `desired`) complete every
+`lattice.plan_create_input.v1`–`v5` object with `completeCreateInput(value, {env, now})`
+in `todo-authoring-input.mjs` (pure apart from the injected env/clock):
+
+| Field | Completion | Row |
+|---|---|---|
+| `actor` | absent or null → the seat actor from `LATTICE_TODO_ACTOR_*` / host / user, the same resolver todo write commands use (`resolveTodoActor`, moved from todo-cli, with the u03s A57 rule: a set but non-identifier value is treated like an unset one, no refusal) | A81 |
+| `recorded_at` | absent or null → the current time, strict ISO-8601 UTC milliseconds | A81 |
+| `input_digest` | always recomputed (existing repairAuthoringArtifact); a supplied wrong value is replaced, not refused | A81 |
+| `tasks`, `phases`, `hard_dependencies`, `joins`, `phase_accept_dependencies`, nested id lists | sorted into the validator's canonical order and exact duplicates dropped, for every create schema (v1–v5); entries with the same key but different content still refuse | A81s |
+| `tasks[].design_memo` (v4/v5) | absent, null or blank → `NO_PLAN`; the title stays the work specification | A80 |
+| `phases[].required_evidence_slots` (v2–v5) | absent, null or empty → `["acceptance"]` (`DEFAULT_EVIDENCE_SLOT`): the phase asks for one acceptance evidence | a4 (2026-11-08) |
+| `schema` v1–v3 | accepted again (`plan_create_schema_retired` removed); they build the older plan schemas they always built | A79 |
+
+Refusals that remain: values the author wrote that are unreadable or name
+nothing (identifier format, unknown phase reference, same key with different
+content, graph cycles), each with pointer/rule/next_action.
+`plan create --schema` and `docs/schemas/lattice.plan_create_input.v5.schema.json`
+no longer list `actor`, `recorded_at`, `input_digest` or `design_memo` as required.
+
+## Refusal guidance (u05, 2026-11-08)
+
+Every refusal printed by `lattice plan create|revise|backchain` and
+`lattice todo revise|revise-set|revise-phase|migrate|done` (and every other
+todo command that shares the two printers) states, in one `lattice.cli_error.v2`
+`detail`, the three keys of the seat contract (boundaries.md, error shape):
+
+| key | value |
+|---|---|
+| `pointer` | Where to change: the existing pointer; else `violation_path` (`''` is the RFC 6901 document root and stays `''`); else the input pointer registered for the rule; the failing `--<flag>` for an argument refusal of `todo done` and `plan create|revise|backchain`; `null` otherwise (a store/plan state refusal, or another todo command's argument refusal, whose `next_action` is its `--help`). Always present. |
+| `rule` | Which rule refused: an existing `rule`, else `violation_kind`, else `violation_reason`, else `reason`, else `message`. |
+| `next_action` | How to fix: one concrete sentence naming the value, order, key, flag or state step (built from the rule and the existing `expected`/`actual`/`cause`/`task_id` values), or a runnable `lattice ...` command. An existing concrete `next_action` is kept; a placeholder token (`^[a-z_]+$`, e.g. `correct_the_reported_pointer_then_rerun_plan_create`) is replaced by the registered repair. |
+
+Flow: refusal site (Plan or Store, unchanged) → `todo-cli` `typedFailure` /
+`typedArgumentFailure` or `project-cli` `projectCliFailure` →
+`cli-refusal-guidance.mjs` `withRefusalGuidance(error, context)` (pure,
+Plan-owned; `context` = command and the `--plan`/`--task` values the CLI
+parsed) → stderr. Other detail keys, codes and exit codes are unchanged. A rule
+without a registered repair keeps its existing `next_action`, else gets the
+command's `--help`. `todo-cli` keeps a TypeError's `detail` on
+`CONTRACT_VIOLATION` (it was dropped). `todo done` argument refusals name the
+failing flag, and `plan create|revise|backchain` argument refusals (missing
+`--input`/`--json`, unknown flag, switch given a value) print the same
+`lattice.cli_error.v2` (`INVALID_ARGUMENTS`, `plan_arguments_invalid`, the received
+`arguments`) through `project-cli` `planArgumentFailure` instead of the plain usage
+line; exit code 2 is unchanged. Both use `explainFlagCommand` with the command's
+own flag spec. Store refusal sites are not edited; their guidance is derived
+at the printer from the keys they already carry. Bridge, runtime and sensor
+printers are outside this flow.
 
 ## Authored done condition (u12, agreed 2026-11-08)
 

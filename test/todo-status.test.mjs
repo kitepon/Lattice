@@ -228,7 +228,10 @@ test('空のtodo store directoryはtyped errorでfail closedしbytesを変えな
     schema: 'lattice.cli_error.v2',
     code: 'STORE_INCONSISTENT',
     message: 'artifact_missing',
-    detail: { reason: 'artifact_missing', ref: '.lattice/todo/manifest.json' },
+    detail: {
+      reason: 'artifact_missing', ref: '.lattice/todo/manifest.json',
+      pointer: null, rule: 'artifact_missing', next_action: 'lattice todo status --help',
+    },
   });
   assert.equal(await storeDigest(root), before);
 });

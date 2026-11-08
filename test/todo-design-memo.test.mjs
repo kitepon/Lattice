@@ -183,8 +183,10 @@ test('migrate dry-runは独立した複数違反を一度に返しstoreを作ら
   assert.equal(result.schema, 'lattice.todo_migrate_dry_run_result.v2');
   assert.equal(result.valid, false);
   assert.deepEqual(result.violations.map(({ code }) => code), [
-    'design_memo_type', 'design_memo_type', 'unknown_requires_evidence', 'no_registered_tasks',
+    'design_memo_type', 'design_memo_type',
   ]);
+  // u03p A64: 証拠の無いunknownは違反でなくregister_pendingの既定として申告される。
+  assert.deepEqual(result.defaulted_pending_task_ids, ['T1', 'T2']);
   assert.deepEqual(result.violations[0].task_ids, ['T1']);
   assert.equal(result.violations[0].path, '/tasks/0/design_memo');
   assert.deepEqual(result.violations[1].task_ids, ['T2']);

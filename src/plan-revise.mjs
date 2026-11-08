@@ -3,9 +3,11 @@ import path from 'node:path';
 
 import { canonicalizeTodoArtifact, exactRecord, isTodoIdentifier, todoSelfDigest } from './todo-contracts.mjs';
 import { gitSync } from './git-process.mjs';
-import { readAuthoringJsonFile, repairAuthoringArtifact } from './todo-authoring-input.mjs';
+import { completeCreateInput, readAuthoringJsonFile } from './todo-authoring-input.mjs';
 import { validatePlanCreateInput } from './project-cli.mjs';
-import { planSeed, readPlanBackchainBinding, rebindCarriedWork } from './plan-backchain.mjs';
+import {
+  compileBackchainRevision, planSeed, readPlanBackchainBinding, rebindCarriedWork,
+} from './plan-backchain.mjs';
 import {
   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter, readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
@@ -136,17 +138,56 @@ async function appendRevisionHistoryNotes({ repoRoot, revision, notes, actor }) 
   }
 }
 
-export function compilePlanRevision({ member, input }) {
-  if (!exactRecord(input, ['schema', 'desired', 'continuity']) || input.schema !== INPUT_SCHEMA) {
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * 継続方針の算出(u03p N5)。先行planの全taskについて、desiredに在れば作成者の carry/reset
+ * (無ければcarry)、無ければretire。desiredの在不在が優先され、読めない入力だけを拒否する。
+ */
+function computeContinuity(member, input, desiredIds) {
+  const entries = input.continuity ?? [];
+  if (!Array.isArray(entries)) fail('plan_revise_continuity_invalid', '/continuity');
+  const oldIds = new Set(member.plan.tasks.map(({ task_id }) => task_id));
+  const decisions = new Map();
+  for (const [index, entry] of entries.entries()) {
+    if (!isRecord(entry) || !Object.keys(entry).every((key) => ['task_id', 'policy', 'reason'].includes(key))
+      || !isTodoIdentifier(entry.task_id) || !['carry', 'reset', 'retire'].includes(entry.policy)
+      || (entry.reason !== undefined && (typeof entry.reason !== 'string' || entry.reason.trim().length === 0))
+      || !oldIds.has(entry.task_id) || decisions.has(entry.task_id)) {
+      fail('plan_revise_continuity_invalid', `/continuity/${index}`);
+    }
+    decisions.set(entry.task_id, entry);
+  }
+  return member.plan.tasks.map(({ task_id: taskId }) => {
+    const entry = decisions.get(taskId);
+    const policy = !desiredIds.has(taskId) ? 'retire'
+      : entry === undefined || entry.policy === 'retire' ? 'carry' : entry.policy;
+    return { task_id: taskId, policy,
+      reason: entry?.policy === policy && entry.reason !== undefined ? entry.reason : `computed ${policy}` };
+  });
+}
+
+/** 入力の検査と補完。desired(補完済み)と算出した継続方針を返す。 */
+export function resolvePlanRevision({ member, input, env = process.env, now = new Date() }) {
+  if (!exactRecord(input, ['schema', 'desired', 'continuity'])
+    && !exactRecord(input, ['schema', 'desired'])) {
     fail('plan_revise_schema_invalid', '/', { expected: INPUT_SCHEMA });
   }
-  const desired = repairAuthoringArtifact(input.desired);
+  if (input.schema !== INPUT_SCHEMA) fail('plan_revise_schema_invalid', '/', { expected: INPUT_SCHEMA });
+  const desired = completeCreateInput(input.desired, { env, now });
   try { validatePlanCreateInput(desired); }
   catch (error) {
     if (typeof error?.detail?.pointer === 'string') {
       error.detail.pointer = `/desired${error.detail.pointer === '/' ? '' : error.detail.pointer}`;
     }
     throw error;
+  }
+  // 軽量改訂は設計メモを持つ現行plan(v7/v8)の後継を作る。v1〜v3入力は新規作成だけに使える。
+  if (!['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5'].includes(desired.schema)) {
+    fail('plan_revise_desired_schema_unsupported', '/desired/schema', {
+      accepted: ['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5'],
+      actual: desired.schema, next_action: 'lattice plan create --schema-version 5 --json',
+    });
   }
   if (member === undefined) fail('plan_not_active', '/desired/plan_key');
   if (member.plan.schema === 'lattice.todo_plan.v6'
@@ -162,32 +203,21 @@ export function compilePlanRevision({ member, input }) {
   if (desired.project_id !== member.plan.project_id || desired.plan_key !== member.plan.plan_key) {
     fail('plan_revise_identity_mismatch', '/desired/plan_key');
   }
-  if (!Array.isArray(input.continuity) || input.continuity.length !== member.plan.tasks.length) {
-    fail('plan_revise_continuity_incomplete', '/continuity', {
-      expected: { task_ids: member.plan.tasks.map(({ task_id }) => task_id) },
-    });
-  }
-  const oldIds = new Set(member.plan.tasks.map(({ task_id }) => task_id));
-  const decisions = new Map();
-  for (const [index, entry] of input.continuity.entries()) {
-    if (!exactRecord(entry, ['task_id', 'policy', 'reason']) || !isTodoIdentifier(entry.task_id)
-      || !['carry', 'reset', 'retire'].includes(entry.policy)
-      || typeof entry.reason !== 'string' || entry.reason.trim().length === 0
-      || !oldIds.has(entry.task_id) || decisions.has(entry.task_id)) {
-      fail('plan_revise_continuity_invalid', `/continuity/${index}`);
-    }
-    decisions.set(entry.task_id, entry.policy);
-  }
-  const desiredIds = new Set(desired.tasks.map(({ task_id }) => task_id));
-  const taskMigration = member.plan.tasks.map(({ task_id: id }) => {
-    const policy = decisions.get(id);
-    if ((policy === 'retire') === desiredIds.has(id)) {
-      fail('plan_revise_removed_task_mismatch', '/continuity', { task_id: id });
-    }
-    return { from_task_id: id, to_task_id: policy === 'retire' ? 'removed' : id,
-      state_policy: policy === 'retire' ? 'removed'
-        : policy === 'carry' ? 'carry_reconciled_metadata' : 'reset_pending' };
-  });
+  const continuity = computeContinuity(member, input,
+    new Set(desired.tasks.map(({ task_id }) => task_id)));
+  return { desired, continuity };
+}
+
+export function compilePlanRevision({ member, input, env, now }) {
+  const { desired, continuity } = resolvePlanRevision({ member, input, env, now });
+  return compileLightRevision({ member, desired, continuity });
+}
+
+function compileLightRevision({ member, desired, continuity }) {
+  const taskMigration = continuity.map(({ task_id: id, policy }) => ({
+    from_task_id: id, to_task_id: policy === 'retire' ? 'removed' : id,
+    state_policy: policy === 'retire' ? 'removed'
+      : policy === 'carry' ? 'carry_reconciled_metadata' : 'reset_pending' }));
   const predecessor = {
     plan_digest: member.plan.plan_digest,
     journal_head_digest: member.journal.events.at(-1).event_digest,
@@ -210,6 +240,20 @@ export function compilePlanRevision({ member, input }) {
   return revision;
 }
 
+/**
+ * backchain束縛plan(u03p N3): 束縛済みの機能連鎖を後継の元にする。tasksはdesiredの各taskに1件
+ * (残るtaskは連鎖の項目を保ち、新しいtaskは空の項目)、continuityは算出値。目標と機能は変えない。
+ */
+function successorBackchain(chain, desired, continuity) {
+  const entries = new Map(chain.tasks.map((entry) => [entry.task_id, entry]));
+  const successor = { ...chain, continuity,
+    tasks: desired.tasks.map(({ task_id: taskId }) => entries.get(taskId)
+      ?? { task_id: taskId, requires_feature_ids: [], provides_feature_ids: [] }),
+    chain_digest: '' };
+  successor.chain_digest = todoSelfDigest(successor, 'chain_digest');
+  return successor;
+}
+
 export async function planReviseSchema() {
   return JSON.parse(await readFile(new URL('../docs/schemas/lattice.plan_revise_input.v1.schema.json', import.meta.url)));
 }
@@ -224,18 +268,22 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
   const input = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'INPUT_INVALID' });
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === input?.desired?.plan_key);
-  const revision = compilePlanRevision({ member, input });
-  if (await readPlanBackchainBinding({ repoRoot, plan: member.plan }) !== null) {
-    fail('plan_revise_requires_backchain', '/desired/plan_key', {
-      next_action: 'lattice plan backchain --input <file> --json',
-    });
-  }
-  // v5入力は集合の並びを正準化するので、同じ内容の別の並びは「変更なし」になる。
-  const desired = repairAuthoringArtifact(input.desired);
-  const unchanged = input.continuity.every(({ policy }) => policy === 'carry')
+  const { desired, continuity } = resolvePlanRevision({ member, input, env, now: new Date() });
+  // 集合の並びは正準化済みなので、同じ内容の別の並びは「変更なし」になる。
+  const unchanged = continuity.every(({ policy }) => policy === 'carry')
     && canonicalizeTodoArtifact(planSeed(desired, null, member.plan))
       === canonicalizeTodoArtifact(planSeed(member.plan, null));
-  if (!unchanged && !validatePhaseTodoRevision(revision)) fail('plan_revise_artifact_invalid', '/');
+  const binding = await readPlanBackchainBinding({ repoRoot, plan: member.plan });
+  let revision;
+  let featureChainFindings = null;
+  if (binding !== null && !unchanged) {
+    ({ revision, findings: featureChainFindings } = await compileBackchainRevision({
+      repoRoot, member, authoring: desired,
+      chain: successorBackchain(binding.chain, desired, continuity) }));
+  } else {
+    revision = compileLightRevision({ member, desired, continuity });
+    if (!unchanged && !validatePhaseTodoRevision(revision)) fail('plan_revise_artifact_invalid', '/');
+  }
   let applied = null;
   let reboundTaskIds = [];
   if (!dryRun) {
@@ -246,7 +294,7 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
       });
       await appendRevisionHistoryNotes({ repoRoot, revision, actor: desired.actor,
         notes: planRevisionHistoryNotes({ previousPlan: member.plan,
-          successorPlan: revision.desired_plan, continuity: input.continuity }) });
+          successorPlan: revision.desired_plan, continuity }) });
     }
     try {
       reboundTaskIds = await rebindCarriedWork({ repoRoot, planKey: revision.plan_key, env,
@@ -268,7 +316,9 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
     project_id: revision.project_id, plan_key: revision.plan_key,
     plan_version: unchanged ? member.plan.plan_version : revision.desired_plan.plan_version,
     dry_run: dryRun, revision: unchanged ? null : revision, applied,
-    continuity: input.continuity, rebound_task_ids: reboundTaskIds, result_digest: '',
+    continuity, rebound_task_ids: reboundTaskIds,
+    ...(featureChainFindings === null ? {} : { feature_chain_findings: featureChainFindings }),
+    result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   stdout.write(`${JSON.stringify(result)}\n`);

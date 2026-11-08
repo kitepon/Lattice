@@ -17,8 +17,6 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const CLI = path.join(REPO_ROOT, 'bin', 'lattice.mjs');
 
 const REJECTED_SURFACE = Object.freeze([
-  ['plan', 'create'],
-  ['plan', 'create', '--input'],
   ['plan', 'create', '--schema'],
   ['plan', 'compile'],
   ['plan', 'verify'],
@@ -72,6 +70,20 @@ test('--versionはpackage versionだけをstdoutへ返しexit 0で終わる', ()
 test('引数を欠くplan surfaceと未実装surfaceはusage違反exit 2で拒否される', () => {
   for (const args of REJECTED_SURFACE) {
     assertRejected(args);
+  }
+});
+
+// u05: plan createの引数違反は、usage文ではなく欄・規則・直し方をcli_error.v2で返す（exit 2は同じ）。
+test('引数を欠くplan createはexit 2で--inputを名指すcli_error.v2を返す', () => {
+  for (const args of [['plan', 'create'], ['plan', 'create', '--input']]) {
+    const result = runCli(args);
+    assert.equal(result.status, 2, args.join(' '));
+    assert.equal(result.stdout, '', args.join(' '));
+    const payload = JSON.parse(result.stderr);
+    assert.equal(payload.code, 'INVALID_ARGUMENTS');
+    assert.equal(payload.detail.pointer, '--input');
+    assert.equal(payload.detail.rule, 'flag_missing');
+    assert.deepEqual(payload.detail.arguments, args);
   }
 });
 

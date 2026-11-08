@@ -550,6 +550,9 @@ test('active revisionのfuture schemaは破損と分離してstatus/verifyへtyp
         'lattice.phase_todo_revision.v4',
         'lattice.phase_todo_revision.v5',
       ],
+      pointer: null,
+      rule: 'unsupported_revision_schema',
+      next_action: 'lattice todo verify --help',
     },
   });
 });
@@ -762,26 +765,31 @@ for (const crashStage of ['phase_v3_cutover_barrier_durable', 'phase_v3_source_c
   });
 }
 
-test('phase v3 carryは旧outgoing削除を拒否しsafe outgoing追加を許す', async (t) => {
+test('phase v3 carryはoutgoing追加に加え旧outgoing削除も許しstateを保つ', async (t) => {
   const safe = await fixture(t);
   const receipt = await applyPhaseTodoRevision({ repoRoot: safe.root, writer: safe.writer,
     revision: safe.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
   assert.equal(receipt.revision_digest, safe.revision.revision_digest);
   const removed = await fixture(t, { initialEdge: true, desiredEdge: false });
-  await assert.rejects(applyPhaseTodoRevision({ repoRoot: removed.root, writer: removed.writer,
-    revision: removed.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT }),
-  (error) => error.code === 'REVISION_INVALID'
-    && error.detail.reason === 'carry_outgoing_edge_removed');
+  await applyPhaseTodoRevision({ repoRoot: removed.root, writer: removed.writer,
+    revision: removed.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
+  const member = (await readTodoStore({ repoRoot: removed.root, now: COMMIT_AT })).members[0];
+  assert.deepEqual(member.plan.hard_dependencies, []);
+  assert.equal(member.tasks.find(({ task_id }) => task_id === 'T1').status, 'done');
 });
 
-test('phase v3の既存memo変更はcarryを拒否し明示reconcileだけがpolicy付きで保持する', async (t) => {
+test('phase v3の既存memo変更は通常carryでもdone stateを保ち、明示reconcileはpolicyも記録する', async (t) => {
   const normal = await fixture(t, {
     initialDesignMemo: '初期方針', desiredDesignMemo: '## 改訂方針\n\n本文を更新する。',
     desiredEdge: false,
   });
-  await assert.rejects(applyPhaseTodoRevision({ repoRoot: normal.root, writer: normal.writer,
-    revision: normal.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT }),
-  (error) => error.code === 'REVISION_INVALID' && error.detail.reason === 'carry_semantics_changed');
+  await applyPhaseTodoRevision({ repoRoot: normal.root, writer: normal.writer,
+    revision: normal.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
+  const carried = (await readTodoStore({ repoRoot: normal.root, now: COMMIT_AT })).members[0];
+  assert.equal(carried.plan.tasks.find(({ task_id }) => task_id === 'T1').design_memo,
+    '## 改訂方針\n\n本文を更新する。');
+  assert.equal(carried.tasks.find(({ task_id }) => task_id === 'T1').status, 'done');
+  assert.equal(carried.journal.events[0].state_migration[0].state_policy, 'carry');
 
   const explicit = await fixture(t, {
     initialDesignMemo: '初期方針', desiredDesignMemo: '## 改訂方針\n\n本文を更新する。',
@@ -858,7 +866,7 @@ test('phase v3 carryはphase ID migration後のtask semanticsを比較する', a
   assert.equal(store.members[0].plan.tasks[0].phase_id, 'phase-2');
 });
 
-test('phase v3 carry_reconciled_metadataは別Phaseへのtask移動を拒否する', async (t) => {
+test('phase v3 carry_reconciled_metadataは別Phaseへのtask移動でもin-progress stateを保つ', async (t) => {
   const value = await fixture(t, { desiredEdge: false, carryT2: true, t2Status: 'in-progress' });
   const revision = structuredClone(value.revision);
   revision.task_migration[1].state_policy = 'carry_reconciled_metadata';
@@ -881,10 +889,11 @@ test('phase v3 carry_reconciled_metadataは別Phaseへのtask移動を拒否す�
     'reconciliation_digest');
   revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
   assert.equal(validatePhaseTodoRevision(revision), true);
-  await assert.rejects(applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
-    revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT }),
-  (error) => error.code === 'REVISION_INVALID'
-    && error.detail.reason === 'carry_semantics_changed');
+  await applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
+    revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
+  const member = (await readTodoStore({ repoRoot: value.root, now: COMMIT_AT })).members[0];
+  assert.equal(member.plan.tasks.find(({ task_id }) => task_id === 'T2').phase_id, 'phase-2');
+  assert.equal(member.tasks.find(({ task_id }) => task_id === 'T2').status, 'in-progress');
 });
 
 for (const status of ['in-progress', 'blocked']) {
@@ -898,8 +907,8 @@ for (const status of ['in-progress', 'blocked']) {
   });
 }
 
-// 先行planがPhaseを持たない世代（todo_plan.v3）からのcarryは、素のTypeErrorではなく
-// typedなREVISION_INVALIDで拒否されなければならない。Phase割当ての獲得は意味変化である。
+// 先行planがPhaseを持たない世代（todo_plan.v3）からのcarryは、素のTypeErrorにならず、
+// Phase割当ての獲得を含めてstateを保ったまま通る(u03 A38/A39)。
 async function phaselessFixture(t, { statePolicy = 'carry' } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-phase-v3-phaseless-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -979,14 +988,14 @@ async function phaselessFixture(t, { statePolicy = 'carry' } = {}) {
   return { root, revision, writer };
 }
 
-test('phase v3 carryはPhase無し先行planをtyped REVISION_INVALIDで拒否する', async (t) => {
+test('phase v3 carryはPhase無し先行planからPhaseを獲得してもstateを保つ', async (t) => {
   const value = await phaselessFixture(t);
   assert.equal(validatePhaseTodoRevision(value.revision), true);
-  await assert.rejects(applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
-    revision: value.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT }),
-  (error) => error.code === 'REVISION_INVALID'
-    && error.detail.reason === 'carry_semantics_changed'
-    && error.detail.from_task_id === 'T1');
+  await applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
+    revision: value.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
+  const member = (await readTodoStore({ repoRoot: value.root, now: COMMIT_AT })).members[0];
+  assert.equal(member.plan.tasks.find(({ task_id }) => task_id === 'T1').phase_id, 'phase-1');
+  assert.equal(member.tasks.find(({ task_id }) => task_id === 'T1').status, 'in-progress');
 });
 
 test('phase v3 reset_pendingはPhase無し先行planからPhaseを獲得できる', async (t) => {
@@ -1001,8 +1010,8 @@ test('phase v3 reset_pendingはPhase無し先行planからPhaseを獲得でき�
 
 // acquire_phase専用fixture(ADR 0147裁定4): phase無し先行plan(todo_plan.v3)のtaskをdoneにした
 // 状態で、v3 phase revisionへacquire_phaseを渡す。carryと違いphase_id獲得だけを許すpolicyであり、
-// done等の状態は完全に持ち越る。retitleT1でtitle変更を混ぜ、獲得以外の意味論変化が従来どおり
-// 拒否されることも同じfixtureで検証できるようにする。
+// done等の状態は完全に持ち越る。retitleT1でtitle変更を混ぜても状態が持ち越ることも
+// 同じfixtureで検証できるようにする(u03 A38/A39)。
 async function acquirePhaseFixture(t, { retitleT1 = false, retireT2 = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-phase-v3-acquire-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1132,18 +1141,17 @@ test('phase v3 acquire_phaseもremoved taskへのoutgoingだけを除外する',
   assert.equal(store.members[0].tasks.some(({ task_id }) => task_id === 'T2'), false);
 });
 
-test('phase v3 acquire_phaseはtitle変更をcarry_semantics_changedで拒否する', async (t) => {
+test('phase v3 acquire_phaseはtitle変更を混ぜてもdone stateを保つ', async (t) => {
   const value = await acquirePhaseFixture(t, { retitleT1: true });
-  await assert.rejects(applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
-    revision: value.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT }),
-  (error) => error.code === 'REVISION_INVALID'
-    && error.detail.reason === 'carry_semantics_changed'
-    && error.detail.from_task_id === 'T1');
+  await applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
+    revision: value.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
+  const member = (await readTodoStore({ repoRoot: value.root, now: COMMIT_AT })).members[0];
+  assert.equal(member.plan.tasks.find(({ task_id }) => task_id === 'T1').title, 'T1 retitled');
+  assert.equal(member.tasks.find(({ task_id }) => task_id === 'T1').status, 'done');
 });
 
 // 既にphaseを持つtask(v5世代)がacquire_phaseで別Phaseへ付け替えを試みるfixture。
-// 「獲得」はpredecessor側が未割当(null)の場合だけを許し、既存割当の変更は意味論の変化として
-// 拒否し続ける(ADR 0147裁定4)。
+// u03 A38/A39以降は、既存割当の付け替えもstateを保ったまま通る。
 async function acquirePhaseReassignFixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-phase-v3-acquire-reassign-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -1216,14 +1224,14 @@ async function acquirePhaseReassignFixture(t) {
   return { root, revision, writer };
 }
 
-test('phase v3 acquire_phaseは既にPhaseを持つtaskの付け替えを拒否する', async (t) => {
+test('phase v3 acquire_phaseは既にPhaseを持つtaskの付け替えも許す', async (t) => {
   const value = await acquirePhaseReassignFixture(t);
   assert.equal(validatePhaseTodoRevision(value.revision), true);
-  await assert.rejects(applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
-    revision: value.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT }),
-  (error) => error.code === 'REVISION_INVALID'
-    && error.detail.reason === 'acquire_phase_requires_unassigned_predecessor'
-    && error.detail.from_task_id === 'T1');
+  await applyPhaseTodoRevision({ repoRoot: value.root, writer: value.writer,
+    revision: value.revision, actor: ACTOR, recordedAt: COMMIT_AT, now: COMMIT_AT });
+  const member = (await readTodoStore({ repoRoot: value.root, now: COMMIT_AT })).members[0];
+  assert.equal(member.plan.tasks.find(({ task_id }) => task_id === 'T1').phase_id, 'phase-2');
+  assert.equal(member.journal.events[0].state_migration[0].state_policy, 'acquire_phase');
 });
 
 // v3 revisionはmanifestをv2へ昇格させる。以後のv1/v2 phase revisionがactive_revision_digestを

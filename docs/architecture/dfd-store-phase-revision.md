@@ -125,3 +125,19 @@ Removed refusals: `binding_stale` (read and every successor writer) and
 A binding whose digest matches no retained predecessor version (or whose task has
 no migration entry on the way) stays a finding; the explicit
 `rebindTodoCrossPlanDependencies` recovery repairs it.
+
+## One carry rule for every revision schema (u03 A38/A39/A87, Alice under Ludmila's review, 2026-11-08)
+
+Supersedes the "v1–v4 keep their existing comparisons" clauses of the u12 rows
+above and "Generic carry mismatch remains a refusal" in Preserved boundaries.
+
+| Store step | Input | Rule | Kept refusals |
+|---|---|---|---|
+| Task carry (`stateMigrationFor`) | todo_revision and phase_todo_revision v1–v5; task migration `carry`, `carry_reconciled_metadata` or `acquire_phase` | The u12 light-carry rule for every schema: state and evidence carry whatever authored fields, edges, joins or phase assignment changed (including Phase acquisition or reassignment). The v3 `validatePhaseV3Carry`, v4 `validateBackchainCarry`, `validateAcquirePhaseCarry` and the generic `taskSemantics` comparison are deleted. | Desired target task missing or compile_binding changed → REVISION_INVALID `carry_semantics_changed`; `predecessor_task_migration_incomplete`; `predecessor_task_state_missing`; schema downgrades. |
+| Phase carry (`phaseStateMigrationFor`) | Every revision schema; phase migration `carry` | Carries exactly what phase_migration says; only the id mapping is checked. | Target phase missing → `phase_carry_semantics_changed`; `predecessor_phase_migration_incomplete`; `predecessor_phase_state_missing`. |
+| Backchain carry contract (v4) | `revision.backchain.continuity`, predecessor backchain.json | `assertBackchainCarryContracts` is deleted: a continuity decision that disagrees with its migration row no longer refuses (the row's own policy applies), and a carried task whose feature signature changed carries. | v4 schema/version/feature-graph-digest validation in validatePhaseTodoRevision is unchanged. |
+
+Unchanged: lock, fresh read, predecessor CAS (`stale_predecessor`), narrative
+anchor verification, merged-graph validation, the final locked validation,
+event and migration schemas, replay. `todoTaskCarrySemantics` stays exported from
+todo-store-view.mjs for Plan; todo-store no longer imports it.

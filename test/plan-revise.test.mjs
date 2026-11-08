@@ -55,13 +55,29 @@ test('light revision machine-fills predecessor and version from full desired sta
   assert.deepEqual({ previous, input }, before);
 });
 
-test('light revision refuses missing/duplicate/unknown policies and retire/desired mismatch before apply', () => {
+test('light revision computes continuity (u03p N5) and refuses only unreadable entries before apply', () => {
+  const policies = (input) => compilePlanRevision({ member: member(), input }).task_migration
+    .map(({ state_policy: policy }) => policy);
+  const missing = intent();
+  missing.continuity.pop();
+  assert.deepEqual(policies(missing), Array(3).fill('carry_reconciled_metadata'));
+  const absent = intent();
+  delete absent.continuity;
+  assert.deepEqual(policies(absent), Array(3).fill('carry_reconciled_metadata'));
+  const retireStillPresent = intent();
+  retireStillPresent.continuity[2].policy = 'retire';
+  assert.deepEqual(policies(retireStillPresent), Array(3).fill('carry_reconciled_metadata'));
+  const droppedWithoutEntry = intent(['a', 'b']);
+  droppedWithoutEntry.continuity = [continuity('a', 'reset')];
+  assert.deepEqual(compilePlanRevision({ member: member(), input: droppedWithoutEntry }).task_migration, [
+    { from_task_id: 'a', to_task_id: 'a', state_policy: 'reset_pending' },
+    { from_task_id: 'b', to_task_id: 'b', state_policy: 'carry_reconciled_metadata' },
+    { from_task_id: 'c', to_task_id: 'removed', state_policy: 'removed' },
+  ]);
   for (const mutate of [
-    (input) => input.continuity.pop(),
     (input) => { input.continuity[2] = continuity('a'); },
     (input) => { input.continuity[2] = continuity('unknown'); },
     (input) => { input.continuity[2].reason = ''; },
-    (input) => { input.continuity[2].policy = 'retire'; },
   ]) {
     const input = intent();
     mutate(input);

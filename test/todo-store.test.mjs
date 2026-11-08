@@ -302,8 +302,14 @@ test('Phaseは重いgateをjournalで証明しacceptまで後続ToDoを閉じる
     plan_key: 'main', predecessor: nextPredecessor, desired_plan: movedPlan,
     task_migration: movedTaskMigration, phase_migration: phaseMigration, revision_digest: '' };
   movedRevision.revision_digest = todoSelfDigest(movedRevision, 'revision_digest');
-  await expectCode(applyPhaseTodoRevision({ repoRoot: root, writer, revision: movedRevision,
-    actor: ACTOR, recordedAt: NOW, now: NOW }), 'REVISION_INVALID', 'phase_carry_semantics_changed');
+  // u03 A38: a carried phase whose membership changed no longer refuses; carried phase state is kept.
+  await applyPhaseTodoRevision({ repoRoot: root, writer, revision: movedRevision,
+    actor: ACTOR, recordedAt: NOW, now: NOW });
+  store = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.equal(store.members[0].plan.tasks.find(({ task_id }) => task_id === 'T1').phase_id, 'phase-2');
+  assert.deepEqual(store.members[0].snapshot.phases.map(({ phase_id, status }) => [phase_id, status]),
+    [['phase-1', 'accepted'], ['phase-2', 'active']]);
+  assert.equal(store.members[0].tasks.find(({ task_id }) => task_id === 'T2').status, 'in-progress');
 });
 
 test('todo_plan.v5はPhaseを監査境界に限定しToDo DAGの並列性を維持する', async (context) => {
