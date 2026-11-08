@@ -202,8 +202,7 @@
         "phase_id",
         "title",
         "gate_policy",
-        "predecessor_phase_ids",
-        "required_evidence_slots"
+        "predecessor_phase_ids"
       ],
       "properties": {
         "phase_id": {
@@ -235,12 +234,11 @@
         },
         "required_evidence_slots": {
           "type": "array",
-          "minItems": 1,
           "items": {
             "$ref": "#/$defs/identifier"
           },
           "uniqueItems": true,
-          "description": "Phase gateが要求する証跡slot。1つ以上必須で、identifierの昇順・重複なしで並べる。"
+          "description": "Phase gateが要求する証跡slot。省略・空なら[\"acceptance\"]。入力順は問わず、機械が昇順へ整列し重複を除く。"
         }
       }
     },

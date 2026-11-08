@@ -7,6 +7,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { readTodoStore } from '../src/todo-store.mjs';
 
 import { todoSelfDigest } from '../src/todo-contracts.mjs';
 
@@ -50,15 +51,19 @@ async function reject(context, mutate) {
   return JSON.parse(execution.stdout || execution.stderr).detail;
 }
 
-test('証跡slotが空のPhaseは、そのPhaseのslotをpointerで名指しする', async (context) => {
-  const detail = await reject(context, (value) => {
-    value.phases[0].required_evidence_slots = [];
-    return value;
+test('証跡slotが空のPhaseは受入の証拠1つ（acceptance）を既定にして受理する(a4)', async (context) => {
+  const root = await workspace(context);
+  const value = draft((input) => {
+    input.phases[0].required_evidence_slots = [];
+    return input;
   });
-  assert.equal(detail.reason, 'plan_create_schema_invalid');
-  assert.equal(detail.pointer, '/phases/0/required_evidence_slots');
-  assert.equal(detail.violation_kind, 'empty');
-  assert.equal(detail.expected.min_items, 1);
+  await writeFile(path.join(root, 'draft.json'), `${JSON.stringify(value)}\n`);
+  const execution = spawnSync(process.execPath, [CLI, 'plan', 'create', '--input', 'draft.json'], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0' },
+  });
+  assert.equal(execution.status, 0, execution.stderr);
+  const store = await readTodoStore({ repoRoot: root });
+  assert.deepEqual(store.members[0].plan.phases[0].required_evidence_slots, ['acceptance']);
 });
 
 test('同じtask_idで内容が違えば、落ちたindexと直前の値を返す', async (context) => {

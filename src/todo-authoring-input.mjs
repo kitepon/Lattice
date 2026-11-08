@@ -36,19 +36,8 @@ function defaultActorHost(env) {
   return terminalId === null ? 'host' : terminalPublicLabel(terminalId);
 }
 
+// u03s A57: a set but non-identifier value is treated like an unset one (no refusal).
 export function resolveTodoActor(env) {
-  const provided = ACTOR_ENV_KEYS.map((key) => ({ key, value: env[key] }));
-  const invalidEnvironment = provided
-    .filter(({ value }) => typeof value === 'string' && value.length > 0 && !isTodoIdentifier(value))
-    .map(({ key }) => key);
-  if (invalidEnvironment.length > 0) {
-    throw new TodoStoreError('ACTOR_UNRESOLVED', 'actor_environment_invalid', undefined, {
-      required_environment: ACTOR_ENV_KEYS,
-      missing_environment: [],
-      invalid_environment: invalidEnvironment,
-      next_action: 'set_required_actor_environment_and_retry',
-    });
-  }
   return {
     host: isTodoIdentifier(env.LATTICE_TODO_ACTOR_HOST)
       ? env.LATTICE_TODO_ACTOR_HOST
@@ -203,6 +192,8 @@ export function repairAuthoringArtifact(value) {
  * actorは席の解決値、recorded_atは現在時刻、v4/v5の空の設計メモはNO_PLAN、配列は正準順、
  * input_digestは再計算。作成入力でない値と、レコードでない値はそのまま返す。
  */
+export const DEFAULT_EVIDENCE_SLOT = 'acceptance';
+
 export function completeCreateInput(value, { env, now }) {
   if (!isRecord(value) || !CREATE_INPUT_SCHEMA.test(value.schema)) return value;
   const next = { ...value };
@@ -214,6 +205,13 @@ export function completeCreateInput(value, { env, now }) {
       && (task.design_memo === undefined || task.design_memo === null
         || (typeof task.design_memo === 'string' && task.design_memo.trim() === ''))
       ? { ...task, design_memo: 'NO_PLAN' } : task));
+  }
+  // 段が要求する証拠の種類を書かなければ、受入の証拠1つ（acceptance）を求める。
+  if (Array.isArray(next.phases)) {
+    next.phases = next.phases.map((phase) => (isRecord(phase)
+      && (phase.required_evidence_slots === undefined || phase.required_evidence_slots === null
+        || (Array.isArray(phase.required_evidence_slots) && phase.required_evidence_slots.length === 0))
+      ? { ...phase, required_evidence_slots: [DEFAULT_EVIDENCE_SLOT] } : phase));
   }
   return repairAuthoringArtifact(next);
 }

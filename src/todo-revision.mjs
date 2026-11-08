@@ -1080,6 +1080,34 @@ function completeSourceInventory(inventory, revision, predecessorInventory) {
 }
 
 /**
+ * 補うphase行の方針。軽量改訂（compileLightPhaseMigration）と同じ規則: 定義が変わったか、
+ * 終わっていない工程を迎える（新規・他Phaseから移る・reset）phaseはreset、それ以外はcarry。
+ * 迎えた未完の工程を、記録済みの受入が覆っているように見せないため（u03p review）。
+ */
+function defaultPhaseCarry(member, desired, taskMigration) {
+  const carried = new Set(['carry', 'carry_reconciled_metadata', 'acquire_phase']);
+  const rowByTarget = new Map(taskMigration.map((row) => [row.to_task_id, row]));
+  const previousById = new Map(member.plan.tasks.map((task) => [task.task_id, task]));
+  const states = new Map((member.tasks ?? []).map(({ task_id: id, status }) => [id, status]));
+  const definition = ({ title, gate_policy: gatePolicy, predecessor_phase_ids: predecessors,
+    required_evidence_slots: slots }) => canonicalizeTodoArtifact({
+    title, gate_policy: gatePolicy, predecessor_phase_ids: predecessors, required_evidence_slots: slots });
+  return (phase) => {
+    const next = desired.phases.find(({ phase_id: id }) => id === phase.phase_id);
+    if (definition(phase) !== definition(next)) return false;
+    return !desired.tasks.some((task) => {
+      if (task.phase_id !== phase.phase_id) return false;
+      const row = rowByTarget.get(task.task_id);
+      const reset = row === undefined || !carried.has(row.state_policy);
+      const previous = reset ? undefined : previousById.get(row.from_task_id);
+      const arrives = reset || previous?.phase_id !== phase.phase_id;
+      const state = reset ? 'pending' : states.get(row.from_task_id);
+      return arrives && !['done', 'retired'].includes(state);
+    });
+  };
+}
+
+/**
  * revise-phaseの成果物を、新鮮な先行memberに対して機械が補う(u03p A40a/A41)。
  * 先行taskのtask_migration行が無ければ、desiredに同idがあればcarry(v5はcarry_reconciled_metadata)、
  * 無ければremoved。phase_migrationも同様(carry/removed、新しいphaseはreset)。v3は先行の出所のうち
@@ -1106,12 +1134,14 @@ export function completePhaseTodoRevision(revision, { member, predecessorInvento
         : { from_task_id: id, to_task_id: 'removed', state_policy: 'removed' }));
     const predecessorPhases = PHASE_PREDECESSOR_SCHEMAS.has(member.plan.schema) ? member.plan.phases : [];
     const targeted = new Set(revision.phase_migration.map(({ to_phase_id: id }) => id));
+    const keepsAcceptance = defaultPhaseCarry(member, desired, [...revision.task_migration, ...taskRows]);
     const phaseRows = [
       ...predecessorPhases
         .filter(({ phase_id: id }) => !revision.phase_migration.some(({ from_phase_id: from }) => from === id))
-        .map(({ phase_id: id }) => (desiredPhaseIds.has(id)
-          ? { from_phase_id: id, to_phase_id: id, state_policy: 'carry' }
-          : { from_phase_id: id, to_phase_id: 'removed', state_policy: 'removed' })),
+        .map((phase) => (desiredPhaseIds.has(phase.phase_id)
+          ? { from_phase_id: phase.phase_id, to_phase_id: phase.phase_id,
+            state_policy: keepsAcceptance(phase) ? 'carry' : 'reset' }
+          : { from_phase_id: phase.phase_id, to_phase_id: 'removed', state_policy: 'removed' })),
       ...[...desiredPhaseIds].filter((id) => !targeted.has(id)
         && !predecessorPhases.some(({ phase_id: from }) => from === id && desiredPhaseIds.has(from)))
         .map((id) => ({ from_phase_id: null, to_phase_id: id, state_policy: 'reset' })),

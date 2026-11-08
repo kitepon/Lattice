@@ -571,23 +571,32 @@ test('authoring CLIはactor欠落をdefaultで通し、順序違反・blocked中
   assert.equal(await storeDigest(root), blockedBefore);
 });
 
-test('authoring CLIは不正actor環境だけを拒否し、欠落はdefaultする', async (context) => {
+test('authoring CLIは不正actor環境を未設定と同じに扱い、defaultのactorで記録する（u03 A57）', async (context) => {
   const root = await workspace(context);
-  const env = {
-    ...process.env,
-    LATTICE_TODO_ACTOR_HOST: 'host-1',
-    LATTICE_TODO_ACTOR_SESSION: 'invalid session',
-  };
-  delete env.LATTICE_TODO_ACTOR_AGENT;
-  const result = spawnSync(process.execPath, [CLI, 'todo', 'start', '--plan', 'main', '--task', 'T1'], {
-    cwd: root, env, encoding: 'utf8',
+  const result = runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1'], {
+    extraEnv: {
+      LATTICE_TODO_ACTOR_HOST: 'bad host',
+      LATTICE_TODO_ACTOR_SESSION: 'invalid session',
+      LATTICE_TODO_ACTOR_AGENT: 'bad/agent',
+      USER: 'qa user',
+      LATTICE_CONFIG_DIR: TERMINAL_CONFIG_DIR,
+    },
   });
-  assert.equal(result.status, 1);
-  const error = JSON.parse(result.stderr);
-  assert.equal(error.code, 'ACTOR_UNRESOLVED');
-  assert.deepEqual(error.detail.missing_environment, []);
-  assert.deepEqual(error.detail.invalid_environment, ['LATTICE_TODO_ACTOR_SESSION']);
-  assert.equal(error.detail.next_action, 'set_required_actor_environment_and_retry');
+  assert.equal(successJson(result).status, 'in-progress');
+  const actor = (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+  assert.match(actor.host, /^terminal-[0-9a-f]{12}$/u);
+  assert.equal(actor.session, 'session');
+  assert.equal(actor.agent, 'qa-user');
+
+  // 一部だけ不正でも、正しい値はそのまま使い、不正な欄だけがdefaultになる。
+  const mixed = runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'], {
+    extraEnv: { LATTICE_TODO_ACTOR_SESSION: 'invalid session' },
+  });
+  assert.equal(successJson(mixed).status, 'blocked');
+  const blocked = (await readTodoStore({ repoRoot: root })).members[0].journal.events.at(-1).actor;
+  assert.equal(blocked.host, ACTOR.host);
+  assert.equal(blocked.session, 'session');
+  assert.equal(blocked.agent, ACTOR.agent);
 });
 
 test('flag順と証拠本文・repo内絶対pathでstart/doneが通る', async (context) => {

@@ -71,8 +71,16 @@ test('completeCreateInput fills actor, recorded_at, NO_PLAN, order and digest; o
   assert.equal(completeCreateInput(null, { env: ENV, now }), null);
   const other = { schema: 'lattice.plan_revise_input.v1' };
   assert.equal(completeCreateInput(other, { env: ENV, now }), other);
-  assert.throws(() => completeCreateInput(bareInput(), { env: { LATTICE_TODO_ACTOR_HOST: '!' }, now }),
-    (error) => error.code === 'ACTOR_UNRESOLVED');
+  const noSlots = completeCreateInput({ ...bareInput(), phases: [{ ...phase, required_evidence_slots: [] }] },
+    { env: ENV, now });
+  assert.deepEqual(noSlots.phases[0].required_evidence_slots, ['acceptance']);
+  const { required_evidence_slots: _omitted, ...slotless } = phase;
+  assert.deepEqual(completeCreateInput({ ...bareInput(), phases: [slotless] }, { env: ENV, now })
+    .phases[0].required_evidence_slots, ['acceptance']);
+  // u03s A57: an invalid actor value is treated like an unset one.
+  const sanitized = completeCreateInput(bareInput(), { env: { LATTICE_TODO_ACTOR_HOST: '!', USER: 'qa' }, now });
+  assert.equal(sanitized.actor.agent, 'qa');
+  assert.equal(sanitized.actor.session, 'session');
 });
 
 test('plan create accepts an input without actor, recorded_at, input_digest, design_memo and with unsorted tasks', async (context) => {
@@ -208,6 +216,25 @@ test('todo revise-phase completes missing task/phase migration rows and applies 
   assert.equal(next.plan.plan_version, complete.desired_plan.plan_version);
   assert.deepEqual(next.plan.tasks.map(({ task_id: id }) => id), ['a', 'b']);
   assert.deepEqual(next.revision.task_migration, complete.task_migration);
+});
+
+test('a defaulted phase row carries only when the phase gains no unfinished task (light-route rule)', async (context) => {
+  const root = await repo(context);
+  await createMain(root);
+  const member = (await readTodoStore({ repoRoot: root })).members.find(({ plan }) => plan.plan_key === 'main');
+  const rowFor = (ids) => {
+    const desired = bareInput(ids);
+    desired.plan_version = 'v2';
+    const revision = compilePlanRevision({ member, env: ENV,
+      input: { schema: 'lattice.plan_revise_input.v1', desired } });
+    const completed = completePhaseTodoRevision({ ...revision, phase_migration: [] },
+      { member, buildPlan: buildTodoPlan });
+    assert.equal(validatePhaseTodoRevision(completed), true);
+    return completed.phase_migration.find(({ from_phase_id: id }) => id === 'p').state_policy;
+  };
+  // Losing a task keeps the recorded acceptance; gaining a pending task must be reviewed again.
+  assert.equal(rowFor(['a', 'b']), 'carry');
+  assert.equal(rowFor(['a', 'b', 'c', 'd']), 'reset');
 });
 
 const ACTOR = { host: 'fixture', session: 'fixture', agent: 'fixture' };

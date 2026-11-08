@@ -118,11 +118,12 @@ in `todo-authoring-input.mjs` (pure apart from the injected env/clock):
 
 | Field | Completion | Row |
 |---|---|---|
-| `actor` | absent or null → the seat actor from `LATTICE_TODO_ACTOR_*` / host / user, the same resolver todo write commands use (`resolveTodoActor`, moved from todo-cli unchanged) | A81 |
+| `actor` | absent or null → the seat actor from `LATTICE_TODO_ACTOR_*` / host / user, the same resolver todo write commands use (`resolveTodoActor`, moved from todo-cli, with the u03s A57 rule: a set but non-identifier value is treated like an unset one, no refusal) | A81 |
 | `recorded_at` | absent or null → the current time, strict ISO-8601 UTC milliseconds | A81 |
 | `input_digest` | always recomputed (existing repairAuthoringArtifact); a supplied wrong value is replaced, not refused | A81 |
 | `tasks`, `phases`, `hard_dependencies`, `joins`, `phase_accept_dependencies`, nested id lists | sorted into the validator's canonical order and exact duplicates dropped, for every create schema (v1–v5); entries with the same key but different content still refuse | A81s |
 | `tasks[].design_memo` (v4/v5) | absent, null or blank → `NO_PLAN`; the title stays the work specification | A80 |
+| `phases[].required_evidence_slots` (v2–v5) | absent, null or empty → `["acceptance"]` (`DEFAULT_EVIDENCE_SLOT`): the phase asks for one acceptance evidence | a4 (2026-11-08) |
 | `schema` v1–v3 | accepted again (`plan_create_schema_retired` removed); they build the older plan schemas they always built | A79 |
 
 Refusals that remain: values the author wrote that are unreadable or name
