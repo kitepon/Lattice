@@ -30,7 +30,8 @@ import {
  * plan単位noteは工程に属する義務で、taskへ着手した人のcontextには届くが、**まだ誰も
  * 着手していない工程の義務は、この欄が無いとどこにも出ない**。
  */
-export const TODO_STATUS_SCHEMA = 'lattice.todo_status_result.v8';
+export const TODO_STATUS_SCHEMA = 'lattice.todo_status_result.v9';
+/** v9 (u03 A77): `truncated: [{list, total, shown}]` records every cut of an output list. */
 /** v8: cross_plan_findingsは件数だけ全数、本文は先頭からこの件数まで（statusを止めない）。 */
 export const TODO_STATUS_FINDING_LIMIT = 32;
 export const TODO_DISPATCH_FRONTIER_SCHEMA = 'lattice.todo_dispatch_frontier.v1';
@@ -338,7 +339,7 @@ export function validateTodoStatusResult(value) {
       'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
       'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
       'coordination', 'parallel_candidates', 'cross_plan_findings',
-      'member_heads', 'result_digest',
+      'member_heads', 'truncated', 'result_digest',
     ]) && value.schema === TODO_STATUS_SCHEMA && isTodoIdentifier(value.project_id)
       && boundedList(value.active_set, activeTaskEntry) && boundedList(value.next_ready, taskEntry)
       && dispatchFrontierEntry(value.dispatch_frontier, value.project_id, value.next_ready)
@@ -349,6 +350,9 @@ export function validateTodoStatusResult(value) {
       && boundedList(value.parallel_candidates, parallelCandidateEntry)
       && crossPlanFindings(value.cross_plan_findings)
       && boundedList(value.member_heads, memberHead)
+      && Array.isArray(value.truncated) && value.truncated.every((entry) => exactRecord(entry, ['list', 'total', 'shown'])
+        && typeof entry.list === 'string' && isNonNegativeSafeInteger(entry.total)
+        && isNonNegativeSafeInteger(entry.shown) && entry.shown < entry.total)
       && isTodoDigest(value.result_digest)
       && value.result_digest === todoSelfDigest(value, 'result_digest');
   } catch {
@@ -590,6 +594,16 @@ export function projectTodoStatus(readModel, options = undefined) {
   const parallelCandidates = [...options.parallelCandidates];
   const structureFinalizations = [...(options.structureFinalizations ?? [])];
 
+  // u03 A77: output callers get a bounded result that records each cut; dispatch-only callers
+  // (never printed) keep full lists and the list limit as before.
+  const output = options !== TODO_STATUS_DISPATCH_ONLY;
+  const truncated = new Map();
+  const cut = (name, value, limit) => {
+    if (value.length <= limit) return value;
+    const entry = truncated.get(name) ?? { list: name, total: 0, shown: 0 };
+    truncated.set(name, entry);
+    return value.slice(0, limit);
+  };
   const activeSet = [];
   const nextReady = [];
   const blocked = [];
@@ -603,8 +617,13 @@ export function projectTodoStatus(readModel, options = undefined) {
           return { plan_key: predecessor.plan_key, task_id: predecessor.task_id };
         })
         .sort(compareTaskEntries);
-      enforceListLimit('active_set.unmet_dependencies', unmetDependencies);
-      activeSet.push({ ...task, unmet_dependencies: unmetDependencies });
+      if (!output) enforceListLimit('active_set.unmet_dependencies', unmetDependencies);
+      const shownDependencies = cut('active_set.unmet_dependencies', unmetDependencies, TODO_STATUS_LIST_LIMIT);
+      if (shownDependencies !== unmetDependencies) {
+        const entry = truncated.get('active_set.unmet_dependencies');
+        entry.total += unmetDependencies.length; entry.shown += shownDependencies.length;
+      }
+      activeSet.push({ ...task, unmet_dependencies: shownDependencies });
     }
     if (isNodeReady(node, graph)) nextReady.push({ ...task, done_condition: node.done_condition });
     if (node.status === 'blocked') {
@@ -619,53 +638,64 @@ export function projectTodoStatus(readModel, options = undefined) {
   nextReady.sort(compareTaskEntries);
   blocked.sort(compareTaskEntries);
   memberHeads.sort((left, right) => left.plan_key < right.plan_key ? -1 : left.plan_key > right.plan_key ? 1 : 0);
-  for (const [name, value] of [
-    ['active_set', activeSet], ['next_ready', nextReady], ['blocked', blocked],
-    ['audit_pending', auditPending], ['structure_finalization_pending', structureFinalizations],
-    ['plan_notes', planNotes],
-    ['coordination', coordination], ['parallel_candidates', parallelCandidates],
-    ['member_heads', memberHeads],
-  ]) enforceListLimit(name, value);
-
-  const result = {
-    schema: TODO_STATUS_SCHEMA,
-    project_id: readModel.project_id,
-    active_set: activeSet,
-    next_ready: nextReady,
-    dispatch_frontier: dispatchFrontier(readModel.project_id, nextReady),
-    blocked,
-    // 監査待ちは`member.phases`だけから作った別の列で、dispatch(next_ready/dispatch_frontier)へは
-    // 影響しない。監査が進んでもfrontier_digestは動かない。
-    audit_pending: auditPending,
-    // 全task done後、構造finalizationが無い／古いplanだけを別列へ出す。監査状態と
-    // dispatch状態を混ぜず、terminal受理へ進めない理由と正規コマンドを同時に示す。
-    structure_finalization_pending: structureFinalizations,
-    // plan単位noteも同じく別の列である。noteの有無・件数はdispatchへ影響しないので、
-    // next_ready・dispatch_frontier・frontier_digestはnoteを書いても1バイトも動かない。
-    plan_notes: planNotes,
-    // 調整方式の宣言も同じく別の列である。宣言はdispatchを変えない——未宣言でもready
-    // frontierは通常どおり出る(ADR 0160・ob04のProtected behavior)。
-    coordination,
-    // 並列候補も別の列である。判定が進んでもdispatchは動かない——next_ready・
-    // dispatch_frontier・frontier_digestは判定状態を1バイトも含まない（ADR 0063・ob04）。
-    parallel_candidates: parallelCandidates,
-    // u03 A24/A25b/N6: 陳腐化・消えた越境参照はStoreのfindingで、dispatchを止めない。
-    // 一覧で上限に達してもstatusを拒否しないよう、本文は先頭から切り、件数は全数を返す。
-    cross_plan_findings: {
-      total: (readModel.cross_plan_findings ?? []).length,
-      entries: (readModel.cross_plan_findings ?? []).slice(0, TODO_STATUS_FINDING_LIMIT),
-    },
-    member_heads: memberHeads,
-    result_digest: '',
+  const lists = {
+    active_set: activeSet, next_ready: nextReady, blocked, audit_pending: auditPending,
+    structure_finalization_pending: structureFinalizations, plan_notes: planNotes,
+    coordination, parallel_candidates: parallelCandidates, member_heads: memberHeads,
   };
-  result.result_digest = todoSelfDigest(result, 'result_digest');
-  if (!validateTodoStatusResult(result)) fail('TODO_STATUS_INVALID_RESULT', 'todo_status_result_invalid');
-  const resultBytes = Buffer.byteLength(`${JSON.stringify(result)}\n`);
-  if (resultBytes > TODO_STATUS_CAPTURE_LIMIT) {
-    fail('TODO_SCALE_EXCEEDED', 'todo_status_result_size_limit_exceeded', {
-      result_bytes: resultBytes,
-      result_limit: TODO_STATUS_CAPTURE_LIMIT,
-    });
+  const totals = Object.fromEntries(Object.entries(lists).map(([name, value]) => [name, value.length]));
+  for (const [name, value] of Object.entries(lists)) {
+    if (output) lists[name] = cut(name, value, TODO_STATUS_LIST_LIMIT);
+    else enforceListLimit(name, value);
+  }
+  const findings = readModel.cross_plan_findings ?? [];
+  const build = () => {
+    for (const [name, value] of Object.entries(lists)) {
+      if (value.length < totals[name]) truncated.set(name, { list: name, total: totals[name], shown: value.length });
+    }
+    const result = {
+      schema: TODO_STATUS_SCHEMA,
+      project_id: readModel.project_id,
+      active_set: lists.active_set,
+      next_ready: lists.next_ready,
+      dispatch_frontier: dispatchFrontier(readModel.project_id, lists.next_ready),
+      blocked: lists.blocked,
+      // 監査待ちは`member.phases`だけから作った別の列で、dispatch(next_ready/dispatch_frontier)へは
+      // 影響しない。監査が進んでもfrontier_digestは動かない。
+      audit_pending: lists.audit_pending,
+      // 全task done後、構造finalizationが無い／古いplanだけを別列へ出す。監査状態と
+      // dispatch状態を混ぜず、terminal受理へ進めない理由と正規コマンドを同時に示す。
+      structure_finalization_pending: lists.structure_finalization_pending,
+      // plan単位noteも同じく別の列である。noteの有無・件数はdispatchへ影響しないので、
+      // next_ready・dispatch_frontier・frontier_digestはnoteを書いても1バイトも動かない。
+      plan_notes: lists.plan_notes,
+      // 調整方式の宣言も同じく別の列である。宣言はdispatchを変えない——未宣言でもready
+      // frontierは通常どおり出る(ADR 0160・ob04のProtected behavior)。
+      coordination: lists.coordination,
+      // 並列候補も別の列である。判定が進んでもdispatchは動かない——next_ready・
+      // dispatch_frontier・frontier_digestは判定状態を1バイトも含まない（ADR 0063・ob04）。
+      parallel_candidates: lists.parallel_candidates,
+      // u03 A24/A25b/N6: 陳腐化・消えた越境参照はStoreのfindingで、dispatchを止めない。
+      // 一覧で上限に達してもstatusを拒否しないよう、本文は先頭から切り、件数は全数を返す。
+      cross_plan_findings: {
+        total: findings.length,
+        entries: findings.slice(0, TODO_STATUS_FINDING_LIMIT),
+      },
+      member_heads: lists.member_heads,
+      truncated: [...truncated.values()].sort((left, right) => left.list.localeCompare(right.list)),
+      result_digest: '',
+    };
+    result.result_digest = todoSelfDigest(result, 'result_digest');
+    if (!validateTodoStatusResult(result)) fail('TODO_STATUS_INVALID_RESULT', 'todo_status_result_invalid');
+    return result;
+  };
+  let result = build();
+  // Output only: halve the longest list until the result fits the capture limit (never refuse).
+  while (output && Buffer.byteLength(`${JSON.stringify(result)}\n`) > TODO_STATUS_CAPTURE_LIMIT) {
+    const [name, value] = Object.entries(lists).sort((left, right) => right[1].length - left[1].length)[0];
+    if (value.length === 0) break;
+    lists[name] = value.slice(0, Math.floor(value.length / 2));
+    result = build();
   }
   return result;
 }
