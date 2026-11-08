@@ -3,11 +3,8 @@ import {
   isPhaseTodoPlanSchema,
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
-  localTaskRef,
   normalizeCheckoutEol,
-  removedTaskRef,
   isFinishedTodoTaskState,
-  todoTaskCarrySemantics as taskSemantics,
 } from './todo-store-view.mjs';
 export {
   isDecoupledPhaseTodoPlanSchema,
@@ -3690,206 +3687,6 @@ export async function verifyPhaseTodoRevisionSources(options = {}) {
   return true;
 }
 
-function removedTaskIdsFor(revision) {
-  return new Set(revision.task_migration
-    .filter(({ to_task_id, state_policy }) => to_task_id === 'removed' && state_policy === 'removed')
-    .map(({ from_task_id }) => from_task_id));
-}
-
-function phaseV3CarrySemantics(plan, taskId, taskIdMap, phaseIdMap,
-  { reconciliationMetadata = false, includeDesignMemo = false, removedTaskIds = new Set() } = {}) {
-  const task = plan.tasks.find(({ task_id: id }) => id === taskId);
-  if (task === undefined) return null;
-  const mapTaskRef = (ref) => ref.project_id === plan.project_id && ref.plan_key === plan.plan_key
-    ? { ...ref, task_id: taskIdMap.get(ref.task_id) ?? ref.task_id } : ref;
-  const mapPhaseRef = (ref) => ref.project_id === plan.project_id && ref.plan_key === plan.plan_key
-    ? { ...ref, phase_id: phaseIdMap.get(ref.phase_id) ?? ref.phase_id } : ref;
-  // Phaseを持たない世代(todo_plan.v3)のtaskはphase_idを持たない。undefinedのまま
-  // canonicalizeするとJSON treeでないとしてTypeErrorになり、typedな拒否理由が失われる。
-  // nullへ正規化してcarry比較へ渡し、Phase割当ての獲得をcarry_semantics_changedとして拒否する。
-  const mappedPhaseId = phaseIdMap.get(task.phase_id) ?? task.phase_id ?? null;
-  const mappedTask = reconciliationMetadata ? {
-    task_id: taskIdMap.get(task.task_id) ?? task.task_id, title: task.title, lane: task.lane,
-    compile_binding: task.compile_binding,
-    phase_id: mappedPhaseId,
-  } : {
-    task_id: taskIdMap.get(task.task_id) ?? task.task_id,
-    title: task.title, lane: task.lane,
-    ...(includeDesignMemo ? { design_memo: task.design_memo } : {}),
-    narrative_ref: task.narrative_ref, narrative_anchor: task.narrative_anchor ?? null,
-    compile_binding: task.compile_binding,
-    phase_id: mappedPhaseId,
-    parent_task_id: task.parent_task_id === null ? null
-      : taskIdMap.get(task.parent_task_id) ?? task.parent_task_id,
-  };
-  const incoming = [];
-  const outgoing = [];
-  for (const edge of plan.hard_dependencies) {
-    if (removedTaskRef(edge.from, plan, removedTaskIds)
-      || removedTaskRef(edge.to, plan, removedTaskIds)) continue;
-    const mapped = { kind: 'hard', from: mapTaskRef(edge.from), to: mapTaskRef(edge.to) };
-    if (localTaskRef(edge.to, plan, taskId)) incoming.push(mapped);
-    if (localTaskRef(edge.from, plan, taskId)) outgoing.push(mapped);
-  }
-  for (const join of plan.joins) {
-    if (removedTaskRef(join.before, plan, removedTaskIds)) continue;
-    const to = mapTaskRef(join.before);
-    for (const after of join.after) {
-      if (removedTaskRef(after, plan, removedTaskIds)) continue;
-      const tuple = { kind: 'join', join_id: join.id, from: mapTaskRef(after), to };
-      if (localTaskRef(join.before, plan, taskId)) incoming.push(tuple);
-      if (localTaskRef(after, plan, taskId)) outgoing.push(tuple);
-    }
-  }
-  if (isDecoupledPhaseTodoPlanSchema(plan.schema)) for (const edge of plan.phase_accept_dependencies) {
-    if (localTaskRef(edge.to, plan, taskId)) incoming.push({ kind: 'phase_accept',
-      from: mapPhaseRef(edge.from), to: mapTaskRef(edge.to) });
-  }
-  const sort = (entries) => entries.map(canonicalizeTodoArtifact).sort();
-  return { task: mappedTask, incoming: sort(incoming), outgoing: sort(outgoing) };
-}
-
-function validatePhaseV3Carry(previous, revision, migration, idMap, state) {
-  const reconciliationMetadata = migration.state_policy === 'carry_reconciled_metadata';
-  const predecessorTask = previous.plan.tasks.find(({ task_id }) => task_id === migration.from_task_id);
-  const includeDesignMemo = !reconciliationMetadata && typeof predecessorTask?.design_memo === 'string';
-  const removedTaskIds = removedTaskIdsFor(revision);
-  const phaseIdMap = new Map(revision.phase_migration
-    .filter(({ from_phase_id, to_phase_id }) => from_phase_id !== null && to_phase_id !== 'removed')
-    .map(({ from_phase_id, to_phase_id }) => [from_phase_id, to_phase_id]));
-  const before = phaseV3CarrySemantics(previous.plan, migration.from_task_id, idMap, phaseIdMap,
-    { reconciliationMetadata, includeDesignMemo, removedTaskIds });
-  const after = phaseV3CarrySemantics(revision.desired_plan, migration.to_task_id,
-    new Map(), new Map(),
-    { reconciliationMetadata, includeDesignMemo });
-  if (canonicalizeTodoArtifact(before.task) !== canonicalizeTodoArtifact(after.task)
-    || canonicalizeTodoArtifact(before.incoming) !== canonicalizeTodoArtifact(after.incoming)) {
-    fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
-  }
-  const successorOutgoing = new Set(after.outgoing);
-  if (!before.outgoing.every((edge) => successorOutgoing.has(edge))) {
-    fail('REVISION_INVALID', 'carry_outgoing_edge_removed', { from_task_id: migration.from_task_id });
-  }
-}
-
-function validateBackchainCarry(previous, revision, migration, idMap) {
-  const decision = revision.backchain.continuity?.find(({ task_id: id }) =>
-    id === migration.from_task_id);
-  if (decision?.policy === 'carry') return;
-  const reconciliationMetadata = migration.state_policy === 'carry_reconciled_metadata';
-  const predecessorTask = previous.plan.tasks.find(({ task_id }) => task_id === migration.from_task_id);
-  const phaseIdMap = new Map(revision.phase_migration
-    .filter(({ from_phase_id, to_phase_id }) => from_phase_id !== null && to_phase_id !== 'removed')
-    .map(({ from_phase_id, to_phase_id }) => [from_phase_id, to_phase_id]));
-  const before = phaseV3CarrySemantics(previous.plan, migration.from_task_id, idMap, phaseIdMap, {
-    reconciliationMetadata, includeDesignMemo: !reconciliationMetadata
-      && typeof predecessorTask?.design_memo === 'string',
-    removedTaskIds: removedTaskIdsFor(revision),
-  });
-  const after = phaseV3CarrySemantics(revision.desired_plan, migration.to_task_id,
-    new Map(), new Map(), {
-      reconciliationMetadata, includeDesignMemo: !reconciliationMetadata
-        && typeof predecessorTask?.design_memo === 'string',
-    });
-  // 利用先の増減は提供済み機能の意味を変えない。入力・提供機能の同一性は
-  // backchain契約で別に照合し、工程の入力辺と本体の意味だけをここで検査する。
-  if (canonicalizeTodoArtifact(before.task) !== canonicalizeTodoArtifact(after.task)
-    || canonicalizeTodoArtifact(before.incoming) !== canonicalizeTodoArtifact(after.incoming)) {
-    fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
-  }
-}
-
-function backchainTaskSignature(chain, taskId) {
-  const task = chain?.tasks?.find(({ task_id: id }) => id === taskId);
-  if (task === undefined) return null;
-  const featureIds = [...new Set([...task.requires_feature_ids, ...task.provides_feature_ids])].sort();
-  const byId = new Map(chain.features.map((feature) => [feature.feature_id, feature]));
-  return canonicalizeTodoArtifact({
-    requires_feature_ids: task.requires_feature_ids,
-    provides_feature_ids: task.provides_feature_ids,
-    features: featureIds.map((id) => byId.get(id)),
-  });
-}
-
-async function assertBackchainCarryContracts(repoRoot, previous, revision) {
-  const decisions = new Map((revision.backchain.continuity ?? [])
-    .map((entry) => [entry.task_id, entry]));
-  for (const decision of decisions.values()) {
-    const migration = revision.task_migration.find(({ from_task_id: id }) => id === decision.task_id);
-    if (migration === undefined || (decision.policy === 'carry'
-      && !['carry', 'carry_reconciled_metadata'].includes(migration.state_policy))
-      || (decision.policy === 'reset' && migration.state_policy !== 'reset_pending')
-      || (decision.policy === 'retire' && migration.state_policy !== 'removed')) {
-      fail('REVISION_INVALID', 'backchain_continuity_mismatch', { task_id: decision.task_id });
-    }
-  }
-  const carried = revision.task_migration.filter(({ state_policy }) =>
-    ['carry', 'carry_reconciled_metadata', 'acquire_phase'].includes(state_policy));
-  if (carried.length === 0) return;
-  const oldRef = path.resolve(repoRoot, STORE_ROOT_REF, 'plans', previous.plan.plan_key,
-    previous.plan.plan_version, 'backchain.json');
-  const bytes = await exactFileOrNull(oldRef);
-  if (bytes === null) fail('REVISION_INVALID', 'backchain_predecessor_missing');
-  let binding;
-  try { binding = JSON.parse(decodeUtf8(bytes, 'REVISION_INVALID', 'backchain_predecessor_invalid')); }
-  catch { fail('REVISION_INVALID', 'backchain_predecessor_invalid'); }
-  if (binding?.schema !== 'lattice.plan_backchain_binding.v1'
-    || binding.plan_digest !== previous.plan.plan_digest
-    || binding.binding_digest !== todoSelfDigest(binding, 'binding_digest')) {
-    fail('REVISION_INVALID', 'backchain_predecessor_invalid');
-  }
-  for (const migration of carried) {
-    if (decisions.get(migration.from_task_id)?.policy === 'carry') continue;
-    if (backchainTaskSignature(binding.chain, migration.from_task_id)
-      !== backchainTaskSignature(revision.backchain, migration.to_task_id)) {
-      fail('REVISION_INVALID', 'backchain_carry_feature_changed', {
-        from_task_id: migration.from_task_id, to_task_id: migration.to_task_id,
-      });
-    }
-  }
-}
-
-/**
- * acquire_phase専用のcarry検証(ADR 0147裁定4)。既存carry/carry_reconciled_metadataの
- * 分岐(validatePhaseV3Carry)には一切手を入れず、「Phase割当ての獲得だけ」を許す別分岐として
- * 独立に置く——同じcarry比較へphase_idだけ除外する特例を混ぜると、以後の意味論比較すべてに
- * 例外条件が混入する経路を開いてしまう(裁定4が名指しで禁じる形)。
- *
- * 獲得の定義: predecessor側がphase無し(phase_idがnullに正規化される)→successor側がphase有り、
- * という向きだけを許す。既にphaseを持つtaskの付け替えは意味論の変更であり、acquire_phaseでは
- * 許さない(carryへ回して従来どおりcarry_semantics_changedで拒否させる)。phase_id以外の
- * 属性(title/lane/narrative_ref/narrative_anchor/compile_binding/parent_task_id)と
- * 依存辺(incoming)は、phaseV3CarrySemanticsのtaskからphase_idだけを取り除いた上で
- * carryと同じ完全一致を要求する。outgoingの扱い(successor側が上位集合であること)もcarryと同じ。
- */
-function validateAcquirePhaseCarry(previous, revision, migration, idMap) {
-  const phaseIdMap = new Map(revision.phase_migration
-    .filter(({ from_phase_id, to_phase_id }) => from_phase_id !== null && to_phase_id !== 'removed')
-    .map(({ from_phase_id, to_phase_id }) => [from_phase_id, to_phase_id]));
-  const predecessorTask = previous.plan.tasks.find(({ task_id }) => task_id === migration.from_task_id);
-  const includeDesignMemo = typeof predecessorTask?.design_memo === 'string';
-  const removedTaskIds = removedTaskIdsFor(revision);
-  const before = phaseV3CarrySemantics(previous.plan, migration.from_task_id, idMap, phaseIdMap,
-    { includeDesignMemo, removedTaskIds });
-  const after = phaseV3CarrySemantics(revision.desired_plan, migration.to_task_id, new Map(), new Map(),
-    { includeDesignMemo });
-  if (before.task.phase_id !== null) {
-    fail('REVISION_INVALID', 'acquire_phase_requires_unassigned_predecessor', { from_task_id: migration.from_task_id });
-  }
-  if (after.task.phase_id === null) {
-    fail('REVISION_INVALID', 'acquire_phase_requires_assigned_successor', { from_task_id: migration.from_task_id });
-  }
-  const stripPhase = ({ phase_id, ...rest }) => rest;
-  if (canonicalizeTodoArtifact(stripPhase(before.task)) !== canonicalizeTodoArtifact(stripPhase(after.task))
-    || canonicalizeTodoArtifact(before.incoming) !== canonicalizeTodoArtifact(after.incoming)) {
-    fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
-  }
-  const successorOutgoing = new Set(after.outgoing);
-  if (!before.outgoing.every((edge) => successorOutgoing.has(edge))) {
-    fail('REVISION_INVALID', 'carry_outgoing_edge_removed', { from_task_id: migration.from_task_id });
-  }
-}
-
 function stateMigrationFor(previous, revision) {
   if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(previous.plan.schema)
     && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']
@@ -3909,62 +3706,20 @@ function stateMigrationFor(previous, revision) {
   if (canonicalizeTodoArtifact([...oldIds].sort()) !== canonicalizeTodoArtifact([...migrationIds].sort())) {
     fail('REVISION_INVALID', 'predecessor_task_migration_incomplete');
   }
-  const idMap = new Map(revision.task_migration
-    .filter(({ to_task_id }) => to_task_id !== 'removed')
-    .map(({ from_task_id, to_task_id }) => [from_task_id, to_task_id]));
-  const removedTaskIds = removedTaskIdsFor(revision);
   const states = new Map(previous.tasks.map((state) => [state.task_id, state]));
   return revision.task_migration.map((migration) => {
     const carriesState = ['carry', 'carry_reconciled_metadata', 'acquire_phase'].includes(migration.state_policy);
     if (!carriesState) return { ...migration, state: null };
-    const reconciliationMetadata = migration.state_policy === 'carry_reconciled_metadata';
     const state = states.get(migration.from_task_id);
     if (!state) fail('STORE_INCONSISTENT', 'predecessor_task_state_missing');
-    if (migration.state_policy === 'acquire_phase') {
-      // acquire_phaseはv3 phase revision専用の獲得判定を持つ。v3以外(v1/v2 phase revisionや
-      // 平文todo_revision)ではtaskSemantics自体がphase_idを比較対象へ含めないため、carryと
-      // 同じ比較で意味論は保たれる——ここを別ロジックにする理由が無い(既知のv1/v2の緩さは
-      // ADR 0147の対象外であり、緩めも締めもしない)。
-      if (revision.schema === 'lattice.phase_todo_revision.v3') {
-        validateAcquirePhaseCarry(previous, revision, migration, idMap);
-      } else {
-        const predecessorTask = previous.plan.tasks
-          .find(({ task_id }) => task_id === migration.from_task_id);
-        const includeDesignMemo = typeof predecessorTask?.design_memo === 'string';
-        const before = taskSemantics(previous.plan, migration.from_task_id, idMap,
-          { includeDesignMemo, removedTaskIds });
-        const after = taskSemantics(revision.desired_plan, migration.to_task_id, new Map(),
-          { includeDesignMemo });
-        if (canonicalizeTodoArtifact(before) !== canonicalizeTodoArtifact(after)) {
-          fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
-        }
-      }
-    } else if (revision.schema === 'lattice.phase_todo_revision.v5' && reconciliationMetadata) {
-      // u12 light carry: only the task_id mapping and compile_binding bind carried state.
-      const predecessorTask = previous.plan.tasks
-        .find(({ task_id }) => task_id === migration.from_task_id);
-      const desiredTask = revision.desired_plan.tasks
-        .find(({ task_id }) => task_id === migration.to_task_id);
-      if (!desiredTask || canonicalizeTodoArtifact(predecessorTask?.compile_binding)
-        !== canonicalizeTodoArtifact(desiredTask.compile_binding)) {
-        fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
-      }
-    } else if (revision.schema === 'lattice.phase_todo_revision.v3') {
-      validatePhaseV3Carry(previous, revision, migration, idMap, state);
-    } else if (revision.schema === 'lattice.phase_todo_revision.v4') {
-      validateBackchainCarry(previous, revision, migration, idMap);
-    } else {
-      const predecessorTask = previous.plan.tasks
-        .find(({ task_id }) => task_id === migration.from_task_id);
-      const includeDesignMemo = !reconciliationMetadata
-        && typeof predecessorTask?.design_memo === 'string';
-      const before = taskSemantics(previous.plan, migration.from_task_id, idMap,
-        { reconciliationMetadata, includeDesignMemo, removedTaskIds });
-      const after = taskSemantics(revision.desired_plan, migration.to_task_id, new Map(),
-        { reconciliationMetadata, includeDesignMemo });
-      if (canonicalizeTodoArtifact(before) !== canonicalizeTodoArtifact(after)) {
-        fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
-      }
+    // u03 A38/A39: every schema uses the u12 light-carry rule. Authored fields, edges, joins and
+    // phase assignment may change at any state; only the id mapping and compile_binding bind
+    // carried state (the claim 1-4 impact binding must not carry onto another compiled spec).
+    const predecessorTask = previous.plan.tasks.find(({ task_id }) => task_id === migration.from_task_id);
+    const desiredTask = revision.desired_plan.tasks.find(({ task_id }) => task_id === migration.to_task_id);
+    if (!desiredTask || canonicalizeTodoArtifact(predecessorTask?.compile_binding ?? null)
+      !== canonicalizeTodoArtifact(desiredTask.compile_binding ?? null)) {
+      fail('REVISION_INVALID', 'carry_semantics_changed', { from_task_id: migration.from_task_id });
     }
     return { ...migration, state: {
       status: state.status, started_at: state.started_at, done_at: state.done_at,
@@ -3983,12 +3738,6 @@ function phaseStateMigrationFor(previous, revision) {
     !== canonicalizeTodoArtifact(predecessorPhases.map(({ phase_id }) => phase_id).sort())) {
     fail('REVISION_INVALID', 'predecessor_phase_migration_incomplete');
   }
-  const idMap = new Map(revision.phase_migration
-    .filter(({ from_phase_id, to_phase_id }) => from_phase_id !== null && to_phase_id !== 'removed')
-    .map(({ from_phase_id, to_phase_id }) => [from_phase_id, to_phase_id]));
-  const taskIdMap = new Map(revision.task_migration
-    .filter(({ to_task_id }) => to_task_id !== 'removed')
-    .map(({ from_task_id, to_task_id }) => [from_task_id, to_task_id]));
   const previousStates = new Map((previous.snapshot.phases ?? []).map((state) => [state.phase_id, state]));
   return revision.phase_migration
     .filter(({ to_phase_id }) => to_phase_id !== 'removed')
@@ -3996,22 +3745,9 @@ function phaseStateMigrationFor(previous, revision) {
       if (migration.state_policy === 'reset') {
         return { phase_id: migration.to_phase_id, state_policy: 'reset', state: null };
       }
-      const before = predecessorPhases.find(({ phase_id }) => phase_id === migration.from_phase_id);
       const after = revision.desired_plan.phases.find(({ phase_id }) => phase_id === migration.to_phase_id);
-      const mappedBefore = { ...before, phase_id: migration.to_phase_id,
-        predecessor_phase_ids: before.predecessor_phase_ids.map((id) => idMap.get(id) ?? id).sort() };
-      const beforeTaskIds = previous.plan.tasks
-        .filter(({ phase_id }) => phase_id === migration.from_phase_id)
-        .map(({ task_id }) => taskIdMap.get(task_id) ?? 'removed').filter((id) => id !== 'removed').sort();
-      const afterTaskIds = revision.desired_plan.tasks
-        .filter(({ phase_id }) => phase_id === migration.to_phase_id).map(({ task_id }) => task_id).sort();
-      // u12 light carry (revision v5): Plan chose carry vs reset; Store checks only the id mapping.
-      if (revision.schema === 'lattice.phase_todo_revision.v5') {
-        if (!after) fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
-      } else if (canonicalizeTodoArtifact({ phase: mappedBefore, task_ids: beforeTaskIds })
-        !== canonicalizeTodoArtifact({ phase: after, task_ids: afterTaskIds })) {
-        fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
-      }
+      // u12/u03 A38: the revision chose carry vs reset; Store checks only the id mapping.
+      if (!after) fail('REVISION_INVALID', 'phase_carry_semantics_changed', { from_phase_id: migration.from_phase_id });
       const state = previousStates.get(migration.from_phase_id);
       if (state === undefined) fail('STORE_INCONSISTENT', 'predecessor_phase_state_missing');
       return { phase_id: migration.to_phase_id, state_policy: 'carry', state: {
@@ -4729,7 +4465,7 @@ async function cleanupPhaseV3Staging(transaction, staged) {
   await fsyncDirectory(transaction);
 }
 
-async function predecessorSourceInventory(repoRoot, previous) {
+export async function predecessorSourceInventory(repoRoot, previous) {
   if (previous.revision?.source_inventory !== undefined) return previous.revision.source_inventory;
   const versionsRoot = path.join(repoRoot, STORE_ROOT_REF, 'plans', previous.plan.plan_key);
   const plansByDigest = new Map();
@@ -5073,9 +4809,6 @@ export async function applyPhaseTodoRevision(options = {}) {
       fail('STORE_WRITE_CONFLICT', 'stale_predecessor');
     }
     verifyPlanNarrativeAnchors(repoRoot, revision.desired_plan, previous.plan);
-    if (revision.schema === 'lattice.phase_todo_revision.v4') {
-      await assertBackchainCarryContracts(repoRoot, previous, revision);
-    }
     const stateMigration = stateMigrationFor(previous, revision);
     const phaseStateMigration = phaseStateMigrationFor(previous, revision);
     const prospective = store.members.map((member) => member === previous

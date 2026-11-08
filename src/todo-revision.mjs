@@ -1036,3 +1036,150 @@ export function validateTodoRevisionSet(value) {
       && value.revision_set_digest === todoSelfDigest(value, 'revision_set_digest');
   } catch { return false; }
 }
+
+const PHASE_PREDECESSOR_SCHEMAS = new Set([
+  'lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8',
+]);
+const sourceKey = (entry) => `${entry.source_ref}\0${entry.source_digest}`;
+
+/** v3: desired在庫が引き継がず・tombstoneにもしない先行の出所(Storeの黙殺検査と同じ判定)を、tombstoneへ足す。 */
+function completeSourceInventory(inventory, revision, predecessorInventory) {
+  const desiredTombstoneKeys = new Set(inventory.excluded_tombstones.map(sourceKey));
+  const activeRefs = new Set(inventory.active.map(({ source_ref: ref }) => ref));
+  const tombstoneRefs = new Set(inventory.excluded_tombstones.map(({ source_ref: ref }) => ref));
+  const added = [];
+  const add = (entry, reason) => {
+    if (activeRefs.has(entry.source_ref) || tombstoneRefs.has(entry.source_ref)) return;
+    tombstoneRefs.add(entry.source_ref);
+    added.push({ source_ref: entry.source_ref, source_digest: entry.source_digest, exclusion_reason: reason });
+  };
+  for (const entry of predecessorInventory.active) {
+    const active = inventory.active.find(({ task_id: id }) => id === entry.task_id);
+    const continued = active?.source_ref === entry.source_ref && active.source_digest === entry.source_digest;
+    const relocated = revision.source_cutover_batch.operations.some((operation, index) => {
+      if (operation.source_ref !== entry.source_ref || operation.source_digest !== entry.source_digest) return false;
+      const archiveRef = todoCutoverArchiveSourceRef(revision.source_cutover_batch, index);
+      return operation.disposition === 'active'
+        ? inventory.active.some((candidate) => candidate.task_id === operation.task_id
+          && candidate.source_ref === archiveRef && candidate.source_digest === operation.source_digest)
+        : inventory.excluded_tombstones.some((candidate) => candidate.source_ref === archiveRef
+          && candidate.source_digest === operation.source_digest);
+    });
+    if (!continued && !relocated && !desiredTombstoneKeys.has(sourceKey(entry))) {
+      add(entry, 'dropped from the desired source inventory (machine-completed)');
+    }
+  }
+  for (const entry of predecessorInventory.excluded_tombstones) {
+    if (!desiredTombstoneKeys.has(sourceKey(entry))) add(entry, entry.exclusion_reason);
+  }
+  return added.length === 0 ? inventory : {
+    ...inventory,
+    excluded_tombstones: [...inventory.excluded_tombstones, ...added]
+      .sort((left, right) => compareText(left.source_ref, right.source_ref)),
+  };
+}
+
+/**
+ * 補うphase行の方針。軽量改訂（compileLightPhaseMigration）と同じ規則: 定義が変わったか、
+ * 終わっていない工程を迎える（新規・他Phaseから移る・reset）phaseはreset、それ以外はcarry。
+ * 迎えた未完の工程を、記録済みの受入が覆っているように見せないため（u03p review）。
+ */
+function defaultPhaseCarry(member, desired, taskMigration) {
+  const carried = new Set(['carry', 'carry_reconciled_metadata', 'acquire_phase']);
+  const rowByTarget = new Map(taskMigration.map((row) => [row.to_task_id, row]));
+  const previousById = new Map(member.plan.tasks.map((task) => [task.task_id, task]));
+  const states = new Map((member.tasks ?? []).map(({ task_id: id, status }) => [id, status]));
+  const definition = ({ title, gate_policy: gatePolicy, predecessor_phase_ids: predecessors,
+    required_evidence_slots: slots }) => canonicalizeTodoArtifact({
+    title, gate_policy: gatePolicy, predecessor_phase_ids: predecessors, required_evidence_slots: slots });
+  return (phase) => {
+    const next = desired.phases.find(({ phase_id: id }) => id === phase.phase_id);
+    if (definition(phase) !== definition(next)) return false;
+    return !desired.tasks.some((task) => {
+      if (task.phase_id !== phase.phase_id) return false;
+      const row = rowByTarget.get(task.task_id);
+      const reset = row === undefined || !carried.has(row.state_policy);
+      const previous = reset ? undefined : previousById.get(row.from_task_id);
+      const arrives = reset || previous?.phase_id !== phase.phase_id;
+      const state = reset ? 'pending' : states.get(row.from_task_id);
+      return arrives && !['done', 'retired'].includes(state);
+    });
+  };
+}
+
+/**
+ * revise-phaseの成果物を、新鮮な先行memberに対して機械が補う(u03p A40a/A41)。
+ * 先行taskのtask_migration行が無ければ、desiredに同idがあればcarry(v5はcarry_reconciled_metadata)、
+ * 無ければremoved。phase_migrationも同様(carry/removed、新しいphaseはreset)。v3は先行の出所のうち
+ * desiredが引き継がず・tombstoneにもしないものをexcluded_tombstonesへ足す。足したものが無ければ入力のまま返す。
+ * 補った時は、plan_version・desired_planのdigest・(v3)reconciliation・(v4)chain_digest・revision_digestを
+ * 既存の関数で再計算する。buildPlanはStoreのbuildTodoPlan(循環importを避けて注入する)。
+ */
+export function completePhaseTodoRevision(revision, { member, predecessorInventory = null, buildPlan }) {
+  const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const version = /^lattice\.phase_todo_revision\.v([1-5])$/u.exec(revision?.schema ?? '')?.[1];
+  if (version === undefined || !isRecord(revision.desired_plan) || !Array.isArray(revision.task_migration)
+    || !Array.isArray(revision.phase_migration) || !Array.isArray(revision.desired_plan.tasks)
+    || !Array.isArray(revision.desired_plan.phases)) return revision;
+  try {
+    const desired = revision.desired_plan;
+    const desiredTaskIds = new Set(desired.tasks.map(({ task_id: id }) => id));
+    const desiredPhaseIds = new Set(desired.phases.map(({ phase_id: id }) => id));
+    // v3のruntime_task_migrationは証拠付きの行であり機械が作れない。task行は補わない。
+    const taskRows = version === '3' ? [] : member.plan.tasks
+      .filter(({ task_id: id }) => !revision.task_migration.some(({ from_task_id: from }) => from === id))
+      .map(({ task_id: id }) => (desiredTaskIds.has(id)
+        ? { from_task_id: id, to_task_id: id,
+          state_policy: version === '5' ? 'carry_reconciled_metadata' : 'carry' }
+        : { from_task_id: id, to_task_id: 'removed', state_policy: 'removed' }));
+    const predecessorPhases = PHASE_PREDECESSOR_SCHEMAS.has(member.plan.schema) ? member.plan.phases : [];
+    const targeted = new Set(revision.phase_migration.map(({ to_phase_id: id }) => id));
+    const keepsAcceptance = defaultPhaseCarry(member, desired, [...revision.task_migration, ...taskRows]);
+    const phaseRows = [
+      ...predecessorPhases
+        .filter(({ phase_id: id }) => !revision.phase_migration.some(({ from_phase_id: from }) => from === id))
+        .map((phase) => (desiredPhaseIds.has(phase.phase_id)
+          ? { from_phase_id: phase.phase_id, to_phase_id: phase.phase_id,
+            state_policy: keepsAcceptance(phase) ? 'carry' : 'reset' }
+          : { from_phase_id: phase.phase_id, to_phase_id: 'removed', state_policy: 'removed' })),
+      ...[...desiredPhaseIds].filter((id) => !targeted.has(id)
+        && !predecessorPhases.some(({ phase_id: from }) => from === id && desiredPhaseIds.has(from)))
+        .map((id) => ({ from_phase_id: null, to_phase_id: id, state_policy: 'reset' })),
+    ];
+    const inventory = version === '3' && predecessorInventory !== null
+      ? completeSourceInventory(revision.source_inventory, revision, predecessorInventory) : null;
+    if (taskRows.length === 0 && phaseRows.length === 0
+      && (inventory === null || inventory === revision.source_inventory)) return revision;
+
+    const byFrom = (left, right) => compareText(left.from_task_id, right.from_task_id);
+    const phaseOrder = (left, right) => compareText(left.from_phase_id ?? '￿', right.from_phase_id ?? '￿')
+      || compareText(left.to_phase_id, right.to_phase_id);
+    const taskMigration = [...revision.task_migration, ...taskRows].sort(byFrom);
+    const phaseMigration = [...revision.phase_migration, ...phaseRows].sort(phaseOrder);
+    const featureGraphDigest = version === '4' ? digestTodoArtifact({
+      goal: revision.backchain.goal, features: revision.backchain.features, tasks: revision.backchain.tasks,
+    }) : null;
+    const planVersion = phaseTodoRevisionPlanVersion({
+      projectId: revision.project_id, planKey: revision.plan_key, predecessor: revision.predecessor,
+      desiredPlan: desired, taskMigration, phaseMigration, featureGraphDigest,
+    });
+    const next = { ...revision, task_migration: taskMigration, phase_migration: phaseMigration,
+      desired_plan: buildPlan({ ...desired, plan_version: planVersion }) };
+    if (version === '4') {
+      next.backchain = { ...revision.backchain, plan_version: planVersion, chain_digest: '' };
+      next.backchain.chain_digest = todoSelfDigest(next.backchain, 'chain_digest');
+    }
+    if (version === '3') {
+      next.source_inventory = inventory;
+      next.reconciliation = { ...revision.reconciliation,
+        source_inventory_digest: todoSourceInventoryDigest(inventory),
+        desired_plan_digest: next.desired_plan.plan_digest,
+        task_migration_digest: todoTaskMigrationDigest(taskMigration),
+        phase_migration_digest: digestTodoArtifact(phaseMigration),
+        reconciliation_digest: '' };
+      next.reconciliation.reconciliation_digest = todoSelfDigest(next.reconciliation, 'reconciliation_digest');
+    }
+    next.revision_digest = todoSelfDigest(next, 'revision_digest');
+    return next;
+  } catch { return revision; }
+}

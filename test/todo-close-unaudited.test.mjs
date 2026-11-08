@@ -387,3 +387,17 @@ test('CLI経由のtodo phase close-unauditedはclosed_unauditedを記録する',
   assert.equal(result.kind, 'phase_close_unaudited');
   assert.equal(result.status, 'closed_unaudited');
 });
+
+test('an accepted phase is acceptance_stale while a member task is unfinished (carried acceptance, u03p review)', async () => {
+  const { phaseAcceptanceStale } = await import('../src/todo-cli.mjs');
+  const plan = { schema: 'lattice.todo_plan.v7', tasks: [taskV4('A', 'p'), taskV4('B', 'p'), taskV4('X', 'q')] };
+  const phase = { phase_id: 'p', status: 'accepted', decision_event_digest: 'd' };
+  const events = [{ event_digest: 'd', kind: 'phase_accept' }];
+  const states = (b) => [{ task_id: 'A', status: 'done' }, { task_id: 'B', status: b },
+    { task_id: 'X', status: 'pending' }];
+  assert.equal(phaseAcceptanceStale(plan, events, phase, states('done')), false);
+  assert.equal(phaseAcceptanceStale(plan, events, phase, states('retired')), false);
+  // B joined p through a revision that carried the acceptance; it is not finished.
+  assert.equal(phaseAcceptanceStale(plan, events, phase, states('pending')), true);
+  assert.equal(phaseAcceptanceStale(plan, events, { ...phase, status: 'active' }, states('pending')), false);
+});

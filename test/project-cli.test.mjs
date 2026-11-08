@@ -86,7 +86,7 @@ test('plan create --schema --jsonは版指定なしで最新v4を返し、旧sch
   assert.equal(JSON.parse(legacy.stdout).title, 'lattice.plan_create_input.v1');
 });
 
-test('旧plan create入力は参照用schemaとして識別し現行v4への訂正情報付きで拒否する', async (context) => {
+test('旧plan create入力(v1)は拒否せず、旧plan schemaのplanとして作る(u03p A79)', async (context) => {
   const root = await workspace(context);
   const legacy = {
     schema: 'lattice.plan_create_input.v1', project_id: 'legacy-project',
@@ -100,30 +100,36 @@ test('旧plan create入力は参照用schemaとして識別し現行v4への訂�
   legacy.input_digest = todoSelfDigest(legacy, 'input_digest');
   await writeFile(path.join(root, 'legacy.json'), `${canonicalizeTodoArtifact(legacy)}\n`);
   const execution = run(root, ['plan', 'create', '--input', 'legacy.json']);
-  assert.equal(execution.status, 1);
-  const failure = JSON.parse(execution.stderr);
-  assert.equal(failure.code, 'INPUT_INVALID');
-  assert.equal(failure.detail.violation_kind, 'const_mismatch');
-  assert.equal(failure.detail.pointer, '/schema');
-  assert.equal(failure.detail.expected, 'lattice.plan_create_input.v4');
-  assert.equal(failure.detail.actual, 'lattice.plan_create_input.v1');
-  assert.equal(failure.detail.next_action, 'lattice plan create --schema-version 4 --json');
+  assert.equal(execution.status, 0, execution.stderr);
+  const plan = JSON.parse(await readFile(path.join(root, JSON.parse(execution.stdout).plan_ref), 'utf8'));
+  assert.equal(plan.schema, 'lattice.todo_plan.v3');
 });
 
 test('plan createは設計メモ違反を本文非露出のpointer付きdiagnosticで返す', async (context) => {
   const root = await workspace(context);
   const input = createInput();
-  input.tasks[0].design_memo = '   ';
+  input.tasks[0].design_memo = 'a\u0000b';
   input.input_digest = todoSelfDigest(input, 'input_digest');
-  await writeFile(path.join(root, 'blank-memo.json'), `${canonicalizeTodoArtifact(input)}\n`);
-  const execution = run(root, ['plan', 'create', '--input', 'blank-memo.json']);
+  await writeFile(path.join(root, 'bad-memo.json'), `${canonicalizeTodoArtifact(input)}\n`);
+  const execution = run(root, ['plan', 'create', '--input', 'bad-memo.json']);
   assert.equal(execution.status, 1);
   const failure = JSON.parse(execution.stderr);
   assert.equal(failure.code, 'DESIGN_MEMO_REQUIRED');
-  assert.equal(failure.detail.violation_kind, 'blank');
+  assert.equal(failure.detail.violation_kind, 'forbidden_control');
   assert.equal(failure.detail.pointer, '/tasks/0/design_memo');
-  assert.deepEqual(failure.detail.actual, { byte_length: 3, non_whitespace: false });
+  assert.deepEqual(failure.detail.actual, { byte_length: 3, contains_forbidden_control: true });
   assert.match(failure.detail.prompt, /`NO_PLAN`/u);
+});
+
+test('空の設計メモは機械がNO_PLANにして作成する(u03p A80)', async (context) => {
+  const root = await workspace(context);
+  const input = createInput();
+  input.tasks[0].design_memo = '   ';
+  await writeFile(path.join(root, 'blank-memo.json'), `${JSON.stringify(input)}\n`);
+  const execution = run(root, ['plan', 'create', '--input', 'blank-memo.json']);
+  assert.equal(execution.status, 0, execution.stderr);
+  const plan = JSON.parse(await readFile(path.join(root, JSON.parse(execution.stdout).plan_ref), 'utf8'));
+  assert.equal(plan.tasks[0].design_memo, 'NO_PLAN');
 });
 
 test('PROJECT_ROOT_CONFLICTのstatus失敗はcodeを一般化せずadopt導線を返す', async (context) => {

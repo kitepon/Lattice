@@ -431,7 +431,7 @@ test('既存store経路のtodo migrateは検証済みJSONを一度だけ追加�
   const result = JSON.parse(first.stdout);
   assertExactKeys(result, [
     'schema', 'project_id', 'plan_key', 'plan_version', 'extraction_digest',
-    'imported_task_count', 'completed_task_count', 'plan_ref', 'journal_ref', 'snapshot_ref',
+    'imported_task_count', 'defaulted_pending_task_ids', 'completed_task_count', 'plan_ref', 'journal_ref', 'snapshot_ref',
     'topology_digest', 'journal_head_digest', 'dispatch_shape', 'terminal_audit_required',
     'phase_guidance', 'coordination_guidance',
     'companion',
@@ -555,7 +555,6 @@ test('anchor sourceを取得できないpending taskは推定せずnull anchor�
 test('曖昧・schema違反・duplicate・done_mode矛盾はtyped exit 1でstore bytes不変', async (context) => {
   const root = await workspace(context);
   for (const [name, code] of [
-    ['ambiguous.json', 'MIGRATION_UNRESOLVED'],
     ['schema-violation.json', 'INVALID_TODO_EXTRACTION'],
     ['duplicate-task.json', 'INVALID_TODO_EXTRACTION'],
     ['done-mode-contradiction.json', 'INVALID_TODO_EXTRACTION'],

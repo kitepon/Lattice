@@ -10,10 +10,40 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { parseTree } from 'jsonc-parser';
 
-import { canonicalizeTodoArtifact, todoSelfDigest } from './todo-contracts.mjs';
+import { canonicalizeTodoArtifact, isTodoIdentifier, todoSelfDigest } from './todo-contracts.mjs';
+import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
 import { TodoStoreError } from './todo-store.mjs';
 
 const MAX_AUTHORING_INPUT_BYTES = 8_388_608;
+function sanitizeActorIdentifier(raw, fallback) {
+  const compact = String(raw ?? '').replace(/[^0-9A-Za-z._-]/gu, '-').replace(/^-+/u, '').slice(0, 128);
+  return isTodoIdentifier(compact) ? compact : fallback;
+}
+
+/**
+ * 名乗りの無い操作のhost（ADR 0197）。journalは公開repositoryへcommitされるので、OSのhost名は
+ * 書かない——host名はOSが決めた自由文で、持ち主の名前を含むことがある。端末ごとの識別子から
+ * 一方向に導いたlabelを使い、端末の区別は保つ。識別子を読めず作れない端末は`host`になる。
+ */
+function defaultActorHost(env) {
+  const terminalId = readOrCreateTerminalIdSync({ env });
+  return terminalId === null ? 'host' : terminalPublicLabel(terminalId);
+}
+
+// u03s A57: a set but non-identifier value is treated like an unset one (no refusal).
+export function resolveTodoActor(env) {
+  return {
+    host: isTodoIdentifier(env.LATTICE_TODO_ACTOR_HOST)
+      ? env.LATTICE_TODO_ACTOR_HOST
+      : defaultActorHost(env),
+    session: isTodoIdentifier(env.LATTICE_TODO_ACTOR_SESSION)
+      ? env.LATTICE_TODO_ACTOR_SESSION
+      : 'session',
+    agent: isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT)
+      ? env.LATTICE_TODO_ACTOR_AGENT
+      : sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
+  };
+}
 
 export const AUTHORING_DIGEST_FIELDS = Object.freeze({
   'lattice.plan_backchain.v1': 'chain_digest',
@@ -108,12 +138,15 @@ function sortUnique(list, key) {
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+const CREATE_INPUT_SCHEMA = /^lattice\.plan_create_input\.v[1-5]$/u;
+
 /**
- * plan_create_input.v5だけ: 並びに作成者の意味が無い集合を、入力順に依らず正準形へ寄せる。
- * tasksと他の配列は並べ替えない。形が壊れていれば触らず、validatorの指摘に任せる。
+ * plan_create_input.v1〜v5: 並びに作成者の意味が無い集合を、入力順に依らず正準形へ寄せる(u03p A81s)。
+ * 形が壊れていれば触らず、validatorの指摘に任せる。
  */
-function normalizeCreateInputV5(value) {
+function normalizeCreateInput(value) {
   const normalizers = {
+    tasks: (list) => sortUnique(list, (task) => task?.task_id),
     hard_dependencies: (list) => sortUnique(list, (edge) => `${refKey(edge?.from)}\0${refKey(edge?.to)}`),
     phase_accept_dependencies: (list) => sortUnique(list,
       (edge) => `${phaseRefKey(edge?.from)}\0${refKey(edge?.to)}`),
@@ -142,10 +175,39 @@ export function repairAuthoringArtifact(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   const field = AUTHORING_DIGEST_FIELDS[value.schema];
   if (field === undefined) return value;
-  const base = value.schema === 'lattice.plan_create_input.v5' ? normalizeCreateInputV5(value) : value;
+  const base = CREATE_INPUT_SCHEMA.test(value.schema) ? normalizeCreateInput(value) : value;
   const next = { ...base, [field]: typeof base[field] === 'string' ? base[field] : '' };
   next[field] = todoSelfDigest(next, field);
   return next;
+}
+
+/**
+ * 機械が出せる事実を作成入力へ補う(u03p A81/A80)。AIは意図(tasks・依存)だけを書く:
+ * actorは席の解決値、recorded_atは現在時刻、v4/v5の空の設計メモはNO_PLAN、配列は正準順、
+ * input_digestは再計算。作成入力でない値と、レコードでない値はそのまま返す。
+ */
+export const DEFAULT_EVIDENCE_SLOT = 'acceptance';
+
+export function completeCreateInput(value, { env, now }) {
+  if (!isRecord(value) || !CREATE_INPUT_SCHEMA.test(value.schema)) return value;
+  const next = { ...value };
+  if (next.actor === undefined || next.actor === null) next.actor = resolveTodoActor(env);
+  if (next.recorded_at === undefined || next.recorded_at === null) next.recorded_at = now.toISOString();
+  if (['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5'].includes(next.schema)
+    && Array.isArray(next.tasks)) {
+    next.tasks = next.tasks.map((task) => (isRecord(task)
+      && (task.design_memo === undefined || task.design_memo === null
+        || (typeof task.design_memo === 'string' && task.design_memo.trim() === ''))
+      ? { ...task, design_memo: 'NO_PLAN' } : task));
+  }
+  // 段が要求する証拠の種類を書かなければ、受入の証拠1つ（acceptance）を求める。
+  if (Array.isArray(next.phases)) {
+    next.phases = next.phases.map((phase) => (isRecord(phase)
+      && (phase.required_evidence_slots === undefined || phase.required_evidence_slots === null
+        || (Array.isArray(phase.required_evidence_slots) && phase.required_evidence_slots.length === 0))
+      ? { ...phase, required_evidence_slots: [DEFAULT_EVIDENCE_SLOT] } : phase));
+  }
+  return repairAuthoringArtifact(next);
 }
 
 /**

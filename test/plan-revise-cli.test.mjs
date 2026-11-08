@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { runPlanRevise } from '../src/plan-revise.mjs';
 import { readTodoStore } from '../src/todo-store.mjs';
 import { projectTodoCrossPlanDependencies } from '../src/todo-store-view.mjs';
 
@@ -96,10 +97,33 @@ test('light CLI refuses dangling references before publishing a successor', asyn
 });
 
 
-// u03 A57: an invalid actor env used to be the only CLI-reachable rebind failure. It is now
-// treated as unset, so the carried in-progress task is rebound in the same revise.
-// shortcut: the PLAN_REBIND_PENDING decoration (plan-revise.mjs catch) has no CLI-reachable
-// trigger left; add an in-process seam test if that path changes.
+test('light CLI reports an applied revision when carried work rebind fails, then repairs it', async (context) => {
+  const { root } = await fixture(context);
+  success(root, ['todo', 'start', '--plan', 'work', '--task', 'b']);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  // An invalid actor no longer refuses (u03s A57), so the rebind failure is injected in process:
+  // the actor is read only by the post-publication rebind, and reading it throws.
+  const env = new Proxy({ ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0',
+    LATTICE_RUNTIME_ERROR_REPORTING: '0' }, {
+    get(target, key) {
+      if (key === 'LATTICE_TODO_ACTOR_AGENT') throw new Error('injected rebind failure');
+      return target[key];
+    },
+  });
+  const error = await runPlanRevise({ cwd: root, inputRef: 'revise.json', env,
+    stdout: { write() {} } }).then(() => assert.fail('revise must report the rebind failure'), (caught) => caught);
+  assert.equal(error.code, 'PLAN_REBIND_PENDING');
+  assert.equal(error.detail.task_id, 'b');
+  assert.equal(error.detail.revision_applied, true);
+  assert.match(error.detail.revision_digest, /^[a-f0-9]{64}$/);
+  assert.match(error.detail.plan_version, /^rev-/);
+  assert.equal(error.detail.next_action,
+    'lattice todo start --plan work --task b --rebind --reason <text>');
+  const repaired = success(root, ['todo', 'start', '--plan', 'work', '--task', 'b',
+    '--rebind', '--reason', 'fixture']);
+  assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
+});
+
 test('light CLI rebinds carried in-progress work even with an invalid actor env (u03 A57)', async (context) => {
   const { root } = await fixture(context);
   success(root, ['todo', 'start', '--plan', 'work', '--task', 'b']);

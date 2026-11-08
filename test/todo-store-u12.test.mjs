@@ -147,7 +147,7 @@ test('v5 light carry accepts title, edge and phase changes and keeps carried sta
   assert.equal(store.members[0].plan.tasks[0].title, 'renamed');
 });
 
-test('v5 light carry refuses a compile_binding change; carry policy still refuses a title change', async (t) => {
+test('v5 light carry refuses a compile_binding change; strict carry policy now keeps state across a title change', async (t) => {
   const { root, member } = await fixture(t);
   const rebound = revisionFor(member, { edit(desired) {
     desired.tasks[0].compile_binding = { ...BINDING, base_sha: 'e'.repeat(40) };
@@ -155,9 +155,13 @@ test('v5 light carry refuses a compile_binding change; carry policy still refuse
   await assert.rejects(apply(root, rebound), reason('REVISION_INVALID', 'carry_semantics_changed'));
   const unbound = revisionFor(member, { edit(desired) { desired.tasks[0].compile_binding = null; } });
   await assert.rejects(apply(root, unbound), reason('REVISION_INVALID', 'carry_semantics_changed'));
-  const strict = revisionFor(member, { tasks: carry('carry'), edit(desired) { desired.tasks[1].title = 'renamed'; } });
-  await assert.rejects(apply(root, strict), reason('REVISION_INVALID', 'carry_semantics_changed'));
   assert.equal((await readTodoStore({ repoRoot: root })).members[0].plan.plan_version, 'v1');
+  const strict = revisionFor(member, { tasks: carry('carry'), edit(desired) { desired.tasks[1].title = 'renamed'; } });
+  await apply(root, strict);
+  const store = await readTodoStore({ repoRoot: root });
+  assert.equal(store.members[0].plan.tasks[1].title, 'renamed');
+  assert.equal(stateOf(store, 'a').status, 'in-progress');
+  assert.equal(stateOf(store, 'a').started_at, member.tasks.find(({ task_id }) => task_id === 'a').started_at);
 });
 
 test('v5 carried phase may change membership (older revisions keep phase_carry_semantics_changed in todo-store.test.mjs)', async (t) => {
