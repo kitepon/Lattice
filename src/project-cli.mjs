@@ -24,6 +24,7 @@ import {
 import { isTodoIndependenceLegacyMarker } from './todo-independence-contracts.mjs';
 import { selectIndependenceGuidance } from './todo-independence-guidance.mjs';
 import { ensureTodoDashboardActivity } from './todo-dashboard-registry.mjs';
+import { seatIdentityFields } from './seat-identity.mjs';
 import { reportProjectDashboardDelivery } from './dashboard-delivery.mjs';
 import { resolveProjectIdentity } from './project-identity.mjs';
 import {
@@ -432,6 +433,7 @@ export async function runSessionContext({ cwd, stdout, cliVersion, env = process
     ? [] : await summarizeIndependence({ repoRoot: state.repoRoot, store: state.store, todo: state.todo });
   const result = {
     schema: SESSION_CONTEXT_SCHEMA,
+    ...seatIdentityFields(env),
     // project discoveryの答えをそのまま埋める。hostは既存の検証器を再利用できる。
     status: state.result,
     // todoは`lattice todo status`のresultそのもの。新しい意味論を発明しない。

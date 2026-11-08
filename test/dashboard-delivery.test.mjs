@@ -117,3 +117,15 @@ test('a15: a seat without a bridge gets the local_only receipt but no stderr lin
   assert.equal(result.state, 'local_only');
   assert.equal(stderr, '');
 });
+
+test('a15: a delivered page or a bridge without hub prints no line on a write; only failures do', async () => {
+  for (const state of ['hub_delivered', 'bridge_only']) {
+    let stderr = '';
+    const result = await reportProjectDashboardDelivery({ projectId: 'movie', env: {},
+      stderr: { write: (text) => { stderr += text; } },
+      ensureDelivery: async () => ({ schema: 'lattice.dashboard_delivery.v1', state,
+        reason: null, project_ids: ['movie'], urls: [] }) });
+    assert.equal(result.state, state);
+    assert.equal(stderr, '', state);
+  }
+});

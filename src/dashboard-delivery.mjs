@@ -110,7 +110,7 @@ export async function reportProjectDashboardDelivery({ projectId, env, stderr,
       ? { stage: FAILURE_STAGES.get(subreason), subreason }
       : { stage: 'unknown', subreason: 'unavailable' };
   }
-  // a15: no bridge is the seat's choice, not a failure; say nothing on every write.
-  if (delivery.state !== 'local_only') stderr?.write(`${JSON.stringify(delivery)}\n`);
+  // a15: only a failed delivery is news on a write; no bridge or a delivered page says nothing.
+  if (delivery.state === 'failed') stderr?.write(`${JSON.stringify(delivery)}\n`);
   return delivery;
 }

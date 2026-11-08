@@ -214,6 +214,26 @@ test('turnは自分の途中の工程だけをownに載せ、startableはnext_re
   assert.deepEqual(other.turn.own.map(({ task_id: id }) => id), ['T3']);
 });
 
+test('seats sharing one USER are told apart by LATTICE_SEAT_ID: seat_id on top, own per seat', async (context) => {
+  const root = await initialized(context, ['T1', 'T2', 'T3']);
+  const seatEnv = (seat) => ({ LATTICE_TODO_ACTOR_HOST: 'host-1', LATTICE_TODO_ACTOR_SESSION: 'session-1',
+    LATTICE_TODO_ACTOR_AGENT: '', USER: 'bell', LATTICE_SEAT_ID: seat });
+  for (const [task, seat] of [['T1', 'seat-a'], ['T2', 'seat-b']]) {
+    const started = run(root, ['todo', 'start', '--plan', 'main', '--task', task], seatEnv(seat));
+    assert.equal(started.status, 0, started.stderr);
+  }
+  const a = parse(run(root, ['session-context', '--json'], seatEnv('seat-a')).stdout);
+  assert.equal(a.seat_id, 'seat-a');
+  assert.equal(a.turn.actor.agent, 'seat-a');
+  assert.deepEqual(a.turn.own.map(({ task_id: id }) => id), ['T1']);
+  assert.equal(a.result_digest, todoSelfDigest(a, 'result_digest'));
+  const b = parse(run(root, ['session-context', '--json'], seatEnv('seat-b')).stdout);
+  assert.deepEqual(b.turn.own.map(({ task_id: id }) => id), ['T2']);
+  const anonymous = parse(run(root, ['session-context', '--json'], { ...seatEnv('seat-a'), LATTICE_SEAT_ID: '' }).stdout);
+  assert.equal('seat_id' in anonymous, false);
+  assert.equal(anonymous.turn.actor.agent, 'bell');
+});
+
 test('doneの工程はownに載らない', async (context) => {
   const root = await initialized(context, ['T1']);
   const env = actorEnv('agent-1');

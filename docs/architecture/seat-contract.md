@@ -31,9 +31,11 @@ Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
 
 A seat may say who it is with `LATTICE_SEAT_ID` (letters, digits, `.`, `_`, `-`;
-up to 64). The machine derives `seat_id`; Plan connects it to the top level of
-`status --json` and `session-context --json`, and the default actor `agent`
-becomes the seat id (`LATTICE_TODO_ACTOR_AGENT` still wins). The seat's own
+up to 64). The machine derives `seat_id`; it appears at the top level of
+`session-context --json` (the turn-start read; `status --json` keeps its frozen
+v1 shape, ADR 0131), and the default actor `agent` becomes the seat id
+(`LATTICE_TODO_ACTOR_AGENT` still wins), so seats that share one OS user keep
+their own `turn.own`. The seat's own
 display and delivery state moves under `~/.lattice/seats/<seat_id>`
 (`LATTICE_CONFIG_DIR` still wins when set), so the terminal identity and the
 default actor `host` become per-seat as well. This is a one-time transition:

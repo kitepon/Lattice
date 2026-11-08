@@ -12,6 +12,7 @@ import { parseTree } from 'jsonc-parser';
 
 import { canonicalizeTodoArtifact, isTodoIdentifier, todoSelfDigest } from './todo-contracts.mjs';
 import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
+import { resolveSeatIdentity } from './seat-identity.mjs';
 import { TodoStoreError } from './todo-store.mjs';
 
 const MAX_AUTHORING_INPUT_BYTES = 8_388_608;
@@ -30,6 +31,11 @@ function defaultActorHost(env) {
   return terminalId === null ? 'host' : terminalPublicLabel(terminalId);
 }
 
+function seatAgent(env) {
+  const { seat_id } = resolveSeatIdentity(env);
+  return isTodoIdentifier(seat_id) ? seat_id : null;
+}
+
 // u03s A57: a set but non-identifier value is treated like an unset one (no refusal).
 export function resolveTodoActor(env) {
   return {
@@ -39,9 +45,10 @@ export function resolveTodoActor(env) {
     session: isTodoIdentifier(env.LATTICE_TODO_ACTOR_SESSION)
       ? env.LATTICE_TODO_ACTOR_SESSION
       : 'session',
+    // Seats on one machine share USER; the seat id keeps their `own` tasks apart (seat-contract).
     agent: isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT)
       ? env.LATTICE_TODO_ACTOR_AGENT
-      : sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
+      : seatAgent(env) ?? sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
   };
 }
 
