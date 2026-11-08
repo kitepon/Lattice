@@ -144,6 +144,24 @@ export function displayHeadDigest(result, overlayHead = null) {
   });
 }
 
+const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+
+/** Project id and plan keys a display result carries; unavailable carries neither. */
+export function displayResultBinding(result) {
+  let projectId = null;
+  let planKeys = [];
+  if (result.state === 'unverified') {
+    const { store } = projectUnverifiedStore(result.store);
+    projectId = text(result.store?.project_id) ?? text(result.store?.manifest?.project_id);
+    planKeys = store.members.map(({ plan }) => plan.plan_key);
+  } else if (result.state === 'verified' || result.state === 'last_verified') {
+    projectId = text(result.store?.project_id);
+    planKeys = (Array.isArray(result.store?.members) ? result.store.members : [])
+      .map((member) => member?.descriptor?.plan_key).filter((key) => typeof key === 'string');
+  }
+  return { projectId: PROJECT_ID.test(projectId) ? projectId : null, planKeys: planKeys.sort() };
+}
+
 /**
  * One per project, shared by every client. The memo is keyed by the source token
  * observed at the last full-read attempt (not result.source, which is the
@@ -164,13 +182,23 @@ export function createTodoGanttDisplayReader({
   const load = async () => {
     const key = await observe();
     if (memo !== null && memo.valid && memo.key === key && now() - memo.at < revalidateMs) {
+      if (memo.fault !== undefined) throw memo.fault;
       return memo.result;
     }
     const at = now();
-    memo = null; // a throwing read must not leave a stale result behind
-    const result = await readForDisplay({ repoRoot });
+    memo = null;
     // A token change during the attempt leaves the memo invalid for the next poll.
-    memo = { key, at, result, valid: (await observe()) === key };
+    const settle = async (outcome) => {
+      memo = { key, at, valid: (await observe()) === key, ...outcome };
+    };
+    let result;
+    try { result = await readForDisplay({ repoRoot }); } catch (fault) {
+      // A real fault (not a typed result) is bounded like a probe failure: an unchanged token
+      // with a persisting fault is not re-read every poll; the revalidation ceiling still applies.
+      await settle({ fault });
+      throw fault;
+    }
+    await settle({ result });
     return result;
   };
   return {

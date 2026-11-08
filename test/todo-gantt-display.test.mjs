@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, unlink } from 'node:fs/promises';
+import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,7 +9,7 @@ import { createTodoGanttDisplayReader, displayHeadDigest, GANTT_DISPLAY_OMITTED_
   projectUnverifiedStore } from '../src/todo-gantt-display.mjs';
 import { startTodoGanttLiveServer } from '../src/todo-gantt-live.mjs';
 import { digestTodoArtifact } from '../src/todo-contracts.mjs';
-import { createTodoGanttDisplayServing, renderTodoGanttForProject } from '../src/todo-cli.mjs';
+import { createTodoGanttDisplayServing, renderTodoGanttForProject, startTodoGanttDisplayLive } from '../src/todo-cli.mjs';
 import { createTodoStoreWriter, initializeTodoStore, readTodoStoreStable } from '../src/todo-store.mjs';
 
 const NOW = '2026-07-18T00:00:00.000Z';
@@ -311,4 +311,57 @@ test('one-shotのrenderはstrictな読みのまま不整合で失敗する', asy
   const root = await workspace(context);
   await unlink(path.join(root, '.lattice', 'todo', 'manifest.json'));
   await assert.rejects(renderTodoGanttForProject({ repoRoot: root }), (error) => typeof error.code === 'string');
+});
+
+test('起動もdisplay readを使い、不整合のstoreでもlocal live ganttは起動して状態を出す', async (context) => {
+  const root = await workspace(context);
+  const store = await readTodoStoreStable({ repoRoot: root });
+  const start = async (result, extra = {}) => {
+    const { live, planKeys } = await startTodoGanttDisplayLive({ repoRoot: root, ...extra,
+      readForDisplay: async () => result, readDisplaySource: async () => SOURCE });
+    context.after(() => live.close());
+    return { live, planKeys };
+  };
+  // unverified carries project_id and the projected plan keys
+  const unverified = await start(typed('unverified', { store: rawOf(store) }));
+  assert.equal(unverified.live.projectId, 'project-1');
+  assert.deepEqual(unverified.planKeys, ['main']);
+  assert.equal((await fetch(unverified.live.url)).status, 200);
+  // unavailable, nothing registered: still starts and serves the empty state
+  const bare = await start(typed('unavailable', { source: null }));
+  assert.deepEqual(bare.planKeys, []);
+  const response = await fetch(bare.live.url);
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /data-display-state="unavailable"/u);
+  // unavailable with a registered project id keeps that id
+  await writeFile(path.join(root, '.lattice', 'project.json'), `${JSON.stringify({
+    schema: 'lattice.project_identity.v1', project_id: 'registered-1', display_name: 'Registered' })}\n`);
+  const registered = await start(typed('unavailable', { source: null }));
+  assert.equal(registered.live.projectId, 'registered-1');
+  assert.equal(registered.live.displayName, 'Registered');
+});
+
+test('Store readerのthrow(型付き結果の外の故障)は同じtokenなら読み直さず500のまま、ceilingで再検証する', async (context) => {
+  const root = await workspace(context);
+  const harness = readerHarness();
+  const fault = Object.assign(new Error('io'), { code: 'EIO' });
+  harness.result = null;
+  const reader = createTodoGanttDisplayReader({ repoRoot: root, now: () => harness.now.value,
+    readForDisplay: async () => { harness.fullReads += 1; throw fault; },
+    readDisplaySource: async () => harness.source });
+  const live = await serve(context, createTodoGanttDisplayServing({ repoRoot: root,
+    projectId: 'project-1', reader }));
+  for (let poll = 0; poll < 5; poll += 1) {
+    harness.now.value += 500;
+    const response = await fetch(live.url);
+    assert.equal(response.status, 500);
+    assert.equal((await response.json()).code, 'EIO');
+  }
+  assert.equal(harness.fullReads, 1);
+  harness.now.value += 30_000;
+  await assert.rejects(reader.read(), fault);
+  assert.equal(harness.fullReads, 2);
+  harness.source = { ...SOURCE, manifest_digest: 'm2' };
+  await assert.rejects(reader.read(), fault);
+  assert.equal(harness.fullReads, 3);
 });

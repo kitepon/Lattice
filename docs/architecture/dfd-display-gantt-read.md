@@ -23,7 +23,7 @@ makes the strict read throw, and `finishRequestFailure` turns any thrown read in
 | Caller | Today | After |
 |---|---|---|
 | `bin/lattice-dashboard.mjs` registry `render` / `readHead` (public daemon) | `readCachedStore` (process-local `createTodoStoreCache`, manifest-only identity) | `readTodoStoreForDisplay({repoRoot})` |
-| `src/todo-cli.mjs` `serveGantt` `render` / `readHead` (local live gantt) | `readTodoStoreStable` | `readTodoStoreForDisplay({repoRoot})` |
+| `src/todo-cli.mjs` `serveGantt` startup, `render` / `readHead` (local live gantt) | `readTodoStoreStable` (startup also read strictly for `project_id` and plan keys) | `readTodoStoreForDisplay({repoRoot})`; startup takes `project_id` / plan keys from the display result (`unavailable`: the repository's registered `.lattice/project.json` id, else a fixed route id) and starts in every state |
 | `src/todo-gantt-live.mjs` request/SSE handling | thrown read → 500 / SSE `lattice-error` and stream closed | consumes the typed result; no 500 for a typed Store display result |
 
 `renderTodoGanttForProject`, `ganttLiveHeadDigest` and the other one-shot CLI
@@ -43,7 +43,7 @@ renders keep their strict reads; only the two serving paths above change.
 | Change detection | `readTodoStoreDisplaySource({repoRoot})` (same fields as `source`, unverified, never displayed) → compare with the token observed at the last full-read attempt, memoized per project next to its result (not the result's `source`, which in last_verified is the checkpoint's and in unavailable is null). The raw read of `unverified` is the same full read on the same memo/ceiling path: an inconsistent store with an unchanged token reuses the memoized `unverified` result and adds no read loop | Equal → reuse the memoized result, degraded or not; different, first observation, or token recovery after a failure → full `readTodoStoreForDisplay`. A token change during an attempt invalidates the memo for the next poll. A probe failure falls back to one full read; a persisting identical failure must not loop full reads every 500 ms. A full revalidation at least every ~30 s lets same-head repairs exit on their own. In-flight reads and the memo are shared per project. Ships in the same unit as the daemon switch. |
 | Head token | digest of `source` + `state` + `inconsistency.code`, plus the existing overlay digests only in `verified` | A plan-scoped-only append moves `source` and reloads connected pages (today's `ganttLiveHeadDigest` binds only `manifest_digest`). A state change also reloads them via the existing SSE path. |
 | SSE | `state` events carry the token; `lattice-error` is kept only for faults outside the typed display result | The stream no longer closes on a typed inconsistency. |
-| Real server faults | renderer bug, I/O fault outside the Store result | Still 500 with the existing `lattice.todo_gantt_http_error.v1`. |
+| Real server faults | renderer bug, I/O fault outside the Store result, a thrown (untyped) Store read | Still 500 with the existing `lattice.todo_gantt_http_error.v1`. A thrown read is memoized under the observed source token like a probe failure: an unchanged token with a persisting fault does not re-run a full read every poll; the ~30 s revalidation still applies. |
 
 
 ### State precedence (one ordered rule)

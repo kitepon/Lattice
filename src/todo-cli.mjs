@@ -39,15 +39,15 @@ import {
   removeTodoDashboardProject,
 } from './todo-dashboard-registry.mjs';
 import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
-import { readProjectExternalPane, resolveProjectIdentity } from './project-identity.mjs';
+import { readProjectExternalPane, readRegisteredProjectId, resolveProjectIdentity } from './project-identity.mjs';
 import { layoutTodoGantt } from './todo-gantt-layout.mjs';
 import { TODO_GANTT_SCOPES } from './todo-gantt-scope.mjs';
 import { loadTodoGanttPresentation } from './todo-gantt-presentation.mjs';
 import { loadTodoStructurePresentation } from './todo-structure-presentation.mjs';
 import { startTodoGanttLiveServer } from './todo-gantt-live.mjs';
 import {
-  createTodoGanttDisplayReader, degradedBannerHtml, displayHeadDigest, emptyStateHtml,
-  projectUnverifiedStore,
+  createTodoGanttDisplayReader, degradedBannerHtml, displayHeadDigest, displayResultBinding,
+  emptyStateHtml, projectUnverifiedStore,
 } from './todo-gantt-display.mjs';
 import {
   renderTodoGanttHtml,
@@ -3551,9 +3551,9 @@ export async function renderTodoGanttForProject({
  * as a banner state, never a 500. One-shot CLI renders keep their strict reads.
  */
 export function createTodoGanttDisplayServing({
-  repoRoot, projectId, scope = DEFAULT_GANTT_SCOPE, env = process.env, ...readers
+  repoRoot, projectId, scope = DEFAULT_GANTT_SCOPE, env = process.env, reader = null, ...readers
 }) {
-  const reader = createTodoGanttDisplayReader({ repoRoot, ...readers });
+  reader ??= createTodoGanttDisplayReader({ repoRoot, ...readers });
   return {
     render: async ({ displayName }) => {
       const result = await reader.read();
@@ -3606,23 +3606,40 @@ async function renderGanttDisplayResult({ repoRoot, result, displayName, scope, 
   }
 }
 
+// Reached only when the display read carries no project id (unavailable) and the repository
+// registered none: the empty state is still served, under this fixed route id.
+const UNREGISTERED_PROJECT_ID = 'unregistered-project';
+
+/**
+ * Start the local live gantt from the display read, so an inconsistent store does not stop it
+ * from starting (the same stop the typed states remove from the page itself).
+ */
+export async function startTodoGanttDisplayLive({
+  repoRoot, port = 0, env = process.env, scope = DEFAULT_GANTT_SCOPE, onShutdown = null, ...readers
+}) {
+  const reader = createTodoGanttDisplayReader({ repoRoot, ...readers });
+  const { projectId: carried, planKeys } = displayResultBinding(await reader.read());
+  const projectId = carried ?? await readRegisteredProjectId({ repoRoot }) ?? UNREGISTERED_PROJECT_ID;
+  let identity = { displayName: projectId };
+  try { identity = await resolveProjectIdentity({ repoRoot, projectId, env }); } catch (error) {
+    if (carried !== null) throw error; // a readable store keeps the strict identity contract
+  }
+  const live = await startTodoGanttLiveServer({
+    projectId, displayName: identity.displayName, port, onShutdown,
+    ...createTodoGanttDisplayServing({ repoRoot, projectId, scope, env, reader }),
+  });
+  return { live, planKeys };
+}
+
 async function serveGantt({ repoRoot, port, stdout, env, scope = DEFAULT_GANTT_SCOPE }) {
-  const initialStore = await readTodoStoreStable({ repoRoot });
-  const identity = await resolveProjectIdentity({ repoRoot, projectId: initialStore.project_id, env });
   let stop;
   const stopped = new Promise((resolve) => { stop = resolve; });
-  const live = await startTodoGanttLiveServer({
-    projectId: initialStore.project_id,
-    displayName: identity.displayName,
-    port,
-    ...createTodoGanttDisplayServing({
-      repoRoot, projectId: initialStore.project_id, scope, env,
-    }),
-    onShutdown: process.platform === 'win32' ? stop : null,
+  const { live, planKeys } = await startTodoGanttDisplayLive({
+    repoRoot, port, env, scope, onShutdown: process.platform === 'win32' ? stop : null,
   });
   const result = { schema: 'lattice.todo_gantt_live_result.v3', project_id: live.projectId,
     resource_scope: 'project', selection_scope: scope,
-    included_plan_keys: initialStore.members.map(({ descriptor }) => descriptor.plan_key).sort(),
+    included_plan_keys: planKeys,
     media_type: 'text/html; charset=utf-8', dynamic: true,
     host: live.host, port: live.port, project_path: live.projectPath,
     url: live.url, events_url: live.eventsUrl };
