@@ -6,6 +6,7 @@ import {
 import path from 'node:path';
 import { StoreLockError, withStoreLock } from './store-lock.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
+import { normalizeCheckoutEol } from './todo-store-view.mjs';
 
 import {
   TODO_LIMITS,
@@ -88,7 +89,7 @@ async function readOptionalBounded(ref, { missing = false } = {}) {
     if (!metadata.isFile() || metadata.size > TODO_LIMITS.journalSegmentBytes) {
       fail('NOTE_LOG_CORRUPT', 'note_segment_invalid', { ref });
     }
-    return await readFile(ref);
+    return normalizeCheckoutEol(await readFile(ref));
   } catch (error) {
     if (error instanceof TodoNoteStoreError) throw error;
     if (missing && error?.code === 'ENOENT') return null;
@@ -471,7 +472,7 @@ async function readCanonicalJson(ref, { missing = false } = {}) {
     if (!metadata.isFile() || metadata.size > TODO_LIMITS.snapshotBytes) {
       fail('NOTE_PROJECTION_INVALID', 'note_projection_artifact_invalid', { ref });
     }
-    bytes = await readFile(ref);
+    bytes = normalizeCheckoutEol(await readFile(ref));
   } catch (error) {
     if (error instanceof TodoNoteStoreError) throw error;
     if (missing && error?.code === 'ENOENT') return null;

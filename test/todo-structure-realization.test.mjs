@@ -170,14 +170,6 @@ async function evidenceFile(root, taskId) {
   return descriptorRef;
 }
 
-async function bytesOrMissing(root, refs) {
-  return Promise.all(refs.map(async (ref) => {
-    try { return await readFile(path.join(root, ref)); } catch (error) {
-      if (error?.code === 'ENOENT') return null;
-      throw error;
-    }
-  }));
-}
 
 test('todo startは対象taskのcanonical planned構造とrealize案内を直接返す', async (context) => {
   const data = await fixture(context);
@@ -382,7 +374,7 @@ test('訂正はsupersedesで追記し、readは全履歴・最新effective・pla
   assert.equal(body.effective.tasks[1].form, 'planned');
 });
 
-test('doneはrealization無しで通り、terminal gateだけfresh finalizationを要求する', async (context) => {
+test('doneもterminal closeもrealization/finalization無しで通り、finalization状態はstatusに残る', async (context) => {
   const data = await fixture(context, { secondExcluded: true });
   assert.equal(run(data.root, [
     'start', '--plan', 'main', '--task', 'T1', '--parallel-frontier',
@@ -390,14 +382,6 @@ test('doneはrealization無しで通り、terminal gateだけfresh finalization�
   assert.equal(run(data.root, [
     'start', '--plan', 'main', '--task', 'T2',
   ]).status, 0);
-  const store = await readTodoStore({ repoRoot: data.root });
-  const member = store.members[0];
-  const guardedRefs = [
-    '.lattice/todo/manifest.json', member.descriptor.journal_ref,
-    member.descriptor.snapshot_ref,
-    todoStructureRealizationRef('main', 'v1', 'T1'),
-    todoStructureFinalizationRef('main', 'v1'),
-  ];
   const t1Evidence = await evidenceFile(data.root, 'T1');
   assert.equal(run(data.root, [
     'done', '--plan', 'main', '--task', 'T1', '--evidence', t1Evidence,
@@ -421,14 +405,11 @@ test('doneはrealization無しで通り、terminal gateだけfresh finalization�
     stale_reasons: [], next_command: 'lattice todo structure finalize --plan main --json',
   });
   assert.match(parse(auditPending.stdout).phases[0].guidance, /structure finalize/u);
-  const beforeMissingFinalization = await bytesOrMissing(data.root, guardedRefs);
-  const rejectedTerminal = run(data.root, [
+  const closedWithoutFinalization = run(data.root, [
     'phase', 'close-unaudited', '--plan', 'main', '--phase', 'terminal-audit',
     '--reason', 'fixture close',
   ]);
-  assert.equal(rejectedTerminal.status, 1);
-  assert.equal(parse(rejectedTerminal.stderr).code, 'STRUCTURE_FINALIZATION_REQUIRED');
-  assert.deepEqual(await bytesOrMissing(data.root, guardedRefs), beforeMissingFinalization);
+  assert.equal(closedWithoutFinalization.status, 0, closedWithoutFinalization.stderr);
 
   const realized = run(data.root, [
     'structure', 'realize', '--plan', 'main', '--task', 'T1', '--planned',
@@ -457,13 +438,7 @@ test('doneはrealization無しで通り、terminal gateだけfresh finalization�
   assert.equal(clear.status, 0, clear.stderr);
   assert.deepEqual(parse(clear.stdout).structure_finalization_pending, []);
 
-  const accepted = run(data.root, [
-    'phase', 'close-unaudited', '--plan', 'main', '--phase', 'terminal-audit',
-    '--reason', 'fixture close',
-  ]);
-  assert.equal(accepted.status, 0, accepted.stderr);
-  git(data.root, ['add', '.lattice/todo']);
-  git(data.root, ['commit', '--quiet', '-m', 'close terminal phase']);
+  git(data.root, ['commit', '--quiet', '--allow-empty', '-m', 'move head']);
   const stale = await readTodoStructureFinalizationState({
     repoRoot: data.root, planKey: 'main',
   });

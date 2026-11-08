@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { StoreLockError, withStoreLock } from '../src/store-lock.mjs';
+import { LOCK_STALE_MS, StoreLockError, withStoreLock } from '../src/store-lock.mjs';
 import { observeStartIdentityRaw } from '../src/runtime-os-observation.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -153,36 +153,61 @@ test('unidentified recovery claims have a named manual exit and are never delete
   assert.deepEqual(await readdir(claimsPath), ['legacy-unidentified']);
 });
 
-for (const [name, specifier, replacement, cause] of [
-  ['unavailable own identity', './runtime-os-observation.mjs',
-    `export async function observeStartIdentityRaw(){throw new Error('observer unavailable')}
-     export async function observeProcessHostIdentityRaw(){return 'host-domain'}`,
-    'lock_identity_unavailable'],
-  ['unsupported hard links', 'node:fs/promises',
-    `export {lstat,mkdir,open,readFile,readdir,readlink,rm,rmdir} from 'node:fs/promises';
-     export async function link(){throw Object.assign(new Error('unsupported'),{code:'ENOTSUP'})}`,
-    'lock_publication_unavailable'],
-]) {
-  test(`${name} returns typed actionable conflict and publishes no owner`, async (t) => {
-    const { root, lockPath } = await fixture(t);
-    const replacementUrl = `data:text/javascript,${encodeURIComponent(replacement)}`;
-    const loader = `export async function resolve(specifier,context,next){
-      if(specifier===${JSON.stringify(specifier)}&&context.parentURL?.endsWith('/store-lock.mjs'))
-        return {url:${JSON.stringify(replacementUrl)},shortCircuit:true};
-      return next(specifier,context);
-    }`;
-    const result = await execFileAsync(process.execPath, ['--input-type=module', '-e', `
-      import {register} from 'node:module';
-      register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loader)}`)});
-      const {withStoreLock,StoreLockError}=await import(${JSON.stringify(moduleUrl)});
-      try {await withStoreLock({lockPath:${JSON.stringify(lockPath)}},()=>process.exit(2));process.exit(3)}
-      catch(error){if(!(error instanceof StoreLockError))throw error;
-        process.stdout.write(JSON.stringify({reason:error.reason,...error.detail}))}
-    `]);
-    const detail = JSON.parse(result.stdout);
-    assert.equal(detail.reason, 'store_locked');
-    assert.equal(detail.cause, cause);
-    assert.ok(detail.next_action.includes(lockPath));
-    assert.deepEqual(await readdir(root), []);
-  });
+function runWithLoader(lockPath, specifier, replacement, body) {
+  const replacementUrl = `data:text/javascript,${encodeURIComponent(replacement)}`;
+  const loader = `export async function resolve(specifier,context,next){
+    if(specifier===${JSON.stringify(specifier)}&&context.parentURL?.endsWith('/store-lock.mjs'))
+      return {url:${JSON.stringify(replacementUrl)},shortCircuit:true};
+    return next(specifier,context);
+  }`;
+  return execFileAsync(process.execPath, ['--input-type=module', '-e', `
+    import {register} from 'node:module';
+    register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loader)}`)});
+    const {withStoreLock,StoreLockError}=await import(${JSON.stringify(moduleUrl)});
+    ${body}
+  `]);
 }
+
+test('unavailable own identity publishes a weak owner and still acquires', async (t) => {
+  const { root, lockPath } = await fixture(t);
+  const result = await runWithLoader(lockPath, './runtime-os-observation.mjs',
+    `export async function observeStartIdentityRaw(){throw new Error('observer unavailable')}
+     export async function observeProcessHostIdentityRaw(){return 'host-domain'}`, `
+    import {readFile} from 'node:fs/promises';
+    await withStoreLock({lockPath:${JSON.stringify(lockPath)}},async()=>{
+      process.stdout.write(await readFile(${JSON.stringify(lockPath)},'utf8'));
+    });`);
+  const owner = JSON.parse(result.stdout);
+  assert.equal(typeof owner.pid, 'number');
+  assert.deepEqual(owner.process_start, { platform: process.platform, identity: 'unobserved' });
+  assert.equal(owner.host, 'unobserved');
+  assert.deepEqual(await readdir(root), []);
+});
+
+test('unsupported hard links returns typed actionable conflict and publishes no owner', async (t) => {
+  const { root, lockPath } = await fixture(t);
+  const result = await runWithLoader(lockPath, 'node:fs/promises',
+    `export {lstat,mkdir,open,readFile,readdir,readlink,rm,rmdir,utimes} from 'node:fs/promises';
+     export async function link(){throw Object.assign(new Error('unsupported'),{code:'ENOTSUP'})}`, `
+    try {await withStoreLock({lockPath:${JSON.stringify(lockPath)}},()=>process.exit(2));process.exit(3)}
+    catch(error){if(!(error instanceof StoreLockError))throw error;
+      process.stdout.write(JSON.stringify({reason:error.reason,...error.detail}))}`);
+  const detail = JSON.parse(result.stdout);
+  assert.equal(detail.reason, 'store_locked');
+  assert.equal(detail.cause, 'lock_publication_unavailable');
+  assert.ok(detail.next_action.includes(lockPath));
+  assert.deepEqual(await readdir(root), []);
+});
+
+test('unidentified lock is recovered only after its mtime exceeds LOCK_STALE_MS', async (t) => {
+  const { root, lockPath } = await fixture(t);
+  await writeFile(lockPath, '');
+  await assert.rejects(withStoreLock({ lockPath }, () => assert.fail('fresh unidentified lock entered')),
+    busy('lock_owner_unidentified'));
+  const old = new Date(Date.now() - LOCK_STALE_MS - 60_000);
+  await utimes(lockPath, old, old);
+  let ran = false;
+  await withStoreLock({ lockPath }, () => { ran = true; });
+  assert.ok(ran);
+  assert.deepEqual(await readdir(root), []);
+});

@@ -28,7 +28,7 @@ export function todoStoreReadFailurePhase(error) {
   if (error?.code === 'EIO') return 'store_io_failed';
   if (error?.code === 'STORE_INCONSISTENT' && error.detail?.ref === MANIFEST_REF
     && ['schema_invalid', 'artifact_truncated_or_trailing_bytes', 'non_canonical_or_duplicate_key',
-      'size_limit_exceeded', 'artifact_eol_converted'].includes(error.detail.reason)) {
+      'size_limit_exceeded'].includes(error.detail.reason)) {
     return 'store_manifest_invalid';
   }
   return 'store_read_failed';

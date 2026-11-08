@@ -4,6 +4,7 @@ import {
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
   localTaskRef,
+  normalizeCheckoutEol,
   removedTaskRef,
   todoTaskCarrySemantics as taskSemantics,
 } from './todo-store-view.mjs';
@@ -81,7 +82,6 @@ const CROSS_PLAN_IMPORT_TRANSACTION_SCHEMA = 'lattice.todo_cross_plan_import_tra
 const SOURCE_CUTOVER_BARRIER_REF = `${STORE_ROOT_REF}/source-cutover-recovery.json`;
 const SOURCE_CUTOVER_RECOVERY_CAPABILITY = Symbol('lattice.todo.source-cutover-recovery');
 const STORE_LOCK_HELD = Symbol('lattice.todo.lock-held');
-const MAX_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const WRITER_CALLERS = new Set(['g4-migration', 'g5-authoring']);
 const TODO_REVISION_SCHEMAS = Object.freeze([
   'lattice.todo_revision.v1', 'lattice.todo_revision.v2',
@@ -162,11 +162,6 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
     fail(code, bytes.length > maxBytes ? 'size_limit_exceeded' : reason, detail);
   }
   const text = decodeUtf8(bytes, code, 'invalid_utf8');
-  if (text.includes('\r')) {
-    fail(code, 'artifact_eol_converted', {
-      ...detail, next_action: 'lattice todo repair-eol --json',
-    });
-  }
   if (text.startsWith('\uFEFF')) fail(code, reason, detail);
   const body = text.endsWith('\n') ? text.slice(0, -1) : text;
   let value;
@@ -182,7 +177,7 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
 async function readArtifact(repoRoot, ref, { code, maxBytes, validate, missing = false }) {
   const state = await pathState(repoRoot, ref, code, { missing });
   if (state === null) return null;
-  const bytes = await readFile(state.absolute);
+  const bytes = normalizeCheckoutEol(await readFile(state.absolute));
   return parseCanonicalJsonLine(bytes, {
     code, reason: 'artifact_truncated_or_trailing_bytes', maxBytes, validate, ref,
   });
@@ -191,7 +186,7 @@ async function readArtifact(repoRoot, ref, { code, maxBytes, validate, missing =
 async function readSnapshotArtifact(repoRoot, ref) {
   const state = await pathState(repoRoot, ref, 'STORE_INCONSISTENT', { missing: true });
   if (state === null) return null;
-  const bytes = await readFile(state.absolute);
+  const bytes = normalizeCheckoutEol(await readFile(state.absolute));
   return parseCanonicalJsonLine(bytes, {
     code: 'SNAPSHOT_INVALID', reason: 'snapshot_truncated_or_trailing_bytes',
     maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoSnapshot, ref,
@@ -205,11 +200,6 @@ function parseJournalSegment(bytes, ref = null) {
       ? 'journal_segment_limit_exceeded' : 'journal_empty', detail);
   }
   const text = decodeUtf8(bytes, 'STORE_CORRUPT', 'journal_invalid_utf8');
-  if (text.includes('\r')) {
-    fail('STORE_CORRUPT', 'artifact_eol_converted', {
-      ...detail, next_action: 'lattice todo repair-eol --json',
-    });
-  }
   if (!text.endsWith('\n') || text.startsWith('\uFEFF')) fail('STORE_CORRUPT', 'journal_byte_contract', detail);
   const lines = text.slice(0, -1).split('\n');
   if (lines.some((line) => line.length === 0)) fail('STORE_CORRUPT', 'journal_truncated_or_empty_line');
@@ -239,7 +229,7 @@ async function readJournal(repoRoot, journalRef) {
       }
       const ref = path.posix.join(path.posix.dirname(journalRef), 'sealed', name);
       const sealed = await pathState(repoRoot, ref, 'STORE_CORRUPT');
-      const bytes = await readFile(sealed.absolute);
+      const bytes = normalizeCheckoutEol(await readFile(sealed.absolute));
       const [, startText, endText, previousDigest, segmentDigest] = name.match(
         /^(\d{12})-(\d{12})-([0-9a-f]{64})-([0-9a-f]{64})\.jsonl$/u,
       );
@@ -257,7 +247,7 @@ async function readJournal(repoRoot, journalRef) {
     if (error instanceof TodoStoreError) throw error;
     if (error?.code !== 'ENOENT') fail('STORE_CORRUPT', 'sealed_segment_read_failed');
   }
-  const activeBytes = await readFile(state.absolute);
+  const activeBytes = normalizeCheckoutEol(await readFile(state.absolute));
   const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
   if (!duplicateActive) {
     segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef) });
@@ -326,7 +316,7 @@ async function readPlanScopedJournal(repoRoot, journalRef) {
   try {
     const state = await lstat(absolute);
     if (state.isSymbolicLink() || !state.isFile()) fail('STORE_CORRUPT', 'plan_scoped_journal_unsafe');
-    bytes = await readFile(absolute);
+    bytes = normalizeCheckoutEol(await readFile(absolute));
   } catch (error) {
     if (error instanceof TodoStoreError) throw error;
     if (error?.code === 'ENOENT') return { ref, events: [], activeBytes: Buffer.alloc(0) };
@@ -484,7 +474,7 @@ function localSuccessors(plan, taskId) {
   return plan.tasks.map(({ task_id }) => task_id).filter((candidate) => localPredecessors(plan, candidate).includes(taskId));
 }
 
-function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSource } = {}) {
+function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
   const states = new Map(plan.tasks.map(({ task_id }) => [task_id, taskState(task_id)]));
   const phaseStates = new Map(phasesOf(plan).map(({ phase_id }) => [phase_id, emptyPhaseState(phase_id)]));
   const doneDigest = new Map();
@@ -496,22 +486,12 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
   // storeを恒久的に書き込み不能へ落とす（2026-08-22実被弾: reopen済み旧doneのdangling blob）。
   const pendingVerifications = new Map();
   const importedGenesis = events[0]?.payload.historical_import === true;
-  let previousTime = null;
   for (const event of events) {
     if (event.project_id !== plan.project_id || event.plan_key !== plan.plan_key || event.plan_version !== plan.plan_version) {
       fail('STORE_CORRUPT', 'journal_identity_mismatch');
     }
     if (!isStrictTodoTimestamp(event.recorded_at)) fail('STORE_CORRUPT', 'timestamp_invalid');
-    const time = Date.parse(event.recorded_at);
-    if (previousTime !== null && time < previousTime) fail('STORE_INCONSISTENT', 'clock_reversal');
-    if (time > now.valueOf() + MAX_FUTURE_SKEW_MS) {
-      fail('STORE_INCONSISTENT', 'future_clock_skew', {
-        recorded_at: event.recorded_at,
-        current_time: now.toISOString(),
-        max_future_skew_ms: MAX_FUTURE_SKEW_MS,
-      });
-    }
-    previousTime = time;
+    // u03 A4/A5: order is the sequence + hash chain; recorded_at is a shown fact, never an integrity key.
     if (event.kind === 'plan_genesis') {
       if (event.payload.plan_digest !== plan.plan_digest || event.payload.topology_digest !== plan.topology_digest
         || event.payload.predecessor_plan_digest !== plan.predecessor_plan_digest) {
@@ -1529,8 +1509,8 @@ async function readTodoStoreView(options = {}) {
       snapshotStale = snapshot === null || canonicalizeTodoArtifact(snapshot) !== canonicalizeTodoArtifact(expectedSnapshot);
     } catch (error) {
       if (error instanceof TodoStoreError && error.code === 'SNAPSHOT_INVALID'
-        && !['unsafe_artifact_path', 'path_alias_or_escape', 'path_outside_store',
-          'artifact_eol_converted'].includes(error.detail.reason)) snapshotStale = true;
+        && !['unsafe_artifact_path', 'path_alias_or_escape', 'path_outside_store']
+          .includes(error.detail.reason)) snapshotStale = true;
       else throw error;
     }
     if (options.forWrite === true && snapshotStale && !options.recovery) fail('STORE_WRITE_REFUSED', 'snapshot_stale');
@@ -1810,70 +1790,6 @@ function resolveCanonicalTaskId(plan, requestedTaskId) {
   return matches[0].task_id;
 }
 
-async function enforceTodoStructureLifecycleGate(repoRoot, member, eventInput) {
-  if (eventInput.kind === 'done') return;
-  const binding = await readTodoStructureBinding({
-    repoRoot, planKey: member.plan.plan_key, planVersion: member.plan.plan_version,
-  });
-  if (binding === null) return;
-  const source = await readTodoStructureSource({ repoRoot, planKey: member.plan.plan_key });
-  if (source === null || source.structure_set_digest !== binding.structure_set_digest) {
-    fail('STRUCTURE_LIFECYCLE_GATE_FAILED', 'enabled_structure_source_unreadable');
-  }
-  if (!['phase_accept', 'phase_close_unaudited'].includes(eventInput.kind)
-    || member.tasks.some(({ status }) => status !== 'done')) return;
-  const finalization = await readTodoStructureFinalization({
-    repoRoot, planKey: member.plan.plan_key, planVersion: member.plan.plan_version,
-  });
-  if (finalization === null) {
-    fail('STRUCTURE_FINALIZATION_REQUIRED', 'fresh_consistent_finalization_missing', {
-      plan_key: member.plan.plan_key,
-      next_action: `lattice todo structure finalize --plan ${member.plan.plan_key} --json`,
-    });
-  }
-  let currentHead;
-  try {
-    currentHead = gitSync(['rev-parse', '--verify', 'HEAD^{commit}'], {
-      cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    fail('STRUCTURE_GIT_HEAD_UNAVAILABLE', 'current_head_unavailable');
-  }
-  const realizationHeads = [];
-  for (const task of source.tasks.filter(({ applicability }) => applicability === 'graph')) {
-    const chain = await readTodoStructureRealizationChain({
-      repoRoot, structureSet: source, taskId: task.task_id,
-    });
-    const head = chain.at(-1);
-    if (head !== undefined) realizationHeads.push({
-      task_id: task.task_id, sequence: head.sequence,
-      realization_digest: head.realization_digest,
-    });
-  }
-  const staleReasons = [];
-  if (finalization.project_id !== member.plan.project_id) staleReasons.push('project_id');
-  if (finalization.plan_key !== member.plan.plan_key) staleReasons.push('plan_key');
-  if (finalization.plan_version !== member.plan.plan_version) staleReasons.push('plan_version');
-  if (finalization.topology_digest !== member.plan.topology_digest) {
-    staleReasons.push('topology_digest');
-  }
-  if (finalization.structure_set_digest !== source.structure_set_digest) {
-    staleReasons.push('structure_set_digest');
-  }
-  if (finalization.current_head_sha !== currentHead) staleReasons.push('current_head_sha');
-  if (finalization.realization_head_digest
-    !== digestTodoStructureRealizationHeads(realizationHeads)) {
-    staleReasons.push('realization_head_digest');
-  }
-  if (finalization.overlay.verdict !== 'consistent') staleReasons.push('verdict');
-  if (staleReasons.length > 0) {
-    fail('STRUCTURE_FINALIZATION_REQUIRED', 'finalization_stale', {
-      plan_key: member.plan.plan_key, stale_reasons: staleReasons.sort(),
-      next_action: `lattice todo structure finalize --plan ${member.plan.plan_key} --json`,
-    });
-  }
-}
-
 export async function appendTodoEvent(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
   if (typeof options.validateProspectiveEvent !== 'function') {
@@ -1920,7 +1836,6 @@ export async function appendTodoEvent(options = {}) {
       task_id: resolveCanonicalTaskId(member.plan, options.event.task_id),
       recorded_at: options.event.recorded_at ?? new Date().toISOString(),
     }, member);
-    await enforceTodoStructureLifecycleGate(repoRoot, member, input);
     const event = nextEvent(input, member);
     if ((event.kind === 'start' && event.payload.start_mode === 'historical_import')
       || (event.kind === 'done' && event.payload.done_mode === 'historical_import')) {
@@ -2575,7 +2490,7 @@ async function finalizeVisibleCrossPlanImport(repoRoot, transaction, { removeTra
       fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.staged_ref });
     }
     const target = await pathState(repoRoot, artifact.ref, 'STORE_INCONSISTENT', { missing: true });
-    const current = target === null ? Buffer.alloc(0) : await readFile(target.absolute);
+    const current = target === null ? Buffer.alloc(0) : normalizeCheckoutEol(await readFile(target.absolute));
     const before = bytes.subarray(0, bytes.length - eventBytes.length);
     if (!current.equals(before) && !current.equals(bytes)) {
       fail('STORE_INCONSISTENT', 'cross_plan_transaction_staging_digest_mismatch', { ref: artifact.ref });
@@ -5977,7 +5892,7 @@ export async function readTodoStructureRealizationChain(options = {}) {
     missing: true,
   });
   if (state === null) return [];
-  return parseTodoStructureRealizationChain(await readFile(state.absolute), {
+  return parseTodoStructureRealizationChain(normalizeCheckoutEol(await readFile(state.absolute)), {
     structureSet: options.structureSet, taskId: options.taskId,
   });
 }
