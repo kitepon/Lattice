@@ -1,6 +1,7 @@
 import { retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
+import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
@@ -10,8 +11,10 @@ import {
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  explainFlagCommand,
   isAuthoringPathToken,
   matchFlagCommand,
+  parseFlagMap,
   parseAuthoringJson,
   readAuthoringJsonFile,
   repairAuthoringArtifact,
@@ -220,18 +223,27 @@ async function runTodoSchemaCommand(command, stdout) {
   stdout.write(`${JSON.stringify(schema)}\n`);
 }
 
-function typedFailure(stderr, error) {
+function typedFailure(stderr, error, context = {}) {
   const payload = {
     schema: CLI_ERROR_SCHEMA,
     code: error.code,
     message: error.message,
+    detail: withRefusalGuidance(error, context),
   };
-  if (error.detail !== null && typeof error.detail === 'object'
-    && !Array.isArray(error.detail) && Object.keys(error.detail).length > 0) {
-    payload.detail = error.detail;
-  }
   stderr.write(`${JSON.stringify(payload)}\n`);
   return 1;
+}
+
+/** What the printers need to name a concrete repair: the command and the --plan/--task the caller typed. */
+function guidanceContext(argv) {
+  const { flags } = parseFlagMap(argv.slice(1));
+  return {
+    family: 'todo',
+    command: typeof argv[0] === 'string' ? argv[0] : null,
+    plan: typeof flags.plan === 'string' ? flags.plan : undefined,
+    task: typeof flags.task === 'string' ? flags.task : undefined,
+    flags,
+  };
 }
 
 /**
@@ -263,10 +275,41 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
 ]);
 
-function typedArgumentFailure(stderr, code, message, detail) {
-  const payload = { schema: CLI_ERROR_SCHEMA, code, message, detail };
+function typedArgumentFailure(stderr, code, message, detail, context = {}) {
+  const payload = {
+    schema: CLI_ERROR_SCHEMA, code, message,
+    detail: withRefusalGuidance({ code, message, detail }, context),
+  };
   stderr.write(`${JSON.stringify(payload)}\n`);
   return 2;
+}
+
+const DONE_FLAG_SPEC = Object.freeze({
+  known: ['plan', 'task', 'evidence', 'test-result', 'message'],
+  required: ['plan', 'task'],
+});
+
+/** `todo done`のargument拒否を、直すflagと規則で名指す。他のcommandは従来どおり（空）。 */
+function explainArgumentRefusal(argv) {
+  if (argv[0] !== 'done') return {};
+  const flagFailure = explainFlagCommand(argv, ['done'], DONE_FLAG_SPEC);
+  if (flagFailure !== null) return flagFailure;
+  const { flags } = parseFlagMap(argv.slice(1));
+  for (const name of ['plan', 'task']) {
+    if (!isTodoIdentifier(flags[name])) return { pointer: `--${name}`, rule: 'identifier_invalid', actual: flags[name] };
+  }
+  const hasMessage = typeof flags.message === 'string' && flags.message.length > 0;
+  if (flags.message !== undefined && !hasMessage) return { pointer: '--message', rule: 'flag_missing' };
+  if (flags.evidence !== undefined && !isAuthoringPathToken(flags.evidence)) {
+    return { pointer: '--evidence', rule: 'path_token_invalid' };
+  }
+  if (isAuthoringPathToken(flags.evidence) === hasMessage) {
+    return { pointer: '--evidence', rule: 'evidence_or_message_exactly_one' };
+  }
+  if (flags['test-result'] !== undefined && !isAuthoringPathToken(flags['test-result'])) {
+    return { pointer: '--test-result', rule: 'path_token_invalid' };
+  }
+  return {};
 }
 
 function supportsAtomicStoreCommit(argv) {
@@ -290,7 +333,7 @@ function atomicStoreCommitUnsupported(stderr, argv) {
     'todo_command_does_not_mutate_only_the_store', {
       command: argv.slice(0, 3),
       next_action: 'remove_--commit-store_or_use_a_supported_todo_write_command',
-    });
+    }, guidanceContext(argv));
 }
 
 function resolveRepoRoot(cwd) {
@@ -4000,7 +4043,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       return 0;
     } catch (error) {
       if (typeof error?.code === 'string' && error.detail !== null
-        && typeof error.detail === 'object') return typedFailure(stderr, error);
+        && typeof error.detail === 'object') return typedFailure(stderr, error, guidanceContext(argv));
       return failInternally(error);
     }
   }
@@ -4318,10 +4361,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       });
     }
   } else if (argv[0] === 'done') {
-    const flags = matchFlagCommand(argv, ['done'], {
-      known: ['plan', 'task', 'evidence', 'test-result', 'message'],
-      required: ['plan', 'task'],
-    });
+    const flags = matchFlagCommand(argv, ['done'], DONE_FLAG_SPEC);
     const hasEvidence = isAuthoringPathToken(flags?.evidence);
     const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
     // u03 A58: both, one or neither of --evidence/--message is accepted.
@@ -4433,14 +4473,15 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       return typedArgumentFailure(stderr, 'UNKNOWN_SUBCOMMAND', 'todo_subcommand_unknown', {
         command, available_commands: TODO_COMMAND_NAMES,
         next_action: 'lattice todo --help',
-      });
+      }, guidanceContext(argv));
     }
     const argumentHelp = argv[0] === 'gantt' && argv[1] === 'serve'
       ? 'lattice todo gantt serve --help'
       : command === null ? 'lattice todo --help' : `lattice todo ${command} --help`;
-    return typedArgumentFailure(stderr, 'INVALID_ARGUMENTS', 'todo_arguments_invalid', {
-      command, next_action: argumentHelp,
-    });
+    const explained = explainArgumentRefusal(argv);
+    return typedArgumentFailure(stderr, 'INVALID_ARGUMENTS', 'todo_arguments_invalid',
+      explained.rule === undefined ? { command, next_action: argumentHelp } : { command, ...explained },
+      guidanceContext(argv));
   }
   if (atomicCommit && !supportsAtomicStoreCommit(argv)) {
     return atomicStoreCommitUnsupported(stderr, argv);
@@ -4463,13 +4504,17 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     return 0;
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'
-      && error.detail !== null && typeof error.detail === 'object')) return typedFailure(stderr, error);
+      && error.detail !== null && typeof error.detail === 'object')) {
+      return typedFailure(stderr, error, guidanceContext(argv));
+    }
     // 漏れた`fetch failed`もTypeErrorで届く。呼び出し側の契約違反と答えず、内部故障として観測口へ渡す。
     if (error instanceof TypeError && cliFailureClass(error) !== 'transport') {
       return typedFailure(stderr, {
         code: 'CONTRACT_VIOLATION',
         message: error.message,
-      });
+        detail: error.detail !== null && typeof error.detail === 'object' && !Array.isArray(error.detail)
+          ? error.detail : undefined,
+      }, guidanceContext(argv));
     }
     return failInternally(error);
   }

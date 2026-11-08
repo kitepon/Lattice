@@ -731,7 +731,9 @@ test('plan show --jsonはtask・依存本数・topologyを投影し、未知key�
   assert.equal(failure.code, 'STORE_INCONSISTENT');
   assert.equal(failure.message, 'plan_not_active');
   assert.equal(failure.detail.plan_key, 'no-such-plan');
-  assert.equal(failure.detail.next_action, 'check_active_plans_via_status');
+  assert.match(failure.detail.next_action, /lattice todo status --json/u);
+  assert.equal(failure.detail.rule, 'plan_not_active');
+  assert.equal(failure.detail.pointer, '--plan');
 });
 
 test('plan show --jsonはPhase定義とPhase状態を併せて投影する', async (context) => {
