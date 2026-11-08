@@ -86,3 +86,21 @@ validation gap is Rudmira's; this section owns only the Plan continuity semantic
 Protected state: connection history (both originals and tombstones stay on the owner
 chain), endpoints, direction, task lifecycle and evidence. No new connect allowance,
 no disconnect-only intermediate state.
+
+## Authored change at any state (u12, proposed 2026-11-08)
+
+Owner rulings 2026-11-08 (u12/u03 notes): an authored task (title, design memo,
+done condition, dependencies, joins, phase) may be revised at any state, including
+in-progress and done, and may be removed; Lattice records the change with its reason
+and never refuses it. The revised procedure is then enforced as written (readiness,
+`done`/predecessor_unfinished, phase gates and joins stay).
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: continuity | Same `plan_revise_input.v1`; `desired` may be create v4 or v5 | `carry` maps to carry_reconciled_metadata whatever authored fields/edges changed; the Plan pre-check `carry_semantics_changed` (machine-computable choice) is removed. `retire` maps to removed at any state (already true). | Missing/unknown/duplicate policy and retire/desired mismatch still refuse at `/continuity` (author intent cannot be derived). |
+| Store: light carry check (Ludmila) | phase_todo_revision.v5 + carry_reconciled_metadata | Compares only machine-owned identity: mapped task_id and `compile_binding` (claim 1–4 impact binding must not silently carry onto a different compiled spec). Authored title/lane/memo/done_condition/phase/incoming and outgoing edges/joins may change; state and evidence carry. Merged-graph validation (acyclic, refs, phase graph) unchanged. v3/v4 (source/backchain) checks unchanged. | compile_binding change → existing REVISION_INVALID/carry_semantics_changed; author uses reset or the backchain/source route that recompiles. |
+| Plan: history | Applied revision, continuity reasons | For each carried task whose authored projection changed, append one task note on the successor version via `appendTodoNote`: `plan revise <from>→<to>: <reason>`. Removed tasks get the note on the predecessor version. The revision artifact and old versions stay immutable. | Note failure after publication reports `revision_applied: true` like rebind failures; retry appends the missing notes only. |
+
+Plan migration of `lattice-usability-20261108` (u12 acceptance): after the release,
+one light revision to create-v5 moves each task's trailing `終了条件: …` line from
+design_memo into done_condition with policy carry for every task.

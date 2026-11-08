@@ -107,3 +107,20 @@ the path refers to a task; it never claims a filtered plan index is an extractio
 index.
 ADR 0181 canonicalization covers formatting/BOM/CRLF/digest/path normalization;
 it does not sort arrays. Ordering failures require explicit author correction.
+
+## Authored done condition (u12, proposed 2026-11-08)
+
+Owner ruling 2026-11-08: each task's author defines its own done condition; Lattice
+records and shows the text, never evaluates it, never chooses/assigns work and never
+records done. The responsible AI records done itself.
+
+| Step / owner | Input and reads | Decision / output | Failure / recovery |
+|---|---|---|---|
+| Plan: create/add input | `lattice.plan_create_input.v5` = v4 plus per-task `done_condition` (string or null; same text rule as `design_memo` but null allowed). v1–v4 inputs unchanged. | v5 input builds `lattice.todo_plan.v8`; v4 still builds v7. Collections whose order the machine can derive (hard_dependencies, joins.after, phase id lists, evidence slots) are sorted and exact duplicates dropped by the authoring normalizer before validation (u03: input order is not a user-authored procedure). | Invalid text returns INPUT_INVALID with `/tasks/<i>/done_condition` pointer; author corrects and resubmits. Conflicting non-identical duplicates still refuse at their pointer. |
+| Store: plan v8 contract (Ludmila) | `lattice.todo_plan.v8` = v7 with task key `done_condition` (string or null, always present) | Registered in plan validator, schema rank 5 (same lineage as v7), `isPhaseTodoPlanSchema`/`isDecoupledPhaseTodoPlanSchema`, successor rule: v8 never regresses to v7 (like design_memo). `phase_todo_revision.v5` accepts desired v7 or v8 (v7→v8 allowed). | Old readers reject v8 with UNSUPPORTED_SCHEMA; shared-store rollout = every member CLI on the release before the first v8 write. |
+| Plan: projections | v8 task | `todo show`/`todo next` task object and `plan show` carry `done_condition`; `status --json` ready-task entries add `done_condition`; MCP seat tools pass the same task object. v7 tasks project `done_condition: null`. | Projection only; no readiness or lifecycle effect. |
+| Display: Gantt detail (Snow White) | task.done_condition | Task detail shows a `終了条件` section (plain text, escaped) next to the design memo; null shows nothing. Prose byte budget counts it. | Display-only. |
+
+Not changed: readiness, start/done transitions, evidence rules, claimed mechanisms
+(impact estimation, overlap resolution, parallel hold/commit/resume, runtime
+conflict detection and targeted replanning).
