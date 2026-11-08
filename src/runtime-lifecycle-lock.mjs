@@ -112,10 +112,19 @@ async function readLockArtifact(lockPath) {
 /** Empty/torn/invalid bytes name no owner; only their age can show the writer is gone. */
 export async function recoverUnidentifiedLock(lockPath, info) {
   if (Date.now() - info.mtimeMs < UNIDENTIFIED_GRACE_MS) return false;
+  await removeJudgedEntry(lockPath, info);
+  return true;
+}
+
+/**
+ * Unlink exactly the entry judged by `info` ({dev,ino,size,mtimeMs}); never a newer one.
+ * Returns 'removed', 'absent' or 'replaced' (another entry took the path: put back untouched).
+ */
+export async function removeJudgedEntry(lockPath, info) {
   const quarantine = path.join(path.dirname(lockPath),
     `.${path.basename(lockPath)}.${process.pid}.${randomUUID()}.stale`);
   try { await rename(lockPath, quarantine); }
-  catch (error) { if (error?.code === 'ENOENT') return true; throw error; }
+  catch (error) { if (error?.code === 'ENOENT') return 'absent'; throw error; }
   const moved = await lstat(quarantine);
   if (moved.dev !== info.dev || moved.ino !== info.ino || moved.size !== info.size
     || moved.mtimeMs !== info.mtimeMs) {
@@ -126,11 +135,11 @@ export async function recoverUnidentifiedLock(lockPath, info) {
       throw error;
     }
     await unlink(quarantine);
-    return true;
+    return 'replaced';
   }
   await unlink(quarantine);
   await syncDirectory(path.dirname(lockPath));
-  return true;
+  return 'removed';
 }
 
 async function pidExists(pid) {

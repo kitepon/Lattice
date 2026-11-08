@@ -758,9 +758,20 @@ test('activate後もdaemonが生存しfinding→conflict→hold receiptとdispat
   const controllerPid = controllerDescriptors.find((descriptor) => {
     try { process.kill(descriptor.pid, 0); return true; } catch { return false; }
   }).pid;
+  // R2k: the killed worker's stale index.lock in its tree is removed and recorded.
+  const workerTree = await realpath(fixture.repo);
+  const indexLock = path.resolve(workerTree, exec('git', ['rev-parse', '--git-path', 'index.lock'],
+    workerTree).stdout.trim());
+  await writeFile(indexLock, 'left by a killed worker');
   const abandoned = exec(process.execPath, [CLI, 'run', 'abandon', '--run', fixture.runRef,
     '--reason', 'e2e-cleanup'], fixture.repo);
   assert.equal(JSON.parse(abandoned.stdout).outcome, 'abandoned');
+  const terminated = JSON.parse(await readFile(active.controlEventsPath))
+    .findLast((event) => event.kind === 'worker_processes_terminated').payload;
+  assert.ok(terminated.terminated_pids.includes(worker.pid));
+  const keptTree = terminated.kept_worktrees.find((entry) => entry.worktree_path === workerTree);
+  assert.deepEqual([keptTree.todo_ids, keptTree.index_lock], [['T1'], 'removed']);
+  await assert.rejects(readFile(indexLock), (error) => error.code === 'ENOENT');
   const deadline = Date.now() + 4_000;
   while (Date.now() < deadline) {
     const alive = [supervisorPid, controllerPid, worker.pid].some((pid) => {

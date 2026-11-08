@@ -191,9 +191,24 @@ export function validateRuntimeControlEventPayload(kind, value) {
     const pidList = (pids) => Array.isArray(pids) && pids.length > 0 && pids.length <= 4096
       && pids.every((pid, index) => Number.isSafeInteger(pid) && pid > 0
         && (index === 0 || pids[index - 1] < pid));
-    return (exact(value, ['reason', 'terminated_pids', 'skipped_count'])
-      || (exact(value, ['reason', 'terminated_pids', 'skipped_count', 'signal_unavailable_pids'])
-        && pidList(value.signal_unavailable_pids)))
+    // kept_worktrees (R2k): per tree, index.lock recovery and paths written after the last checkpoint.
+    const textList = (items) => Array.isArray(items) && items.length <= 4096
+      && items.every((item) => typeof item === 'string' && item.length > 0);
+    const keptWorktree = (entry) => plain(entry)
+      && (exact(entry, ['todo_ids', 'worktree_path', 'index_lock', 'unobserved_paths'])
+        ? textList(entry.unobserved_paths)
+        : exact(entry, ['todo_ids', 'worktree_path', 'index_lock', 'observation_error'])
+          && typeof entry.observation_error === 'string')
+      && Array.isArray(entry.todo_ids) && entry.todo_ids.length > 0 && entry.todo_ids.every(identifier)
+      && typeof entry.worktree_path === 'string' && path.isAbsolute(entry.worktree_path)
+      && ['absent', 'removed', 'replaced', 'conflict_kept', 'owner_live', 'owner_unproven', 'unknown']
+        .includes(entry.index_lock);
+    const optional = Object.keys(value ?? {}).filter((key) => !['reason', 'terminated_pids',
+      'skipped_count'].includes(key));
+    return exact(value, ['reason', 'terminated_pids', 'skipped_count', ...optional])
+      && optional.every((key) => (key === 'signal_unavailable_pids' && pidList(value[key]))
+        || (key === 'kept_worktrees' && Array.isArray(value[key]) && value[key].length > 0
+          && value[key].length <= 4096 && value[key].every(keptWorktree)))
       && typeof value.reason === 'string' && value.reason.length > 0
       && Array.isArray(value.terminated_pids) && value.terminated_pids.length <= 4096
       && value.terminated_pids.every((pid) => Number.isSafeInteger(pid) && pid > 0)
