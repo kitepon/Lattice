@@ -105,6 +105,8 @@ async function parallelWorkspace(context) {
 function runCli(root, args, { actor = true, extraEnv = {} } = {}) {
   const env = { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0' };
   delete env.FORCE_COLOR;
+  // A seat's own id would become the default actor (0.84.1); the default-actor cases assume none.
+  delete env.LATTICE_SEAT_ID;
   if (actor) {
     env.LATTICE_TODO_ACTOR_HOST = ACTOR.host;
     env.LATTICE_TODO_ACTOR_SESSION = ACTOR.session;

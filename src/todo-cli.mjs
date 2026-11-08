@@ -69,6 +69,7 @@ import {
   TodoStoreError,
   isPhaselessTodoPlanSchema,
   isTodoEvidenceUncommitted,
+  isUninitializedTodoStore,
   projectTodoCrossPlanDependencies,
   TERMINAL_AUDIT_PHASE_ID,
   todoPhaseDefinitions,
@@ -344,7 +345,9 @@ function resolveRepoRoot(cwd) {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).replace(/\r?\n$/u, ''));
   } catch {
-    throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved', 'cwdのgit toplevelを解決できない');
+    throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved', 'cwdのgit toplevelを解決できない', {
+      next_action: 'cd into the project repository, or run `git init` there first',
+    });
   }
 }
 
@@ -2017,6 +2020,17 @@ async function splitTodo({ repoRoot, env, planKey, inputRef }) {
 }
 
 async function status({ repoRoot }) {
+  // No plan yet is an empty project, not a broken store: answer zero plans and how to make one.
+  if (await isUninitializedTodoStore({ repoRoot })) {
+    const result = {
+      schema: 'lattice.todo_status_uninitialized.v1',
+      plan_count: 0,
+      next_actions: ['lattice plan create --template --json', 'lattice plan create --input <file>'],
+      result_digest: '',
+    };
+    result.result_digest = todoSelfDigest(result, 'result_digest');
+    return result;
+  }
   const store = await readTodoStore({ repoRoot });
   const result = projectTodoStatus(store, {
     planNotes: await readTodoPlanNotesForStatus({ repoRoot, store }),

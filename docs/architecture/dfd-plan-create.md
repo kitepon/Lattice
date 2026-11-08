@@ -52,7 +52,9 @@ requested plan_key from returned members.
 Plain create routes by published manifest presence: absent/ENOTDIR goes to the
 initializer, present goes to append. This preserves the initializer's existing
 unsafe-parent error; a false discovery classification alone does not mean a
-valid Store. `isUninitializedTodoStore` remains the read-only discovery service.
+valid Store. `isUninitializedTodoStore` remains the read-only discovery service; `lattice status`
+and `lattice todo status` both use it, so an uninitialized Store reads as zero plans
+with the create commands as next actions, never as `artifact_missing`.
 Both Store transactions perform the authoritative layout/identity/race checks.
 
 ## Compatibility and identity

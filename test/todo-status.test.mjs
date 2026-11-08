@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
   mkdir, mkdtemp, readFile, readdir, rm,
@@ -91,8 +92,8 @@ async function workspace(context) {
   return root;
 }
 
-function runStatus(root) {
-  const env = { ...process.env, NO_COLOR: '1' };
+function runStatus(root, extraEnv = {}) {
+  const env = { ...process.env, NO_COLOR: '1', ...extraEnv };
   delete env.FORCE_COLOR;
   const result = spawnSync(process.execPath, [CLI, 'todo', 'status'], {
     cwd: root, encoding: 'utf8', env,
@@ -214,26 +215,35 @@ test('空store projectionは全list空の固定digest resultを返す', () => {
   assert.equal(validateTodoStatusResult(result), true);
 });
 
-test('空のtodo store directoryはtyped errorでfail closedしbytesを変えない', async (context) => {
+test('計画の無いstoreは計画0件と作り方を返し、bytesを変えない', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-todo-status-empty-'));
   context.after(() => rm(root, { recursive: true, force: true }));
   assert.equal(spawnSync('git', ['init', '--quiet'], { cwd: root }).status, 0);
-  await mkdir(path.join(root, '.lattice', 'todo'), { recursive: true });
-  const before = await storeDigest(root);
-  const execution = runStatus(root);
+  for (const layout of ['absent', 'empty directory']) {
+    if (layout === 'empty directory') await mkdir(path.join(root, '.lattice', 'todo'), { recursive: true });
+    const before = layout === 'absent' ? null : await storeDigest(root);
+    const execution = runStatus(root);
+    assert.equal(execution.status, 0, layout);
+    assert.equal(execution.stderr, '', layout);
+    const result = JSON.parse(execution.stdout);
+    assert.equal(result.schema, 'lattice.todo_status_uninitialized.v1');
+    assert.equal(result.plan_count, 0);
+    assert.deepEqual(result.next_actions,
+      ['lattice plan create --template --json', 'lattice plan create --input <file>']);
+    assert.equal(result.result_digest, todoSelfDigest(result, 'result_digest'));
+    if (before === null) assert.equal(existsSync(path.join(root, '.lattice')), false);
+    else assert.equal(await storeDigest(root), before, layout);
+  }
+});
+
+test('gitの外では次の手としてgit initを示す', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-todo-status-nogit-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const execution = runStatus(root, { GIT_CEILING_DIRECTORIES: path.dirname(root) });
   assert.equal(execution.status, 1);
-  assert.equal(execution.stdout, '');
-  assert.match(execution.stderr, /^\{.*\}\n$/u);
-  assert.deepEqual(JSON.parse(execution.stderr), {
-    schema: 'lattice.cli_error.v2',
-    code: 'STORE_INCONSISTENT',
-    message: 'artifact_missing',
-    detail: {
-      reason: 'artifact_missing', ref: '.lattice/todo/manifest.json',
-      pointer: null, rule: 'artifact_missing', next_action: 'lattice todo status --help',
-    },
-  });
-  assert.equal(await storeDigest(root), before);
+  const error = JSON.parse(execution.stderr);
+  assert.equal(error.code, 'REPO_UNRESOLVED');
+  assert.match(error.detail.next_action, /git init/u);
 });
 
 function syntheticReadModel(activeCount) {
