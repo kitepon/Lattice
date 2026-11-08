@@ -244,7 +244,7 @@ test('plan createはcanonical inputから初期storeを作りstatusをreadyへ�
   assert.equal(active.state, 'active_run');
   assert.equal(active.can_create_plan, true);
   assert.deepEqual(active.active_runs, [{ plan_key: 'main', task_id: 'T1', label: '最初の仕事' }]);
-  assert.equal(active.next_action.command, 'lattice todo status');
+  assert.equal(active.next_action.command, 'lattice session-context --json');
   assert.equal(validateProjectStatus(active), true);
 });
 

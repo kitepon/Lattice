@@ -13,7 +13,7 @@ import {
   isTodoIdentifier,
   todoSelfDigest,
 } from './todo-contracts.mjs';
-import { projectTodoStatus } from './todo-status.mjs';
+import { projectTodoStatus, todoStatusBlockedReason, todoStatusTaskDisplay } from './todo-status.mjs';
 import { readTodoPlanNotesForStatus } from './todo-note-store.mjs';
 import { projectIndependenceFrontier } from './todo-independence.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
@@ -41,13 +41,13 @@ import {
 import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
-import { completeCreateInput, explainFlagCommand, readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import { completeCreateInput, explainFlagCommand, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
 const STORE_REF = '.lattice/todo';
 const MANIFEST_REF = `${STORE_REF}/manifest.json`;
 const STATUS_SCHEMA = 'lattice.project_status.v1';
-const SESSION_CONTEXT_SCHEMA = 'lattice.session_context.v1';
+const SESSION_CONTEXT_SCHEMA = 'lattice.session_context.v2';
 /** HEADが読めない環境でも投影を組めるようにする。記録があるときは実HEADで置き換わる。 */
 const PLACEHOLDER_SHA = '0'.repeat(40);
 const CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v1';
@@ -307,7 +307,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
     }));
     const state = activeRuns.length > 0 ? 'active_run' : 'ready';
     const next = activeRuns.length > 0
-      ? { command: 'lattice todo status', reason: 'active_run_present' }
+      ? { command: 'lattice session-context --json', reason: 'active_run_present' }
       : todo.next_ready.length > 0
         ? { command: `lattice todo start --plan ${todo.next_ready[0].plan_key} --task ${todo.next_ready[0].task_id}${todo.next_ready.length > 1 ? ' --parallel-frontier' : ''}`,
           reason: todo.next_ready.length > 1 ? 'parallel_frontier_present' : 'next_ready_present' }
@@ -388,6 +388,35 @@ export async function runProjectStatus({ cwd, stdout, stderr = process.stderr, c
 }
 
 /**
+ * turn開始時にseatが見る「次に取れる工程」と「自分の途中の工程」（a3、seat-contract）。記録して見せるだけで、選びも割り当てもしない。
+ * `own`は、現在のjournalで最後の`start`を同じagentが記録した in-progress/blocked の工程。
+ * storeまたはtodoが無い（未初期化・読めない）ときは空2つと`warning`を返し、投げない。
+ */
+export function projectTurn({ store, todo, actor, reason = 'store_unavailable' }) {
+  if (store === null || todo === null) return { actor, startable: [], own: [], warning: { reason } };
+  const own = [];
+  for (const member of store.members) {
+    const lastStart = new Map();
+    for (const event of member.journal.events) if (event.kind === 'start') lastStart.set(event.task_id, event);
+    for (const state of member.tasks) {
+      if (state.status !== 'in-progress' && state.status !== 'blocked') continue;
+      if (lastStart.get(state.task_id)?.actor?.agent !== actor.agent) continue;
+      const task = member.plan.tasks.find(({ task_id: id }) => id === state.task_id);
+      const { label, done_condition: doneCondition } = todoStatusTaskDisplay(task);
+      own.push({
+        plan_key: member.plan.plan_key, task_id: state.task_id, label, status: state.status,
+        started_at: state.started_at,
+        blocked_reason: state.status === 'blocked' ? todoStatusBlockedReason(state.blocked_reason) : null,
+        done_condition: doneCondition,
+      });
+    }
+  }
+  const order = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  own.sort((a, b) => order(a.plan_key, b.plan_key) || order(a.task_id, b.task_id));
+  return { actor, startable: todo.next_ready, own };
+}
+
+/**
  * session開始時の現在地を1プロセス・1 store読みで返す（ADR 0131）。
  *
  * `lattice status`と`lattice todo status`は同じ`readTodoStore`を別プロセスで二重に払う。
@@ -397,7 +426,7 @@ export async function runProjectStatus({ cwd, stdout, stderr = process.stderr, c
  *
  * dashboard活動の登録は行わない。現在地を知るために呼ぶ面であり、常駐面を起こす面ではない。
  */
-export async function runSessionContext({ cwd, stdout, cliVersion }) {
+export async function runSessionContext({ cwd, stdout, cliVersion, env = process.env }) {
   const state = await resolveProjectState({ cwd, cliVersion });
   const independence = state.store === null || state.todo === null
     ? [] : await summarizeIndependence({ repoRoot: state.repoRoot, store: state.store, todo: state.todo });
@@ -408,6 +437,11 @@ export async function runSessionContext({ cwd, stdout, cliVersion }) {
     // todoは`lattice todo status`のresultそのもの。新しい意味論を発明しない。
     todo: state.todo,
     independence,
+    turn: projectTurn({
+      store: state.store, todo: state.todo, actor: resolveTodoActor(env),
+      // 名乗れないときの理由はstatusが既に持つ（invalidはnext_action.reason、未初期化はstate）。
+      reason: state.result.state === 'invalid' ? state.result.next_action.reason : state.result.state,
+    }),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
