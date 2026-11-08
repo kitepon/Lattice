@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { canonicalizeArtifact, digestArtifact } from '../src/artifact-contracts.mjs';
+import { acquireRuntimeLifecycleLock } from '../src/runtime-lifecycle-lock.mjs';
 import { selfDigest } from '../src/runtime-contracts.mjs';
 import { buildNextRunEvent } from '../src/runtime-engine.mjs';
 import { projectRuntimeState } from '../src/runtime-projection.mjs';
@@ -413,4 +415,79 @@ test('upstream無しはno_upstream状態値へ出しexit 0を維持する', () =
   } finally {
     run('git', ['config', '--unset', 'push.default'], repoRoot);
   }
+});
+
+test('CLI lifecycle lock recovers aged legacy bytes and a reused owner', async () => {
+  const lockPath = path.join(path.dirname(eventsPath), '.cli-lifecycle.lock');
+  for (const bytes of ['', '{"torn":']) {
+    await writeFile(lockPath, bytes);
+    const old = new Date(Date.now() - 11_000);
+    await utimes(lockPath, old, old);
+    const result = runCli(['run', 'close', '--run', RUN_REF]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).already_closed, true);
+    await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
+  }
+
+  const ownerIdentity = {
+    schema: 'lattice.process_start_identity.v1',
+    platform: process.platform,
+    pid: process.pid,
+    started_identity: 'prior-process-start',
+    identity_digest: '',
+  };
+  ownerIdentity.identity_digest = selfDigest(ownerIdentity, 'identity_digest');
+  const staleLock = {
+    schema: 'lattice.runtime_lifecycle_lock.v1',
+    owner_pid: process.pid,
+    owner_process_start_identity: ownerIdentity,
+    session_nonce_digest: digestArtifact({ run_dir: path.dirname(eventsPath), lock: '.cli-lifecycle.lock' }),
+    operation: 'cli-lifecycle',
+    request_id: 'prior-request',
+    acquired_at: new Date().toISOString(),
+    lock_digest: '',
+  };
+  staleLock.lock_digest = selfDigest(staleLock, 'lock_digest');
+  await writeFile(lockPath, `${canonicalizeArtifact(staleLock)}\n`);
+  const recovered = runCli(['run', 'close', '--run', RUN_REF]);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(JSON.parse(recovered.stdout).already_closed, true);
+  await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
+});
+
+test('CLI lifecycle lock keeps fresh bytes and a live owner, then releases after either action outcome', async () => {
+  const runDir = path.dirname(eventsPath);
+  const lockPath = path.join(runDir, '.cli-lifecycle.lock');
+  const freshBytes = Buffer.from('fresh unidentified bytes');
+  await writeFile(lockPath, freshBytes);
+  const fresh = runCli(['run', 'close', '--run', RUN_REF]);
+  assert.equal(fresh.status, 1);
+  assert.equal(JSON.parse(fresh.stderr).code, 'RUN_BUSY');
+  assert.deepEqual(await readFile(lockPath), freshBytes);
+  await rm(lockPath);
+
+  const owner = await acquireRuntimeLifecycleLock({
+    lockPath,
+    sessionNonceDigest: digestArtifact({ run_dir: runDir, lock: '.cli-lifecycle.lock' }),
+    operation: 'cli-lifecycle',
+    requestId: 'live-owner',
+  });
+  try {
+    const liveBytes = await readFile(lockPath);
+    const live = runCli(['run', 'close', '--run', RUN_REF]);
+    assert.equal(live.status, 1);
+    assert.equal(JSON.parse(live.stderr).code, 'RUN_BUSY');
+    assert.deepEqual(await readFile(lockPath), liveBytes);
+  } finally {
+    await owner.release();
+  }
+
+  const success = runCli(['run', 'close', '--run', RUN_REF]);
+  assert.equal(success.status, 0, success.stderr);
+  await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
+
+  const failure = runCli(['run', 'abandon', '--run', RUN_REF, '--reason', 'already closed']);
+  assert.equal(failure.status, 1);
+  assert.equal(JSON.parse(failure.stderr).code, 'RUN_CLOSED');
+  await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
 });
