@@ -523,6 +523,127 @@ test('phase revisionがconsumer接続のsource taskを除去するとtombstone�
     .map(({ kind }) => kind), ['cross_plan_dependency', 'cross_plan_dependency_removed']);
 });
 
+// main(T1,T2) <- consumer(C1,C2): connections T1->C1 and T2->C2 are bound to main v1.
+async function crossPlanRepairFixture(context) {
+  const root = await bareWorkspace(context);
+  const phase = { phase_id: 'phase-1', title: 'Phase 1', gate_policy: 'heavy',
+    predecessor_phase_ids: [], required_evidence_slots: ['heavy'] };
+  const genesis = { actor: ACTOR, recorded_at: NOW };
+  await initializeTodoStore({ repoRoot: root, writer: createTodoStoreWriter({ caller: 'g4-migration' }),
+    projectId: 'project-1', repositories: [{ repo_id: 'self', path: '.' }], now: NOW, plans: [
+      { plan: buildTodoPlan({ schema: 'lattice.todo_plan.v4', project_id: 'project-1', plan_key: 'main',
+        plan_version: 'v1', predecessor_plan_digest: null, tasks: [taskV4('T1', 'phase-1'), taskV4('T2', 'phase-1')],
+        phases: [phase], hard_dependencies: [], joins: [] }), genesis },
+      { plan: buildTodoPlan({ schema: 'lattice.todo_plan.v1', project_id: 'project-1', plan_key: 'consumer',
+        plan_version: 'v1', predecessor_plan_digest: null, tasks: [task('C1'), task('C2')],
+        hard_dependencies: [], joins: [] }), genesis }] });
+  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  const member = async (planKey) => (await readTodoStore({ repoRoot: root, now: NOW })).members
+    .find(({ plan }) => plan.plan_key === planKey);
+  const connect = async (fromTask, toTask) => appendTodoEvent({ repoRoot: root, writer, planKey: 'consumer', now: NOW,
+    event: { kind: 'cross_plan_dependency', actor: ACTOR, recorded_at: NOW, payload: {
+      from: ref(fromTask, 'main', 'project-1', (await member('main')).plan.topology_digest),
+      to: ref(toTask, 'consumer', 'project-1', (await member('consumer')).plan.topology_digest),
+      reason: `${fromTask} to ${toTask}` } } });
+  // Carries the first task as `renameT1` (null keeps the id) and T2 unchanged; returns the applyPhaseTodoRevision options.
+  const revise = async (renameT1 = null, extra = {}) => {
+    const { plan } = await member('main');
+    const predecessor = { plan_digest: plan.plan_digest, plan_version: plan.plan_version,
+      journal_head_digest: (await member('main')).journal.events.at(-1).event_digest };
+    const first = renameT1 ?? plan.tasks[0].task_id;
+    const taskMigration = [
+      { from_task_id: plan.tasks[0].task_id, to_task_id: first, state_policy: 'reset_pending' },
+      { from_task_id: 'T2', to_task_id: 'T2', state_policy: 'reset_pending' }];
+    const phaseMigration = [{ from_phase_id: 'phase-1', to_phase_id: 'phase-1', state_policy: 'reset' }];
+    const desiredInput = structuredClone(plan);
+    delete desiredInput.topology_digest; delete desiredInput.plan_digest;
+    desiredInput.schema = 'lattice.todo_plan.v5';
+    desiredInput.phase_accept_dependencies = [];
+    desiredInput.tasks[0].task_id = first;
+    desiredInput.tasks[0].title = `${first} ${plan.plan_version}`;
+    desiredInput.predecessor_plan_digest = predecessor.plan_digest;
+    desiredInput.plan_version = phaseTodoRevisionPlanVersion({ projectId: 'project-1', planKey: 'main',
+      predecessor, desiredPlan: desiredInput, taskMigration, phaseMigration });
+    const revision = { schema: 'lattice.phase_todo_revision.v2', project_id: 'project-1', plan_key: 'main',
+      predecessor, desired_plan: buildTodoPlan(desiredInput), task_migration: taskMigration,
+      phase_migration: phaseMigration, revision_digest: '' };
+    revision.revision_digest = todoSelfDigest(revision, 'revision_digest');
+    return applyPhaseTodoRevision({ repoRoot: root, writer, revision, actor: ACTOR, recordedAt: NOW,
+      now: NOW, ...extra });
+  };
+  const chainPath = async () => path.join(root, (await member('consumer')).plan_scoped.ref);
+  return { root, writer, member, connect, revise, chainPath };
+}
+
+test('consumer接続は修復が間に合わないまま二度改訂されても二つのmigrationを合成してrebindされる', async (context) => {
+  const { root, member, connect, revise, chainPath } = await crossPlanRepairFixture(context);
+  await connect('T1', 'C1');
+  const staleChain = await readFile(await chainPath());
+  await revise('A1');
+  // The first repair never landed: the connection names main v1 again while main is at v2.
+  await writeFile(await chainPath(), staleChain);
+  let store = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings.map(({ reason }) => reason), ['endpoint_missing']);
+  await revise('A2');
+  store = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings, []);
+  const live = projectTodoCrossPlanDependencies(store.members);
+  assert.equal(live.length, 1);
+  assert.equal(live[0].from.task_id, 'A2');
+  assert.equal(live[0].from.expected_topology_digest, (await member('main')).plan.topology_digest);
+  assert.equal(live[0].to.task_id, 'C1');
+});
+
+test('重複を作る修復は単独で見送られ、別の有効な修復を止めない', async (context) => {
+  const { root, member, connect, revise, chainPath } = await crossPlanRepairFixture(context);
+  await connect('T1', 'C1');
+  await connect('T2', 'C2');
+  const staleChain = await readFile(await chainPath());
+  await revise('A1');
+  // Both repairs undone; hide main v1 (a non-identifier name is not scanned as a version) so A1->C1 can be connected at v2 beside the stale T1->C1.
+  await writeFile(await chainPath(), staleChain);
+  const retained = path.join(root, '.lattice/todo/plans/main/v1');
+  await rename(retained, `${retained} aside`);
+  await connect('A1', 'C1');
+  await rename(`${retained} aside`, retained);
+  const before = (await readTodoStore({ repoRoot: root, now: NOW })).cross_plan_findings;
+  assert.deepEqual(before.map(({ ref: { task_id: id } }) => id).sort(), ['T1', 'T2']);
+  const stale = before.find(({ ref: { task_id: id } }) => id === 'T1');
+  // Any consumer write repairs: T2->C2 is rebound, T1->C1 would duplicate A1->C1 and stays.
+  const { cross_plan_repairs: repairs } = await connect('A1', 'C2');
+  assert.deepEqual(repairs.map(({ action }) => action), ['rebound']);
+  const store = await readTodoStore({ repoRoot: root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings.map(({ ref: { task_id: id }, reason }) => [id, reason]),
+    [['T1', 'endpoint_missing']]);
+  assert.equal(store.cross_plan_findings[0].event_digest, stale.event_digest);
+  const top = (await member('main')).plan.topology_digest;
+  const live = projectTodoCrossPlanDependencies(store.members)
+    .map(({ from, to }) => `${from.task_id}@${from.expected_topology_digest === top ? 'v2' : 'v1'}>${to.task_id}`).sort();
+  assert.deepEqual(live, ['A1@v2>C1', 'A1@v2>C2', 'T1@v1>C1', 'T2@v2>C2']);
+});
+
+test('appendTodoEventはcross_plan_repairsを返し、後継writerはonCrossPlanRepairsを呼ぶ', async (context) => {
+  const { connect, revise, chainPath } = await crossPlanRepairFixture(context);
+  const first = await connect('T1', 'C1');
+  assert.deepEqual(first.cross_plan_repairs, []);
+  await connect('T2', 'C2');
+  const staleChain = await readFile(await chainPath());
+  let seen = null;
+  await revise(null, { onCrossPlanRepairs: (repairs) => { seen = repairs; } });
+  assert.deepEqual(seen.map(({ action }) => action), ['rebound', 'rebound']);
+  assert.ok(seen.every(({ owner_plan_key: key, original_event_digest: orig, replacement_event_digest: next }) =>
+    key === 'consumer' && /^[a-f0-9]{64}$/.test(orig) && /^[a-f0-9]{64}$/.test(next)));
+  // Undo them; the next consumer write performs and reports the same repairs.
+  await writeFile(await chainPath(), staleChain);
+  const result = await connect('T1', 'C2');
+  assert.deepEqual(result.cross_plan_repairs.map(({ action }) => action), ['rebound', 'rebound']);
+  assert.deepEqual(result.cross_plan_repairs.map(({ original_event_digest: digest }) => digest),
+    seen.map(({ original_event_digest: digest }) => digest));
+  const noop = await connect('T2', 'C1');
+  assert.deepEqual(noop.cross_plan_repairs, []);
+  assert.equal(result.event.kind, 'cross_plan_dependency');
+});
+
 for (const stage of [
   'phase_revision_marker_durable', 'phase_revision_input_durable', 'phase_revision_plan_durable',
   'phase_revision_genesis_durable', 'phase_revision_snapshot_durable',
