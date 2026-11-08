@@ -1956,6 +1956,9 @@ export class ToolHandler {
   // NotIndexedError's success-shaped guidance). Cleared on a successful
   // {@link setDefaultLatticeSensor}.
   private openFailure: Error | null = null;
+  // u03 E15: rebuilds a damaged default index. The index is derived from the
+  // source tree, so a recorded open failure is repaired on the next call.
+  private defaultIndexRepair: (() => Promise<void>) | null = null;
   // ADR 0049 Decision 5④: this session's execution mode, reported by
   // lattice_sensor_status as a machine-readable field. Defaults to a direct/
   // no-daemon placeholder — every real caller (MCPServer.startDirect, the
@@ -2012,6 +2015,15 @@ export class ToolHandler {
    */
   setOpenFailure(err: Error | null): void {
     this.openFailure = err;
+  }
+
+  /** Engine-only: the repair that rebuilds a damaged default index (u03 E15). */
+  setDefaultIndexRepair(repair: (() => Promise<void>) | null): void {
+    this.defaultIndexRepair = repair;
+  }
+
+  getOpenFailureMessage(): string {
+    return this.openFailure?.message ?? 'unknown error';
   }
 
   /**
@@ -2216,9 +2228,8 @@ export class ToolHandler {
           throw new IndexOpenError(
             `The default project's LatticeSensor index failed to open: ${this.openFailure.message}\n` +
             'This is a genuine malfunction (corrupt/locked database, schema mismatch, or ' +
-            'similar) — NOT a missing index. Retry the call once; if it persists, the index ' +
-            'may need to be rebuilt (`lattice sensor init . --json` after removing `.lattice/sensor/`) or a ' +
-            'stale lock cleared.'
+            'similar) — NOT a missing index. Retry the call once; a damaged index is moved aside and ' +
+            'rebuilt automatically by the serving engine on the next request.'
           );
         }
         const searched = this.defaultProjectHint ?? process.cwd();
@@ -2732,6 +2743,9 @@ export class ToolHandler {
         if (typeof check === 'object' && check !== undefined) return check;
       }
 
+      if (!args.projectPath && !this.cg && this.openFailure && this.defaultIndexRepair) {
+        await this.defaultIndexRepair();
+      }
       const project = await this.getLatticeSensor(args.projectPath as string | undefined);
       // Recover a watcher disabled by prolonged lock contention on the next call.
       // The stale banner remains until the watcher finishes its full scan;
