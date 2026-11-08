@@ -46,12 +46,13 @@ export function createTodoReadiness(store) {
     outgoing.get(source)?.add(target);
   };
   for (const member of store.members) {
-    for (const edge of member.plan.hard_dependencies) connect(edge.from, edge.to);
-    for (const join of member.plan.joins) {
+    // `?? []`: the display reads unverified members too and must not stop on a missing list (u01).
+    for (const edge of member.plan.hard_dependencies ?? []) connect(edge.from, edge.to);
+    for (const join of member.plan.joins ?? []) {
       for (const after of join.after) connect(after, join.before);
     }
     if (isDecoupledPhaseTodoPlanSchema(member.plan.schema)) {
-      for (const edge of member.plan.phase_accept_dependencies) {
+      for (const edge of member.plan.phase_accept_dependencies ?? []) {
         const source = phaseKey(edge.from);
         const target = taskKey(edge.to);
         acceptanceIncoming.get(target)?.add(source);

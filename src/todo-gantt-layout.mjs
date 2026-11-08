@@ -2,6 +2,7 @@ import { TODO_GANTT_SCOPES, projectTodoGanttScope } from './todo-gantt-scope.mjs
 import { buildTodoGanttHierarchy } from './todo-gantt-nested.mjs';
 import { projectTodoCrossPlanDependencies } from './todo-store.mjs';
 import { projectTodoChainV1 } from './todo-chain.mjs';
+import { createTodoReadiness } from './todo-readiness.mjs';
 
 const TASK_LIMIT = 2_000;
 const EDGE_LIMIT = 8_000;
@@ -247,41 +248,11 @@ function normalizeInput(readModel) {
   return { nodes, nodesByKey, edges, retiredKeys };
 }
 
-function readyTaskKeys(readModel, nodes, nodesByKey, incoming, retiredKeys) {
-  const phaseStatuses = new Map();
-  const phaseAcceptIncoming = new Map(nodes.map(({ key }) => [key, new Set()]));
-  for (const member of readModel.members) {
-    // snapshot artifactの形式には縛られない導出ビュー(member.phases)を読む(ADR 0147)。
-    for (const phase of member.phases ?? []) {
-      phaseStatuses.set(JSON.stringify([
-        member.plan.project_id, member.plan.plan_key, phase.phase_id,
-      ]), phase.status);
-    }
-    if (['lattice.todo_plan.v5', 'lattice.todo_plan.v7'].includes(member.plan.schema)) {
-      for (const edge of member.plan.phase_accept_dependencies ?? []) {
-        const target = refKey(refOf(edge.to, 'phase_accept_dependencies.to'));
-        if (retiredKeys.has(target)) continue;
-        if (!nodesByKey.has(target)) {
-          fail('TODO_LAYOUT_INVALID_INPUT', 'phase accept dependency targets an absent task');
-        }
-        phaseAcceptIncoming.get(target).add(JSON.stringify([
-          edge.from.project_id, edge.from.plan_key, edge.from.phase_id,
-        ]));
-      }
-    }
-  }
-  return new Set(nodes.filter((node) => node.status === 'pending' && node.phase_ready
-    && incoming.get(node.key).every((predecessorKey) => {
-      const predecessor = nodesByKey.get(predecessorKey);
-      return predecessor.status === 'done'
-        && (predecessor.plan_schema !== 'lattice.todo_plan.v4'
-          || predecessor.phase_id === null
-          || (predecessor.ref.plan_key === node.ref.plan_key
-            && predecessor.phase_id === node.phase_id)
-          || predecessor.phase_status === 'accepted');
-    }) && [...phaseAcceptIncoming.get(node.key)]
-      .every((phaseKey) => phaseStatuses.get(phaseKey) === 'accepted'))
-    .map(({ key }) => key));
+// u03 D-gantt: the drawing never decides readiness itself. Lattice's readiness (the same one
+// status and start use) decides, so a successor of a retired-not-done task is not drawn ready.
+function readyTaskKeys(readModel, nodes) {
+  const readiness = createTodoReadiness(readModel);
+  return new Set(nodes.filter((node) => readiness.isReady(readiness.key(node.ref))).map(({ key }) => key));
 }
 
 function assignWaves(nodes, nodesByKey, edges) {
@@ -547,7 +518,7 @@ function layoutTodoGanttFlat(readModel, options = {}) {
   });
   const longestNodeKeys = new Set(chain.longest_chain_node_refs.map(refKey));
   const longestEdgeKeys = new Set(chain.longest_chain_edges.map(edge => JSON.stringify([refKey(edge.from), refKey(edge.to)])));
-  const readyKeys = readyTaskKeys(readModel, full.nodes, full.nodesByKey, fullWaves.incoming, full.retiredKeys);
+  const readyKeys = readyTaskKeys(readModel, full.nodes);
   const independence = normalizeIndependence(options.independence ?? null, full.nodesByKey);
   const seamProposals = normalizeSeamProposals(options.seamProposals ?? null);
 
