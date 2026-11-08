@@ -16,8 +16,12 @@ CIは3環境で同じフル試験を同時実行し、製品契約がどの対�
 `npm run test:profile -- --profile=<name>`のOS別profileは、実装中のfocused確認用として維持する。
 通常の新規suiteは自動的に`core`へ入り、3環境すべてのCI対象になる。
 
-3 matrix jobはOrganization self-hosted runnerで同時に開始する。1環境の失敗で残りを中止しない。
-外部forkのコードを自宅LAN内のrunnerへ
-自動投入しないため、triggerは全branchのpushと手動実行だけにする。同一branchの古いrunは
-新しいpushでcancelする。tag pushは同じcommitのbranch CIを再実行しない。timeoutは通常所要時間の
-約2倍に留め、hangを長時間の`in_progress`として保持しない。
+The three matrix jobs use the organization self-hosted runners with fail-fast
+disabled. The caller triggers on main pushes, pull requests targeting main, and
+explicit workflow dispatch. A new push to a pull request cancels that PR's
+superseded run (`concurrency`, grouped by PR ref, `cancel-in-progress` only for
+`pull_request`), so the single runner per environment is not spent on heads that
+can no longer be accepted. Main pushes and dispatches are grouped by their own run
+id and are never cancelled or replaced, so main keeps per-commit evidence. Job
+timeouts stay near twice the normal duration so a hang does not stay
+`in_progress`. Cancellation is not a consumer-lifetime guarantee.

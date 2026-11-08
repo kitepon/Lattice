@@ -85,6 +85,12 @@ test('工場CIは現役runnerの3環境を使い、公開も同じ修正版Node�
 });
 
 
+test('CI cancels only superseded pull_request runs and never groups main runs', async () => {
+  const caller = await readFile(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
+  assert.ok(caller.includes("group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}"));
+  assert.ok(caller.includes("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"));
+});
+
 test('macOS CIは共有Homebrewを変えずjob専有Nodeを全commandへ渡す', async () => {
   const workflow = await readFile(path.join(repoRoot, '.github/workflows/product-full-ci.yml'), 'utf8');
   assert.match(workflow, /id: macos_runtime/u);
