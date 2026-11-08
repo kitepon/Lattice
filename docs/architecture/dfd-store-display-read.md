@@ -1,16 +1,65 @@
 # Store display read: current raw data, verified checkpoint and typed inconsistency
 
-Status: boundary delta for connected review, DESIGN ONLY. PR61 stays first.
-Implementation retains the existing PR55/56 merge and bounded shared-Store
-recovery ordering, followed by Leviathan review of this Store row connected to
-Snow White's display row (e901d32b, dfd-display-gantt-read.md). It is excluded from the recovery diff.
+Status: IMPLEMENTED in the joint display unit (plan lattice-usability-20261108,
+task u01-display-never-stops) together with Snow White's display row
+([dfd-display-gantt-read.md](dfd-display-gantt-read.md)). Leviathan closed this
+Store row (6b94f0ac) and the connected pair (d1930e65) before code.
 Owner: Store. Consumer/banner/empty-state rendering: display owner. The canonical
 [function map](function-map.md) composes this contract; operational lifecycle
 reads, writes, validation and recovery retain the [strict flow](dfd-todo-start.md).
 
+## Implementation binding
+
+All of this row lives in `src/todo-store.mjs` (it needs the private strict view
+reader, path containment and atomic writer; no new module or public helper).
+
+| Name | Kind | Contract |
+|---|---|---|
+| `readTodoStoreForDisplay({repoRoot, now?})` | public export | the envelope below; `now` only fixes replay/observation time in tests |
+| `readTodoStoreDisplaySource({repoRoot})` | public export | the `source` object below, metadata only; throws typed `STORE_INCONSISTENT` only when the manifest cannot be read, parsed or enumerated |
+| `readStoreStableWith(options, reader)` | private | the existing bounded publication-window retry loop, extracted unchanged; `readTodoStoreStable` uses it with `readTodoStore`, the display with the non-recovering `readTodoStoreView` |
+| `displayStoreView(store)` | private | serializable view: `schema:'lattice.todo_store_read.v1'`, `project_id`, `manifest`, `members:[{descriptor, plan, revision, journal:{events}, plan_scoped:{ref, events}, snapshot, tasks, phases, coordination, snapshot_stale}]` — the existing read model minus `journal.segments`, `journal.activeBytes`, `plan_scoped.activeBytes`, so existing renderers accept it unchanged |
+| `observeDisplaySource(repoRoot)` | private | raw manifest + per-member raw metadata; shared by the probe and the unverified result |
+| `readDisplayCheckpoint` / `publishDisplayCheckpoint` | private | checkpoint validation and atomic publication |
+
+`source` (`schema:'lattice.todo_store_display_source.v1'`):
+`{schema, repository_identity, project_id, manifest_digest, members:[{plan_key,
+active_plan_version, plan_digest, topology_digest, lifecycle_head, plan_scoped_head}],
+diagnostics:[{plan_key, field, code, reason}]}`; members sorted by plan_key.
+`repository_identity` is the sha256 of the canonical (realpath) repository root,
+so no host path is published. Verified source is taken from the validated store
+(`diagnostics:[]`); observed source reads raw `manifest.json`, each member's raw
+`plan.json` `plan_digest`, and the last line of `journal/active.jsonl` and of
+`plan-scoped.jsonl` (`event_digest`; absent plan-scoped file = null, no diagnostic).
+An unreadable field is null plus one `diagnostics` entry; it never fails the probe.
+
+Checkpoint file (`schema:'lattice.todo_store_display_checkpoint.v1'`):
+`{schema, verified_at, source, store, checkpoint_digest}`; `checkpoint_digest` is the
+sha256 of the JSON text of the same object without that field. Valid = bounded
+size (64 MiB), regular non-symlink file at its own realpath, exact keys, strict
+timestamp, matching digest, and `source.repository_identity` + `source.project_id`
+equal to the current repository and the current raw manifest `project_id`. An
+invalid checkpoint counts as absent; it is never deleted or rewritten by a read.
+Publication creates `.lattice/generated/store-display/` only under a real,
+non-symlink `.lattice`, refuses symlinked or aliased directories, then uses the
+existing temp+fsync+rename writer. A publication failure is reported with
+`process.emitWarning` code `LATTICE_STORE_DISPLAY_CHECKPOINT_PUBLICATION_FAILED`
+and does not change the verified result.
+
+Raw member reads use the existing `.lattice/todo` containment/alias check and the
+snapshot size limit, then UTF-8 + `JSON.parse` only. A raw member is
+`{descriptor, plan, snapshot}`: `plan` is the member's `plan_ref` file read by the
+same raw rules (plans are immutable per version, so it adds no consistency claim);
+display uses its titles/lanes/edges when present. A member whose snapshot is
+unreadable is dropped as `{plan_key, snapshot_ref, code, reason}`; a readable
+snapshot with an unreadable plan keeps the member with `plan:null` and names only
+the plan as `{plan_key, plan_ref, code, reason}`. Non-string fields become null.
+Only typed `TodoStoreError` strict failures degrade; any other thrown error (a
+real I/O or program fault) still propagates to the caller as today.
+
 ## Public function and result
 
-Proposed Store export: `readTodoStoreForDisplay({repoRoot})`. It accepts no writer
+Store export: `readTodoStoreForDisplay({repoRoot})`. It accepts no writer
 capability, forWrite option or stale-binding flag and never invokes recovery or
 publishes canonical Store files. It returns:
 
@@ -35,8 +84,8 @@ It is empty when no current member was dropped. Checkpoint selection never turns
 unreadable members into fictitious current members.
 
 The unverified `store` is a state-discriminated raw display value:
-`{project_id,manifest,members:[{descriptor,snapshot}]}`. Values come from the
-current manifest and parsed member snapshot JSON, not replay or a merged graph.
+`{project_id,manifest,members:[{descriptor,plan,snapshot}]}`. Values come from the
+current manifest and parsed member plan/snapshot JSON, not replay or a merged graph.
 Consumers read raw snapshot tasks/phases where present and tolerate absent or
 malformed fields; Store does not synthesize Plan meaning or assert schema,
 bindings, digest, status or readiness validity. It is never passed to operational
@@ -123,7 +172,7 @@ readability repairs, with no manual unlock or unbounded memo retention.
 
 ## Cheap change-detection connection
 
-Store also exports proposed `readTodoStoreDisplaySource({repoRoot})`, returning
+Store also exports `readTodoStoreDisplaySource({repoRoot})`, returning
 the same source fields as the full result (repository/project identity, manifest
 digest, sorted member version/plan/topology digests and lifecycle/plan-scoped
 heads). It reads only source/head metadata, with path/format safety, without
@@ -171,7 +220,7 @@ successful strict read, the reader cannot promise a pre-incident historical view
 Until strict success seeds one, readable current snapshots are shown as unverified,
 not fabricated as a historically verified checkpoint.
 
-## Changed-range verification (future implementation only)
+## Changed-range verification
 
 Cover complete verified publication and unchanged-source no-write; the exact
 four-state precedence, including raw current data before an existing checkpoint;
@@ -184,6 +233,7 @@ plan-scoped-only head change; checkpoint persistence across restart; absent,
 corrupt and wrong-target checkpoint; publication failure retaining current view
 and previous bytes; next strict success clearing the diagnostic; zero canonical
 mutations/recovery on this entry; and strict writer/reader behavior unchanged.
-Store tests cover this row and cheap token/no-recovery contract. Display tests cover the connected renderer row, including degraded+unchanged observed token memoization and bounded full revalidation.
-No tests or implementation are part of this design draft. DFD, function map,
-implementation and affected checks must ship in the same eventual diff.
+Store tests (`test/todo-store-display-read.test.mjs`) cover this row and the cheap
+token/no-recovery contract. Display tests cover the connected renderer row,
+including degraded+unchanged observed token memoization and bounded full
+revalidation. DFD, function map, implementation and checks ship in one diff.

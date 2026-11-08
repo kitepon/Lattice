@@ -1556,6 +1556,10 @@ async function readTodoStoreView(options = {}) {
 }
 
 export async function readTodoStoreStable(options = {}) {
+  return readStoreStableWith(options, readTodoStore);
+}
+
+async function readStoreStableWith(options, readStore) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   const maximumAttempts = options.maximumAttempts ?? 4;
   if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1 || maximumAttempts > 16) {
@@ -1572,7 +1576,7 @@ export async function readTodoStoreStable(options = {}) {
       code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
     });
     try {
-      const store = await readTodoStore(options);
+      const store = await readStore(options);
       const after = await readArtifact(repoRoot, MANIFEST_REF, {
         code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
       });
@@ -1600,6 +1604,254 @@ export async function readTodoStoreStable(options = {}) {
   // that reads kept failing.
   if (lastError !== null) throw lastError;
   fail('STORE_BUSY', 'stable_read_exhausted', { attempts: maximumAttempts });
+}
+
+// Store display read (dfd-store-display-read.md). Read-only toward canonical Store files:
+// no lock, recovery or writer; the only write is the derived checkpoint below.
+const DISPLAY_CHECKPOINT_REF = '.lattice/generated/store-display/last-verified.json';
+const DISPLAY_CHECKPOINT_SCHEMA = 'lattice.todo_store_display_checkpoint.v1';
+const DISPLAY_SOURCE_SCHEMA = 'lattice.todo_store_display_source.v1';
+const DISPLAY_CHECKPOINT_MAX_BYTES = 64 * 1_048_576;
+
+const nullableString = (value) => (typeof value === 'string' ? value : null);
+
+function displayFailure(error) {
+  return { code: error.code, reason: error.detail?.reason ?? null };
+}
+
+async function canonicalRepoRoot(repoRoot) {
+  try { return await realpath(repoRoot); } catch { return path.resolve(repoRoot); }
+}
+
+/** Bounded raw bytes of a contained `.lattice/todo` file; no schema or digest checks. */
+async function readRawStoreFile(repoRoot, ref, maxBytes, { missing = false } = {}) {
+  if (typeof ref !== 'string') fail('STORE_INCONSISTENT', 'ref_invalid');
+  const state = await pathState(repoRoot, ref, 'STORE_INCONSISTENT', { missing });
+  if (state === null) return null;
+  if (state.stats.size > maxBytes) fail('STORE_INCONSISTENT', 'size_limit_exceeded', { ref });
+  try { return await readFile(state.absolute); } catch { fail('STORE_INCONSISTENT', 'artifact_read_failed', { ref }); }
+}
+
+async function readRawStoreJson(repoRoot, ref, maxBytes) {
+  const bytes = await readRawStoreFile(repoRoot, ref, maxBytes);
+  const text = decodeUtf8(bytes, 'STORE_INCONSISTENT', 'invalid_utf8');
+  try { return JSON.parse(text); } catch { fail('STORE_INCONSISTENT', 'json_invalid', { ref }); }
+}
+
+async function rawLastEventDigest(repoRoot, ref, { missing = false } = {}) {
+  const bytes = await readRawStoreFile(repoRoot, ref, TODO_LIMITS.journalSegmentBytes, { missing });
+  if (bytes === null) return null;
+  const lines = decodeUtf8(bytes, 'STORE_INCONSISTENT', 'invalid_utf8').split('\n').filter(Boolean);
+  let digest;
+  try { digest = JSON.parse(lines.at(-1)).event_digest; } catch { fail('STORE_INCONSISTENT', 'json_invalid', { ref }); }
+  if (typeof digest !== 'string') fail('STORE_INCONSISTENT', 'event_digest_missing', { ref });
+  return digest;
+}
+
+async function readRawManifest(repoRoot) {
+  const manifest = await readRawStoreJson(repoRoot, MANIFEST_REF, TODO_LIMITS.snapshotBytes);
+  if (manifest === null || typeof manifest !== 'object' || !Array.isArray(manifest.members)) {
+    fail('STORE_INCONSISTENT', 'manifest_members_unenumerable', { ref: MANIFEST_REF });
+  }
+  return manifest;
+}
+
+function sortDisplayMembers(members) {
+  return members.sort((left, right) => String(left.plan_key).localeCompare(String(right.plan_key)));
+}
+
+async function observeDisplaySource(repoRoot, manifest) {
+  const diagnostics = [];
+  const members = [];
+  for (const descriptor of manifest.members) {
+    const entry = descriptor !== null && typeof descriptor === 'object' ? descriptor : {};
+    const planKey = nullableString(entry.plan_key);
+    const observe = async (field, read) => {
+      try { return await read(); } catch (error) {
+        if (!(error instanceof TodoStoreError)) throw error;
+        diagnostics.push({ plan_key: planKey, field, ...displayFailure(error) });
+        return null;
+      }
+    };
+    const journalRef = nullableString(entry.journal_ref);
+    members.push({
+      plan_key: planKey,
+      active_plan_version: nullableString(entry.active_plan_version),
+      plan_digest: await observe('plan_digest', async () => {
+        const digest = (await readRawStoreJson(repoRoot, entry.plan_ref, TODO_LIMITS.snapshotBytes))?.plan_digest;
+        if (typeof digest !== 'string') fail('STORE_INCONSISTENT', 'plan_digest_missing');
+        return digest;
+      }),
+      topology_digest: nullableString(entry.topology_digest),
+      lifecycle_head: await observe('lifecycle_head', () => rawLastEventDigest(repoRoot, journalRef)),
+      plan_scoped_head: journalRef === null ? null : await observe('plan_scoped_head', () => (
+        rawLastEventDigest(repoRoot, planScopedJournalRef(journalRef), { missing: true }))),
+    });
+  }
+  return {
+    schema: DISPLAY_SOURCE_SCHEMA,
+    repository_identity: sha256Bytes(Buffer.from(await canonicalRepoRoot(repoRoot), 'utf8')),
+    project_id: nullableString(manifest.project_id),
+    manifest_digest: nullableString(manifest.manifest_digest),
+    members: sortDisplayMembers(members),
+    diagnostics,
+  };
+}
+
+async function verifiedDisplaySource(repoRoot, store) {
+  return {
+    schema: DISPLAY_SOURCE_SCHEMA,
+    repository_identity: sha256Bytes(Buffer.from(await canonicalRepoRoot(repoRoot), 'utf8')),
+    project_id: store.project_id,
+    manifest_digest: store.manifest.manifest_digest,
+    members: sortDisplayMembers(store.members.map(({ descriptor, plan, journal, plan_scoped: planScoped }) => ({
+      plan_key: descriptor.plan_key,
+      active_plan_version: descriptor.active_plan_version,
+      plan_digest: plan.plan_digest,
+      topology_digest: descriptor.topology_digest,
+      lifecycle_head: journal.events.at(-1).event_digest,
+      plan_scoped_head: planScoped.events.at(-1)?.event_digest ?? null,
+    }))),
+    diagnostics: [],
+  };
+}
+
+/** The existing read model without implementation bytes; JSON-serializable. */
+function displayStoreView(store) {
+  return JSON.parse(JSON.stringify({
+    schema: store.schema, project_id: store.project_id, manifest: store.manifest,
+    members: store.members.map(({ journal, plan_scoped: planScoped, ...member }) => ({
+      ...member,
+      journal: { events: journal.events },
+      plan_scoped: { ref: planScoped.ref, events: planScoped.events },
+    })),
+  }));
+}
+
+function checkpointDigest(checkpoint) {
+  const { checkpoint_digest: _digest, ...body } = checkpoint;
+  return sha256Bytes(Buffer.from(JSON.stringify(body), 'utf8'));
+}
+
+/** Returns the checkpoint attributable to this repository/project, or null. Never writes. */
+async function readDisplayCheckpoint(repoRoot, projectId) {
+  if (typeof projectId !== 'string') return null;
+  const root = await canonicalRepoRoot(repoRoot);
+  const absolute = path.resolve(root, DISPLAY_CHECKPOINT_REF);
+  let checkpoint;
+  try {
+    const stats = await lstat(absolute);
+    if (stats.isSymbolicLink() || !stats.isFile() || stats.size > DISPLAY_CHECKPOINT_MAX_BYTES) return null;
+    if (await realpath(absolute) !== absolute) return null;
+    checkpoint = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readFile(absolute)));
+  } catch { return null; }
+  const valid = exactRecord(checkpoint, ['schema', 'verified_at', 'source', 'store', 'checkpoint_digest'])
+    && checkpoint.schema === DISPLAY_CHECKPOINT_SCHEMA
+    && isStrictTodoTimestamp(checkpoint.verified_at)
+    && checkpoint.checkpoint_digest === checkpointDigest(checkpoint)
+    && checkpoint.source?.schema === DISPLAY_SOURCE_SCHEMA
+    && checkpoint.source.repository_identity === sha256Bytes(Buffer.from(root, 'utf8'))
+    && checkpoint.source.project_id === projectId
+    && checkpoint.store?.project_id === projectId && Array.isArray(checkpoint.store.members);
+  return valid ? checkpoint : null;
+}
+
+async function publishDisplayCheckpoint(repoRoot, { verified_at: verifiedAt, source, store }) {
+  const root = await canonicalRepoRoot(repoRoot);
+  let directory = root;
+  for (const segment of path.posix.dirname(DISPLAY_CHECKPOINT_REF).split('/')) {
+    directory = path.join(directory, segment);
+    if (segment !== '.lattice') await mkdir(directory).catch((error) => { if (error?.code !== 'EEXIST') throw error; });
+    const stats = await lstat(directory);
+    if (stats.isSymbolicLink() || !stats.isDirectory() || await realpath(directory) !== directory) {
+      fail('STORE_DISPLAY_CHECKPOINT_UNSAFE', 'unsafe_checkpoint_directory', { ref: path.relative(root, directory) });
+    }
+  }
+  const checkpoint = { schema: DISPLAY_CHECKPOINT_SCHEMA, verified_at: verifiedAt, source, store, checkpoint_digest: '' };
+  checkpoint.checkpoint_digest = checkpointDigest(checkpoint);
+  await atomicWrite(path.resolve(root, DISPLAY_CHECKPOINT_REF), Buffer.from(JSON.stringify(checkpoint), 'utf8'));
+}
+
+async function readRawDisplayMembers(repoRoot, manifest) {
+  const members = [];
+  const dropped = [];
+  for (const descriptor of manifest.members) {
+    const entry = descriptor !== null && typeof descriptor === 'object' ? descriptor : {};
+    const planKey = nullableString(entry.plan_key);
+    let snapshot;
+    try { snapshot = await readRawStoreJson(repoRoot, entry.snapshot_ref, TODO_LIMITS.snapshotBytes); } catch (error) {
+      if (!(error instanceof TodoStoreError)) throw error;
+      dropped.push({ plan_key: planKey, snapshot_ref: nullableString(entry.snapshot_ref), ...displayFailure(error) });
+      continue;
+    }
+    // Plans are immutable per version; an unreadable plan drops only the plan, not the member.
+    let plan = null;
+    try { plan = await readRawStoreJson(repoRoot, entry.plan_ref, TODO_LIMITS.snapshotBytes); } catch (error) {
+      if (!(error instanceof TodoStoreError)) throw error;
+      dropped.push({ plan_key: planKey, plan_ref: nullableString(entry.plan_ref), ...displayFailure(error) });
+    }
+    members.push({ descriptor, plan, snapshot });
+  }
+  return { members, dropped };
+}
+
+/** Cheap unverified change hint for display polling; never validation or recovery. */
+export async function readTodoStoreDisplaySource({ repoRoot = process.cwd() } = {}) {
+  const root = path.resolve(repoRoot);
+  return observeDisplaySource(root, await readRawManifest(root));
+}
+
+/** Display-only envelope: verified > unverified current raw > last_verified > unavailable. */
+export async function readTodoStoreForDisplay({ repoRoot = process.cwd(), now } = {}) {
+  const root = path.resolve(repoRoot);
+  const verifiedAt = new Date(now ?? Date.now()).toISOString();
+  let inconsistency;
+  try {
+    const strict = await readStoreStableWith({ repoRoot: root, now }, readTodoStoreView);
+    const store = displayStoreView(strict);
+    const source = await verifiedDisplaySource(root, strict);
+    try {
+      const retained = await readDisplayCheckpoint(root, source.project_id);
+      if (JSON.stringify(retained?.source) !== JSON.stringify(source)) {
+        await publishDisplayCheckpoint(root, { verified_at: verifiedAt, source, store });
+      }
+    } catch (error) {
+      process.emitWarning(`Store display checkpoint was not published: ${error?.detail?.reason ?? error?.code ?? error}`, {
+        code: 'LATTICE_STORE_DISPLAY_CHECKPOINT_PUBLICATION_FAILED',
+      });
+    }
+    return { state: 'verified', store, verified_at: verifiedAt, source, inconsistency: null, dropped_members: [] };
+  } catch (error) {
+    if (!(error instanceof TodoStoreError)) throw error;
+    inconsistency = { code: error.code, detail: { ...error.detail } };
+  }
+  let manifest = null;
+  try { manifest = await readRawManifest(root); } catch (error) {
+    if (!(error instanceof TodoStoreError)) throw error;
+  }
+  let dropped = [];
+  if (manifest !== null) {
+    const raw = await readRawDisplayMembers(root, manifest);
+    dropped = raw.dropped;
+    if (raw.members.length > 0) {
+      return {
+        state: 'unverified',
+        store: { project_id: nullableString(manifest.project_id), manifest, members: raw.members },
+        verified_at: null,
+        source: await observeDisplaySource(root, manifest),
+        inconsistency,
+        dropped_members: dropped,
+      };
+    }
+  }
+  const checkpoint = await readDisplayCheckpoint(root, manifest?.project_id);
+  if (checkpoint !== null) {
+    return {
+      state: 'last_verified', store: checkpoint.store, verified_at: checkpoint.verified_at,
+      source: checkpoint.source, inconsistency, dropped_members: dropped,
+    };
+  }
+  return { state: 'unavailable', store: null, verified_at: null, source: null, inconsistency, dropped_members: dropped };
 }
 
 async function atomicWrite(absolute, bytes) {
