@@ -2,12 +2,27 @@
 
 ## Unreleased
 
+## 0.83.0 — 2026-11-08
+
+Latticeが作った「止まるだけで何も守らない拒否」を外す見直し（u03）と、工程表が一部の不整合で全体ごと見えなくなる停止の修理を中心にした版。
+
+- 工程表（公開・手元のgantt）は、Storeが不整合でも全体を500にしない。表示用の読み取り（`readTodoStoreForDisplay`）は、確認済み・未確認・最後に確認できた版・読めない、のどれかを示して描く。表示は何も書かないので、拒否しない。
+- ganttの「次に着手できる」は、`todo status`・`todo start`と同じ判定（`createTodoReadiness`）から描く。完了せずに退役したtaskの後続を、着手可能と描かない。
+- 計画をまたぐ依存で、相手の工程が消えた・接続が古い版に結ばれたまま（`endpoint_missing` / `binding_stale`）でも、着手判定を止めない。`todo status`は版8（`lattice.todo_status_result.v8`）になり、`cross_plan_findings {total, entries}`で見つかった問題を示す（本文は先頭32件、件数は全数）。Storeは後継版へ接続を結び直し、壊れた修理は隔離して報告する。`dependency disconnect`の`tolerateStaleBindings`は無くなる。
+- taskごとの完了条件（`done_condition`）を、計画を書く人が書ける（`lattice.plan_create_input.v5`、`lattice.todo_plan.v8`）。Latticeは記録して見せるだけで、評価も完了の記録もしない。
+- 計画の改訂は、taskの状態に関わらず行える。引き継いだtaskは、記述・接続・工程が変わっても状態を保つ。`todo retire`は未着手・blocked・doneから使え、既に退役済みなら`unchanged: true`で成功する。
+- Storeの読み取りは、時計の逆行・未来の時刻で拒否しない（順序は連番とhash鎖）。CRLFでcheckoutされた記録は、読む時にメモリ上で戻す。構造の鮮度による開始の門（structure lifecycle gate）は外し、鮮度は表示に残す。ロックは持ち主の識別が取れなくても弱い持ち主として扱い、10分を超えて放置された他者・旧版のロックは自動で回収する。
+- `todo`の書き込みコマンドは、どこに`--json`を付けても失敗しない（出力は元からJSON）。
+- dashboardのlifecycle記録・登録簿（`projects.json`）、hubの端末登録簿（`terminals.json`）が壊れていても止まらない。壊れたfileは`.invalid`として脇へ移し、警告を出して残りを読む。hubの非公開一覧（`public-visibility.json`）が壊れた時は、何も隠さないのではなく公開一覧を空にする。
+- bridgeのsupervisorが同じ設定で2つ起きた時、pidfileに載っていない方が自分で終わる（3秒ごとに確かめる）。0.82.0で、片方が3秒ごとにbridgeを起こし直し続けていた。
+- sensorのMCP: 同じprojectの2つ目の直接セッションは終了せず、読み取り専用で動く。監視が劣化している間の古い答えは、拒否せず注記（`structuredContent.freshness`）を付けて返す。`lattice-mcp`は知らない引数を警告して無視する。
 - runtimeの止まり方を、自分で抜けられる形へ直す（u03）。lifecycle / pull / start-binding のlockは完成したbytesだけを一時fileからhard linkで公開し、古い版が残した空・破損lockは10秒後に自動で回収する。hard linkの無いfilesystemでは従来の排他作成へ戻る。別schemaのlockは新しい版の持ち主とみなし、回収しない。
 - `todo retract`は`.lattice/runs/`の迷いentryで止まらず、撤回するstartに結び付いた未受理intakeを自動で解放して記録する（止まった席は再認証できれば再開してからdetach）。読めないrunは警告`LATTICE_RETRACT_RUNS_SKIPPED`で示す。
 - `run close`は未完了でも拒否しない。pull runは残りのintakeを解放して`released_task_ids`を、legacy/managed runは`abandoned_todo_ids`を記録して閉じる。managed runは残ったworkerを止め、作業木は残す。`RUN_NOT_COMPLETE`はcloseから出なくなる。
 - managed runの`run close`/`run abandon`が止めたworkerの作業木を自分で回復する。その木に入れたworkerとprocess groupが全員いなくなったと確かめられた時だけ、残った`index.lock`を判定した同じinodeに限って消す（生きている・再認証できない持ち主のlockは残す）。最後のcheckpoint以後に書かれたpathは`worker_processes_terminated.kept_worktrees`に記録し、closeもabandonも失敗させない。
 - managed runtimeは、exec後の実行imageを観測できない時もpre-exec検証で起動する（観測できて食い違う時は従来どおり止める）。
 - 後発競合のholdは影響群（affected closureと、finding pathに触れるTODO）だけに掛ける。carry-over witnessを作れないだけの無関係TODOは止めずに続け、そのorigin receiptは`hold_decided`の継続集合で受理する。
+- 試験とCIだけの変更: PRのCIは、変更が届く範囲（import でつながる試験と、変わった試験）だけを走らせる。mainへの統合・tag・手動実行は全部を走らせる。bridge試験は固定portをやめて空きportを使う。
 
 ## 0.82.0 — 2026-11-08
 
