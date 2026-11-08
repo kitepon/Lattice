@@ -41,7 +41,7 @@ import {
 import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
-import { readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import { completeCreateInput, readAuthoringJsonFile } from './todo-authoring-input.mjs';
 
 const STORE_REF = '.lattice/todo';
 const MANIFEST_REF = `${STORE_REF}/manifest.json`;
@@ -434,8 +434,11 @@ async function readCanonicalInput(repoRoot, inputRef) {
  * 整列要求（task_id昇順など）はJSON Schemaに書けないので、ここが唯一の案内面になる。
  */
 function describePlanShapeViolation(value, { phaseInput }) {
-  const TASK_KEYS = ['task_id', 'title', 'lane', 'design_memo', 'narrative_ref',
-    'narrative_anchor', 'compile_binding', 'parent_task_id', 'phase_id',
+  const TASK_KEYS = ['task_id', 'title', 'lane', 'narrative_ref',
+    'narrative_anchor', 'compile_binding', 'parent_task_id',
+    ...(phaseInput ? ['phase_id'] : []),
+    ...([MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(value.schema)
+      ? ['design_memo'] : []),
     ...(value.schema === DONE_CONDITION_CREATE_INPUT_SCHEMA ? ['done_condition'] : [])];
   const PHASE_KEYS = ['phase_id', 'title', 'gate_policy', 'predecessor_phase_ids',
     'required_evidence_slots'];
@@ -613,23 +616,17 @@ function describeCreateInputViolation(value) {
 }
 
 export function validatePlanCreateInput(input) {
-  if (![MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input?.schema)) {
-    throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_retired', undefined, {
-      violation_kind: 'const_mismatch', pointer: '/schema',
-      expected: MEMO_PHASE_CREATE_INPUT_SCHEMA,
-      accepted: [MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA],
-      actual: typeof input?.schema === 'string' ? input.schema : { type: typeof input?.schema },
-      next_action: CURRENT_CREATE_SCHEMA_COMMAND,
-    });
-  }
-  if (!Array.isArray(input.tasks)) {
+  if (!Array.isArray(input?.tasks)) {
     throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_invalid', undefined, {
       violation_kind: 'type', pointer: '/tasks', expected: { type: 'array', min_items: 1 },
-      actual: { type: input.tasks === null ? 'null' : typeof input.tasks },
+      actual: { type: input?.tasks === null ? 'null' : typeof input?.tasks },
       next_action: CURRENT_CREATE_SCHEMA_COMMAND,
     });
   }
-  const invalidMemoIndex = input.tasks.findIndex((task) => !isTodoDesignMemo(task?.design_memo));
+  // v1〜v3のtaskにはdesign_memoが無い。
+  const memoInput = [MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input.schema);
+  const invalidMemoIndex = memoInput
+    ? input.tasks.findIndex((task) => !isTodoDesignMemo(task?.design_memo)) : -1;
   if (invalidMemoIndex >= 0) {
     const explained = explainTodoDesignMemo(input.tasks[invalidMemoIndex]?.design_memo);
     throw new TodoStoreError('DESIGN_MEMO_REQUIRED', 'plan_create_design_memo_required', undefined, {
@@ -660,10 +657,13 @@ export function validatePlanCreateInput(input) {
   }
 }
 
-export async function runPlanCreate({ cwd, inputRef, stdout, inputValue = null, featureChain = null }) {
+export async function runPlanCreate({
+  cwd, inputRef, stdout, inputValue = null, featureChain = null, env = process.env,
+}) {
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved');
-  const input = inputValue ?? await readCanonicalInput(repoRoot, inputRef);
+  const input = completeCreateInput(
+    inputValue ?? await readCanonicalInput(repoRoot, inputRef), { env, now: new Date() });
   validatePlanCreateInput(input);
   // dispatch_shapeは結果へ載せる観測であり、直列度では初期化を拒まない（ADR 0180）。
   const dispatchShape = computeTodoDispatchShapeForPlan({

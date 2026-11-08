@@ -193,8 +193,7 @@ test('双方を止め、変換で生まれた面をそれぞれ所有させて�
     plan_key: 'main', plan_version: 'v1',
     actor: { host: 'fixture', session: 'fixture', agent: 'fixture' },
     recorded_at: '2026-07-28T00:00:00.000Z',
-    // 既にcutover済みの形で立てる。`carry`はtask記録の完全一致を要求するので、後の改訂で
-    // narrative_refが動くと`carry_semantics_changed`になる。
+    // 既にcutover済みの形で立てる。
     tasks: ['T1', 'T2'].map((taskId, index) => ({ task_id: taskId, title: taskId, lane: 'main',
       design_memo: `${taskId}が所有する面をseam split後も維持し、双方を再開する。`,
       narrative_ref: `docs/archive/seam.md#L${index + 6}`, narrative_anchor: null,

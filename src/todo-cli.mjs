@@ -14,7 +14,9 @@ import {
   matchFlagCommand,
   parseAuthoringJson,
   readAuthoringJsonFile,
+  repairAuthoringArtifact,
   resolveAuthoringInputPath,
+  resolveTodoActor,
 } from './todo-authoring-input.mjs';
 
 import {
@@ -38,7 +40,6 @@ import {
   ensureTodoDashboardActivity,
   removeTodoDashboardProject,
 } from './todo-dashboard-registry.mjs';
-import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
 import { readProjectExternalPane, readRegisteredProjectId, resolveProjectIdentity } from './project-identity.mjs';
 import { layoutTodoGantt } from './todo-gantt-layout.mjs';
 import { TODO_GANTT_SCOPES } from './todo-gantt-scope.mjs';
@@ -69,6 +70,7 @@ import {
   todoPhaseDefinitions,
   readTodoIndependenceArtifact,
   readTodoSeamProposalArtifact,
+  predecessorSourceInventory,
   readTodoStore,
   readTodoStructureBinding,
   readTodoStructureRealizationChain,
@@ -166,7 +168,7 @@ import {
   validateWitnessDraft,
 } from './witness-scaffold.mjs';
 import {
-  explainPhaseTodoRevision, explainTodoRevision, explainTodoRevisionSet,
+  completePhaseTodoRevision, explainPhaseTodoRevision, explainTodoRevision, explainTodoRevisionSet,
   parseTodoSourceRef, todoLegacyReconciliationDigest, validatePhaseTodoRevision,
   validateTodoRevision, validateTodoRevisionSet,
 } from './todo-revision.mjs';
@@ -188,11 +190,6 @@ import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 const DEFAULT_GANTT_SCOPE = 'live';
 const MAX_NOTE_INPUT_BYTES = 16_384;
-const ACTOR_ENV_KEYS = Object.freeze([
-  'LATTICE_TODO_ACTOR_HOST',
-  'LATTICE_TODO_ACTOR_SESSION',
-  'LATTICE_TODO_ACTOR_AGENT',
-]);
 
 /**
  * `revise` / `revise-set` / `revise-phase` / `migrate`が配布する名前付き入力契約のJSON
@@ -371,9 +368,30 @@ function within(root, candidate) {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
+/**
+ * 証拠の無い判定`unknown_requires_evidence`は、証拠の無いcarry済みtaskと同じ`register_pending`
+ * (状態を取り込まない)として扱う(u03p A64)。機械が決められる答えを人に聞き直さない。
+ */
+function defaultUnknownDispositions(extraction) {
+  const tasks = Array.isArray(extraction?.tasks) ? extraction.tasks : [];
+  const unknown = (task) => task?.disposition === 'unknown_requires_evidence';
+  if (!tasks.some(unknown)) return { extraction, defaultedPendingTaskIds: [] };
+  return {
+    extraction: repairAuthoringArtifact({ ...extraction, tasks: tasks.map((task) => (unknown(task)
+      ? { ...task, disposition: 'register_pending', start: null, completion: null } : task)) }),
+    defaultedPendingTaskIds: tasks.filter(unknown).map(({ task_id: taskId }) => taskId)
+      .filter(isTodoIdentifier).sort(),
+  };
+}
+
 async function readMigrationInput(repoRoot, inputRef, { requireValid = true } = {}) {
   const extraction = await readAuthoringJsonFile(repoRoot, inputRef);
   if (!requireValid) return extraction;
+  assertValidMigrationExtraction(extraction);
+  return extraction;
+}
+
+function assertValidMigrationExtraction(extraction) {
   if (![TODO_EXTRACTION_SCHEMA_V3, TODO_EXTRACTION_SCHEMA_V4].includes(extraction?.schema)) {
     throw new TodoStoreError('INVALID_TODO_EXTRACTION', 'todo_extraction_schema_unsupported', undefined, {
       expected: TODO_EXTRACTION_SCHEMA_V4,
@@ -398,7 +416,6 @@ async function readMigrationInput(repoRoot, inputRef, { requireValid = true } = 
     };
     throw new TodoStoreError('INVALID_TODO_EXTRACTION', 'schema_invalid', undefined, detail);
   }
-  return extraction;
 }
 
 async function readRevisionInput(repoRoot, inputRef, {
@@ -406,8 +423,9 @@ async function readRevisionInput(repoRoot, inputRef, {
   invalidCode = 'REVISION_INVALID',
   invalidReason = 'revision_schema_or_digest_invalid',
   explain = explainTodoRevision,
+  complete = async (value) => value,
 } = {}) {
-  const revision = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode });
+  const revision = await complete(await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode }));
   if (!validate(revision)) {
     const explained = explain === null ? null : explain(revision);
     throw new TodoStoreError(invalidCode, invalidReason, undefined,
@@ -562,47 +580,6 @@ async function readStructureSetDraft(repoRoot, inputRef) {
   });
 }
 
-function sanitizeActorIdentifier(raw, fallback) {
-  const compact = String(raw ?? '').replace(/[^0-9A-Za-z._-]/gu, '-').replace(/^-+/u, '').slice(0, 128);
-  return isTodoIdentifier(compact) ? compact : fallback;
-}
-
-/**
- * 名乗りの無い操作のhost（ADR 0197）。journalは公開repositoryへcommitされるので、OSのhost名は
- * 書かない——host名はOSが決めた自由文で、持ち主の名前を含むことがある。端末ごとの識別子から
- * 一方向に導いたlabelを使い、端末の区別は保つ。識別子を読めず作れない端末は`host`になる。
- */
-function defaultActorHost(env) {
-  const terminalId = readOrCreateTerminalIdSync({ env });
-  return terminalId === null ? 'host' : terminalPublicLabel(terminalId);
-}
-
-function mutationActor(env) {
-  const provided = ACTOR_ENV_KEYS.map((key) => ({ key, value: env[key] }));
-  const invalidEnvironment = provided
-    .filter(({ value }) => typeof value === 'string' && value.length > 0 && !isTodoIdentifier(value))
-    .map(({ key }) => key);
-  if (invalidEnvironment.length > 0) {
-    throw new TodoStoreError('ACTOR_UNRESOLVED', 'actor_environment_invalid', undefined, {
-      required_environment: ACTOR_ENV_KEYS,
-      missing_environment: [],
-      invalid_environment: invalidEnvironment,
-      next_action: 'set_required_actor_environment_and_retry',
-    });
-  }
-  return {
-    host: isTodoIdentifier(env.LATTICE_TODO_ACTOR_HOST)
-      ? env.LATTICE_TODO_ACTOR_HOST
-      : defaultActorHost(env),
-    session: isTodoIdentifier(env.LATTICE_TODO_ACTOR_SESSION)
-      ? env.LATTICE_TODO_ACTOR_SESSION
-      : 'session',
-    agent: isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT)
-      ? env.LATTICE_TODO_ACTOR_AGENT
-      : sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
-  };
-}
-
 /**
  * gate_readyの札が出た理由と次の一歩をtypedに言う(ADR 0148裁定8)。
  *
@@ -645,7 +622,7 @@ async function mutate({
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
   testResultRef = null,
 }) {
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   const evidence = evidenceRef === null && evidenceMessage === null
     ? null
     : await resolveDoneEvidence({
@@ -1009,7 +986,7 @@ export async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
 }
 
 async function retractStart({ repoRoot, env, planKey, taskId, reason }) {
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   const store = await readTodoStore({ repoRoot });
   const binding = resolveTodoStartRetractionBinding(store, { planKey, taskId, actor });
   return withStartRetractionGuard({
@@ -1128,7 +1105,7 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
   const { event, snapshot, phases } = await appendTodoEvent({
     validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey,
-    event: { kind, phase_id: phaseId, actor: mutationActor(env), payload },
+    event: { kind, phase_id: phaseId, actor: resolveTodoActor(env), payload },
   });
   // snapshot.phasesはv1(phase無しplan)には存在しない。導出ビュー`phases`を見る
   // (これは暗黙のterminal-audit Phaseにも常に埋まっている)。
@@ -1156,7 +1133,7 @@ async function independenceMode({ repoRoot, env, planKey, mode, reason }) {
   const { event } = await appendTodoEvent({
     validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey,
-    event: { kind: 'coordination_mode', actor: mutationActor(env), payload: { mode, reason } },
+    event: { kind: 'coordination_mode', actor: resolveTodoActor(env), payload: { mode, reason } },
   });
   const result = {
     schema: 'lattice.todo_coordination_mode_result.v1', project_id: event.project_id,
@@ -1211,7 +1188,7 @@ async function dependencyConnect({
     validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: toPlanKey,
     event: {
-      kind: 'cross_plan_dependency', actor: mutationActor(env), payload: { from, to, reason },
+      kind: 'cross_plan_dependency', actor: resolveTodoActor(env), payload: { from, to, reason },
     },
   });
   const result = {
@@ -1248,7 +1225,7 @@ async function dependencyDisconnect({
     validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: owner.plan.plan_key,
     event: {
-      kind: 'cross_plan_dependency_removed', actor: mutationActor(env),
+      kind: 'cross_plan_dependency_removed', actor: resolveTodoActor(env),
       payload: { target_event_digest: target.event_digest, reason },
     },
   });
@@ -1398,18 +1375,10 @@ async function phaseBaseline({ repoRoot, env, reason, exceptPlanKeys }) {
 }
 
 async function migrate({ repoRoot, inputRef }) {
-  const extraction = await readMigrationInput(repoRoot, inputRef);
-  // unresolved/空集合の早期gateは、compileTodoExtraction内部の同名gateをここでも
-  // 先に通しておくことで、既存のエラー優先順位を変えない。
+  const { extraction, defaultedPendingTaskIds } = defaultUnknownDispositions(
+    await readMigrationInput(repoRoot, inputRef, { requireValid: false }));
+  assertValidMigrationExtraction(extraction);
   // dispatch_shapeは結果へ載せる観測であり、直列度では書込みを拒まない（ADR 0180）。
-  const unresolvedTaskIds = extraction.tasks
-    .filter(({ disposition }) => disposition === 'unknown_requires_evidence')
-    .map(({ task_id: taskId }) => taskId);
-  if (unresolvedTaskIds.length > 0) {
-    throw new TodoStoreError('MIGRATION_UNRESOLVED', 'unknown_requires_evidence', undefined, {
-      task_ids: unresolvedTaskIds,
-    });
-  }
   const registered = extraction.tasks.filter(({ disposition }) => disposition.startsWith('register_'));
   const connectionOnly = isTodoExtractionConnectionOnly(extraction);
   if (registered.length === 0 && !connectionOnly) {
@@ -1449,6 +1418,7 @@ async function migrate({ repoRoot, inputRef }) {
     plan_version: imported.plan.plan_version,
     extraction_digest: extraction.extraction_digest,
     imported_task_count: registered.length,
+    defaulted_pending_task_ids: defaultedPendingTaskIds,
     completed_task_count: extraction.tasks.filter(({ disposition }) => disposition === 'register_done').length,
     plan_ref: imported.descriptor.plan_ref,
     journal_ref: imported.descriptor.journal_ref,
@@ -1597,7 +1567,8 @@ function extractionAuthoringViolations(extraction, now = new Date()) {
 }
 
 async function migrateDryRun({ repoRoot, inputRef }) {
-  const extraction = await readMigrationInput(repoRoot, inputRef, { requireValid: false });
+  const { extraction, defaultedPendingTaskIds } = defaultUnknownDispositions(
+    await readMigrationInput(repoRoot, inputRef, { requireValid: false }));
   const violations = [];
   const tasks = Array.isArray(extraction?.tasks) ? extraction.tasks : [];
   const designMemoSchema = [TODO_EXTRACTION_SCHEMA_V3, TODO_EXTRACTION_SCHEMA_V4].includes(extraction?.schema);
@@ -1635,13 +1606,6 @@ async function migrateDryRun({ repoRoot, inputRef }) {
       violations.push(violation);
     }
   }
-  const unresolvedTaskIds = tasks
-    .filter(({ disposition }) => disposition === 'unknown_requires_evidence')
-    .map(({ task_id: taskId }) => taskId).filter(isTodoIdentifier);
-  if (unresolvedTaskIds.length > 0) {
-    violations.push({ code: 'unknown_requires_evidence', path: '/tasks',
-      task_ids: unresolvedTaskIds.slice(0, 64), next_action: 'adjudicate_task_disposition' });
-  }
   const registered = tasks.filter(({ disposition }) => typeof disposition === 'string'
     && disposition.startsWith('register_'));
   const connectionOnly = schemaValid && isTodoExtractionConnectionOnly(extraction);
@@ -1653,7 +1617,7 @@ async function migrateDryRun({ repoRoot, inputRef }) {
   let dispatchShape = null;
   let plannedPlan = null;
   let plannedConnection = null;
-  if (schemaValid && unresolvedTaskIds.length === 0 && (registered.length > 0 || connectionOnly)) {
+  if (schemaValid && (registered.length > 0 || connectionOnly)) {
     try {
       const compiled = compileTodoExtraction(extraction, repoRoot);
       if (connectionOnly) {
@@ -1709,6 +1673,7 @@ async function migrateDryRun({ repoRoot, inputRef }) {
     plan_key: isTodoIdentifier(extraction?.plan_key) ? extraction.plan_key : null,
     violations: bounded,
     overflow_count: Math.max(0, violations.length - bounded.length),
+    defaulted_pending_task_ids: defaultedPendingTaskIds,
     planned: plannedConnection !== null ? {
       connection_only: true,
       source: plannedConnection.source,
@@ -1742,7 +1707,7 @@ async function revise({ repoRoot, env, planKey, inputRef }) {
   }
   return applyTodoRevision({
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), revision,
-    actor: mutationActor(env), recordedAt: new Date().toISOString(),
+    actor: resolveTodoActor(env), recordedAt: new Date().toISOString(),
   });
 }
 
@@ -1755,7 +1720,7 @@ async function reviseSet({ repoRoot, env, inputRef }) {
   });
   return applyTodoRevisionSet({
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), revisionSet,
-    actor: mutationActor(env), recordedAt: new Date().toISOString(),
+    actor: resolveTodoActor(env), recordedAt: new Date().toISOString(),
   });
 }
 
@@ -1764,10 +1729,19 @@ async function revisePhase({ repoRoot, env, planKey, inputRef }) {
     validate: validatePhaseTodoRevision, invalidCode: 'REVISION_INVALID',
     invalidReason: 'phase_revision_schema_or_digest_invalid',
     explain: explainPhaseTodoRevision,
+    complete: async (value) => {
+      // 先行を読めない/無いときは補わず、検証と適用が通常の診断を返す。
+      const store = await readTodoStore({ repoRoot }).catch(() => null);
+      const member = store?.members.find(({ plan }) => plan.plan_key === value?.plan_key);
+      if (member === undefined) return value;
+      return completePhaseTodoRevision(value, { member, buildPlan: buildTodoPlan,
+        predecessorInventory: value?.schema === 'lattice.phase_todo_revision.v3'
+          ? await predecessorSourceInventory(repoRoot, member) : null });
+    },
   });
   if (revision.plan_key !== planKey) throw new TodoStoreError('REVISION_INVALID', 'requested_plan_mismatch');
   return applyPhaseTodoRevision({ repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
-    revision, actor: mutationActor(env), recordedAt: new Date().toISOString() });
+    revision, actor: resolveTodoActor(env), recordedAt: new Date().toISOString() });
 }
 
 async function splitTodo({ repoRoot, env, planKey, inputRef }) {
@@ -1783,7 +1757,7 @@ async function splitTodo({ repoRoot, env, planKey, inputRef }) {
     });
   }
   const compiled = await compileTodoSplit({ repoRoot, member, proposal });
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   const recordedAt = new Date().toISOString();
   // splitのmigrationは既存taskへのidentity写像だけである。宣言を純粋に移行・検査し、
   // 同じcanonical bytesをwitness先へ書けることまでapply前に確定する。これにより、
@@ -1848,7 +1822,7 @@ async function status({ repoRoot }) {
 
 async function adoptDashboardRoot({ repoRoot, env }) {
   const store = await readTodoStoreStable({ repoRoot });
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   const identity = await resolveProjectIdentity({ repoRoot, projectId: store.project_id, env });
   await adoptTodoDashboardActivity({
     repoRoot, projectId: store.project_id, displayName: identity.displayName,
@@ -1916,7 +1890,7 @@ async function appendNote({ repoRoot, env, planKey, taskId, message, inputRef, s
     planKey,
     planVersion: member.plan.plan_version,
     taskId: task?.task_id ?? null,
-    actor: mutationActor(env),
+    actor: resolveTodoActor(env),
     recordedAt: new Date().toISOString(),
     body,
     supersedes,
@@ -2282,7 +2256,7 @@ async function structureCompile({ repoRoot, env, planKey, inputRef }) {
       next_action: `lattice todo structure --plan ${planKey} --json`,
     });
   }
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   const observation = await collectTodoStructureAuthoritativeObservation({ repoRoot, structureSet });
   const sourceEvidence = observation.source_evidence;
   const gitProvenance = observation.git_provenance;
@@ -2408,7 +2382,7 @@ async function recordStructureRealization({ repoRoot, planKey, taskId, realizati
 
 async function structureRealize({ repoRoot, env, planKey, taskId, inputRef }) {
   const realization = await readStructureRealizationInput(repoRoot, inputRef);
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   if (realization.plan_key !== planKey || realization.task_id !== taskId) {
     throw new TodoStoreError('STRUCTURE_REALIZATION_BINDING_MISMATCH',
       'cli_target_mismatch', undefined, {
@@ -2495,7 +2469,7 @@ async function structureRealizeActual({
     commit_oids: resolveStructureRealizationCommits(repoRoot, commitRefs),
     realized,
     supersedes: previous?.realization_digest ?? null,
-    actor: mutationActor(env),
+    actor: resolveTodoActor(env),
     recorded_at: new Date().toISOString(),
     realization_digest: '',
   };
@@ -2544,7 +2518,7 @@ async function structureFinalize({ repoRoot, env, planKey }) {
     realizations.push(...chain);
     effectiveTransforms.set(task.task_id, latest.realized);
   }
-  const actor = mutationActor(env);
+  const actor = resolveTodoActor(env);
   const observation = await collectTodoStructureAuthoritativeObservation({
     repoRoot, structureSet: source, effectiveTransforms,
   });
@@ -3740,7 +3714,7 @@ function writesTodoStore(argv) {
 async function ensureActiveProjectDashboard({ repoRoot, env, stderr, strict = false }) {
   if (env.LATTICE_DASHBOARD_AUTOSTART === '0') return null;
   let actor;
-  try { actor = mutationActor(env); } catch (error) { if (strict) throw error; return null; }
+  try { actor = resolveTodoActor(env); } catch (error) { if (strict) throw error; return null; }
   const sessionId = actor.session;
   let store;
   try { store = await readTodoStoreStable({ repoRoot }); }

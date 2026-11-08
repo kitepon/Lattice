@@ -11,7 +11,7 @@ import {
   readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
 import { gitSync } from './git-process.mjs';
-import { readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import { completeCreateInput, readAuthoringJsonFile } from './todo-authoring-input.mjs';
 import {
   explainPhaseTodoRevision, phaseTodoRevisionPlanVersion, validatePhaseTodoRevision,
 } from './todo-revision.mjs';
@@ -101,9 +101,12 @@ export function validatePlanBackchain(chain, authoring) {
     if (features.has(feature.feature_id)) fail('feature_duplicate', `/features/${index}/feature_id`);
     features.set(feature.feature_id, feature);
   }
+  // 意味の検査(u03p A85)は止めずにfindingsへ集める。形・digest・同一性の検査だけが拒否する。
+  const found = [];
+  const finding = (reason, pointer, detail = {}) => found.push({ reason, pointer, ...detail });
   for (const [index, feature] of chain.features.entries()) {
     for (const id of feature.requires_feature_ids) {
-      if (!features.has(id)) fail('required_feature_missing', `/features/${index}/requires_feature_ids`, {
+      if (!features.has(id)) finding('required_feature_missing', `/features/${index}/requires_feature_ids`, {
         feature_id: feature.feature_id, required_feature_id: id,
       });
     }
@@ -111,33 +114,44 @@ export function validatePlanBackchain(chain, authoring) {
   const authored = registeredTasks(authoring);
   if (chain.project_id !== authoring.project_id || chain.plan_key !== authoring.plan_key
     || chain.plan_version !== authoring.plan_version) fail('authoring_identity_mismatch', '/authoring_ref');
-  if (!Array.isArray(chain.tasks) || chain.tasks.length !== authored.length) {
-    fail('task_coverage_missing', '/tasks');
-  }
+  if (!Array.isArray(chain.tasks)) fail('tasks_invalid', '/tasks');
   const authoredIds = new Set(authored.map(({ task_id: id }) => id));
   const taskMap = new Map();
   for (const [index, task] of chain.tasks.entries()) {
     if (!exactRecord(task, ['task_id', 'requires_feature_ids', 'provides_feature_ids'])
-      || !isTodoIdentifier(task.task_id) || !authoredIds.has(task.task_id)
-      || !identifiers(task.requires_feature_ids)
-      || !identifiers(task.provides_feature_ids, { nonempty: true })) {
+      || !isTodoIdentifier(task.task_id) || !identifiers(task.requires_feature_ids)
+      || !identifiers(task.provides_feature_ids)) {
       fail('task_invalid', `/tasks/${index}`);
     }
-    if (taskMap.has(task.task_id)) fail('task_duplicate', `/tasks/${index}/task_id`);
+    if (!authoredIds.has(task.task_id)) {
+      finding('task_invalid', `/tasks/${index}`, { task_id: task.task_id, cause: 'task_not_authored' });
+      continue;
+    }
+    if (task.provides_feature_ids.length === 0) {
+      finding('task_invalid', `/tasks/${index}`, { task_id: task.task_id, cause: 'provides_empty' });
+    }
+    if (taskMap.has(task.task_id)) {
+      finding('task_duplicate', `/tasks/${index}/task_id`, { task_id: task.task_id });
+      continue;
+    }
     taskMap.set(task.task_id, task);
   }
+  for (const id of [...authoredIds].filter((candidate) => !taskMap.has(candidate))) {
+    finding('task_coverage_missing', '/tasks', { task_id: id });
+  }
   for (const [index, task] of chain.tasks.entries()) {
+    if (taskMap.get(task.task_id) !== task) continue;
     for (const id of task.provides_feature_ids) {
       const feature = features.get(id);
       if (feature?.provider.kind !== 'task' || feature.provider.task_id !== task.task_id) {
-        fail('task_output_provider_mismatch', `/tasks/${index}/provides_feature_ids`, { feature_id: id });
+        finding('task_output_provider_mismatch', `/tasks/${index}/provides_feature_ids`, { feature_id: id });
       }
     }
     const supplied = new Set(task.provides_feature_ids);
     const needed = [...new Set(task.provides_feature_ids.flatMap((id) =>
-      features.get(id).requires_feature_ids.filter((required) => !supplied.has(required))))];
+      (features.get(id)?.requires_feature_ids ?? []).filter((required) => !supplied.has(required))))];
     if (needed.some((id) => !task.requires_feature_ids.includes(id))) {
-      fail('task_inputs_incomplete', `/tasks/${index}/requires_feature_ids`, {
+      finding('task_inputs_incomplete', `/tasks/${index}/requires_feature_ids`, {
         expected: needed.sort(), actual: task.requires_feature_ids,
       });
     }
@@ -146,7 +160,7 @@ export function validatePlanBackchain(chain, authoring) {
     if (feature.provider.kind !== 'task') continue;
     const task = taskMap.get(feature.provider.task_id);
     if (task === undefined || !task.provides_feature_ids.includes(feature.feature_id)) {
-      fail('feature_provider_missing', `/features/${feature.feature_id}/provider`, {
+      finding('feature_provider_missing', `/features/${feature.feature_id}/provider`, {
         feature_id: feature.feature_id,
       });
     }
@@ -154,42 +168,61 @@ export function validatePlanBackchain(chain, authoring) {
   const reached = new Set();
   const visiting = new Set();
   const visit = (id) => {
-    if (!features.has(id)) fail('required_feature_missing', '/goal/required_feature_ids', { feature_id: id });
-    if (visiting.has(id)) fail('feature_cycle', `/features/${id}/requires_feature_ids`);
+    if (!features.has(id)) {
+      finding('required_feature_missing', '/goal/required_feature_ids', { feature_id: id });
+      return;
+    }
+    if (visiting.has(id)) {
+      finding('feature_cycle', `/features/${id}/requires_feature_ids`);
+      return;
+    }
     if (reached.has(id)) return;
     visiting.add(id);
     const feature = features.get(id);
     for (const required of feature.requires_feature_ids) visit(required);
     if (feature.provider.kind === 'task') {
-      for (const required of taskMap.get(feature.provider.task_id).requires_feature_ids) visit(required);
+      for (const required of taskMap.get(feature.provider.task_id)?.requires_feature_ids ?? []) visit(required);
     }
     visiting.delete(id);
     reached.add(id);
   };
   for (const id of chain.goal.required_feature_ids) visit(id);
   if (reached.size !== features.size) {
-    fail('orphan_feature', '/features', {
+    finding('orphan_feature', '/features', {
       feature_ids: [...features.keys()].filter((id) => !reached.has(id)).sort(),
     });
   }
   const edges = new Set(authoring.hard_dependencies.map(({ from, to }) =>
     `${from.project_id}/${from.plan_key}/${from.task_id}->${to.project_id}/${to.plan_key}/${to.task_id}`));
   for (const [index, task] of chain.tasks.entries()) {
+    if (taskMap.get(task.task_id) !== task) continue;
     for (const id of task.requires_feature_ids) {
       const feature = features.get(id);
-      if (feature === undefined) fail('task_input_missing', `/tasks/${index}/requires_feature_ids`, {
-        feature_id: id,
-      });
+      if (feature === undefined) {
+        finding('task_input_missing', `/tasks/${index}/requires_feature_ids`, { feature_id: id });
+        continue;
+      }
       if (feature.provider.kind !== 'task') continue;
       const sourceId = feature.provider.task_id;
-      if (sourceId === task.task_id) fail('task_requires_own_output', `/tasks/${index}/requires_feature_ids`);
+      if (sourceId === task.task_id) {
+        finding('task_requires_own_output', `/tasks/${index}/requires_feature_ids`);
+        continue;
+      }
       const edge = `${chain.project_id}/${chain.plan_key}/${sourceId}->${chain.project_id}/${chain.plan_key}/${task.task_id}`;
-      if (!edges.has(edge)) fail('dependency_missing', `/tasks/${index}/requires_feature_ids`, {
+      if (!edges.has(edge)) finding('dependency_missing', `/tasks/${index}/requires_feature_ids`, {
         feature_id: id, from_task_id: sourceId, to_task_id: task.task_id,
       });
     }
   }
-  return { features, tasks: taskMap };
+  return { features, tasks: taskMap, findings: sortFindings(found) };
+}
+
+/** 決定的な順序(pointer, reason, 正準JSON)で並べ、同一の指摘は1件にする。 */
+function sortFindings(list) {
+  const keyed = new Map(list.map((entry) => [canonicalizeTodoArtifact(entry), entry]));
+  return [...keyed.entries()].sort(([left, a], [right, b]) =>
+    a.pointer.localeCompare(b.pointer) || a.reason.localeCompare(b.reason)
+    || (left < right ? -1 : left > right ? 1 : 0)).map(([, entry]) => entry);
 }
 
 /** 作業者に下流の用途まで渡す。文の生成は入力済みの定義を転記するだけ。 */
@@ -204,6 +237,7 @@ export function backchainTaskMemo(chain, taskId) {
     '必要とする機能:',
     ...task.requires_feature_ids.map((id) => {
       const feature = features.get(id);
+      if (feature === undefined) return `- ${id}: （機能の定義が無い）`;
       const provider = feature.provider.kind === 'task'
         ? `工程 ${feature.provider.task_id}`
         : feature.provider.kind === 'existing'
@@ -214,6 +248,7 @@ export function backchainTaskMemo(chain, taskId) {
     '作る機能:',
     ...task.provides_feature_ids.map((id) => {
       const feature = features.get(id);
+      if (feature === undefined) return `- ${id}: （機能の定義が無い）`;
       const consumers = chain.tasks.filter((other) => other.requires_feature_ids.includes(id))
         .map(({ task_id: consumerId }) => consumerId).sort();
       return `- ${id}: ${feature.capability}。受入条件: ${feature.acceptance}。後続: ${consumers.join(', ') || '最終成果'}`;
@@ -290,13 +325,13 @@ export async function readTaskBackchainContext({ repoRoot, plan, taskId }) {
   const downstream = chain.tasks.filter((other) => other.task_id !== taskId
     && other.requires_feature_ids.some((id) => task.provides_feature_ids.includes(id)))
     .map(({ task_id: id }) => id).sort();
-  const required = task.requires_feature_ids.map((id) => features.get(id));
+  const required = task.requires_feature_ids.map((id) => features.get(id)).filter(Boolean);
   return {
     schema: 'lattice.todo_feature_context.v1',
     plan_key: chain.plan_key, plan_version: chain.plan_version,
     goal: chain.goal,
     requires: required,
-    provides: task.provides_feature_ids.map((id) => features.get(id)),
+    provides: task.provides_feature_ids.map((id) => features.get(id)).filter(Boolean),
     downstream_task_ids: downstream,
     unknown_feature_ids: required.filter(({ provider }) => provider.kind === 'unknown')
       .map(({ feature_id: id }) => id),
@@ -380,7 +415,7 @@ function taskSignature(chain, taskId) {
   return canonicalizeTodoArtifact({
     requires_feature_ids: task.requires_feature_ids,
     provides_feature_ids: task.provides_feature_ids,
-    features: ids.map((id) => byId.get(id)),
+    features: ids.map((id) => byId.get(id) ?? null),
   });
 }
 
@@ -449,7 +484,7 @@ export function compilePhaseMigration(previousPlan, desiredSeed, taskMigration) 
   ];
 }
 
-async function compileBackchainRevision({ repoRoot, member, chain, authoring }) {
+export async function compileBackchainRevision({ repoRoot, member, chain, authoring }) {
   if (!['lattice.todo_plan.v7', DONE_CONDITION_PLAN_SCHEMA].includes(member.plan.schema)) {
     fail('predecessor_plan_schema_unsupported', '/plan_key', {
       actual: member.plan.schema, next_action: 'author_a_new_backchain_plan',
@@ -474,7 +509,7 @@ async function compileBackchainRevision({ repoRoot, member, chain, authoring }) 
   const successorChain = { ...chain, plan_version: version, chain_digest: '' };
   successorChain.chain_digest = todoSelfDigest(successorChain, 'chain_digest');
   const desiredPlan = buildTodoPlan({ ...seed, plan_version: version });
-  validatePlanBackchain(successorChain, {
+  const { findings } = validatePlanBackchain(successorChain, {
     schema: CREATE_SCHEMA, project_id: desiredPlan.project_id,
     plan_key: desiredPlan.plan_key, plan_version: desiredPlan.plan_version,
     tasks: desiredPlan.tasks, hard_dependencies: desiredPlan.hard_dependencies,
@@ -489,7 +524,7 @@ async function compileBackchainRevision({ repoRoot, member, chain, authoring }) 
   if (!validatePhaseTodoRevision(revision)) {
     fail('revision_invalid', '/revision', { diagnosis: explainPhaseTodoRevision(revision) });
   }
-  return revision;
+  return { revision, findings };
 }
 
 async function activeIntentUnchanged({ repoRoot, member, chain, authoring }) {
@@ -538,10 +573,10 @@ export async function rebindCarriedWork({ repoRoot, planKey, env,
 export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, env = process.env }) {
   const repoRoot = gitRoot(cwd);
   const chain = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'PLAN_BACKCHAIN_INVALID' });
-  const authoring = await readAuthoringJsonFile(repoRoot, chain.authoring_ref, {
+  const authoring = completeCreateInput(await readAuthoringJsonFile(repoRoot, chain.authoring_ref, {
     invalidCode: 'PLAN_BACKCHAIN_INVALID',
-  });
-  validatePlanBackchain(chain, authoring);
+  }), { env, now: new Date() });
+  const { findings: featureChainFindings } = validatePlanBackchain(chain, authoring);
   await verifyExistingFeatureReferences(repoRoot, chain);
   let member = null;
   let store = null;
@@ -560,7 +595,7 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     repoRoot, member, chain, authoring,
   });
   const revision = member === null || unchanged ? null
-    : await compileBackchainRevision({ repoRoot, member, chain, authoring });
+    : (await compileBackchainRevision({ repoRoot, member, chain, authoring })).revision;
   const amended = revision === null ? attachBackchainMemos(chain, authoring) : null;
   if (!unchanged && revision === null) {
     try { buildTodoPlan({ ...planSeed(amended, null), plan_version: chain.plan_version }); }
@@ -578,6 +613,7 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
       operation: unchanged ? 'unchanged' : revision !== null ? 'revise'
         : store === null ? 'create' : 'add',
       task_migration: revision?.task_migration ?? null,
+      feature_chain_findings: featureChainFindings,
       result_digest: '',
     };
     checked.result_digest = todoSelfDigest(checked, 'result_digest');
@@ -633,6 +669,7 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     unknown_feature_ids: unknownFeatureIds,
     chain_digest: effectiveChain.chain_digest, authoring_result: created,
     rebound_task_ids: reboundTaskIds,
+    feature_chain_findings: featureChainFindings,
     operation: unchanged ? 'unchanged' : revision !== null ? 'revise'
       : store === null ? 'create' : 'add',
     journal_head_digest: finalMember.journal.events.at(-1).event_digest,

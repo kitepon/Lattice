@@ -61,15 +61,29 @@ test('証跡slotが空のPhaseは、そのPhaseのslotをpointerで名指しす�
   assert.equal(detail.expected.min_items, 1);
 });
 
-test('task_idが昇順でなければ、落ちたindexと直前の値を返す', async (context) => {
+test('同じtask_idで内容が違えば、落ちたindexと直前の値を返す', async (context) => {
   const detail = await reject(context, (value) => {
     const [task] = value.tasks;
-    value.tasks = [{ ...task, task_id: 't2' }, { ...task, task_id: 't1' }];
+    value.tasks = [{ ...task, task_id: 't1' }, { ...task, task_id: 't1', title: 'other' }];
     return value;
   });
   assert.equal(detail.pointer, '/tasks/1/task_id');
   assert.equal(detail.violation_kind, 'unsorted');
-  assert.equal(detail.expected.greater_than, 't2');
+  assert.equal(detail.expected.greater_than, 't1');
+});
+
+test('task_idの順序違反は機械が並べ替えて受理する(u03p)', async (context) => {
+  const root = await workspace(context);
+  const value = draft((input) => {
+    const [task] = input.tasks;
+    input.tasks = [{ ...task, task_id: 't2' }, { ...task, task_id: 't1' }];
+    return input;
+  });
+  await writeFile(path.join(root, 'draft.json'), `${JSON.stringify(value)}\n`);
+  const execution = spawnSync(process.execPath, [CLI, 'plan', 'create', '--input', 'draft.json'], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0' },
+  });
+  assert.equal(execution.status, 0, execution.stderr);
 });
 
 test('存在しないphase_idを指すtaskは、選べるphase_idを添えて拒否する', async (context) => {
@@ -98,18 +112,15 @@ test('入力に無関係なkeyが混ざれば、期待するkey一覧を返す',
   assert.ok(detail.actual.keys.includes('stray'));
 });
 
-test('hard dependenciesの順序違反はfieldと規則を返す', async (context) => {
+test('hard dependenciesの順序違反は機械が並べ替え、循環はfieldと規則を返す', async (context) => {
   const detail = await reject(context, (value) => {
     const [task] = value.tasks;
     value.tasks = ['a', 'b', 'c'].map((task_id) => ({ ...task, task_id }));
     const ref = (task_id) => ({ project_id: value.project_id, plan_key: value.plan_key, task_id });
     value.hard_dependencies = [
-      { from: ref('b'), to: ref('c') }, { from: ref('a'), to: ref('c') },
+      { from: ref('c'), to: ref('a') }, { from: ref('a'), to: ref('b') }, { from: ref('b'), to: ref('c') },
     ];
     return value;
   });
-  assert.equal(detail.reason, 'plan_create_schema_invalid');
-  assert.equal(detail.pointer, '/hard_dependencies/1');
-  assert.equal(detail.violation_kind, 'unsorted_or_duplicate_collection');
-  assert.equal(detail.expected.order, 'ascending_unique');
+  assert.equal(detail.reason, 'dispatch_shape_dependency_cycle');
 });

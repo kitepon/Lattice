@@ -109,17 +109,20 @@ test('逆算した初回工程を一回で作り、担当者へ目的・必要�
   assert.equal(start.feature_context.provides[0].feature_id, 'index');
 });
 
-test('後続の必要機能を作る工程が無ければstoreを作らない', async (context) => {
+test('後続の必要機能の工程依存が欠けても登録し、feature_chain_findingsで知らせる(u03p A85)', async (context) => {
   const root = await repo(context);
   const plan = createInput();
   plan.hard_dependencies = [];
   await writeFile(path.join(root, 'plan.json'), `${JSON.stringify(plan)}\n`);
   await writeFile(path.join(root, 'chain.json'), `${JSON.stringify(chain())}\n`);
+  const dry = run(root, ['plan', 'backchain', '--input', 'chain.json', '--dry-run', '--json']);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.deepEqual(JSON.parse(dry.stdout).feature_chain_findings.map(({ reason }) => reason), ['dependency_missing']);
   const result = run(root, ['plan', 'backchain', '--input', 'chain.json', '--json']);
-  assert.equal(result.status, 1);
-  assert.equal(JSON.parse(result.stderr).code, 'PLAN_BACKCHAIN_INVALID');
-  const status = run(root, ['status', '--json']);
-  assert.equal(JSON.parse(status.stdout).state, 'uninitialized');
+  assert.equal(result.status, 0, result.stderr);
+  const created = JSON.parse(result.stdout);
+  assert.deepEqual(created.feature_chain_findings.map(({ reason }) => reason), ['dependency_missing']);
+  assert.equal(JSON.parse(run(root, ['status', '--json']).stdout).state !== 'uninitialized', true);
 });
 
 test('既存機能を申告する参照が実在しない時は作成前に理由を返す', async (context) => {

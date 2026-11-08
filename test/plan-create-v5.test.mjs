@@ -129,13 +129,17 @@ test('v5 normalizer sorts and de-duplicates ordered-set fields into the validato
   assert.equal(repairAuthoringArtifact(shuffled).input_digest, repaired.input_digest);
 });
 
-test('v5 normalizer never reorders tasks and keeps same-key conflicts for the validator', () => {
+test('v5 normalizer sorts tasks (u03p) and keeps same-key conflicts for the validator', () => {
   const unsortedTasks = repairAuthoringArtifact(draft((value) => {
     value.tasks = [task('t2'), task('t1')];
     return value;
   }));
-  assert.deepEqual(unsortedTasks.tasks.map(({ task_id }) => task_id), ['t2', 't1']);
-  assert.equal(rejection(unsortedTasks).detail.pointer, '/tasks/1/task_id');
+  assert.deepEqual(unsortedTasks.tasks.map(({ task_id }) => task_id), ['t1', 't2']);
+  const conflictingTasks = repairAuthoringArtifact(draft((value) => {
+    value.tasks = [task('t1'), { ...task('t1'), title: 'other' }];
+    return value;
+  }));
+  assert.equal(rejection(conflictingTasks).detail.pointer, '/tasks/1/task_id');
 
   const conflicting = repairAuthoringArtifact(draft((value) => {
     value.joins = [
@@ -146,14 +150,14 @@ test('v5 normalizer never reorders tasks and keeps same-key conflicts for the va
   assert.equal(conflicting.joins.length, 2);
 });
 
-test('v4 input is not normalized', () => {
+test('v4 input is normalized too (u03p: every create schema)', () => {
   const v4 = draft((value) => {
     value.schema = 'lattice.plan_create_input.v4';
     for (const entry of value.tasks) delete entry.done_condition;
     value.hard_dependencies = [{ from: ref('t2'), to: ref('t1') }, { from: ref('t1'), to: ref('t2') }];
     return value;
   });
-  assert.deepEqual(repairAuthoringArtifact(v4).hard_dependencies, v4.hard_dependencies);
+  assert.deepEqual(repairAuthoringArtifact(v4).hard_dependencies, [...v4.hard_dependencies].reverse());
 });
 
 async function createFromDraft(context, value) {

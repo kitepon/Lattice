@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_create_input.v5.schema.json",
   "title": "lattice.plan_create_input.v5",
-  "description": "Canonical initial authoring input for a phase-audited plan. Every task requires a design memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every task preserves an owner-supplied work specification without adding a product purpose. あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください v5 adds the per-task authored `done_condition`: plain text (or null when the author states none) that Lattice records and shows but never evaluates, never assigns and never records as done. Builds lattice.todo_plan.v8.",
-  "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, sorted identifiers and edges, unique ids, combined task/phase acyclicity, byte bounds, non-empty design_memo, and input_digest. v5 additionally accepts hard_dependencies, joins, each joins[].after, phase_accept_dependencies, phases, phases[].predecessor_phase_ids and phases[].required_evidence_slots in any order or with exact duplicates: they are sorted into canonical order and de-duplicated before validation. tasks are never reordered. Entries with the same key but different content are still refused.",
+  "description": "Canonical initial authoring input for a phase-audited plan. Every task requires a design memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every task preserves an owner-supplied work specification without adding a product purpose. あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください v5 adds the per-task authored `done_condition`: plain text (or null when the author states none) that Lattice records and shows but never evaluates, never assigns and never records as done. Builds lattice.todo_plan.v8. actor, recorded_at, input_digest and tasks[].design_memo may be omitted: the machine fills the seat actor, the current time and NO_PLAN, recomputes input_digest and sorts every list into canonical order.",
+  "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, sorted identifiers and edges, unique ids, combined task/phase acyclicity, byte bounds, non-empty design_memo (omitted, null or blank becomes NO_PLAN), and input_digest (recomputed). v5 additionally accepts hard_dependencies, joins, each joins[].after, phase_accept_dependencies, phases, phases[].predecessor_phase_ids and phases[].required_evidence_slots in any order or with exact duplicates: they are sorted into canonical order and de-duplicated before validation. tasks are sorted by task_id. Entries with the same key but different content are still refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,14 +11,11 @@
     "project_id",
     "plan_key",
     "plan_version",
-    "actor",
-    "recorded_at",
     "tasks",
     "phases",
     "hard_dependencies",
     "joins",
-    "phase_accept_dependencies",
-    "input_digest"
+    "phase_accept_dependencies"
   ],
   "properties": {
     "schema": {
@@ -150,7 +147,6 @@
         "task_id",
         "title",
         "lane",
-        "design_memo",
         "narrative_ref",
         "narrative_anchor",
         "compile_binding",

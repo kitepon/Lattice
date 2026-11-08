@@ -2,32 +2,56 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_revise_input.v1.schema.json",
   "title": "lattice.plan_revise_input.v1",
-  "description": "工程全体のdesired stateと、全ての旧taskの明示的な状態移行。predecessor/CAS/digest/後継versionは機械が算出する。旧版は保持し、作業の意味が同じかを暗黙に推定しない。",
+  "description": "工程全体のdesired stateと、必要なら状態移行の指定。継続方針は機械が全ての旧taskについて算出する（desiredに在れば既定carry、無ければretire）。predecessor/CAS/digest/後継versionも機械が算出する。旧版は保持する。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "desired", "continuity"],
+  "required": [
+    "schema",
+    "desired"
+  ],
   "properties": {
-    "schema": { "const": "lattice.plan_revise_input.v1" },
+    "schema": {
+      "const": "lattice.plan_revise_input.v1"
+    },
     "desired": {
       "oneOf": [
-        { "$ref": "lattice.plan_create_input.v4.schema.json" },
-        { "$ref": "lattice.plan_create_input.v5.schema.json" }
+        {
+          "$ref": "lattice.plan_create_input.v4.schema.json"
+        },
+        {
+          "$ref": "lattice.plan_create_input.v5.schema.json"
+        }
       ],
-      "description": "同じproject_idとplan_keyのcreate-v4またはv5入力。input_digestは通常のauthoring正規化で補う。v5は終了条件done_conditionを持ち、集合の並びを機械が正準化する（plan v8を作る）。v4でも先行planがv8なら、書かない終了条件は先行planの値を引き継ぐ。plan_versionは入力形を保つために記載し、後継versionは機械算出値に置き換える。新taskはpending。消すtaskへの参照も明示的に取り除く。"
+      "description": "同じproject_idとplan_keyのcreate-v4またはv5入力。actor・recorded_at・input_digest・空の設計メモは機械が補い、集合と配列の並びは正準化する。v5は終了条件done_conditionを持つ（plan v8を作る）。v4でも先行planがv8なら、書かない終了条件は先行planの値を引き継ぐ。plan_versionは入力形を保つために記載し、後継versionは機械算出値に置き換える。新taskはpending。消すtaskへの参照も明示的に取り除く。"
     },
     "continuity": {
       "type": "array",
-      "minItems": 1,
       "maxItems": 512,
-      "description": "旧task全件をtask_idごとに一度ずつ選ぶ。新taskへのentryは書かない。配列の順序は問わない。carryはtaskの状態（進行中・完了を含む）を保ったまま、文面・終了条件・依存・joinの改訂を受け付け（改訂後の手順は以後そのまま実行時に守られ、履歴noteに残る）、resetはpendingへ戻し、retireはdesiredに存在しないtaskだけに使う。各判断の理由をreasonに記録する。",
+      "description": "任意の上書き。entryを書いたtaskだけが対象で、順序は問わない。desiredに在るtaskの既定はcarry（進行中・完了を含む状態を保ち、文面・終了条件・依存・joinの改訂を受け付ける）で、resetを書けばpendingへ戻す。desiredに無いtaskは常にretireになる（desiredの在不在がentryに優先する）。reasonを省くと `computed <policy>` が入る。読めないentry（旧planに無いtask_id、重複、未知のpolicy）は拒否する。",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["task_id", "policy", "reason"],
+        "required": [
+          "task_id",
+          "policy"
+        ],
         "properties": {
-          "task_id": { "type": "string", "pattern": "^[0-9A-Za-z](?:[0-9A-Za-z._-]{0,127})$" },
-          "policy": { "enum": ["carry", "reset", "retire"] },
-          "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }
+          "task_id": {
+            "type": "string",
+            "pattern": "^[0-9A-Za-z](?:[0-9A-Za-z._-]{0,127})$"
+          },
+          "policy": {
+            "enum": [
+              "carry",
+              "reset",
+              "retire"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
         }
       }
     }

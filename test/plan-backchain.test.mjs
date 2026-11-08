@@ -63,29 +63,56 @@ test('最終成果から逆算した機能と工程依存を照合し、担当�
   assert.notEqual(enriched.input_digest, plan.input_digest);
 });
 
-test('後続が必要とする機能の工程依存が欠けたら登録前に拒否する', () => {
+test('後続が必要とする機能の工程依存が欠けても拒否せず、指摘として返す(u03p A85)', () => {
   const plan = authoring();
   plan.hard_dependencies = [];
-  assert.throws(() => validatePlanBackchain(chain(), plan), (error) =>
-    error.code === 'PLAN_BACKCHAIN_INVALID' && error.message === 'dependency_missing'
-      && error.detail.from_task_id === 'index' && error.detail.to_task_id === 'search');
+  const { findings } = validatePlanBackchain(chain(), plan);
+  assert.deepEqual(findings.map(({ reason }) => reason), ['dependency_missing']);
+  assert.equal(findings[0].from_task_id, 'index');
+  assert.equal(findings[0].to_task_id, 'search');
+  assert.equal(findings[0].pointer, '/tasks/1/requires_feature_ids');
 });
 
-test('最終成果へつながらない機能を余計な工程として検出する', () => {
+test('最終成果へつながらない機能を余計な工程として指摘する', () => {
   const input = chain();
   input.goal.required_feature_ids = ['index'];
   resign(input);
-  assert.throws(() => validatePlanBackchain(input, authoring()), (error) =>
-    error.code === 'PLAN_BACKCHAIN_INVALID' && error.message === 'orphan_feature');
+  const { findings } = validatePlanBackchain(input, authoring());
+  assert.deepEqual(findings.map(({ reason }) => reason), ['orphan_feature']);
+  assert.deepEqual(findings[0].feature_ids, ['results']);
 });
 
-test('機能前提の循環を検出する', () => {
+test('機能前提の循環を指摘する(走査は止まらない)', () => {
   const input = chain();
   input.features[0].requires_feature_ids = ['results'];
   input.tasks[0].requires_feature_ids = ['results'];
   resign(input);
+  const { findings } = validatePlanBackchain(input, authoring());
+  assert.ok(findings.some(({ reason }) => reason === 'feature_cycle'));
+});
+
+test('連鎖の欠落(被覆・提供元・未定義の機能)は拒否せずfindingsを決定的な順で返す', () => {
+  const input = chain();
+  input.tasks.pop();
+  input.tasks.push({ task_id: 'ghost', requires_feature_ids: ['nowhere'], provides_feature_ids: [] });
+  resign(input);
+  const first = validatePlanBackchain(input, authoring()).findings;
+  const second = validatePlanBackchain(structuredClone(input), authoring()).findings;
+  assert.deepEqual(first, second);
+  const reasons = first.map(({ reason }) => reason);
+  for (const reason of ['task_invalid', 'task_coverage_missing', 'feature_provider_missing']) {
+    assert.ok(reasons.includes(reason), reason);
+  }
+  assert.deepEqual(first, [...first].sort((left, right) => left.pointer.localeCompare(right.pointer)
+    || left.reason.localeCompare(right.reason)));
+});
+
+test('形の壊れた連鎖(task行の欠けたkey)は引き続き拒否する', () => {
+  const input = chain();
+  delete input.tasks[0].provides_feature_ids;
+  resign(input);
   assert.throws(() => validatePlanBackchain(input, authoring()), (error) =>
-    error.code === 'PLAN_BACKCHAIN_INVALID' && error.message === 'feature_cycle');
+    error.code === 'PLAN_BACKCHAIN_INVALID' && error.message === 'task_invalid');
 });
 
 test('未知の提供元は問いを明示して工程作成を続けられる', () => {
