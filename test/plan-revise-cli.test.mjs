@@ -153,6 +153,35 @@ test('light CLI tombstones the live incoming binding when the revision removes i
   assert.ok(owner.plan_scoped.events.some(({ kind }) => kind === 'cross_plan_dependency_removed'));
 });
 
+test('light CLI walks a binding through two source revisions when the first repair never landed', async (context) => {
+  const { root } = await fixture(context);
+  await writeFile(path.join(root, 'other.json'), JSON.stringify({ ...desired(['x']), plan_key: 'other' }));
+  success(root, ['plan', 'create', '--input', 'other.json']);
+  success(root, ['todo', 'dependency', 'connect', '--from-plan', 'work', '--from-task', 'b',
+    '--to-plan', 'other', '--to-task', 'x', '--reason', 'fixture']);
+  const owner = (await readTodoStore({ repoRoot: root })).members.find(({ plan }) => plan.plan_key === 'other');
+  const chainPath = path.join(root, owner.plan_scoped.ref);
+  const v1Chain = await readFile(chainPath);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  success(root, ['plan', 'revise', '--input', 'revise.json', '--json']);
+  // Undo the first repair: the connection is bound to v1 again while the source is at v2.
+  await writeFile(chainPath, v1Chain);
+  let store = await readTodoStore({ repoRoot: root });
+  assert.deepEqual(store.cross_plan_findings.map(({ reason }) => reason), ['binding_stale']);
+  const second = { schema: 'lattice.plan_revise_input.v1', desired: desired(['a', 'b', 'e']),
+    continuity: [decision('a', 'carry'), decision('b', 'carry'), decision('d', 'retire')] };
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(second));
+  success(root, ['plan', 'revise', '--input', 'revise.json', '--json']);
+  store = await readTodoStore({ repoRoot: root });
+  const source = store.members.find(({ plan }) => plan.plan_key === 'work').plan;
+  assert.deepEqual(store.cross_plan_findings, []);
+  const live = projectTodoCrossPlanDependencies(store.members);
+  assert.equal(live.length, 1);
+  assert.equal(live[0].from.task_id, 'b');
+  assert.equal(live[0].from.expected_topology_digest, source.topology_digest);
+  assert.equal(live[0].to.task_id, 'x');
+});
+
 test('artifact CLI applies v5 through revise-phase and verifies its reconciliation projection', async (context) => {
   const { root } = await fixture(context);
   await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));

@@ -1574,24 +1574,54 @@ async function readTodoStoreView(options = {}) {
   };
 }
 
-async function predecessorPlanOf(repoRoot, member) {
-  const base = `${STORE_ROOT_REF}/plans/${member.plan.plan_key}`;
-  let versions;
-  try { versions = await readdir(path.resolve(repoRoot, base)); } catch { return null; }
-  for (const version of versions) {
-    if (version === member.plan.plan_version || !isTodoIdentifier(version)) continue;
-    const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
-      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
-    }).catch(() => null);
-    if (plan?.plan_digest === member.plan.predecessor_plan_digest) return plan;
+/**
+ * Composes the source plan's recorded task migrations back to the version whose topology the
+ * connection names (u03): returns the source task id it maps to now, 'removed', or null (unknown).
+ */
+async function carriedSourceTask(repoRoot, source, ref, versionsCache) {
+  if (!versionsCache.has(source)) {
+    const base = `${STORE_ROOT_REF}/plans/${source.plan.plan_key}`;
+    const byDigest = new Map();
+    let names = [];
+    try { names = await readdir(path.resolve(repoRoot, base)); } catch { /* no retained versions */ }
+    for (const version of names) {
+      if (version === source.plan.plan_version || !isTodoIdentifier(version)) continue;
+      const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
+        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
+      }).catch(() => null);
+      if (plan !== null) byDigest.set(plan.plan_digest, { plan, journalRef: `${base}/${version}/journal/active.jsonl` });
+    }
+    versionsCache.set(source, byDigest);
+  }
+  const byDigest = versionsCache.get(source);
+  // Newest first: the active genesis maps its predecessor's ids onto the active ids.
+  const migrations = [source.journal.events[0].payload.task_migration ?? []];
+  for (let plan = source.plan; migrations.length <= byDigest.size;) {
+    const predecessor = byDigest.get(plan.predecessor_plan_digest);
+    if (predecessor === undefined) return null;
+    if (predecessor.plan.topology_digest === ref.expected_topology_digest) {
+      let taskId = ref.task_id;
+      for (const migration of migrations.reverse()) {
+        const entry = migration.find(({ from_task_id: from }) => from === taskId);
+        if (entry === undefined) return null;
+        if (entry.to_task_id === 'removed') return 'removed';
+        taskId = entry.to_task_id;
+      }
+      return taskId;
+    }
+    let journal;
+    try { journal = await readJournal(repoRoot, predecessor.journalRef); } catch { return null; }
+    migrations.push(journal.events[0].payload.task_migration ?? []);
+    plan = predecessor.plan;
   }
   return null;
 }
 
 /**
- * u03 A24/A25b: a live connection bound to the immediate predecessor of its source plan follows
- * that revision's task_migration: carried → tombstone + replacement, removed → tombstone. Publishes
- * each owner chain once and updates the in-memory store; anything else stays a finding.
+ * u03 A24/A25b: a live connection whose source plan was revised follows the source's recorded
+ * task migrations (Plan's revision decision, the carry proof): carried -> tombstone + replacement,
+ * removed -> tombstone. A repair that would duplicate an edge or close a cycle is dropped alone and
+ * stays a finding; the rest publish once per owner chain and update the in-memory store.
  */
 async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, recordedAt }) {
   const stale = (store.cross_plan_findings ?? []).filter(({ event_digest: digest, side }) => (
@@ -1599,9 +1629,10 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
   if (stale.length === 0) return [];
   const live = new Map(projectTodoCrossPlanDependencies(store.members)
     .map((dependency) => [dependency.event_digest, dependency]));
-  const predecessors = new Map();
+  const versionsCache = new Map();
   const staged = new Map();
   const repairs = [];
+  let findings = store.cross_plan_findings;
   for (const finding of stale) {
     const dependency = live.get(finding.event_digest);
     const source = store.members.find(({ plan }) => plan.project_id === finding.ref.project_id
@@ -1609,25 +1640,21 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
     const owner = store.members.find(({ plan_scoped: chain }) => (chain?.events ?? [])
       .some(({ event_digest: digest }) => digest === finding.event_digest));
     if (!dependency || !source || !owner) continue;
-    if (!predecessors.has(source)) predecessors.set(source, await predecessorPlanOf(repoRoot, source));
-    const predecessor = predecessors.get(source);
-    if (predecessor?.topology_digest !== dependency.from.expected_topology_digest) continue;
-    const migration = (source.journal.events[0].payload.task_migration ?? [])
-      .find(({ from_task_id: from }) => from === dependency.from.task_id);
-    if (migration === undefined) continue;
+    const mapped = await carriedSourceTask(repoRoot, source, dependency.from, versionsCache);
+    if (mapped === null) continue;
     if (!staged.has(owner)) {
       staged.set(owner, { ...owner, plan_scoped: { ...owner.plan_scoped,
         events: [...owner.plan_scoped.events], activeBytes: owner.plan_scoped.activeBytes } });
     }
     const target = staged.get(owner);
+    const before = { events: target.plan_scoped.events.length, activeBytes: target.plan_scoped.activeBytes };
     const inputs = [{ kind: 'cross_plan_dependency_removed', payload: {
       target_event_digest: dependency.event_digest,
-      reason: `source ${source.plan.plan_key} ${source.plan.plan_version} ${migration.to_task_id === 'removed'
+      reason: `source ${source.plan.plan_key} ${source.plan.plan_version} ${mapped === 'removed'
         ? 'removed the task' : 'carried the task'}`,
     } }];
-    if (migration.to_task_id !== 'removed') inputs.push({ kind: 'cross_plan_dependency', payload: {
-      from: { ...dependency.from, task_id: migration.to_task_id,
-        expected_topology_digest: source.plan.topology_digest },
+    if (mapped !== 'removed') inputs.push({ kind: 'cross_plan_dependency', payload: {
+      from: { ...dependency.from, task_id: mapped, expected_topology_digest: source.plan.topology_digest },
       to: dependency.to, reason: dependency.reason,
     } });
     for (const input of inputs) {
@@ -1636,22 +1663,26 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
         planScopedEventBytes(target, event)]);
       target.plan_scoped.events.push(event);
     }
+    const prospective = store.members.map((member) => staged.get(member) ?? member);
+    const keys = projectTodoCrossPlanDependencies(prospective)
+      .map(({ from, to }) => `${mergedTaskKey(from)}\0${mergedTaskKey(to)}`);
+    try {
+      if (new Set(keys).size !== keys.length) fail('DEPENDENCY_EXISTS', 'cross_plan_dependency_duplicate');
+      findings = validateMergedGraph(prospective);
+    } catch (error) {
+      if (!(error instanceof TodoStoreError)) throw error;
+      target.plan_scoped.events.length = before.events;
+      target.plan_scoped.activeBytes = before.activeBytes;
+      continue;
+    }
     repairs.push({ owner_plan_key: owner.plan.plan_key, original_event_digest: dependency.event_digest,
-      replacement_event_digest: migration.to_task_id === 'removed' ? null : target.plan_scoped.events.at(-1).event_digest,
-      action: migration.to_task_id === 'removed' ? 'tombstoned' : 'rebound' });
+      replacement_event_digest: mapped === 'removed' ? null : target.plan_scoped.events.at(-1).event_digest,
+      action: mapped === 'removed' ? 'tombstoned' : 'rebound' });
   }
   if (repairs.length === 0) return [];
-  const prospective = store.members.map((member) => staged.get(member) ?? member);
-  const keys = projectTodoCrossPlanDependencies(prospective)
-    .map(({ from, to }) => `${mergedTaskKey(from)}\0${mergedTaskKey(to)}`);
-  let findings;
-  // A repair that would duplicate or close a cycle stays a finding instead of blocking the write.
-  try {
-    if (new Set(keys).size !== keys.length) return [];
-    findings = validateMergedGraph(prospective);
-  } catch (error) { if (error instanceof TodoStoreError) return []; throw error; }
   await assertHeld();
   for (const [owner, target] of staged) {
+    if (target.plan_scoped.events.length === owner.plan_scoped.events.length) continue;
     await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), target.plan_scoped.activeBytes);
     owner.plan_scoped = target.plan_scoped;
     owner.coordination = projectTodoCoordination(target.plan_scoped.events);
@@ -2010,8 +2041,10 @@ async function withLock(repoRoot, callback, {
     const result = await callback(assertHeld);
     // The successor is already published: a failed repair leaves findings for the next locked write.
     try {
-      await repairCrossPlanBindings(repoRoot, await readTodoStoreView({ repoRoot }),
+      const repairs = await repairCrossPlanBindings(repoRoot, await readTodoStoreView({ repoRoot }),
         { assertHeld, actor: repairAfter.actor, recordedAt: repairAfter.recordedAt ?? new Date().toISOString() });
+      // Results stay digest-bound; the caller learns the repairs through its own callback.
+      if (repairs.length > 0 && typeof repairAfter.onRepairs === 'function') await repairAfter.onRepairs(repairs);
     } catch (error) {
       if (!(error instanceof TodoStoreError || error instanceof StoreLockError)) throw error;
     }
@@ -2219,10 +2252,10 @@ export async function appendTodoEvent(options = {}) {
           fail('DEPENDENCY_INVALID', 'cross_plan_dependency_already_removed', { target_event_digest: digest });
         }
       }
-      return appendPlanScopedEvent({
+      return { cross_plan_repairs: store.cross_plan_repairs, ...await appendPlanScopedEvent({
         repoRoot, member, assertHeld,
         input: { ...options.event, recorded_at: options.event.recorded_at ?? new Date().toISOString() },
-      });
+      }) };
     }
     const input = resolveTargetedEvent({
       ...options.event,
@@ -2296,7 +2329,7 @@ export async function appendTodoEvent(options = {}) {
     // 見るための導出ビューは、snapshotと分けてここで別途返す。
     const phases = projectPhaseStates(member.plan, [...member.journal.events, event],
       new Map(tasks.map((task) => [task.task_id, task])));
-    return { event, snapshot, plan: member.plan, phases };
+    return { event, snapshot, plan: member.plan, phases, cross_plan_repairs: store.cross_plan_repairs };
   });
 }
 
@@ -5019,7 +5052,8 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     await rm(transaction, { recursive: true, force: true });
     return commitReceipt;
   }, { lockCapability: options[STORE_LOCK_HELD],
-    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt,
+      onRepairs: options.onCrossPlanRepairs } });
 }
 
 /** Native successor transaction for first-class Phase plans; no Markdown source inventory is involved. */
@@ -5130,7 +5164,8 @@ export async function applyPhaseTodoRevision(options = {}) {
     await rm(transaction, { recursive: true, force: true });
     return phaseRevisionResult(revision, genesis, false);
   }, { lockCapability: options[STORE_LOCK_HELD],
-    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt,
+      onRepairs: options.onCrossPlanRepairs } });
 }
 
 /** G5 revision transaction: exact successor, state migration, and manifest-CAS activation. */
@@ -5319,7 +5354,8 @@ export async function applyTodoRevision(options = {}) {
     await rm(transaction, { recursive: true, force: true });
     return revisionResult(revision, genesis, { recovered: recovering });
   }, { lockCapability: options[STORE_LOCK_HELD],
-    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt,
+      onRepairs: options.onCrossPlanRepairs } });
 }
 
 function revisionSetResult(projectId, revisionSetDigest, entries, { recovered }) {
@@ -5627,7 +5663,8 @@ export async function applyTodoRevisionSet(options = {}) {
     await rm(transaction, { recursive: true, force: true });
     return revisionSetResult(projectId, revisionSetDigest, prepared, { recovered: recovering });
   }, { lockCapability: options[STORE_LOCK_HELD],
-    repairAfter: { actor: options.actor, recordedAt: options.recordedAt } });
+    repairAfter: { actor: options.actor, recordedAt: options.recordedAt,
+      onRepairs: options.onCrossPlanRepairs } });
 }
 
 /** G5 revise primitive: topology changes only by publishing a successor version. */
@@ -5701,7 +5738,8 @@ export async function createSuccessorTodoPlan(options = {}) {
     store.manifest.manifest_digest = todoSelfDigest(store.manifest, 'manifest_digest');
     await atomicWrite(path.resolve(repoRoot, MANIFEST_REF), canonicalLine(store.manifest));
     return { plan, genesis, snapshot };
-  }, { repairAfter: { actor: options.genesis.actor, recordedAt: options.genesis.recorded_at } });
+  }, { repairAfter: { actor: options.genesis.actor, recordedAt: options.genesis.recorded_at,
+    onRepairs: options.onCrossPlanRepairs } });
 }
 
 const INDEPENDENCE_ARTIFACT_NAME = 'independence.json';
