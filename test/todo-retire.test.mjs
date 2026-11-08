@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,6 +8,7 @@ import test from 'node:test';
 
 import { runTodoCli } from '../src/todo-cli.mjs';
 import {
+  appendTodoEvent as appendStoreEvent,
   createTodoStoreWriter,
   initializeTodoStore,
   readTodoStore,
@@ -73,12 +75,106 @@ test('retireはblockedからも遷移できる', async (context) => {
   assert.equal(store.members[0].tasks.find(({ task_id: id }) => id === 'A').status, 'retired');
 });
 
-test('retireはin-progress/doneからは拒否される（invalid_retire_transition）', async (context) => {
+test('legacy retire payloadはin-progressからは従来通り拒否される（invalid_retire_transition）', async (context) => {
   const root = await workspace(context);
   await appendTodoEvent({ repoRoot: root, writer: WRITER, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'A', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
   await assert.rejects(retire(root, 'A'), (error) => {
     assert.equal(error.detail?.reason ?? error.reason, 'invalid_retire_transition');
+    return true;
+  });
+});
+
+const reasonOf = (error) => error.detail?.reason ?? error.reason;
+const taskOf = async (root, taskId) => (await readTodoStore({ repoRoot: root, now: NOW }))
+  .members[0].tasks.find(({ task_id: id }) => id === taskId);
+const retireFrom = (root, taskId, priorStatus) => appendTodoEvent({
+  repoRoot: root, writer: WRITER, planKey: 'main', now: NOW,
+  event: { kind: 'retire', task_id: taskId, actor: ACTOR, recorded_at: NOW,
+    payload: { reason: '著者が削除', prior_status: priorStatus } },
+});
+const start = (root, taskId, overrideReason = null) => appendTodoEvent({
+  repoRoot: root, writer: WRITER, planKey: 'main', now: NOW,
+  event: { kind: 'start', task_id: taskId, actor: ACTOR, recorded_at: NOW,
+    payload: { override_reason: overrideReason } },
+});
+async function done(root, taskId, append = (r, event) => appendTodoEvent({
+  repoRoot: r, writer: WRITER, planKey: 'main', now: NOW, event })) {
+  const bytes = Buffer.from(`evidence ${taskId}\n`);
+  await writeFile(path.join(root, `${taskId}.txt`), bytes);
+  execFileSync('git', ['add', `${taskId}.txt`], { cwd: root });
+  execFileSync('git', ['commit', '--quiet', '-m', `evidence ${taskId}`], { cwd: root });
+  const oid = execFileSync('git', ['rev-parse', `HEAD:${taskId}.txt`], { cwd: root, encoding: 'utf8' }).trim();
+  const evidence = { evidence_id: `ev-${taskId}`, repo_id: 'self', path: `${taskId}.txt`, git_blob_oid: oid,
+    content_digest: createHash('sha256').update(bytes).digest('hex'), media_type: 'text/plain',
+    anchor_digest: null };
+  return append(root, { kind: 'done', task_id: taskId, actor: ACTOR, recorded_at: NOW, payload: { evidence } });
+}
+
+test('retire(prior_status)はpending/blocked/in-progress/doneの各状態から遷移し、retired形に整う', async (context) => {
+  for (const prior of ['pending', 'blocked', 'in-progress', 'done']) {
+    const root = await workspace(context);
+    if (prior !== 'pending') await start(root, 'A');
+    if (prior === 'blocked') {
+      await appendTodoEvent({ repoRoot: root, writer: WRITER, planKey: 'main', now: NOW,
+        event: { kind: 'block', task_id: 'A', actor: ACTOR, recorded_at: NOW, payload: { reason: '停止' } } });
+    }
+    if (prior === 'done') await done(root, 'A');
+    await retireFrom(root, 'A', prior);
+    const state = await taskOf(root, 'A');
+    assert.equal(state.status, 'retired', prior);
+    assert.equal(state.blocked_reason, '著者が削除');
+    assert.equal(state.evidence, null);
+    assert.equal(state.test_result, null);
+    assert.equal(state.imported, false);
+    assert.equal(state.started_at === null, prior === 'pending', prior);
+    assert.equal(state.done_at !== null, prior === 'done', prior);
+    await assert.rejects(retireFrom(root, 'A', 'retired'));
+    await assert.rejects(retireFrom(root, 'A', 'pending'), (error) => {
+      assert.equal(reasonOf(error), 'invalid_retire_transition');
+      return true;
+    });
+  }
+});
+
+test('retireのprior_statusが実状態と食い違えばretire_prior_status_mismatchで拒否される', async (context) => {
+  const root = await workspace(context);
+  await start(root, 'A');
+  await assert.rejects(retireFrom(root, 'A', 'pending'), (error) => {
+    assert.equal(reasonOf(error), 'retire_prior_status_mismatch');
+    return true;
+  });
+  assert.equal((await taskOf(root, 'A')).status, 'in-progress');
+});
+
+test('in-progressをretireするとstart束縛が閉じ、同じstartへのstart_retractedは拒否される', async (context) => {
+  const root = await workspace(context);
+  await start(root, 'A');
+  await retireFrom(root, 'A', 'in-progress');
+  await assert.rejects(appendTodoEvent({ repoRoot: root, writer: WRITER, planKey: 'main', now: NOW,
+    event: { kind: 'start_retracted', task_id: 'A', actor: ACTOR, recorded_at: NOW,
+      payload: { reason: '取り消し', target_start_digest: '0'.repeat(64) } } }));
+});
+
+// Store replay only: Plan/lifecycle-owned readiness (todo-readiness.mjs) is bypassed on purpose.
+const storeOnly = (root, event) => appendStoreEvent({ repoRoot: root, writer: WRITER, planKey: 'main',
+  now: NOW, validateProspectiveEvent: () => ({ ok: true }),
+  event: { actor: ACTOR, recorded_at: NOW, ...event } });
+
+test('Store replay: doneからretireした前提は後続のauthored doneを許し、pendingからのretireは許さない', async (context) => {
+  const fromDone = await workspace(context, { edge: true });
+  await start(fromDone, 'A');
+  await done(fromDone, 'A');
+  await retireFrom(fromDone, 'A', 'done');
+  await storeOnly(fromDone, { kind: 'start', task_id: 'B', payload: { override_reason: null } });
+  await done(fromDone, 'B', storeOnly);
+  assert.equal((await taskOf(fromDone, 'B')).status, 'done');
+
+  const fromPending = await workspace(context, { edge: true });
+  await retireFrom(fromPending, 'A', 'pending');
+  await storeOnly(fromPending, { kind: 'start', task_id: 'B', payload: { override_reason: '前提を迂回して着手' } });
+  await assert.rejects(done(fromPending, 'B', storeOnly), (error) => {
+    assert.equal(reasonOf(error), 'invalid_done_transition');
     return true;
   });
 });
