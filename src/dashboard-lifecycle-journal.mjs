@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 const SCHEMA = 'lattice.dashboard_lifecycle.v1';
@@ -64,6 +64,40 @@ export async function prepareLifecycleDirectory(root) {
   }
 }
 
+const QUARANTINE_KEEP = 8;
+
+/**
+ * u03 D-lifecycle: an unreadable record is diagnostic history, never a reason to stop the
+ * dashboard. Move it aside as `<name>.invalid` (newest QUARANTINE_KEEP kept) and go on.
+ * A failed move only leaves the file in place; the next read tries again.
+ */
+async function quarantineLifecycleRecord(ref) {
+  try { await rename(ref, `${ref}.invalid`); } catch { return; }
+  process.emitWarning(`dashboard lifecycle record was invalid and moved aside: ${ref}.invalid`,
+    { code: 'LATTICE_DASHBOARD_LIFECYCLE_QUARANTINED' });
+  const parent = path.dirname(ref);
+  const kept = [];
+  for (const name of await readdir(parent).catch(() => [])) {
+    if (!name.endsWith('.json.invalid')) continue;
+    const info = await lstat(path.join(parent, name)).catch(() => null);
+    if (info?.isFile()) kept.push({ name, mtime: info.mtimeMs });
+  }
+  kept.sort((a, b) => b.mtime - a.mtime);
+  for (const { name } of kept.slice(QUARANTINE_KEEP)) await rm(path.join(parent, name), { force: true }).catch(() => {});
+}
+
+async function readLifecycleRecord(ref, valid) {
+  const info = await checkOwned(ref, 'file');
+  let value = null;
+  if (info.size <= LIFECYCLE_MAX_BYTES) {
+    const handle = await open(ref, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try { value = JSON.parse(await handle.readFile('utf8')); } catch { value = null; } finally { await handle.close(); }
+  }
+  if (value !== null && valid(value)) return value;
+  await quarantineLifecycleRecord(ref);
+  return null;
+}
+
 export async function readLifecycleRuns(root) {
   try { await checkOwned(directory(root), 'directory'); } catch (error) {
     if (error.code === 'ENOENT') return [];
@@ -72,19 +106,11 @@ export async function readLifecycleRuns(root) {
   const runs = [];
   for (const name of (await readdir(directory(root))).sort()) {
     if (!name.endsWith('.json') || !RUN_ID.test(name.slice(0, -5))) continue;
-    const ref = path.join(directory(root), name);
-    const info = await checkOwned(ref, 'file');
-    if (info.size > LIFECYCLE_MAX_BYTES) throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID');
-    const handle = await open(ref, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    let value;
-    try { value = JSON.parse(await handle.readFile('utf8')); }
-    catch { throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID'); }
-    finally { await handle.close(); }
-    if (value?.schema !== SCHEMA || value.run_id !== name.slice(0, -5)
-      || !['active', 'closed', 'supervisor_lost'].includes(value.state)) {
-      throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID');
-    }
-    runs.push(value);
+    const value = await readLifecycleRecord(path.join(directory(root), name), (record) =>
+      record?.schema === SCHEMA && record.run_id === name.slice(0, -5)
+      && typeof record.started_at === 'string'
+      && ['active', 'closed', 'supervisor_lost'].includes(record.state));
+    if (value !== null) runs.push(value);
   }
   return runs.sort((a, b) => a.started_at.localeCompare(b.started_at));
 }
@@ -224,12 +250,8 @@ export async function readDashboardLifecycleStatus(root) {
     terminationTime(a).localeCompare(terminationTime(b)));
   let ensure = null;
   try {
-    const ref = path.join(directory(root), 'ensure.json');
-    const info = await checkOwned(ref, 'file');
-    if (info.size > LIFECYCLE_MAX_BYTES) throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID');
-    try { ensure = JSON.parse(await readFile(ref, 'utf8')); }
-    catch { throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID'); }
-    if (ensure.schema !== 'lattice.dashboard_ensure.v1') throw lifecycleError('DASHBOARD_LIFECYCLE_INVALID');
+    ensure = await readLifecycleRecord(path.join(directory(root), 'ensure.json'),
+      (record) => record?.schema === 'lattice.dashboard_ensure.v1');
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   return { schema: 'lattice.dashboard_lifecycle_status.v1',
     last_ensure: ensure, active: runs.filter((run) => run.state === 'active'),
