@@ -54,10 +54,10 @@ const CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v1';
 const PHASE_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v2';
 const DECOUPLED_PHASE_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v3';
 const MEMO_PHASE_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v4';
-// v5 = v4 + 作成者が書く終了条件`done_condition`（u12）。planはv8になる。既定入力はv4のまま。
+// v5 = v4 + 作成者が書く終了条件`done_condition`（u12）。planはv8になる。既定入力はa11でv5になった。
 const DONE_CONDITION_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v5';
-const CURRENT_CREATE_INPUT_SCHEMA = MEMO_PHASE_CREATE_INPUT_SCHEMA;
-const CURRENT_CREATE_SCHEMA_COMMAND = 'lattice plan create --schema-version 4 --json';
+const CURRENT_CREATE_INPUT_SCHEMA = DONE_CONDITION_CREATE_INPUT_SCHEMA;
+const CURRENT_CREATE_SCHEMA_COMMAND = 'lattice plan create --schema-version 5 --json';
 const CREATE_RESULT_SCHEMA = 'lattice.plan_create_result.v1';
 
 /** create入力schemaが作るplan schema。v4→v7、v5→v8。 */
@@ -463,12 +463,29 @@ async function readCanonicalInput(repoRoot, inputRef) {
   }
 }
 
+const isPlainRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const typeOf = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
+
+/** keyの過不足を`missing_keys`/`unexpected_keys`で名指す。recordでなければ全keyが足りない。 */
+function keyShapeViolation(pointer, value, keys) {
+  const actual = isPlainRecord(value) ? Object.keys(value).sort() : null;
+  return {
+    violation_kind: 'unexpected_or_missing_keys', pointer,
+    expected: { keys: [...keys].sort() },
+    actual: actual === null ? { type: typeOf(value) } : { keys: actual },
+    missing_keys: keys.filter((key) => actual === null || !actual.includes(key)).sort(),
+    unexpected_keys: actual === null ? [] : actual.filter((key) => !keys.includes(key)),
+  };
+}
+
 /**
  * buildTodoPlanは通ったか否かしか返さない。authorが実際に書くtasks・phasesについて、
- * 落ちた最初の条件をpointer付きで名指しする。ここで拾えない違反だけ総称へ落とす。
- * 整列要求（task_id昇順など）はJSON Schemaに書けないので、ここが唯一の案内面になる。
+ * 落ちた条件を独立なものすべてpointer付きで名指しする（a11）。整列要求（task_id昇順など）は
+ * JSON Schemaに書けないので、ここが唯一の案内面になる。機械が整列するので`unsorted`は
+ * めったに出ないが、他の指摘を隠さない。文書順で返す。
  */
 function describePlanShapeViolation(value, { phaseInput }) {
+  const problems = [];
   const TASK_KEYS = ['task_id', 'title', 'lane', 'narrative_ref',
     'narrative_anchor', 'compile_binding', 'parent_task_id',
     ...(phaseInput ? ['phase_id'] : []),
@@ -479,88 +496,92 @@ function describePlanShapeViolation(value, { phaseInput }) {
     'required_evidence_slots'];
 
   if (value.tasks.length === 0) {
-    return { violation_kind: 'empty', pointer: '/tasks',
-      expected: { min_items: 1 }, actual: { length: 0 } };
+    problems.push({ violation_kind: 'empty', pointer: '/tasks',
+      expected: { min_items: 1 }, actual: { length: 0 } });
   }
   for (const [index, task] of value.tasks.entries()) {
-    if (!exactRecord(task, TASK_KEYS)) {
-      return { violation_kind: 'unexpected_or_missing_keys', pointer: `/tasks/${index}`,
-        expected: { keys: [...TASK_KEYS].sort() },
-        actual: (task === null || typeof task !== 'object')
-          ? { type: task === null ? 'null' : typeof task }
-          : { keys: Object.keys(task).sort() } };
-    }
+    if (!exactRecord(task, TASK_KEYS)) problems.push(keyShapeViolation(`/tasks/${index}`, task, TASK_KEYS));
+    if (!isPlainRecord(task)) continue;
     for (const field of ['task_id', 'lane', 'phase_id']) {
-      if (!isTodoIdentifier(task[field])) {
-        return { violation_kind: 'identifier_invalid', pointer: `/tasks/${index}/${field}`,
-          expected: { format: 'todo_identifier' }, actual: task[field] };
+      if (field in task && !isTodoIdentifier(task[field])) {
+        problems.push({ violation_kind: 'identifier_invalid', pointer: `/tasks/${index}/${field}`,
+          expected: { format: 'todo_identifier' }, actual: task[field] });
       }
     }
-    if (index > 0 && !(value.tasks[index - 1].task_id < task.task_id)) {
-      return { violation_kind: 'unsorted', pointer: `/tasks/${index}/task_id`,
-        expected: { greater_than: value.tasks[index - 1].task_id, order: 'ascending_unique' },
-        actual: task.task_id };
+    const previous = value.tasks[index - 1]?.task_id;
+    if (index > 0 && isTodoIdentifier(previous) && isTodoIdentifier(task.task_id) && !(previous < task.task_id)) {
+      problems.push({ violation_kind: 'unsorted', pointer: `/tasks/${index}/task_id`,
+        expected: { greater_than: previous, order: 'ascending_unique' }, actual: task.task_id });
     }
   }
-  if (!phaseInput) return null;
+  if (!phaseInput) return problems;
 
   if (!Array.isArray(value.phases) || value.phases.length === 0) {
-    return { violation_kind: 'empty', pointer: '/phases', expected: { min_items: 1 },
-      actual: Array.isArray(value.phases) ? { length: 0 } : { type: typeof value.phases } };
+    problems.push({ violation_kind: 'empty', pointer: '/phases', expected: { min_items: 1 },
+      actual: Array.isArray(value.phases) ? { length: 0 } : { type: typeof value.phases } });
+    return problems;
   }
   for (const [index, phase] of value.phases.entries()) {
-    if (!exactRecord(phase, PHASE_KEYS)) {
-      return { violation_kind: 'unexpected_or_missing_keys', pointer: `/phases/${index}`,
-        expected: { keys: [...PHASE_KEYS].sort() },
-        actual: (phase === null || typeof phase !== 'object')
-          ? { type: phase === null ? 'null' : typeof phase }
-          : { keys: Object.keys(phase).sort() } };
-    }
+    if (!exactRecord(phase, PHASE_KEYS)) problems.push(keyShapeViolation(`/phases/${index}`, phase, PHASE_KEYS));
+    if (!isPlainRecord(phase)) continue;
     for (const field of ['phase_id', 'gate_policy']) {
-      if (!isTodoIdentifier(phase[field])) {
-        return { violation_kind: 'identifier_invalid', pointer: `/phases/${index}/${field}`,
-          expected: { format: 'todo_identifier' }, actual: phase[field] };
+      if (field in phase && !isTodoIdentifier(phase[field])) {
+        problems.push({ violation_kind: 'identifier_invalid', pointer: `/phases/${index}/${field}`,
+          expected: { format: 'todo_identifier' }, actual: phase[field] });
       }
     }
-    if (!Array.isArray(phase.required_evidence_slots) || phase.required_evidence_slots.length === 0) {
-      return { violation_kind: 'empty',
+    const slots = phase.required_evidence_slots;
+    if ('required_evidence_slots' in phase && (!Array.isArray(slots) || slots.length === 0)) {
+      problems.push({ violation_kind: 'empty',
         pointer: `/phases/${index}/required_evidence_slots`,
         expected: { min_items: 1, note: 'Phase gateが要求する証跡slotを1つ以上挙げる' },
-        actual: Array.isArray(phase.required_evidence_slots)
-          ? { length: 0 } : { type: typeof phase.required_evidence_slots } };
+        actual: Array.isArray(slots) ? { length: 0 } : { type: typeof slots } });
     }
     for (const field of ['predecessor_phase_ids', 'required_evidence_slots']) {
       const list = phase[field];
+      if (!Array.isArray(list)) {
+        if (field in phase && field === 'predecessor_phase_ids') {
+          problems.push({ violation_kind: 'type', pointer: `/phases/${index}/${field}`,
+            expected: { type: 'array' }, actual: { type: typeOf(list) } });
+        }
+        continue;
+      }
       const unsorted = list.findIndex((entry, i) => i > 0 && !(list[i - 1] < entry));
       if (unsorted > 0) {
-        return { violation_kind: 'unsorted', pointer: `/phases/${index}/${field}/${unsorted}`,
+        problems.push({ violation_kind: 'unsorted', pointer: `/phases/${index}/${field}/${unsorted}`,
           expected: { greater_than: list[unsorted - 1], order: 'ascending_unique' },
-          actual: list[unsorted] };
+          actual: list[unsorted] });
       }
     }
-    if (index > 0 && !(value.phases[index - 1].phase_id < phase.phase_id)) {
-      return { violation_kind: 'unsorted', pointer: `/phases/${index}/phase_id`,
-        expected: { greater_than: value.phases[index - 1].phase_id, order: 'ascending_unique' },
-        actual: phase.phase_id };
+    const previous = value.phases[index - 1]?.phase_id;
+    if (index > 0 && isTodoIdentifier(previous) && isTodoIdentifier(phase.phase_id)
+      && !(previous < phase.phase_id)) {
+      problems.push({ violation_kind: 'unsorted', pointer: `/phases/${index}/phase_id`,
+        expected: { greater_than: previous, order: 'ascending_unique' }, actual: phase.phase_id });
     }
   }
-  const phaseIds = new Set(value.phases.map(({ phase_id }) => phase_id));
-  const orphan = value.tasks.findIndex(({ phase_id }) => !phaseIds.has(phase_id));
-  if (orphan >= 0) {
-    return { violation_kind: 'unknown_reference', pointer: `/tasks/${orphan}/phase_id`,
-      expected: { one_of: [...phaseIds].sort() }, actual: value.tasks[orphan].phase_id };
+  const phaseIds = new Set(value.phases.map((phase) => phase?.phase_id));
+  for (const [index, task] of value.tasks.entries()) {
+    if (isPlainRecord(task) && isTodoIdentifier(task.phase_id) && !phaseIds.has(task.phase_id)) {
+      problems.push({ violation_kind: 'unknown_reference', pointer: `/tasks/${index}/phase_id`,
+        expected: { one_of: [...phaseIds].filter(isTodoIdentifier).sort() }, actual: task.phase_id });
+    }
   }
-  return null;
+  return problems;
 }
 
+// 最初に返す違反の優先順（従来どおり）。同じ順位なら文書順で先のもの。
+const RANK = Object.freeze({ memo: 0, done: 1, input: 2, authorable: 3, shape: 4, graph: 5 });
+
 /**
- * plan create入力の違反を、通ったか否かでなく「どこがどう違うか」で返す。
- * 以前は巨大な `||` 連鎖と `catch { return false }` で理由を捨てており、
- * 呼び手には pointer `/` と `validation: failed` しか届かなかった。
- * 直せない指摘は指摘ではないので、最初に落ちた条件をpointer付きで返す。
- * 違反が無ければ null。
+ * plan create入力の違反を、通ったか否かでなく「どこがどう違うか」で、独立なものすべて返す(a11)。
+ * 以前は巨大な `||` 連鎖と `catch { return false }` で理由を捨てており、呼び手には pointer `/` と
+ * `validation: failed` しか届かなかった。直せない指摘は指摘ではないので、各違反をpointer付きで返し、
+ * 呼び手が1回で直せるようにする。{ rank, violation }の文書順の配列。違反が無ければ空。
  */
-function describeCreateInputViolation(value) {
+function describeCreateInputViolations(value) {
+  const found = [];
+  const add = (rank, violation) => found.push({ rank, violation });
   const phaseInput = [PHASE_CREATE_INPUT_SCHEMA, DECOUPLED_PHASE_CREATE_INPUT_SCHEMA,
     MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(value?.schema);
   const decoupledPhaseInput = [DECOUPLED_PHASE_CREATE_INPUT_SCHEMA,
@@ -572,124 +593,130 @@ function describeCreateInputViolation(value) {
   if (phaseInput) keys.push('phases');
   if (decoupledPhaseInput) keys.push('phase_accept_dependencies');
 
-  if (!exactRecord(value, keys)) {
-    const actual = (value === null || typeof value !== 'object' || Array.isArray(value))
-      ? { type: value === null ? 'null' : typeof value }
-      : { keys: Object.keys(value).sort() };
-    return { violation_kind: 'unexpected_or_missing_keys', pointer: '/',
-      expected: { keys: [...keys].sort() }, actual };
-  }
+  const topLevelOk = exactRecord(value, keys);
+  if (!topLevelOk) add(RANK.input, keyShapeViolation('/', value, keys));
+  if (!isPlainRecord(value)) return found;
+  const present = (field) => field in value;
   const schemas = [CREATE_INPUT_SCHEMA, PHASE_CREATE_INPUT_SCHEMA,
     DECOUPLED_PHASE_CREATE_INPUT_SCHEMA, MEMO_PHASE_CREATE_INPUT_SCHEMA,
     DONE_CONDITION_CREATE_INPUT_SCHEMA];
-  if (!schemas.includes(value.schema)) {
-    return { violation_kind: 'const_mismatch', pointer: '/schema',
-      expected: { one_of: schemas }, actual: value.schema };
+  if (present('schema') && !schemas.includes(value.schema)) {
+    add(RANK.input, { violation_kind: 'const_mismatch', pointer: '/schema',
+      expected: { one_of: schemas }, actual: value.schema });
   }
   for (const field of ['project_id', 'plan_key', 'plan_version']) {
-    if (!isTodoIdentifier(value[field])) {
-      return { violation_kind: 'identifier_invalid', pointer: `/${field}`,
-        expected: { format: 'todo_identifier' }, actual: value[field] };
+    if (present(field) && !isTodoIdentifier(value[field])) {
+      add(RANK.input, { violation_kind: 'identifier_invalid', pointer: `/${field}`,
+        expected: { format: 'todo_identifier' }, actual: value[field] });
     }
   }
-  if (!exactRecord(value.actor, ['host', 'session', 'agent'])) {
-    return { violation_kind: 'unexpected_or_missing_keys', pointer: '/actor',
-      expected: { keys: ['agent', 'host', 'session'] },
-      actual: (value.actor === null || typeof value.actor !== 'object')
-        ? { type: value.actor === null ? 'null' : typeof value.actor }
-        : { keys: Object.keys(value.actor).sort() } };
-  }
-  for (const field of ['host', 'session', 'agent']) {
-    if (!isTodoIdentifier(value.actor[field])) {
-      return { violation_kind: 'identifier_invalid', pointer: `/actor/${field}`,
-        expected: { format: 'todo_identifier' }, actual: value.actor[field] };
+  if (present('actor')) {
+    if (!exactRecord(value.actor, ['host', 'session', 'agent'])) {
+      add(RANK.input, keyShapeViolation('/actor', value.actor, ['host', 'session', 'agent']));
+    }
+    if (isPlainRecord(value.actor)) {
+      for (const field of ['host', 'session', 'agent']) {
+        if (field in value.actor && !isTodoIdentifier(value.actor[field])) {
+          add(RANK.input, { violation_kind: 'identifier_invalid', pointer: `/actor/${field}`,
+            expected: { format: 'todo_identifier' }, actual: value.actor[field] });
+        }
+      }
     }
   }
-  if (!isStrictTodoTimestamp(value.recorded_at)) {
-    return { violation_kind: 'timestamp_invalid', pointer: '/recorded_at',
-      expected: { format: 'strict_iso8601_utc_milliseconds' }, actual: value.recorded_at };
+  if (present('recorded_at') && !isStrictTodoTimestamp(value.recorded_at)) {
+    add(RANK.input, { violation_kind: 'timestamp_invalid', pointer: '/recorded_at',
+      expected: { format: 'strict_iso8601_utc_milliseconds' }, actual: value.recorded_at });
   }
-  if (!isTodoDigest(value.input_digest)
-    || value.input_digest !== todoSelfDigest(value, 'input_digest')) {
-    return { violation_kind: 'input_digest_mismatch', pointer: '/input_digest',
+  if (topLevelOk && (!isTodoDigest(value.input_digest)
+    || value.input_digest !== todoSelfDigest(value, 'input_digest'))) {
+    add(RANK.input, { violation_kind: 'input_digest_mismatch', pointer: '/input_digest',
       expected: todoSelfDigest(value, 'input_digest'),
-      actual: { type: typeof value.input_digest, matches_canonical_input: false } };
+      actual: { type: typeof value.input_digest, matches_canonical_input: false } });
   }
   if (!Array.isArray(value.tasks)) {
-    return { violation_kind: 'type', pointer: '/tasks', expected: { type: 'array' },
-      actual: { type: value.tasks === null ? 'null' : typeof value.tasks } };
+    if (present('tasks')) {
+      add(RANK.input, { violation_kind: 'type', pointer: '/tasks', expected: { type: 'array' },
+        actual: { type: value.tasks === null ? 'null' : typeof value.tasks } });
+    }
+    return found;
+  }
+  // 設計メモ・終了条件は従来どおり専用のcode/reasonで先に返す(validatePlanCreateInput)。
+  if ([MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(value.schema)) {
+    for (const [index, task] of value.tasks.entries()) {
+      if (isTodoDesignMemo(task?.design_memo)) continue;
+      const explained = explainTodoDesignMemo(task?.design_memo);
+      add(RANK.memo, { violation_kind: explained.reason, pointer: `/tasks/${index}/design_memo`,
+        expected: explained.expected, actual: explained.actual });
+    }
+  }
+  if (value.schema === DONE_CONDITION_CREATE_INPUT_SCHEMA) {
+    // design_memoと同じ本文規則。違いはnull（終了条件なし）を許すことだけ。
+    for (const [index, task] of value.tasks.entries()) {
+      if (task?.done_condition === null || isTodoDesignMemo(task?.done_condition)) continue;
+      const explained = explainTodoDesignMemo(task?.done_condition);
+      add(RANK.done, { violation_kind: explained.reason, pointer: `/tasks/${index}/done_condition`,
+        expected: { ...explained.expected, nullable: true }, actual: explained.actual });
+    }
   }
   for (const [index, task] of value.tasks.entries()) {
     for (const field of ['narrative_anchor', 'compile_binding']) {
       if (task?.[field] !== null) {
-        return { violation_kind: 'not_authorable_at_create', pointer: `/tasks/${index}/${field}`,
-          expected: null, actual: task?.[field] };
+        add(RANK.authorable, { violation_kind: 'not_authorable_at_create',
+          pointer: `/tasks/${index}/${field}`, expected: null, actual: task?.[field] });
       }
     }
   }
-  try {
-    buildTodoPlan({
-      schema: planSchemaForCreateInput(value.schema), project_id: value.project_id,
-      plan_key: value.plan_key, plan_version: value.plan_version,
-      predecessor_plan_digest: null, tasks: value.tasks,
-      hard_dependencies: value.hard_dependencies, joins: value.joins,
-      ...(phaseInput ? { phases: value.phases } : {}),
-      ...(decoupledPhaseInput ? { phase_accept_dependencies: value.phase_accept_dependencies } : {}),
-    });
-  } catch (error) {
-    // Author-specific fields keep their existing diagnostic priority.
-    const shape = describePlanShapeViolation(value, { phaseInput });
-    if (shape !== null) return shape;
-    return {
-      violation_kind: error?.detail?.violation_kind ?? error?.reason ?? error?.code ?? 'topology_invalid',
-      pointer: error?.detail?.pointer ?? '/',
-      expected: error?.detail?.expected ?? { schema: value.schema },
-      actual: error?.detail?.actual ?? { message: String(error?.message ?? error) },
-    };
+  if (schemas.includes(value.schema)) {
+    for (const violation of describePlanShapeViolation(value, { phaseInput })) add(RANK.shape, violation);
   }
-  return null;
+  // 形の指摘が1つも無い時だけ、グラフ(循環・未知の辺の端)を調べる。
+  if (found.length === 0) {
+    try {
+      buildTodoPlan({
+        schema: planSchemaForCreateInput(value.schema), project_id: value.project_id,
+        plan_key: value.plan_key, plan_version: value.plan_version,
+        predecessor_plan_digest: null, tasks: value.tasks,
+        hard_dependencies: value.hard_dependencies, joins: value.joins,
+        ...(phaseInput ? { phases: value.phases } : {}),
+        ...(decoupledPhaseInput ? { phase_accept_dependencies: value.phase_accept_dependencies } : {}),
+      });
+    } catch (error) {
+      add(RANK.graph, {
+        violation_kind: error?.detail?.violation_kind ?? error?.reason ?? error?.code ?? 'topology_invalid',
+        pointer: error?.detail?.pointer ?? '/',
+        expected: error?.detail?.expected ?? { schema: value.schema },
+        actual: error?.detail?.actual ?? { message: String(error?.message ?? error) },
+      });
+    }
+  }
+  return found;
 }
 
 export function validatePlanCreateInput(input) {
+  const found = describeCreateInputViolations(input);
+  const problems = found.map(({ violation }) => violation);
   if (!Array.isArray(input?.tasks)) {
     throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_invalid', undefined, {
       violation_kind: 'type', pointer: '/tasks', expected: { type: 'array', min_items: 1 },
       actual: { type: input?.tasks === null ? 'null' : typeof input?.tasks },
-      next_action: CURRENT_CREATE_SCHEMA_COMMAND,
+      problems, next_action: CURRENT_CREATE_SCHEMA_COMMAND,
     });
   }
-  // v1〜v3のtaskにはdesign_memoが無い。
-  const memoInput = [MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input.schema);
-  const invalidMemoIndex = memoInput
-    ? input.tasks.findIndex((task) => !isTodoDesignMemo(task?.design_memo)) : -1;
-  if (invalidMemoIndex >= 0) {
-    const explained = explainTodoDesignMemo(input.tasks[invalidMemoIndex]?.design_memo);
+  if (found.length === 0) return;
+  // 返す先頭の違反は従来の優先順(設計メモ→終了条件→その他)。problemsは文書順の全件。
+  const first = found.reduce((best, entry) => (entry.rank < best.rank ? entry : best));
+  const { violation } = first;
+  if (first.rank === RANK.memo) {
     throw new TodoStoreError('DESIGN_MEMO_REQUIRED', 'plan_create_design_memo_required', undefined, {
-      violation_kind: explained.reason, pointer: `/tasks/${invalidMemoIndex}/design_memo`,
-      expected: explained.expected, actual: explained.actual,
-      prompt: TODO_DESIGN_MEMO_PROMPT, next_action: CURRENT_CREATE_SCHEMA_COMMAND,
+      ...violation, problems, prompt: TODO_DESIGN_MEMO_PROMPT, next_action: CURRENT_CREATE_SCHEMA_COMMAND,
     });
   }
-  if (input.schema === DONE_CONDITION_CREATE_INPUT_SCHEMA) {
-    // design_memoと同じ本文規則。違いはnull（終了条件なし）を許すことだけ。
-    const invalidIndex = input.tasks.findIndex((task) => task?.done_condition !== null
-      && !isTodoDesignMemo(task?.done_condition));
-    if (invalidIndex >= 0) {
-      const explained = explainTodoDesignMemo(input.tasks[invalidIndex]?.done_condition);
-      throw new TodoStoreError('INPUT_INVALID', 'plan_create_done_condition_invalid', undefined, {
-        violation_kind: explained.reason, pointer: `/tasks/${invalidIndex}/done_condition`,
-        expected: { ...explained.expected, nullable: true }, actual: explained.actual,
-        next_action: 'correct_the_reported_pointer_then_rerun_plan_create',
-      });
-    }
-  }
-  const violation = describeCreateInputViolation(input);
-  if (violation !== null) {
-    throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_invalid', undefined, {
-      ...violation,
+  throw new TodoStoreError('INPUT_INVALID',
+    first.rank === RANK.done ? 'plan_create_done_condition_invalid' : 'plan_create_schema_invalid',
+    undefined, {
+      ...violation, problems,
       next_action: 'correct_the_reported_pointer_then_rerun_plan_create',
     });
-  }
 }
 
 export async function runPlanCreate({
@@ -757,15 +784,15 @@ export async function runPlanCreate({
 }
 
 /**
- * `--schema --json`（版指定なし）の既定はCURRENT_CREATE_INPUT_SCHEMAと同じv4にする。
+ * `--schema --json`（版指定なし）の既定はCURRENT_CREATE_INPUT_SCHEMAと同じv5にする。
  * 既定がv1のままだと、素の`--schema`を叩いたAIが古いv1（Phaseを表現できない）を
  * 受け取り、実運用で通らない入力を作ってしまう（実際に踏んだ）。
  * `--schema-version 1`は互換のため引き続き取得できる（bin/lattice.mjs側で許可）。
  *
- * 「どの版を返したか」は返すJSON Schema自身の`title`（例: `lattice.plan_create_input.v4`）が
+ * 「どの版を返したか」は返すJSON Schema自身の`title`（例: `lattice.plan_create_input.v5`）が
  * 既に機械可読に持っている。壊さずに追加のkeyを足す理由が無いので足さない。
  */
-export async function runPlanCreateSchema({ stdout, version = 4 }) {
+export async function runPlanCreateSchema({ stdout, version = 5 }) {
   if (![1, 2, 3, 4, 5].includes(version)) throw new TypeError('unsupported plan create schema version');
   const expected = version === 5 ? DONE_CONDITION_CREATE_INPUT_SCHEMA : version === 4 ? MEMO_PHASE_CREATE_INPUT_SCHEMA
     : version === 3 ? DECOUPLED_PHASE_CREATE_INPUT_SCHEMA
@@ -780,6 +807,34 @@ export async function runPlanCreateSchema({ stdout, version = 4 }) {
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * `plan create --template --json`（a11）。作者が書くkeyだけの最小のv5入力を出す。
+ * 機械が埋めるkey(actor・recorded_at・input_digest・定数のkey・辺のproject_id/plan_key)は載せない。
+ * 決定的で、storeもrepositoryも読まない。id・題名を書き換えれば`plan create`がそのまま受理する。
+ */
+export const PLAN_CREATE_TEMPLATE = Object.freeze({
+  schema: DONE_CONDITION_CREATE_INPUT_SCHEMA,
+  project_id: 'my-project',
+  plan_key: 'my-plan',
+  plan_version: 'v1',
+  phases: [
+    { phase_id: 'p1', title: 'First phase' },
+    { phase_id: 'p2', title: 'Second phase' },
+  ],
+  tasks: [
+    { task_id: 't1', title: 'First task', phase_id: 'p1', design_memo: 'NO_PLAN' },
+    { task_id: 't2', title: 'Second task', phase_id: 'p1' },
+    { task_id: 't3', title: 'Third task', phase_id: 'p2' },
+  ],
+  // from is the prerequisite; to starts after from is done.
+  hard_dependencies: [{ from: { task_id: 't1' }, to: { task_id: 't3' } }],
+});
+
+export async function runPlanCreateTemplate({ stdout }) {
+  stdout.write(`${JSON.stringify(PLAN_CREATE_TEMPLATE)}\n`);
+  return 0;
 }
 
 const PLAN_SHOW_RESULT_SCHEMA = 'lattice.plan_show_result.v1';
@@ -859,6 +914,10 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
     has_phases: phaseInput,
     phases: phaseList,
     tasks: taskList,
+    // a11: 辺の向きは from=前提、to=fromが終わってから始まる。planが持つとおりに出す。
+    hard_dependencies: plan.hard_dependencies,
+    joins: plan.joins,
+    phase_accept_dependencies: plan.phase_accept_dependencies ?? [],
     topology: {
       task_count: dispatchShape.task_count,
       critical_path_length: dispatchShape.critical_path_length,

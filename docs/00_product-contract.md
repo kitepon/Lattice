@@ -418,7 +418,7 @@ authoring契約のJSON Schemaは各入口から取得できる。`plan create --
 dependency・joinから参照する入力はcompile前にpointer付きで拒否する。未知subcommand、不正引数、
 repo外inputはそれぞれ`UNKNOWN_SUBCOMMAND`、
 `INVALID_ARGUMENTS`、`INPUT_UNREADABLE`へ分ける。repo内なら絶対pathを受理する。`lattice plan show <plan_key> --json`は`lattice.plan_show_result.v1`として
-plan本体（phase定義と状態・task一覧と状態・依存本数・topology要約）を投影する——
+plan本体（phase定義と状態・task一覧と状態・依存本数・依存辺`hard_dependencies`／`joins`／`phase_accept_dependencies`・topology要約）を投影する——
 `todo bindings`が`compile_binding`付きtaskだけを投影することによる「planが空」という誤読を塞ぐ面である。
 
 通常の状態遷移は`todo start / block / unblock / done / evidence promote / reopen`のclosed面で行う。

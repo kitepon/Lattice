@@ -2,24 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_create_input.v5.schema.json",
   "title": "lattice.plan_create_input.v5",
-  "description": "Canonical initial authoring input for a phase-audited plan. Every task requires a design memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every task preserves an owner-supplied work specification without adding a product purpose. あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください v5 adds the per-task authored `done_condition`: plain text (or null when the author states none) that Lattice records and shows but never evaluates, never assigns and never records as done. Builds lattice.todo_plan.v8. actor, recorded_at, input_digest and tasks[].design_memo may be omitted: the machine fills the seat actor, the current time and NO_PLAN, recomputes input_digest and sorts every list into canonical order.",
+  "description": "Canonical initial authoring input for a phase-audited plan. Every task requires a design memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every task preserves an owner-supplied work specification without adding a product purpose. あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください v5 adds the per-task authored `done_condition`: plain text (or null when the author states none) that Lattice records and shows but never evaluates, never assigns and never records as done. Builds lattice.todo_plan.v8. The author writes intent: ids, titles, phases and edges (see `lattice plan create --template --json`). Every key whose value is constant or null may be omitted and the machine fills it: schema (this version), actor (the seat actor), recorded_at (the current time; an ISO-8601 date-time with an explicit zone is normalised to UTC milliseconds), input_digest (recomputed), tasks[].design_memo (NO_PLAN), tasks[].lane (main), tasks[].narrative_ref, narrative_anchor, compile_binding, parent_task_id and done_condition (null), phases[].gate_policy (heavy), phases[].predecessor_phase_ids ([]), phases[].required_evidence_slots ([\"acceptance\"]), hard_dependencies, joins and phase_accept_dependencies ([]), and project_id/plan_key of an edge reference (this input's own). Every list is sorted into canonical order. A refusal lists every problem at once in detail.problems. Edge direction: from is the prerequisite; to starts after from is done.",
   "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, sorted identifiers and edges, unique ids, combined task/phase acyclicity, byte bounds, non-empty design_memo (omitted, null or blank becomes NO_PLAN), and input_digest (recomputed). v5 additionally accepts hard_dependencies, joins, each joins[].after, phase_accept_dependencies, phases, phases[].predecessor_phase_ids and phases[].required_evidence_slots in any order or with exact duplicates: they are sorted into canonical order and de-duplicated before validation. tasks are sorted by task_id. Entries with the same key but different content are still refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema",
     "project_id",
     "plan_key",
     "plan_version",
     "tasks",
-    "phases",
-    "hard_dependencies",
-    "joins",
-    "phase_accept_dependencies"
+    "phases"
   ],
   "properties": {
     "schema": {
-      "const": "lattice.plan_create_input.v5"
+      "const": "lattice.plan_create_input.v5",
+      "description": "Omitted: lattice.plan_create_input.v5."
     },
     "project_id": {
       "$ref": "#/$defs/identifier"
@@ -34,7 +31,9 @@
       "$ref": "#/$defs/actor"
     },
     "recorded_at": {
-      "$ref": "#/$defs/strictTimestamp"
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T",
+      "description": "Any ISO-8601 date-time with an explicit zone (Z or ±hh:mm) whose written fields are a real date and time; the machine normalises it to UTC milliseconds (Z). Omitted: the current time."
     },
     "tasks": {
       "type": "array",
@@ -60,7 +59,7 @@
       "items": {
         "$ref": "#/$defs/edge"
       },
-      "description": "入力順は問わず、機械が正準順（from、toを(project_id, plan_key, task_id)の辞書順）へ整列し完全一致の重複を除く。"
+      "description": "Omitted: []. 入力順は問わず、機械が正準順（from、toを(project_id, plan_key, task_id)の辞書順）へ整列し完全一致の重複を除く。 辺の向き: from=前提、to=fromが終わってから始まる。同じplanの辺ならfrom/toはtask_idだけでよい。"
     },
     "joins": {
       "type": "array",
@@ -68,7 +67,7 @@
       "items": {
         "$ref": "#/$defs/join"
       },
-      "description": "入力順は問わず、機械がidの昇順へ整列する。同じidで内容が違うjoinは拒否する。各afterも同様に整列し重複を除く。"
+      "description": "Omitted: []. 入力順は問わず、機械がidの昇順へ整列する。同じidで内容が違うjoinは拒否する。各afterも同様に整列し重複を除く。"
     },
     "phase_accept_dependencies": {
       "type": "array",
@@ -76,7 +75,7 @@
       "items": {
         "$ref": "#/$defs/phaseAcceptDependency"
       },
-      "description": "入力順は問わず、機械が正準順へ整列し完全一致の重複を除く。"
+      "description": "Omitted: []. 入力順は問わず、機械が正準順へ整列し完全一致の重複を除く。"
     },
     "input_digest": {
       "$ref": "#/$defs/authoringDigest"
@@ -95,10 +94,6 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 1024
-    },
-    "strictTimestamp": {
-      "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
     },
     "nullableRepoRef": {
       "oneOf": [
@@ -146,13 +141,7 @@
       "required": [
         "task_id",
         "title",
-        "lane",
-        "narrative_ref",
-        "narrative_anchor",
-        "compile_binding",
-        "parent_task_id",
-        "phase_id",
-        "done_condition"
+        "phase_id"
       ],
       "properties": {
         "task_id": {
@@ -171,7 +160,8 @@
           ]
         },
         "lane": {
-          "$ref": "#/$defs/identifier"
+          "$ref": "#/$defs/identifier",
+          "description": "Omitted: main."
         },
         "design_memo": {
           "type": "string",
@@ -190,19 +180,23 @@
               "maxLength": 16384
             }
           ],
-          "description": "作成者が書くこのtask固有の終了条件（プレーンテキスト、設計メモと同じ本文規則）。nullは「書かない」。Latticeは記録して表示するだけで、評価せず、作業を割り当てず、doneも記録しない。"
+          "description": "Omitted: null. 作成者が書くこのtask固有の終了条件（プレーンテキスト、設計メモと同じ本文規則）。nullは「書かない」。Latticeは記録して表示するだけで、評価せず、作業を割り当てず、doneも記録しない。"
         },
         "narrative_ref": {
-          "$ref": "#/$defs/nullableRepoRef"
+          "$ref": "#/$defs/nullableRepoRef",
+          "description": "Omitted: null."
         },
         "narrative_anchor": {
-          "type": "null"
+          "type": "null",
+          "description": "Omitted: null."
         },
         "compile_binding": {
-          "type": "null"
+          "type": "null",
+          "description": "Omitted: null."
         },
         "parent_task_id": {
-          "$ref": "#/$defs/nullableIdentifier"
+          "$ref": "#/$defs/nullableIdentifier",
+          "description": "Omitted: null."
         },
         "phase_id": {
           "$ref": "#/$defs/identifier"
@@ -214,9 +208,7 @@
       "additionalProperties": false,
       "required": [
         "phase_id",
-        "title",
-        "gate_policy",
-        "predecessor_phase_ids"
+        "title"
       ],
       "properties": {
         "phase_id": {
@@ -236,7 +228,7 @@
         },
         "gate_policy": {
           "$ref": "#/$defs/identifier",
-          "description": "Phase gateの呼び名。製品はこの値で分岐しないので統制語彙は無く、identifierなら何でもよい。表示に使う。慣用は 'heavy'（重監査）と 'terminal-audit'（暗黙の終端Phaseが使う）。"
+          "description": "Omitted: heavy. Phase gateの呼び名。製品はこの値で分岐しないので統制語彙は無く、identifierなら何でもよい。表示に使う。慣用は 'heavy'（重監査）と 'terminal-audit'（暗黙の終端Phaseが使う）。"
         },
         "predecessor_phase_ids": {
           "type": "array",
@@ -244,7 +236,7 @@
             "$ref": "#/$defs/identifier"
           },
           "uniqueItems": true,
-          "description": "先行Phase。入力順は問わず、機械がidentifierの昇順へ整列し重複を除く。"
+          "description": "Omitted: []. 先行Phase。入力順は問わず、機械がidentifierの昇順へ整列し重複を除く。"
         },
         "required_evidence_slots": {
           "type": "array",
@@ -260,8 +252,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "project_id",
-        "plan_key",
         "task_id"
       ],
       "properties": {
@@ -277,14 +267,13 @@
         "expected_topology_digest": {
           "$ref": "#/$defs/digest"
         }
-      }
+      },
+      "description": "Reference to a task. Omitted project_id/plan_key: this input's own."
     },
     "phaseRef": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "project_id",
-        "plan_key",
         "phase_id"
       ],
       "properties": {
@@ -300,7 +289,8 @@
         "expected_topology_digest": {
           "$ref": "#/$defs/digest"
         }
-      }
+      },
+      "description": "Reference to a phase. Omitted project_id/plan_key: this input's own."
     },
     "edge": {
       "type": "object",
@@ -311,12 +301,15 @@
       ],
       "properties": {
         "from": {
-          "$ref": "#/$defs/nodeRef"
+          "$ref": "#/$defs/nodeRef",
+          "description": "The prerequisite task."
         },
         "to": {
-          "$ref": "#/$defs/nodeRef"
+          "$ref": "#/$defs/nodeRef",
+          "description": "The task that starts after from is done."
         }
-      }
+      },
+      "description": "Hard dependency: from is the prerequisite; to starts after from is done."
     },
     "phaseAcceptDependency": {
       "type": "object",
