@@ -23,6 +23,12 @@ moving journal tail. See the [activation flow](dfd-todo-start.md#runtime-activat
 Heartbeats may append after the selected control head; contradictory activation
 transitions still reject publication. Runtime alone owns this correction.
 
+Runtime CLI lifecycle exclusion (u03 X3): `runtime-cli.withLifecycleLock` wraps
+`runClose`, `runAbandon` and `runActivate` with `acquireRuntimeLifecycleLock` at
+the existing `.cli-lifecycle.lock` path. Publication, dead-owner and legacy
+empty/torn recovery use L1/L2; finally awaits owner-checked release. See L3 in the
+[Runtime flow](dfd-runtime-hold-resume.md). The daemon's lock is separate.
+
 ## Product boundary
 
 Lattice runs independently of BellTeam. Runtime execution management is required
