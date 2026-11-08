@@ -87,8 +87,9 @@ async function workspace(context) {
 const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v7","project_id":"project-1",'
   + '"active_set":[{"plan_key":"main","task_id":"A","label":"Active work",'
   + '"unmet_dependencies":[]}],'
-  + '"next_ready":[{"plan_key":"main","task_id":"C","label":"Ready work"},'
-  + '{"plan_key":"main","task_id":"F","label":"Second ready work"}],'
+  // u12: ready entryは作成者が書いた終了条件を足して載せる（欄なしplanはnull）。
+  + '"next_ready":[{"plan_key":"main","task_id":"C","label":"Ready work","done_condition":null},'
+  + '{"plan_key":"main","task_id":"F","label":"Second ready work","done_condition":null}],'
   + '"dispatch_frontier":{"schema":"lattice.todo_dispatch_frontier.v1",'
   + '"selection_source":"next_ready","policy":"all_ready_parallel_by_default",'
   + '"recommended_parallelism":2,"subset_requires_reason":true,'

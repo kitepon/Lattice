@@ -616,7 +616,8 @@ export function validatePlanCreateInput(input) {
   if (![MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA].includes(input?.schema)) {
     throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_retired', undefined, {
       violation_kind: 'const_mismatch', pointer: '/schema',
-      expected: { one_of: [MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA] },
+      expected: MEMO_PHASE_CREATE_INPUT_SCHEMA,
+      accepted: [MEMO_PHASE_CREATE_INPUT_SCHEMA, DONE_CONDITION_CREATE_INPUT_SCHEMA],
       actual: typeof input?.schema === 'string' ? input.schema : { type: typeof input?.schema },
       next_action: CURRENT_CREATE_SCHEMA_COMMAND,
     });
@@ -794,6 +795,7 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
     lane: task.lane,
     phase_id: phaseInput ? task.phase_id : null,
     state: stateByTaskId.get(task.task_id).status,
+    done_condition: task.done_condition ?? null,
     depends_on_count: dependsOnCount.get(task.task_id) ?? 0,
   }));
 

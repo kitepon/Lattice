@@ -97,9 +97,10 @@ function enforceListLimit(name, value) {
 }
 
 function taskEntry(value) {
-  return exactRecord(value, ['plan_key', 'task_id', 'label'])
+  return exactRecord(value, ['plan_key', 'task_id', 'label', 'done_condition'])
     && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
-    && isTodoStatusBoundedText(value.label, TODO_STATUS_LABEL_LIMIT);
+    && isTodoStatusBoundedText(value.label, TODO_STATUS_LABEL_LIMIT)
+    && (value.done_condition === null || isTodoStatusBoundedText(value.done_condition, TODO_STATUS_REASON_LIMIT));
 }
 
 function taskRefEntry(value) {
@@ -448,6 +449,11 @@ function buildTodoGraph(readModel) {
         plan_key: member.plan.plan_key,
         task_id: task.task_id,
         label: displayText(task.title, task.task_id, TODO_STATUS_LABEL_LIMIT),
+        // u12: 作成者が書いた終了条件。一覧は1行・512文字までの表示用で、全文は`todo show`が返す。
+        // v7以前は欄が無くnull。
+        done_condition: typeof task.done_condition === 'string' && task.done_condition.trim().length > 0
+          ? displayText(task.done_condition.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim(), '', TODO_STATUS_REASON_LIMIT)
+          : null,
         status: state.status,
         blocked_reason: state.blocked_reason,
       });
@@ -506,7 +512,8 @@ export function computeReadyFrontier(readModel) {
   const graph = buildTodoGraph(readModel);
   const ready = [...graph.nodes.values()]
     .filter((node) => isNodeReady(node, graph))
-    .map((node) => ({ plan_key: node.plan_key, task_id: node.task_id, label: node.label }));
+    .map((node) => ({ plan_key: node.plan_key, task_id: node.task_id, label: node.label,
+      done_condition: node.done_condition }));
   ready.sort(compareTaskEntries);
   enforceListLimit('next_ready', ready);
   return ready;
@@ -569,7 +576,7 @@ export function projectTodoStatus(readModel, options = undefined) {
       enforceListLimit('active_set.unmet_dependencies', unmetDependencies);
       activeSet.push({ ...task, unmet_dependencies: unmetDependencies });
     }
-    if (isNodeReady(node, graph)) nextReady.push(task);
+    if (isNodeReady(node, graph)) nextReady.push({ ...task, done_condition: node.done_condition });
     if (node.status === 'blocked') {
       blocked.push({
         plan_key: node.plan_key,

@@ -703,6 +703,7 @@ async function mutate({
     advisory: resolvedAdvisory,
     ...(includesNoteContext ? {
       design_memo: designMemoProjection(authoredTask),
+      done_condition: authoredTask.done_condition ?? null,
       note_context: noteContext,
       structure_context: structureContext,
       ...(featureContext === null ? {} : { feature_context: featureContext }),
@@ -1838,7 +1839,8 @@ async function todoDetail({ repoRoot, planKey, taskId }) {
     project_id: store.project_id,
     plan_key: planKey,
     plan_version: member.plan.plan_version,
-    task,
+    // v7以前のtaskは欄を持たないのでnullで投影する（u12）。
+    task: { ...task, done_condition: task.done_condition ?? null },
     design_memo: designMemoProjection(task),
     state,
     note_context: context,
