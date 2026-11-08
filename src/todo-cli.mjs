@@ -4247,6 +4247,13 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   }
   if (action === null) {
+    // 書込みの出力は常にJSONなので、`--json`は結果を変えない旗として受ける（seat契約）。
+    // 読めなかった時だけ外して読み直すので、既に`--json`を文法に持つ命令は変わらない。
+    const withoutJson = argv.filter((value) => value !== '--json');
+    if (withoutJson.length < argv.length && writesTodoStore(withoutJson)) {
+      return runTodoCli({ argv: atomicCommit ? [...withoutJson, '--commit-store'] : withoutJson,
+        cwd, stdout, stderr, env, onInternalFailure });
+    }
     const command = typeof argv[0] === 'string' ? argv[0] : null;
     if (command !== null && !TODO_COMMAND_NAMES.includes(command)) {
       return typedArgumentFailure(stderr, 'UNKNOWN_SUBCOMMAND', 'todo_subcommand_unknown', {
