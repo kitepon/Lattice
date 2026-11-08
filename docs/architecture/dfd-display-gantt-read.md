@@ -6,6 +6,9 @@ empty state, head token, per-project memo/reader) and wired by
 Store's `readTodoStoreForDisplay` / `readTodoStoreDisplaySource` exports of `src/todo-store.mjs`
 directly. Connected to the [Store display read](dfd-store-display-read.md).
 Delta 2026-11-08 (guards.remove-unnamed): `unverified` added; `unavailable` only when nothing is readable.
+Delta 2026-11-08 (u03 D-gantt, guards.remove-unnamed): the render path itself never refuses on scale,
+cycle, independence drift, invalid edge, embedded prose, page size or an invalid presentation file; it
+draws what it can and attaches notices (see "Render notices").
 Implementation starts after the PR55/56 merge and the bounded shared-Store recovery,
 and after Leviathan reviews this row together with the Store row.
 Owner: Snow White (display: gantt HTML, SSE, public dashboard daemon, banner and
@@ -46,6 +49,26 @@ renders keep their strict reads; only the two serving paths above change.
 | Real server faults | renderer bug, I/O fault outside the Store result, a thrown (untyped) Store read | Still 500 with the existing `lattice.todo_gantt_http_error.v1`. A thrown read is memoized under the observed source token like a probe failure: an unchanged token with a persisting fault does not re-run a full read every poll; the ~30 s revalidation still applies. |
 
 
+### Render notices (u03 D-gantt)
+
+Reading is not writing, so nothing is protected by refusing a drawing. Each former refusal now
+draws and adds one `{code, message, detail}` notice under its old code; the notices are
+`layout.notices` (layout, present only when non-empty) plus the renderer's own, shown as one visible banner (same look as the
+state banner) at the top of the diagram legend, and also returned as `rendered.notices`.
+
+| Former refusal (code) | Now |
+|---|---|
+| `TODO_SCALE_EXCEEDED` tasks > 2000 | first 2000 in task-ref order drawn; the rest and their edges dropped; notice counts and limit |
+| `TODO_SCALE_EXCEEDED` edges > 8000 | first 8000 in edge-key order drawn; notice counts and limit |
+| `TODO_LAYOUT_CYCLE` | tasks the topological pass cannot reach (cycle part) are taken in ref order and each edge among them pointing back is left out, so every later step sees a DAG; notice lists the cycle tasks and the cut edges |
+| `TODO_LAYOUT_INDEPENDENCE_DRIFT` | the task is left unmarked; notice lists it |
+| `TODO_LAYOUT_INVALID_INPUT` for an edge (endpoint missing, self edge, not a task ref, malformed join) | the edge is skipped; notice lists it. A malformed read-model or member shape still refuses: there is nothing to draw |
+| `TODO_SCALE_EXCEEDED` embedded prose > 8 MiB | the overflowing design memo / done condition is replaced by an "omitted" text, narrative bytes are not counted (never rendered), overflowing notes are left out; notice counts them |
+| `TODO_SCALE_EXCEEDED` page > 24 MiB | re-render without embedded prose; if still over, serve it with the notice |
+| `PRESENTATION_INVALID` (render use only) | the file is ignored, defaults used, notice carries the reason. No write path stores presentation through this module, so nothing else changes |
+
+Self-exit: the next render of a corrected input draws no notice.
+
 ### State precedence (one ordered rule)
 
 | Order | Store condition | State shown | Banner says |
@@ -77,4 +100,4 @@ after either → the token changes and SSE triggers a reload; `last_verified` �
 overlay output and the fixed omitted list shown; a plan-scoped-only append → the head
 token changes; equal source token → no full read until the ~30 s revalidation, including while degraded (last_verified or unavailable with an unchanged token); a persisting probe failure → no 500 ms full-read loop; the
 public diagnostic carries only `code` and the reason slug; a renderer fault → 500 as today; one-shot CLI
-gantt still fails strictly. Prior gantt suites are not repeated.
+gantt still fails strictly on the Store read (not on rendering). Render notices: over-limit tasks/edges, a cycle, drifted independence, a bad edge, over-budget prose, an over-sized page and an invalid presentation each give a 200 drawing plus a notice and no throw. Prior gantt suites are not repeated.

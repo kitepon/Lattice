@@ -42,7 +42,7 @@ import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-iden
 import { readProjectExternalPane, readRegisteredProjectId, resolveProjectIdentity } from './project-identity.mjs';
 import { layoutTodoGantt } from './todo-gantt-layout.mjs';
 import { TODO_GANTT_SCOPES } from './todo-gantt-scope.mjs';
-import { loadTodoGanttPresentation } from './todo-gantt-presentation.mjs';
+import { loadTodoGanttPresentation, projectTodoGanttPresentation } from './todo-gantt-presentation.mjs';
 import { loadTodoStructurePresentation } from './todo-structure-presentation.mjs';
 import { startTodoGanttLiveServer } from './todo-gantt-live.mjs';
 import {
@@ -3523,8 +3523,23 @@ export async function renderTodoGanttForProject({
     : { displayName };
   // degraded (display of an unverified/last_verified store): every current-file overlay is
   // omitted, since computing one can reach strict Store validation.
-  const presentation = degraded ? null
-    : await loadTodoGanttPresentation({ repoRoot, readModel: store });
+  // u03 D-gantt: an invalid presentation file only costs the lane names; the page uses the
+  // defaults and says so. (Authoring input is not validated here, so nothing is stored.)
+  const notices = [];
+  let presentation = null;
+  if (!degraded) {
+    try {
+      presentation = await loadTodoGanttPresentation({ repoRoot, readModel: store });
+    } catch (error) {
+      if (!(error instanceof TodoStoreError) || error.code !== 'PRESENTATION_INVALID') throw error;
+      presentation = projectTodoGanttPresentation(store, null);
+      notices.push({
+        code: 'PRESENTATION_INVALID',
+        message: '表示設定が不正なため、既定の表示で描いています',
+        detail: { reason: error.message },
+      });
+    }
+  }
   const [independence, seamProposals, notes, structures] = degraded
     ? [null, null, { contexts: null, warnings: [], headBindings: [] }, null]
     : await Promise.all([
@@ -3582,6 +3597,7 @@ export async function renderTodoGanttForProject({
     noteContexts: notes.contexts,
     noteWarnings: notes.warnings,
     structurePresentation: structures,
+    notices,
   });
   return { store, metadata, memberBindings, rendered };
 }

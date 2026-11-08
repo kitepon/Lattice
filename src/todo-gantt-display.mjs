@@ -7,7 +7,7 @@
  */
 import { readTodoStoreDisplaySource, readTodoStoreForDisplay } from './todo-store.mjs';
 import { digestTodoArtifact } from './todo-contracts.mjs';
-import { escapeHtmlText } from './todo-gantt-html-shared.mjs';
+import { BANNER_STYLE, escapeHtmlText } from './todo-gantt-html-shared.mjs';
 
 export const GANTT_DISPLAY_REVALIDATE_MS = 30_000;
 export const GANTT_DISPLAY_OMITTED_OVERLAYS = Object.freeze([
@@ -156,7 +156,6 @@ export function publicDiagnostic(inconsistency) {
   return { code, reason };
 }
 
-const BANNER_STYLE = 'margin:0;padding:10px 16px;border-bottom:2px solid #e85f2a;background:#fff4e8;color:#201d19;font:13px/1.6 system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif';
 
 function droppedMarkup(dropped) {
   if (dropped.length === 0) return '';

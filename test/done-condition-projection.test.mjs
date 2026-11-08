@@ -12,7 +12,7 @@ import { projectTodoChainV1 } from '../src/todo-chain.mjs';
 import { layoutTodoGantt } from '../src/todo-gantt-layout.mjs';
 import { projectTodoGanttPresentation } from '../src/todo-gantt-presentation.mjs';
 import {
-  renderTodoGanttHtml, TODO_GANTT_PROSE_MAX_BYTES, TodoGanttRenderError,
+  renderTodoGanttHtml, TODO_GANTT_PROSE_MAX_BYTES,
 } from '../src/todo-gantt-html.mjs';
 import { TODO_MARKDOWN_SECTION_MAX_BYTES } from '../src/todo-markdown-renderer.mjs';
 
@@ -66,8 +66,10 @@ test('done_condition counts toward the aggregate prose budget', { timeout: 15_00
     done_at: null, blocked_reason: null, evidence: null, evidence_unverified: false }));
   assert.equal(render(read).prose_bytes, TODO_GANTT_PROSE_MAX_BYTES);
   tasks[32].done_condition = 'a';
-  assert.throws(() => render(read), (error) => error instanceof TodoGanttRenderError
-    && error.code === 'TODO_SCALE_EXCEEDED' && error.detail.prose_bytes === TODO_GANTT_PROSE_MAX_BYTES + 1);
+  const over = render(read);
+  assert.equal(over.prose_bytes, TODO_GANTT_PROSE_MAX_BYTES);
+  assert.deepEqual(over.notices.map(({ code, detail }) => [code, detail.omitted.done_condition]),
+    [['TODO_SCALE_EXCEEDED', 1]]);
 });
 
 // --- CLI projections ------------------------------------------------------

@@ -17,6 +17,20 @@ export function escapeHtmlText(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
+// One banner look for every "shown with a caveat" state (display states and render notices).
+export const BANNER_STYLE = 'margin:0;padding:10px 16px;border-bottom:2px solid #e85f2a;background:#fff4e8;color:#201d19;font:13px/1.6 system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif';
+
+/** Visible list of render notices ({code, message, detail}); empty string when there are none. */
+export function noticesBannerHtml(notices) {
+  if (!Array.isArray(notices) || notices.length === 0) return '';
+  const items = notices.map(({ code, message, detail }) => {
+    const text = detail === undefined || detail === null ? '' : JSON.stringify(detail);
+    const shown = text.length > 600 ? `${text.slice(0, 600)}…` : text;
+    return `<li><code>${escapeHtmlText(code)}</code> ${escapeHtmlText(message)}${shown === '' ? '' : ` <code>${escapeHtmlText(shown)}</code>`}</li>`;
+  }).join('');
+  return `<aside role="status" data-render-notices style="${BANNER_STYLE}"><strong>一部を省いて表示しています</strong><ul>${items}</ul></aside>`;
+}
+
 export function refKey(ref) {
   return JSON.stringify([ref.project_id, ref.plan_key, ref.task_id]);
 }

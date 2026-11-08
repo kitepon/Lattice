@@ -7,6 +7,8 @@ import { createTodoReadiness } from './todo-readiness.mjs';
 const TASK_LIMIT = 2_000;
 const EDGE_LIMIT = 8_000;
 const SWEEP_ROUNDS = 4;
+// A notice names at most this many refs; the count always covers all of them.
+const NOTICE_SAMPLE = 20;
 
 /** Columns for a stage made only of ToDos with no registered dependency. */
 const LOOSE_COLUMNS_MINIMUM = 8;
@@ -108,11 +110,10 @@ function compareText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function refOf(value, context) {
+// null when the value is not a task ref; the caller skips what it cannot draw.
+function refOf(value) {
   if (!plain(value) || typeof value.project_id !== 'string'
-    || typeof value.plan_key !== 'string' || typeof value.task_id !== 'string') {
-    fail('TODO_LAYOUT_INVALID_INPUT', `${context} must be a task ref`);
-  }
+    || typeof value.plan_key !== 'string' || typeof value.task_id !== 'string') return null;
   return { project_id: value.project_id, plan_key: value.plan_key, task_id: value.task_id };
 }
 
@@ -136,6 +137,7 @@ function normalizeInput(readModel) {
     fail('TODO_LAYOUT_INVALID_INPUT', 'read model must be lattice.todo_store_read.v1');
   }
 
+  const notices = []; // u03 D-gantt: a read-only drawing draws what it can and says what it left out
   const nodesByKey = new Map();
   const retiredKeys = new Set(); // 撤去済みtask。端点に持つ辺は図から一緒に消す
   const members = [...readModel.members].sort((left, right) => {
@@ -192,22 +194,30 @@ function normalizeInput(readModel) {
       });
     }
   }
+  const droppedKeys = new Set(); // 上限で描かないtask。端点に持つ辺は黙って除く（通知は件数で済む）
   if (nodesByKey.size > TASK_LIMIT) {
-    fail('TODO_SCALE_EXCEEDED', 'todo gantt task limit exceeded', {
-      task_count: nodesByKey.size, task_limit: TASK_LIMIT, edge_count: null, edge_limit: EDGE_LIMIT,
+    const kept = [...nodesByKey.values()].sort((left, right) => compareRefs(left.ref, right.ref));
+    for (const node of kept.slice(TASK_LIMIT)) { nodesByKey.delete(node.key); droppedKeys.add(node.key); }
+    notices.push({
+      code: 'TODO_SCALE_EXCEEDED',
+      message: `工程数が上限を超えたため、並び順の先頭${TASK_LIMIT}件だけを描いています（${droppedKeys.size}件を除外）`,
+      detail: { task_count: kept.length, task_limit: TASK_LIMIT, dropped_task_count: droppedKeys.size },
     });
   }
 
   const edgeMap = new Map();
+  const skippedEdges = [];
+  const skipEdge = (from, to, reason) => skippedEdges.push({ from, to, reason });
   const addEdge = (fromValue, toValue, kind, joinIdentity = null) => {
-    const fromRef = refOf(fromValue, 'edge.from');
-    const toRef = refOf(toValue, 'edge.to');
+    const fromRef = refOf(fromValue);
+    const toRef = refOf(toValue);
+    if (fromRef === null || toRef === null) return skipEdge(fromRef && refKey(fromRef), toRef && refKey(toRef), 'not_a_task_ref');
     const from = refKey(fromRef);
     const to = refKey(toRef);
     if (retiredKeys.has(from) || retiredKeys.has(to)) return; // 撤去済み端点の辺は描かない
-    if (!nodesByKey.has(from) || !nodesByKey.has(to) || from === to) {
-      fail('TODO_LAYOUT_INVALID_INPUT', 'edge must connect two distinct read-model tasks');
-    }
+    if (droppedKeys.has(from) || droppedKeys.has(to)) return;
+    if (from === to) return skipEdge(from, to, 'self_edge');
+    if (!nodesByKey.has(from) || !nodesByKey.has(to)) return skipEdge(from, to, 'endpoint_not_in_read_model');
     const key = JSON.stringify([from, to]);
     let edge = edgeMap.get(key);
     if (edge === undefined) {
@@ -223,10 +233,11 @@ function normalizeInput(readModel) {
     }
   };
   for (const member of members) {
-    for (const edge of member.plan.hard_dependencies) addEdge(edge.from, edge.to, 'hard');
+    for (const edge of member.plan.hard_dependencies) addEdge(edge?.from, edge?.to, 'hard');
     for (const join of member.plan.joins) {
       if (!plain(join) || !Array.isArray(join.after) || typeof join.id !== 'string') {
-        fail('TODO_LAYOUT_INVALID_INPUT', 'join has an invalid shape');
+        skipEdge(null, null, 'join_invalid_shape');
+        continue;
       }
       const identity = { project_id: member.plan.project_id, plan_key: member.plan.plan_key,
         join_id: join.id };
@@ -236,22 +247,88 @@ function normalizeInput(readModel) {
   for (const dependency of projectTodoCrossPlanDependencies(members)) {
     addEdge(dependency.from, dependency.to, 'cross_plan');
   }
-  if (edgeMap.size > EDGE_LIMIT) {
-    fail('TODO_SCALE_EXCEEDED', 'todo gantt edge limit exceeded', {
-      task_count: nodesByKey.size, task_limit: TASK_LIMIT,
-      edge_count: edgeMap.size, edge_limit: EDGE_LIMIT,
+  if (skippedEdges.length > 0) {
+    notices.push({
+      code: 'TODO_LAYOUT_INVALID_INPUT',
+      message: `端点を図に描けない依存${skippedEdges.length}件を除いて描いています`,
+      detail: { skipped_edge_count: skippedEdges.length, skipped_edges: skippedEdges.slice(0, NOTICE_SAMPLE) },
     });
   }
 
   const nodes = [...nodesByKey.values()].sort((left, right) => compareRefs(left.ref, right.ref));
-  const edges = [...edgeMap.values()].sort((left, right) => compareText(left.key, right.key));
-  return { nodes, nodesByKey, edges, retiredKeys };
+  let edges = [...edgeMap.values()].sort((left, right) => compareText(left.key, right.key));
+  if (edges.length > EDGE_LIMIT) {
+    notices.push({
+      code: 'TODO_SCALE_EXCEEDED',
+      message: `依存数が上限を超えたため、並び順の先頭${EDGE_LIMIT}本だけを描いています（${edges.length - EDGE_LIMIT}本を除外）`,
+      detail: { edge_count: edges.length, edge_limit: EDGE_LIMIT, dropped_edge_count: edges.length - EDGE_LIMIT },
+    });
+    edges = edges.slice(0, EDGE_LIMIT);
+  }
+  edges = breakCycles(nodes, nodesByKey, edges, notices);
+  return { nodes, nodesByKey, edges, retiredKeys, notices };
+}
+
+/**
+ * u03 D-gantt: a cycle is drawn, not refused. Nodes the topological pass cannot reach (the
+ * cycle part, with what hangs off it) are taken in ref order, and each edge among them that
+ * points back to an earlier one is left out, so the rest is acyclic and every later step
+ * terminates. shortcut: an acyclic edge below a cycle that points back in ref order is left
+ * out too; the notice names every cut edge, so upgrade only if that proves misleading.
+ */
+function breakCycles(nodes, nodesByKey, edges, notices) {
+  const indegree = new Map(nodes.map(({ key }) => [key, 0]));
+  const outgoing = new Map(nodes.map(({ key }) => [key, []]));
+  for (const edge of edges) { indegree.set(edge.to, indegree.get(edge.to) + 1); outgoing.get(edge.from).push(edge.to); }
+  const queue = nodes.filter(({ key }) => indegree.get(key) === 0).map(({ key }) => key);
+  const visited = new Set();
+  while (queue.length > 0) {
+    const current = queue.pop();
+    visited.add(current);
+    for (const next of outgoing.get(current)) {
+      indegree.set(next, indegree.get(next) - 1);
+      if (indegree.get(next) === 0) queue.push(next);
+    }
+  }
+  if (visited.size === nodes.length) return edges;
+  const rank = new Map(nodes.filter(({ key }) => !visited.has(key)).map(({ key }, index) => [key, index]));
+  const cut = [];
+  const kept = edges.filter((edge) => {
+    if (!rank.has(edge.from) || !rank.has(edge.to) || rank.get(edge.from) < rank.get(edge.to)) return true;
+    cut.push(edge);
+    return false;
+  });
+  notices.push({
+    code: 'TODO_LAYOUT_CYCLE',
+    message: `依存が循環しているため、循環部分の工程${rank.size}件の戻り方向の依存${cut.length}本を除いて描いています`,
+    detail: {
+      cycle_task_count: rank.size,
+      cycle_tasks: [...rank.keys()].slice(0, NOTICE_SAMPLE).map((key) => nodesByKey.get(key).ref),
+      cut_edge_count: cut.length,
+      cut_edges: cut.slice(0, NOTICE_SAMPLE).map((edge) => ({
+        from: nodesByKey.get(edge.from).ref, to: nodesByKey.get(edge.to).ref,
+      })),
+    },
+  });
+  return kept;
 }
 
 // u03 D-gantt: the drawing never decides readiness itself. Lattice's readiness (the same one
 // status and start use) decides, so a successor of a retired-not-done task is not drawn ready.
 function readyTaskKeys(readModel, nodes) {
-  const readiness = createTodoReadiness(readModel);
+  // Readiness reads the raw edge lists; hand it only the edges normalizeInput can draw, so a
+  // malformed one (skipped with a notice) does not stop the page here.
+  const drawable = (edge) => refOf(edge?.from) !== null && refOf(edge?.to) !== null;
+  const members = readModel.members.map((member) => ({
+    ...member,
+    plan: {
+      ...member.plan,
+      hard_dependencies: member.plan.hard_dependencies.filter(drawable),
+      joins: member.plan.joins.filter((join) => plain(join) && Array.isArray(join.after)
+        && join.after.every((after) => refOf(after) !== null) && refOf(join.before) !== null),
+    },
+  }));
+  const readiness = createTodoReadiness({ ...readModel, members });
   return new Set(nodes.filter((node) => readiness.isReady(readiness.key(node.ref))).map(({ key }) => key));
 }
 
@@ -282,6 +359,7 @@ function assignWaves(nodes, nodesByKey, edges) {
       }
     }
   }
+  // normalizeInput's breakCycles leaves no cycle; this only guards that invariant.
   if (visited !== nodes.length) fail('TODO_LAYOUT_CYCLE', 'todo layout input contains a cycle');
   return { incoming, outgoing, wave };
 }
@@ -370,13 +448,14 @@ function crossingCount(edges, wave, transversePosition) {
  * 読み出しはasync I/Oとgit実行を伴うためCLI層が行い、ここへは値として渡る。
  * layoutは同期pureのままに保つ。
  */
-function normalizeIndependence(value, nodesByKey) {
+function normalizeIndependence(value, nodesByKey, notices) {
   if (value === null || value === undefined) return { stateByKey: new Map(), summary: null };
   if (!Array.isArray(value)) {
     fail('TODO_LAYOUT_INVALID_INPUT', 'independence must be an array of plan projections');
   }
   const stateByKey = new Map();
   const plans = [];
+  const drifted = [];
   for (const projection of value) {
     if (!plain(projection) || typeof projection.plan_key !== 'string'
       || typeof projection.coverage !== 'string' || !plain(projection.frontier)) {
@@ -388,11 +467,10 @@ function normalizeIndependence(value, nodesByKey) {
         project_id: projection.project_id, plan_key: planKey, task_id: taskId,
       });
       // 図に無いtaskへ状態を付けない。layoutのready判定と投影のready判定が食い違えば、
-      // 静かに無視するのでなくここで露見させる。
+      // 印を付けずに通知で露見させる（読むだけの図は拒まない）。
       if (!nodesByKey.has(key)) {
-        fail('TODO_LAYOUT_INDEPENDENCE_DRIFT', 'independence references a task absent from layout', {
-          plan_key: planKey, task_id: taskId,
-        });
+        drifted.push({ plan_key: planKey, task_id: taskId });
+        return;
       }
       stateByKey.set(key, state);
     };
@@ -423,6 +501,13 @@ function normalizeIndependence(value, nodesByKey) {
     });
   }
   plans.sort((left, right) => compareText(left.plan_key, right.plan_key));
+  if (drifted.length > 0) {
+    notices.push({
+      code: 'TODO_LAYOUT_INDEPENDENCE_DRIFT',
+      message: `独立性の記録が図に無い工程${drifted.length}件を指しているため、その工程には印を付けていません`,
+      detail: { drifted_count: drifted.length, drifted_tasks: drifted.slice(0, NOTICE_SAMPLE) },
+    });
+  }
   return { stateByKey, summary: { plans } };
 }
 
@@ -519,7 +604,7 @@ function layoutTodoGanttFlat(readModel, options = {}) {
   const longestNodeKeys = new Set(chain.longest_chain_node_refs.map(refKey));
   const longestEdgeKeys = new Set(chain.longest_chain_edges.map(edge => JSON.stringify([refKey(edge.from), refKey(edge.to)])));
   const readyKeys = readyTaskKeys(readModel, full.nodes);
-  const independence = normalizeIndependence(options.independence ?? null, full.nodesByKey);
+  const independence = normalizeIndependence(options.independence ?? null, full.nodesByKey, full.notices);
   const seamProposals = normalizeSeamProposals(options.seamProposals ?? null);
 
   // Only the geometry stage below sees the narrowed graph.
@@ -859,6 +944,9 @@ function layoutTodoGanttFlat(readModel, options = {}) {
       .map((taskKey) => JSON.parse(taskKey))
       .map(([project_id, plan_key, task_id]) => ({ project_id, plan_key, task_id }))
       .sort(compareRefs),
+    // u03 D-gantt: what the drawing left out or bent instead of refusing, each as {code, message, detail}.
+    // Absent when there is nothing to say, so a clean layout keeps its bytes (and digest).
+    ...(full.notices.length > 0 ? { notices: full.notices } : {}),
     metrics: {
       crossing_count: crossingCount(edges, wave, transversePosition),
       visible_node_count: visibleKeys.size,
@@ -914,11 +1002,13 @@ export function layoutTodoGantt(readModel, options = {}) {
     ? fullLayout : layoutTodoGanttFlat(readModel, { ...options, scope: 'all' });
   const semanticByKey = new Map(semanticLayout.nodes.map((node) => [refKey(node.ref), node]));
   const semanticRoot = applyHierarchySemantics(nested.root, semanticByKey);
-  const rootLayout = semanticRoot.layout;
+  // The levels' own notices repeat or partly cover the whole graph's; the whole graph's are the ones to show.
+  const { notices: _levelNotices, ...rootLayout } = semanticRoot.layout;
   return {
     ...rootLayout,
     full_edges: fullLayout.full_edges,
     groups: fullLayout.groups,
+    ...(fullLayout.notices === undefined ? {} : { notices: fullLayout.notices }),
     scope: fullLayout.scope,
     folded: fullLayout.folded,
     hierarchy_nodes: descendantNodes(semanticRoot),
