@@ -1,5 +1,6 @@
 import {
   isDecoupledPhaseTodoPlanSchema,
+  isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
   projectTodoCrossPlanDependencies,
 } from './todo-store-view.mjs';
@@ -22,13 +23,15 @@ export function createTodoReadiness(store) {
   const acceptanceOutgoing = new Map();
   for (const member of store.members) {
     const { plan } = member;
-    const states = new Map(member.tasks.map((state) => [state.task_id, state.status]));
+    const states = new Map(member.tasks.map((state) => [state.task_id, state]));
     const phaseStates = new Map((member.phases ?? []).map((phase) => [phase.phase_id, phase.status]));
     for (const phase of member.phases ?? []) phases.set(phaseKey({ ...plan, ...phase }), phase.status);
     for (const task of plan.tasks) {
       const key = taskKey({ ...plan, ...task });
       nodes.set(key, {
-        status: states.get(task.task_id),
+        status: states.get(task.task_id)?.status,
+        // retired from doneも先行として完了扱い（u12）。判定はStore replayと同じ一つの述語。
+        finished: isFinishedTodoTaskState(states.get(task.task_id)),
         schema: plan.schema,
         plan_key: plan.plan_key,
         phase_id: isPhaseTodoPlanSchema(plan.schema) ? task.phase_id : null,
@@ -73,7 +76,7 @@ export function createTodoReadiness(store) {
 
   function prerequisites(key) {
     const predecessors = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source));
-    const predecessorsDone = predecessors.every((node) => node?.status === 'done');
+    const predecessorsDone = predecessors.every((node) => node?.finished === true);
     const predecessorPhasesReady = predecessors.every((node) => dependencyPhaseReady(node, nodes.get(key)));
     const taskDependenciesDone = predecessorsDone && predecessorPhasesReady;
     const phaseAcceptReady = [...(acceptanceIncoming.get(key) ?? [])]

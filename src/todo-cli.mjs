@@ -714,6 +714,43 @@ async function mutate({
   return result;
 }
 
+/**
+ * 恒久除去（u12）。pending/blocked/doneから`{reason, prior_status}`で閉じる。
+ * in-progressはRuntimeに解放経路が無いので従来どおり拒否する（先にretract/blockする）。
+ * 既にretiredなら成功を返しeventは足さない（応答を失った再試行をエラーにしない）。
+ */
+async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
+  const state = member?.tasks.find(({ task_id: current }) => current === taskId);
+  if (state === undefined) {
+    // 未知のplan/taskはStoreの既存の拒否をそのまま通す。
+    return mutate({ repoRoot, env, planKey, taskId, kind: 'retire', payload: { reason }, evidenceRef: null });
+  }
+  if (state.status === 'retired') {
+    const events = member.journal.events;
+    const recorded = events.findLast((event) => event.kind === 'retire' && event.task_id === taskId)
+      ?? events.at(-1);
+    const result = {
+      schema: 'lattice.todo_mutation_result.v2',
+      project_id: member.plan.project_id, plan_key: planKey, plan_version: member.plan.plan_version,
+      task_id: taskId, kind: 'retire', sequence: recorded.sequence, event_digest: recorded.event_digest,
+      journal_head_digest: events.at(-1).event_digest, snapshot_digest: member.snapshot.snapshot_digest,
+      status: 'retired', advisory: null, unchanged: true, result_digest: '',
+    };
+    result.result_digest = todoSelfDigest(result, 'result_digest');
+    return result;
+  }
+  if (state.status === 'in-progress') {
+    throw new TodoStoreError('STORE_INCONSISTENT', 'invalid_retire_transition', undefined, {
+      task_id: taskId, status: state.status,
+      next_action: `lattice todo retract --plan ${planKey} --task ${taskId} --reason <text>`,
+    });
+  }
+  return mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
+    payload: { reason, prior_status: state.status }, evidenceRef: null });
+}
+
 async function startStructureContext({ repoRoot, store, planKey, taskId }) {
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active');
@@ -4203,9 +4240,8 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'],
     });
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
-      action = (repoRoot) => mutate({
-        repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'retire', payload: { reason: flags.reason }, evidenceRef: null,
+      action = (repoRoot) => retireTask({
+        repoRoot, env, planKey: flags.plan, taskId: flags.task, reason: flags.reason,
       });
     }
   } else if (argv[0] === 'unblock') {

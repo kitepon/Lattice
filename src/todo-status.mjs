@@ -1,5 +1,5 @@
 import { createTodoReadiness } from './todo-readiness.mjs';
-import { isDecoupledPhaseTodoPlanSchema } from './todo-store-view.mjs';
+import { isDecoupledPhaseTodoPlanSchema, isFinishedTodoTaskState } from './todo-store-view.mjs';
 import {
   AUDIT_PENDING_PHASE_STATUSES,
   auditPendingNextCommands,
@@ -455,6 +455,7 @@ function buildTodoGraph(readModel) {
           ? displayText(task.done_condition.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim(), '', TODO_STATUS_REASON_LIMIT)
           : null,
         status: state.status,
+        finished: isFinishedTodoTaskState(state),
         blocked_reason: state.blocked_reason,
       });
       incoming.set(key, new Set());
@@ -567,7 +568,7 @@ export function projectTodoStatus(readModel, options = undefined) {
     const task = { plan_key: node.plan_key, task_id: node.task_id, label: node.label };
     if (node.status === 'in-progress') {
       const unmetDependencies = [...incoming.get(node.key)]
-        .filter((key) => nodes.get(key).status !== 'done')
+        .filter((key) => !nodes.get(key).finished)
         .map((key) => {
           const predecessor = nodes.get(key);
           return { plan_key: predecessor.plan_key, task_id: predecessor.task_id };
