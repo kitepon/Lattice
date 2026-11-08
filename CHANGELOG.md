@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `lattice hooks install`を入れ直しても、Latticeの項目はその位置で置き換わり、他の製品のhookの位置と並びは変わらない。これまでは自分の項目を消して末尾へ足していたため、位置でhookの承認を覚えるCodexで、他の製品の承認がずれた。
+
 - `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
 
 ## 0.83.0 — 2026-11-08
