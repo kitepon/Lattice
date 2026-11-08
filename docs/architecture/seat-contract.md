@@ -41,6 +41,25 @@ a start recorded before the seat first set `LATTICE_SEAT_ID` is retracted in
 the old environment, or finished first. An unset or malformed id makes the
 seat anonymous; nothing refuses.
 
+## Turn-start read (a3, Snow 2026-11-08)
+
+`lattice session-context --json` is the one read a seat makes at the start of a
+turn (one process, one store read, ADR 0131). Schema `lattice.session_context.v2`
+= v1 plus one object `turn`. Lattice records and shows; `turn` chooses and
+assigns nothing.
+
+| Field | Value |
+|---|---|
+| `turn.actor` | `{host, session, agent}` the CLI would write with now (`resolveTodoActor(env)`: `LATTICE_TODO_ACTOR_*`, else the seat defaults). |
+| `turn.startable` | `todo.next_ready` as is (`plan_key, task_id, label, done_condition`). |
+| `turn.own` | This seat's in-progress and blocked tasks: a task whose status is `in-progress` or `blocked` and whose latest `start` event in its plan's current journal was recorded with `actor.agent === turn.actor.agent`. Entry `{plan_key, task_id, label, status, started_at, blocked_reason, done_condition}`, sorted by plan_key then task_id. Done tasks are history and stay in `todo status`/`todo show`. A carried task whose start lies in a predecessor version appears after its rebind start (blocked carried tasks without one are not listed). |
+| `turn.warning` | Present only when the store is missing or unreadable: `{reason}` (the status reason). `startable` and `own` are then `[]`; the read never refuses. |
+
+`lattice status --json` keeps `lattice.project_status.v1` exactly; when a store
+exists and work is active (`active_run_present`) its `next_action.command` is
+`lattice session-context --json` instead of `lattice todo status`. Other
+next_action branches are unchanged.
+
 ## Error shape
 
 `code` names the kind; `detail.pointer` names the field; `detail.rule` names the

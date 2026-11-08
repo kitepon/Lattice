@@ -331,9 +331,9 @@ task間排他で検証し、破れた宣言は候補にせずkindの異なるtyp
 plan versionディレクトリへ並置し、再生成できるhost localの投影として扱う。
 
 session開始時にhostが必要とする現在地は`lattice session-context --json`が
-**1プロセス・1回のstore読み**で返す（`lattice.session_context.v1`、ADR 0131）。
+**1プロセス・1回のstore読み**で返す（`lattice.session_context.v2`、ADR 0131）。
 `status`フィールドは`project_status.v1`、`todo`フィールドは`todo_status_result.v6`をそのまま埋め、
-`independence`はreadyのあるplanだけの並列可否要約を持つ。既存2面は不変で、これはその合成である。
+`independence`はreadyのあるplanだけの並列可否要約を持つ。v2の`turn`は、この席の名乗り・取れる工程・自分の途中の工程を載せる（seat-contract「Turn-start read」）。既存2面は不変で、これはその合成である。
 この面はdashboard活動を登録しない読み取り専用面とする。消費者へexact key検証を要求せず、
 知っているkeyだけを読んでよい——Lattice側は既存keyの意味を変えるときだけschema版を上げる。
 
