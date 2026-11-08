@@ -51,9 +51,9 @@ seam-refactorを施し、再解析後に全planを新versionへコンパイル�
 - 着手時は`todo start`が返す`advisory`を読む（ADR 0128）。`conflicts_with_active`は進行中ToDoとの競合、
   `severability`は`code_seam`（分割で並列化しうる）か`serial`（共有状態ゆえ直列必須）かを示す。
   競合の同時起動は助言であり、どの ready を取るかは host が決める。記録があるのに対象工程が
-  未宣言・失効なら`todo start`は`INDEPENDENCE_UNVERIFIED`で拒否する（ADR 0182）。
+  未宣言・失効でも`todo start`は止めず、助言で示す（u03 B1–B6）。
   `coverage`が`missing`の時は「競合なし」ではなく「まだ判定していない」。
-  remaining A を witness に含めて compile する。現在の ready だけを compile すると次の frontier の start が止まる。
+  remaining A を witness に含めて compile する。現在の ready だけを compile すると次の frontier の start の助言が未検証になる。
 - plan revisionでtask_idが変わったら`lattice todo independence witness migrate --plan <key>`で宣言を写し、
   commitしてから再compileする。移行はid写像だけを行い、宣言内容が改訂後も妥当かは主張しない。
 - 初回scaffoldだけはindexがまだ存在しないためbootstrap例外とする。bootstrap sourceを作った直後、

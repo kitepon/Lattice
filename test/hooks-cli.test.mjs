@@ -1282,3 +1282,29 @@ test('P3 C6 input: Cursor emitは conversation_id と workspace_roots[0] をsess
   assert.equal(result.status, 0, result.stdout);
   assert.deepEqual(JSON.parse(result.stdout), { additional_context: INFO });
 });
+
+// a1 (bellteam-adoption): reinstall replaces Lattice's own entry where it stands. Codex keys
+// [hooks.state] trusted_hash by position, so other products' entries must not move.
+for (const host of ['claude', 'cursor']) {
+  test(`a1: ${host} reinstall replaces Lattice's own entry in place; foreign entries keep their positions`, async (t) => {
+    const fixture = await hooksFixture(t, host, { config: '{}' });
+    assert.equal(runCli(['hooks', 'install', '--host', host], options(fixture)).status, 0);
+    const old = ['/old/node', '/old/lattice.mjs', 'hooks', 'emit', '--host', host];
+    const oldCommand = old.map((word) => `'${word}'`).join(' ');
+    const receipt = await readJson(receiptPath(fixture, host));
+    receipt.entries.push({ argv: old, status: 'committed', operation_id: 'old-install' });
+    await writeFile(receiptPath(fixture, host), `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+    const config = await readJson(fixture.configPath);
+    const event = host === 'cursor' ? 'beforeSubmitPrompt' : 'UserPromptSubmit';
+    const wrap = (handler) => (host === 'cursor' ? handler : { hooks: [handler] });
+    const foreign = (name) => (host === 'cursor' ? { command: name, timeout: 7 } : { type: 'command', command: name, timeout: 7 });
+    config.hooks[event] = [wrap(foreign('first --keep')), wrap({ ...foreign(oldCommand), timeout: 5 }), wrap(foreign('last --keep'))];
+    await writeFile(fixture.configPath, `${JSON.stringify(config)}\n`);
+    assert.equal(runCli(['hooks', 'install', '--host', host], options(fixture)).status, 0);
+    const commands = handlers(await readJson(fixture.configPath), host).map((item) => item.command);
+    assert.equal(commands.length, 3);
+    assert.equal(commands[0], 'first --keep');
+    assert.deepEqual(commandArgv(commands[1]), await canonical(host));
+    assert.equal(commands[2], 'last --keep');
+  });
+}

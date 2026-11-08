@@ -235,7 +235,7 @@ parallel set. Starting one of them does not require `--parallel-frontier` or
 `--override-reason`. Those flags record intent; they are not gates.
 `--serial-confirmed` and `--serialization-reviewed` are accepted only for compatibility.
 If an independence record exists but the task is undeclared or stale, `todo start`
-fails with `INDEPENDENCE_UNVERIFIED`. `independence compile` fails with
+still starts and reports it in `advisory.guidance`. `independence compile` fails with
 `INDEPENDENCE_READY_UNDECLARED` when `next_ready` is missing from the witness.
 
 ```bash

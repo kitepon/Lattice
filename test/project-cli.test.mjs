@@ -352,7 +352,7 @@ test('plan create v4は設計メモを保持しPhase監査順とToDo実行順を
   assert.equal(created.status, 0, created.stderr);
   const status = JSON.parse(run(root, ['todo', 'status', '--json']).stdout);
   assert.deepEqual(status.next_ready.map(({ task_id }) => task_id), ['T1', 'T2']);
-  assert.equal(status.schema, 'lattice.todo_status_result.v8');
+  assert.equal(status.schema, 'lattice.todo_status_result.v9');
   assert.equal(status.dispatch_frontier.recommended_parallelism, 2);
   assert.equal(status.dispatch_frontier.subset_requires_reason, true);
   const discovery = JSON.parse(run(root, ['status', '--json']).stdout);

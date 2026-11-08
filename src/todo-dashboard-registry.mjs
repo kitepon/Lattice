@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { homedir } from 'node:os';
 import {
   mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile,
 } from 'node:fs/promises';
@@ -9,6 +8,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import { isAuditPendingPhaseStatus } from './todo-audit-pending.mjs';
 import { observeStartIdentityEpochMs } from './runtime-os-observation.mjs';
 import { spawnSupervisedDashboard } from './dashboard-supervisor.mjs';
+import { resolveSeatIdentity } from './seat-identity.mjs';
 import { reconcileLifecycleRuns, readDashboardLifecycleStatus,
   recordDashboardEnsureDecision } from './dashboard-lifecycle-journal.mjs';
 import { observeDashboardProcess } from './dashboard-process-control.mjs';
@@ -37,7 +37,9 @@ function identifier(value) {
 function runtimeDir(env) {
   const configured = env.LATTICE_DASHBOARD_RUNTIME_DIR;
   return typeof configured === 'string' && path.isAbsolute(configured)
-    ? configured : path.join(homedir(), '.lattice', 'dashboard');
+    ? configured
+    // Same seat root as bridge-server.mjs, so CLI and bridge find one daemon per seat (seat-contract.md).
+    : path.join(resolveSeatIdentity(env).state_dir, 'dashboard');
 }
 
 function paths(env) {

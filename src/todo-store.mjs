@@ -785,20 +785,8 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
       if (state.status !== 'done' || doneDigest.get(event.task_id) !== event.payload.target_done_digest) {
         fail('STORE_INCONSISTENT', 'invalid_reopen_binding');
       }
-      {
-        // 暗黙のterminal-audit Phaseがaccepted/closed_unauditedの後にtaskだけを無警告でreopen
-        // できると、監査済み(または監査なしで閉じた)まま(gantt上も畳まれたまま)裏で作業が
-        // 再開する抜け道になり、ADR 0147/0148の「監査の記録なしに閉じたことにさせない」を
-        // 潜脱する。v4/v5の既存Phaseと同じ規律を暗黙Phaseにも及ぼし、phase_reopenを先に
-        // 通させる。closed_unauditedをここへ足さないと、ADR 0148で新設した状態だけが
-        // このgateを素通りしてしまう。
-        const phaseId = isPhaselessTodoPlanSchema(plan.schema)
-          ? TERMINAL_AUDIT_PHASE_ID
-          : plan.tasks.find(({ task_id }) => task_id === event.task_id).phase_id;
-        if (['accepted', 'closed_unaudited'].includes(derivedPhaseStatus(plan, states, phaseStates, phaseId))) {
-          fail('STORE_INCONSISTENT', 'task_reopen_requires_phase_reopen');
-        }
-      }
+      // u03 A15: reopening a task in an accepted/closed_unaudited phase is the user's change. The
+      // phase decision stays as recorded; Plan shows it as acceptance_stale (derived from the journal).
       const startedSuccessor = localSuccessors(plan, event.task_id).some((id) => states.get(id).status !== 'pending');
       if (startedSuccessor && event.payload.override_reason === null) fail('STORE_INCONSISTENT', 'reopen_has_started_successor');
       state.status = 'in-progress'; state.done_at = null; state.evidence = null; state.test_result = null;

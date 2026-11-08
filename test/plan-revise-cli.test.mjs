@@ -124,6 +124,20 @@ test('light CLI reports an applied revision when carried work rebind fails, then
   assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
 });
 
+test('light CLI rebinds carried in-progress work even with an invalid actor env (u03 A57)', async (context) => {
+  const { root } = await fixture(context);
+  success(root, ['todo', 'start', '--plan', 'work', '--task', 'b']);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  const revised = run(root, ['plan', 'revise', '--input', 'revise.json', '--json'], {
+    LATTICE_TODO_ACTOR_AGENT: 'invalid agent!',
+  });
+  assert.equal(revised.status, 0, revised.stderr);
+  const result = JSON.parse(revised.stdout);
+  assert.deepEqual(result.rebound_task_ids, ['b']);
+  assert.match(result.plan_version, /^rev-/);
+  assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
+});
+
 async function revisedSourceFixture(context, { ids, continuity } = {}) {
   const { root } = await fixture(context);
   await writeFile(path.join(root, 'other.json'), JSON.stringify({ ...desired(['x']), plan_key: 'other' }));

@@ -1,4 +1,4 @@
-// u12: `todo retire`はpending/blocked/doneから閉じられ（prior_status記録）、in-progressは従来どおり拒否、
+// u12: `todo retire`はpending/blocked/doneから閉じられ（prior_status記録）、in-progressもu03 A14rで閉じられる、
 // 既にretiredなら成功（unchanged:true・event追加なし）。retired from doneの先行は後続を妨げない。
 
 import assert from 'node:assert/strict';
@@ -67,14 +67,21 @@ test('retire from pending and blocked records prior_status', async (context) => 
   assert.equal(state(root, 'a').status, 'retired');
 });
 
-test('retire from in-progress is still refused', async (context) => {
+test('retire from in-progress succeeds, records prior_status and closes the start binding (u03 A14r)', async (context) => {
   const root = await fixture(context);
   success(root, ['todo', 'start', '--plan', 'work', '--task', 'c']);
-  const refused = retire(root, 'c');
-  assert.notEqual(refused.status, 0);
-  assert.equal(JSON.parse(refused.stderr).detail.reason, 'invalid_retire_transition');
-  assert.equal(state(root, 'c').status, 'in-progress');
-  assert.deepEqual(await retireEvents(root), []);
+  const retired = retire(root, 'c');
+  assert.equal(retired.status, 0, retired.stderr);
+  const result = JSON.parse(retired.stdout);
+  assert.equal(result.kind, 'retire');
+  assert.equal(result.status, 'retired');
+  assert.equal(state(root, 'c').status, 'retired');
+  assert.deepEqual((await retireEvents(root)).map(({ task_id: id, payload }) => [id, payload.prior_status, payload.reason]),
+    [['c', 'in-progress', '不要']]);
+  // 再度のretireはunchangedで、eventを足さない。
+  const again = JSON.parse(retire(root, 'c').stdout);
+  assert.equal(again.unchanged, true);
+  assert.equal((await retireEvents(root)).length, 1);
 });
 
 test('retire from done keeps the successor startable and finishable; retire from pending does not', async (context) => {

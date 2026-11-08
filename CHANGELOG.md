@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 工程表（gantt）の描画は、工程数・依存数の上限超え、依存の循環、独立性の投影のずれ、図に描けない依存、説明文の量、ページの大きさ、壊れた表示設定（presentation）で断らない。描ける所を描き、何を省いたかを図の上の注記に出す（u03 D-gantt）。注記のcodeは従来の拒否のcodeと同じ。
+- `todo start`は、守るもののない理由で止まらない（u03）。独立性記録があって工程が未宣言・失効でも`INDEPENDENCE_UNVERIFIED`で拒否せず、`advisory.guidance`で示す。記録が読めない・HEADを解決できない時は記録なしと同じ助言で通し、警告`LATTICE_START_INDEPENDENCE_UNUSABLE`を出す。壊れた`backchain.json`は`feature_context`を付けない結果（v5）と警告`LATTICE_START_BACKCHAIN_UNUSABLE`になる。readyでない工程への`--parallel-frontier`は無視する。不正な`LATTICE_TODO_ACTOR_*`は未設定と同じに扱う。
+- `todo retire`は進行中の工程も外せる。外す前に、その着手に結び付いた未受理intakeを`task_retired`として解放して記録する。
+- 受入済み・監査なしで閉じたphaseの工程も`todo reopen`できる。phaseの記録はそのまま残し、再開結果の`advisory`と`todo phase status`の`acceptance_stale`で、受入が古くなったことを示す。
+- `todo done`は`--evidence`と`--message`の両方、どちらも無し、を受ける。両方ならmessageへevidence fileの場所とdigestを添え、無しなら「証拠の指定なしで完了した。」を証拠として記録する。
+- `todo status`は件数・大きさの上限で拒否せず切り詰める。版9（`lattice.todo_status_result.v9`）になり、`truncated: [{list, total, shown}]`で切った所を示す。
+- `lattice hooks install`を入れ直しても、Latticeの項目はその位置で置き換わり、他の製品のhookの位置と並びは変わらない。これまでは自分の項目を消して末尾へ足していたため、位置でhookの承認を覚えるCodexで、他の製品の承認がずれた。
+
+- `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
+
 ## 0.83.0 — 2026-11-08
 
 Latticeが作った「止まるだけで何も守らない拒否」を外す見直し（u03）と、工程表が一部の不整合で全体ごと見えなくなる停止の修理を中心にした版。
