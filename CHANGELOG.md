@@ -5,6 +5,7 @@
 - runtimeの止まり方を、自分で抜けられる形へ直す（u03）。lifecycle / pull / start-binding のlockは完成したbytesだけを一時fileからhard linkで公開し、古い版が残した空・破損lockは10秒後に自動で回収する。hard linkの無いfilesystemでは従来の排他作成へ戻る。別schemaのlockは新しい版の持ち主とみなし、回収しない。
 - `todo retract`は`.lattice/runs/`の迷いentryで止まらず、撤回するstartに結び付いた未受理intakeを自動で解放して記録する（止まった席は再認証できれば再開してからdetach）。読めないrunは警告`LATTICE_RETRACT_RUNS_SKIPPED`で示す。
 - `run close`は未完了でも拒否しない。pull runは残りのintakeを解放して`released_task_ids`を、legacy/managed runは`abandoned_todo_ids`を記録して閉じる。managed runは残ったworkerを止め、作業木は残す。`RUN_NOT_COMPLETE`はcloseから出なくなる。
+- managed runの`run close`/`run abandon`が止めたworkerの作業木を自分で回復する。その木に入れたworkerとprocess groupが全員いなくなったと確かめられた時だけ、残った`index.lock`を判定した同じinodeに限って消す（生きている・再認証できない持ち主のlockは残す）。最後のcheckpoint以後に書かれたpathは`worker_processes_terminated.kept_worktrees`に記録し、closeもabandonも失敗させない。
 - managed runtimeは、exec後の実行imageを観測できない時もpre-exec検証で起動する（観測できて食い違う時は従来どおり止める）。
 - 後発競合のholdは影響群（affected closureと、finding pathに触れるTODO）だけに掛ける。carry-over witnessを作れないだけの無関係TODOは止めずに続け、そのorigin receiptは`hold_decided`の継続集合で受理する。
 

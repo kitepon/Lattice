@@ -25,6 +25,7 @@ import {
   buildIoEscalation, createRunSentinel, probeIoWarning, syncSentinelWatches,
 } from './runtime-io-sentinel.mjs';
 import { ensureScriptedWorktree, removeScriptedWorktrees } from './runtime-scripted-worktree.mjs';
+import { recoverKeptWorktrees } from './runtime-kept-worktree.mjs';
 import {
   buildRuntimeSeamResolution, readRuntimeFindingRecord, resolveRuntimeSeam,
   validateRuntimeSeamRequest, verifySeamSplitSuccessor,
@@ -3674,9 +3675,12 @@ export async function runManagedSupervisorDaemon({
         const stopsWorkers = controlRequest.operation === 'abandon'
           || proposed?.abandoned_todo_ids.length > 0;
         if (stopsWorkers) {
-          const reaped = await reapRunWorkerProcesses({ events }).catch(() => null);
-          if (reaped !== null && (reaped.reaped.length > 0 || reaped.skipped.length > 0
-            || reaped.unavailable.length > 0)) {
+          const reaped = await reapRunWorkerProcesses({ events }).catch(() => null)
+            ?? { reaped: [], skipped: [], unavailable: [] };
+          // R2k: a killed worker's tree loses a stale index.lock and names unobserved writes.
+          const keptWorktrees = await recoverKeptWorktrees({ events });
+          if (reaped.reaped.length > 0 || reaped.skipped.length > 0
+            || reaped.unavailable.length > 0 || keptWorktrees.length > 0) {
             await appendControl({ run_id: request.request_id, kind: 'worker_processes_terminated',
               session_nonce_digest: digestArtifact(sessionNonce), payload: {
                 reason: shutdownReason,
@@ -3684,6 +3688,7 @@ export async function runManagedSupervisorDaemon({
                 skipped_count: reaped.skipped.length,
                 ...(reaped.unavailable.length > 0
                   ? { signal_unavailable_pids: [...reaped.unavailable].sort((left, right) => left - right) } : {}),
+                ...(keptWorktrees.length > 0 ? { kept_worktrees: keptWorktrees } : {}),
               } });
           }
         }
