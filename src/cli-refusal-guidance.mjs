@@ -223,7 +223,12 @@ const REGISTRY = {
     repair: () => 'Pass a non-empty Markdown file to --test-result.',
   },
 
-  flag_missing: { repair: (detail, ctx, pointer) => `Add ${pointer} <value> to \`${run(ctx)}\`.` },
+  flag_missing: {
+    repair: (detail, ctx, pointer) => `Add ${pointer}${detail.expected?.type === 'boolean' ? '' : ' <value>'} to \`${run(ctx)}\`.`,
+  },
+  flag_takes_no_value: {
+    repair: (detail, ctx, pointer) => `${pointer} is a switch: pass it without a value to \`${run(ctx)}\`.`,
+  },
   flag_unknown: {
     repair: (detail, ctx, pointer) => `Remove ${pointer}: \`${run(ctx)}\` does not accept it; see \`${run(ctx, '--help')}\`.`,
   },
@@ -322,16 +327,15 @@ export function withRefusalGuidance({ code, message, detail }, context = {}) {
   const base = record(detail) ? detail : {};
   const rule = base.rule ?? base.violation_kind ?? base.violation_reason ?? base.reason ?? message;
   const entry = Object.hasOwn(REGISTRY, rule) ? REGISTRY[rule] : undefined;
-  const pointer = [base.pointer, base.violation_path, registeredPointer(entry, base, context), context.flagPointer]
+  const pointer = [base.pointer, base.violation_path, registeredPointer(entry, base, context)]
     .find((value) => typeof value === 'string') ?? null;
-  const resolved = pointer === '' ? '/' : pointer;
 
   const existing = typeof base.next_action === 'string' && base.next_action.length > 0 ? base.next_action : null;
   let nextAction = existing !== null && !PLACEHOLDER.test(existing) ? existing : null;
   if (nextAction === null) {
-    const repair = entry?.repair(base, context, resolved)
-      ?? (code === 'PLAN_BACKCHAIN_INVALID' ? backchainRepair(base, context, resolved) : null);
+    const repair = entry?.repair(base, context, pointer)
+      ?? (code === 'PLAN_BACKCHAIN_INVALID' ? backchainRepair(base, context, pointer) : null);
     nextAction = repair ?? existing ?? run(context, '--help');
   }
-  return { ...base, pointer: resolved, rule, next_action: nextAction };
+  return { ...base, pointer, rule, next_action: nextAction };
 }

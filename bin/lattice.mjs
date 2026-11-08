@@ -48,16 +48,13 @@ if (help !== null) {
 } else if (args[0] === 'plan' && args[1] === 'create'
   && args[2] !== '--schema' && args[2] !== '--schema-version') {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
-  const flags = matchFlagCommand(args, ['plan', 'create'], {
-    known: ['input', 'serialization-reviewed'],
-    required: ['input'],
-    booleans: ['serialization-reviewed'],
-  });
+  const spec = { known: ['input', 'serialization-reviewed'], required: ['input'],
+    booleans: ['serialization-reviewed'] };
+  const flags = matchFlagCommand(args, ['plan', 'create'], spec);
   if (flags === null) {
-    // usage違反は受け取った引数をそのまま返す。他surfaceと同じ契約で、
-    // 何を打って弾かれたのかが読める（固定文言だと --input の欠落が見えない）。
-    process.stderr.write(`lattice: unsupported command or arguments: ${args.join(' ')}\n`);
-    process.exitCode = 2;
+    // usage違反も欄（flag）・規則・直し方を返す（u05）。受け取った引数もdetailに残す。
+    const { planArgumentFailure } = await import('../src/project-cli.mjs');
+    process.exitCode = planArgumentFailure(process.stderr, args, spec);
   } else {
     const { projectCliFailure, runPlanCreate } = await import('../src/project-cli.mjs');
     try {
@@ -124,12 +121,13 @@ if (help !== null) {
   }
 } else if (args[0] === 'plan' && args[1] === 'revise') {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
-  const flags = matchFlagCommand(args, ['plan', 'revise'], {
+  const spec = {
     known: ['input', 'dry-run', 'json'], required: ['input'], booleans: ['dry-run', 'json'],
-  });
+  };
+  const flags = matchFlagCommand(args, ['plan', 'revise'], spec);
   if (flags === null || flags.json !== true) {
-    process.stderr.write(`lattice: unsupported command or arguments: ${args.join(' ')}\n`);
-    process.exitCode = 2;
+    const { planArgumentFailure } = await import('../src/project-cli.mjs');
+    process.exitCode = planArgumentFailure(process.stderr, args, spec);
   } else {
     const { runPlanRevise } = await import('../src/plan-revise.mjs');
     const { projectCliFailure } = await import('../src/project-cli.mjs');
@@ -152,13 +150,14 @@ if (help !== null) {
   }
 } else if (args[0] === 'plan' && args[1] === 'backchain') {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
-  const flags = matchFlagCommand(args, ['plan', 'backchain'], {
+  const spec = {
     known: ['input', 'dry-run', 'json'], required: ['input'],
     booleans: ['dry-run', 'json'],
-  });
+  };
+  const flags = matchFlagCommand(args, ['plan', 'backchain'], spec);
   if (flags === null || flags.json !== true) {
-    process.stderr.write(`lattice: unsupported command or arguments: ${args.join(' ')}\n`);
-    process.exitCode = 2;
+    const { planArgumentFailure } = await import('../src/project-cli.mjs');
+    process.exitCode = planArgumentFailure(process.stderr, args, spec);
   } else {
     const { runPlanBackchain } = await import('../src/plan-backchain.mjs');
     const { projectCliFailure } = await import('../src/project-cli.mjs');

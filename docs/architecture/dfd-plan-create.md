@@ -117,8 +117,8 @@ todo command that shares the two printers) states, in one `lattice.cli_error.v2`
 
 | key | value |
 |---|---|
-| `pointer` | Where to change: the existing pointer; else `violation_path` (`''` is `/`); else the input pointer registered for the rule; `--<flag>` for an argument refusal; `null` when the refusal is about current store/plan state rather than an input field. Always present. |
-| `rule` | Which rule refused: `violation_kind`, else `violation_reason`, else `reason`, else `message`. |
+| `pointer` | Where to change: the existing pointer; else `violation_path` (`''` is the RFC 6901 document root and stays `''`); else the input pointer registered for the rule; the failing `--<flag>` for an argument refusal of `todo done` and `plan create|revise|backchain`; `null` otherwise (a store/plan state refusal, or another todo command's argument refusal, whose `next_action` is its `--help`). Always present. |
+| `rule` | Which rule refused: an existing `rule`, else `violation_kind`, else `violation_reason`, else `reason`, else `message`. |
 | `next_action` | How to fix: one concrete sentence naming the value, order, key, flag or state step (built from the rule and the existing `expected`/`actual`/`cause`/`task_id` values), or a runnable `lattice ...` command. An existing concrete `next_action` is kept; a placeholder token (`^[a-z_]+$`, e.g. `correct_the_reported_pointer_then_rerun_plan_create`) is replaced by the registered repair. |
 
 Flow: refusal site (Plan or Store, unchanged) → `todo-cli` `typedFailure` /
@@ -128,8 +128,13 @@ Plan-owned; `context` = command and the `--plan`/`--task` values the CLI
 parsed) → stderr. Other detail keys, codes and exit codes are unchanged. A rule
 without a registered repair keeps its existing `next_action`, else gets the
 command's `--help`. `todo-cli` keeps a TypeError's `detail` on
-`CONTRACT_VIOLATION` (it was dropped), and `todo done` argument refusals name
-the failing flag. Store refusal sites are not edited; their guidance is derived
+`CONTRACT_VIOLATION` (it was dropped). `todo done` argument refusals name the
+failing flag, and `plan create|revise|backchain` argument refusals (missing
+`--input`/`--json`, unknown flag, switch given a value) print the same
+`lattice.cli_error.v2` (`INVALID_ARGUMENTS`, `plan_arguments_invalid`, the received
+`arguments`) through `project-cli` `planArgumentFailure` instead of the plain usage
+line; exit code 2 is unchanged. Both use `explainFlagCommand` with the command's
+own flag spec. Store refusal sites are not edited; their guidance is derived
 at the printer from the keys they already carry. Bridge, runtime and sensor
 printers are outside this flow.
 

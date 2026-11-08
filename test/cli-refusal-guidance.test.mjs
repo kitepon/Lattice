@@ -71,7 +71,8 @@ test('generic kinds name the accepted values, format or digest', () => {
 
 test('a path from violation_path becomes the pointer, and the empty path is /', () => {
   assert.equal(guide({ violation_kind: 'schema_invalid', violation_path: '/tasks/0' }).pointer, '/tasks/0');
-  assert.equal(guide({ violation_kind: 'schema_invalid', violation_path: '' }).pointer, '/');
+  // RFC 6901: '' is the document root and stays ''.
+  assert.equal(guide({ violation_kind: 'schema_invalid', violation_path: '' }).pointer, '');
 });
 
 test('a placeholder next_action is replaced; a concrete one is kept', () => {
@@ -239,4 +240,29 @@ test('todo start on an unknown plan points at --plan', async (context) => {
   assert.equal(detail.rule, 'plan_not_active');
   assert.equal(detail.pointer, '--plan');
   assert.match(detail.next_action, /lattice todo status --json/u);
+});
+
+test('plan create/revise/backchain argument refusals name the flag, rule and repair (exit 2)', async (context) => {
+  const root = await workspace(context);
+  const run = (args) => {
+    const result = spawnSync(process.execPath, [CLI, ...args], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0' },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    const payload = JSON.parse(result.stderr.trim());
+    assert.equal(payload.schema, 'lattice.cli_error.v2');
+    assert.equal(payload.code, 'INVALID_ARGUMENTS');
+    return payload.detail;
+  };
+  const missingInput = run(['plan', 'create']);
+  assert.equal(missingInput.pointer, '--input');
+  assert.equal(missingInput.rule, 'flag_missing');
+  assert.match(missingInput.next_action, /Add --input <value> to `lattice plan create`/u);
+  const unknown = run(['plan', 'revise', '--input', 'x.json', '--bogus', '--json']);
+  assert.equal(unknown.pointer, '--bogus');
+  assert.equal(unknown.rule, 'flag_unknown');
+  const missingJson = run(['plan', 'backchain', '--input', 'x.json']);
+  assert.equal(missingJson.pointer, '--json');
+  assert.equal(missingJson.rule, 'flag_missing');
+  assert.match(missingJson.next_action, /Add --json to `lattice plan backchain`/u);
 });

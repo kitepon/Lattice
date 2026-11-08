@@ -284,6 +284,6 @@ export function explainFlagCommand(argv, head, { known, required = [], booleans 
   const missing = required.find((key) => typeof flags[key] !== 'string' || flags[key].length === 0);
   if (missing !== undefined) return { pointer: `--${missing}`, rule: 'flag_missing' };
   const valued = booleans.find((key) => flags[key] !== undefined && flags[key] !== true);
-  if (valued !== undefined) return { pointer: `--${valued}`, rule: 'flag_unknown' };
+  if (valued !== undefined) return { pointer: `--${valued}`, rule: 'flag_takes_no_value' };
   return null;
 }

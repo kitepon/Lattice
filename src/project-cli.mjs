@@ -41,7 +41,7 @@ import {
 import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
-import { readAuthoringJsonFile } from './todo-authoring-input.mjs';
+import { explainFlagCommand, readAuthoringJsonFile } from './todo-authoring-input.mjs';
 import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
 const STORE_REF = '.lattice/todo';
@@ -871,4 +871,23 @@ export function projectCliFailure(stderr, error, context = {}) {
   };
   stderr.write(`${JSON.stringify(payload)}\n`);
   return 1;
+}
+
+/**
+ * `plan create|revise|backchain`の引数違反（exit 2）。usage文1行ではなく、直すflagと規則を
+ * cli_error.v2で返す（u05）。`--json`必須のcommandで欠けていればそれを名指す。
+ */
+export function planArgumentFailure(stderr, args, spec) {
+  const head = args.slice(0, 2);
+  const explained = explainFlagCommand(args, head, spec)
+    ?? (spec.booleans?.includes('json') ? { pointer: '--json', rule: 'flag_missing', expected: { type: 'boolean' } } : {});
+  const message = 'plan_arguments_invalid';
+  const payload = {
+    schema: 'lattice.cli_error.v2', code: 'INVALID_ARGUMENTS', message,
+    detail: withRefusalGuidance({ code: 'INVALID_ARGUMENTS', message,
+      detail: { command: head.join(' '), arguments: args, ...explained } },
+    { family: 'plan', command: head[1] }),
+  };
+  stderr.write(`${JSON.stringify(payload)}\n`);
+  return 2;
 }
