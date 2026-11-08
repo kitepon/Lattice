@@ -9,6 +9,7 @@ import { BRIDGE_CONFIG_SCHEMA, configureBridge, readBridgeConfig, restoreBridgeC
 import { recoverConfiguredBridge, runBridgeCli } from '../src/bridge-cli.mjs';
 import { installBridgeDetachedSupervisor } from '../src/bridge-detached-supervisor.mjs';
 import { writeBridgeDaemonDescriptor } from '../src/bridge-daemon.mjs';
+import { freePort } from './helpers/free-port.mjs';
 
 function output(isTTY = false) {
   let value = '';
@@ -393,7 +394,8 @@ test('reconfigureのLaunchAgent起動失敗は旧config・旧agent・旧daemon�
 test('対話setup wizardは安全側confirmからlisten/port/upstreamを収集して実行する', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-bridge-wizard-'));
   context.after(() => rm(root, { recursive: true, force: true }));
-  const answers = [true, '127.0.0.1', 'custom', '58750', 'dashboard', 'lattice.kitepon.dev'];
+  const wizardPort = await freePort();
+  const answers = [true, '127.0.0.1', 'custom', String(wizardPort), 'dashboard', 'lattice.kitepon.dev'];
   const prompts = { isCancel: () => false,
     confirm: async () => answers.shift(), text: async () => answers.shift(), select: async () => answers.shift() };
   const stdout = output(true); const stderr = output();
@@ -401,12 +403,12 @@ test('対話setup wizardは安全側confirmからlisten/port/upstreamを収集�
     stderr: stderr.stream, env: { LATTICE_CONFIG_DIR: root }, prompts,
     daemon: { ensure: async () => {}, stop: async () => {} }, launchAgent: launchAgentDouble() });
   assert.equal(code, 0, stderr.read());
-  assert.match(stdout.read(), /127\.0\.0\.1:58750/u);
+  assert.match(stdout.read(), new RegExp(`127\\.0\\.0\\.1:${wizardPort}`, 'u'));
   const statusOut = output();
   await runBridgeCli({ argv: ['status', '--json'], stdout: statusOut.stream, stderr: output().stream,
     env: { LATTICE_CONFIG_DIR: root } });
   const status = JSON.parse(statusOut.read());
-  assert.equal(status.listen.port, 58_750);
+  assert.equal(status.listen.port, wizardPort);
   assert.deepEqual(status.allowed_hosts, ['127.0.0.1', 'lattice.kitepon.dev']);
 });
 

@@ -39,12 +39,16 @@ import {
   removeTodoDashboardProject,
 } from './todo-dashboard-registry.mjs';
 import { readOrCreateTerminalIdSync, terminalPublicLabel } from './terminal-identity.mjs';
-import { readProjectExternalPane, resolveProjectIdentity } from './project-identity.mjs';
+import { readProjectExternalPane, readRegisteredProjectId, resolveProjectIdentity } from './project-identity.mjs';
 import { layoutTodoGantt } from './todo-gantt-layout.mjs';
 import { TODO_GANTT_SCOPES } from './todo-gantt-scope.mjs';
 import { loadTodoGanttPresentation } from './todo-gantt-presentation.mjs';
 import { loadTodoStructurePresentation } from './todo-structure-presentation.mjs';
 import { startTodoGanttLiveServer } from './todo-gantt-live.mjs';
+import {
+  createTodoGanttDisplayReader, degradedBannerHtml, displayHeadDigest, displayResultBinding,
+  emptyStateHtml, projectUnverifiedStore,
+} from './todo-gantt-display.mjs';
 import {
   renderTodoGanttHtml,
   TODO_GANTT_RENDERER_VERSION,
@@ -3512,20 +3516,25 @@ async function seamProposalsForGantt({ repoRoot, store }) {
 
 export async function renderTodoGanttForProject({
   repoRoot, stable = false, displayName = null, env = process.env, readModel = null,
-  scope = DEFAULT_GANTT_SCOPE,
+  scope = DEFAULT_GANTT_SCOPE, degraded = false,
 }) {
   const store = readModel
     ?? (stable ? await readTodoStoreStable({ repoRoot }) : await readTodoStore({ repoRoot }));
   const identity = displayName === null
     ? await resolveProjectIdentity({ repoRoot, projectId: store.project_id, env })
     : { displayName };
-  const presentation = await loadTodoGanttPresentation({ repoRoot, readModel: store });
-  const [independence, seamProposals, notes, structures] = await Promise.all([
-    independenceForGantt({ repoRoot, store }),
-    seamProposalsForGantt({ repoRoot, store }),
-    notesForGantt({ repoRoot, store }),
-    loadTodoStructurePresentation({ repoRoot, readModel: store }),
-  ]);
+  // degraded (display of an unverified/last_verified store): every current-file overlay is
+  // omitted, since computing one can reach strict Store validation.
+  const presentation = degraded ? null
+    : await loadTodoGanttPresentation({ repoRoot, readModel: store });
+  const [independence, seamProposals, notes, structures] = degraded
+    ? [null, null, { contexts: null, warnings: [], headBindings: [] }, null]
+    : await Promise.all([
+      independenceForGantt({ repoRoot, store }),
+      seamProposalsForGantt({ repoRoot, store }),
+      notesForGantt({ repoRoot, store }),
+      loadTodoStructurePresentation({ repoRoot, readModel: store }),
+    ]);
   const layout = layoutTodoGantt(store, { scope, independence, seamProposals });
   // When the diagram hides history, the page also carries the full diagram so
   // the reader can bring it back in place. Nothing is hidden under `all`.
@@ -3533,8 +3542,9 @@ export async function renderTodoGanttForProject({
     ? null : layoutTodoGantt(store, {
       scope: 'all', independence, seamProposals,
     });
-  const narrative = await loadNarratives(store, repoRoot);
-  const anchorOutcomes = verifyNarrativeAnchors({
+  const narrative = degraded ? { narratives: [], bindings: [] }
+    : await loadNarratives(store, repoRoot);
+  const anchorOutcomes = degraded ? [] : verifyNarrativeAnchors({
     readModel: store,
     narratives: narrative.narratives,
   });
@@ -3549,16 +3559,16 @@ export async function renderTodoGanttForProject({
   const memberBindings = store.members.map((member) => ({
     plan_key: member.descriptor.plan_key,
     topology_digest: member.plan.topology_digest,
-    journal_head_digest: member.journal.events.at(-1).event_digest,
+    journal_head_digest: member.journal.events.at(-1)?.event_digest ?? null,
   }));
   const metadata = {
     manifest_digest: store.manifest.manifest_digest,
     member_bindings: memberBindings,
     narrative_bindings_digest: digestTodoArtifact(narrativeBindings),
-    presentation_digest: presentation.presentation_digest,
+    presentation_digest: presentation?.presentation_digest ?? null,
     layout_digest: digestTodoArtifact(layout),
     note_bindings_digest: digestTodoArtifact(notes.headBindings),
-    structure_projection_digest: structures.projection_digest,
+    structure_projection_digest: structures?.projection_digest ?? null,
     renderer_version: TODO_GANTT_RENDERER_VERSION,
     project_display_name: identity.displayName,
     folded_task_count: layout.scope.folded_task_count,
@@ -3578,32 +3588,101 @@ export async function renderTodoGanttForProject({
   return { store, metadata, memberBindings, rendered };
 }
 
+/**
+ * The two serving paths (public daemon, local live gantt) render the Store's typed
+ * display result: a read-only view refuses nothing, so an inconsistent store is shown
+ * as a banner state, never a 500. One-shot CLI renders keep their strict reads.
+ */
+export function createTodoGanttDisplayServing({
+  repoRoot, projectId, scope = DEFAULT_GANTT_SCOPE, env = process.env, reader = null, ...readers
+}) {
+  reader ??= createTodoGanttDisplayReader({ repoRoot, ...readers });
+  return {
+    render: async ({ displayName }) => {
+      const result = await reader.read();
+      const { html, banner_html: bannerHtml = null } = await renderGanttDisplayResult({
+        repoRoot, result, displayName, scope, env,
+      });
+      return { html, banner_html: bannerHtml, head_digest: await ganttDisplayHead({ repoRoot, result }),
+        // 配信のたびに読む。外部ペインを差した／外した側にdaemon再起動を要求しない。
+        external_pane: result.state === 'unavailable' ? null
+          : await readProjectExternalPane({ repoRoot, projectId }) };
+    },
+    readHead: async () => ganttDisplayHead({ repoRoot, result: await reader.read() }),
+  };
+}
+
+async function ganttDisplayHead({ repoRoot, result }) {
+  return displayHeadDigest(result, result.state === 'verified'
+    ? await ganttLiveHeadDigest({ repoRoot, store: result.store }) : null);
+}
+
+async function renderGanttDisplayResult({ repoRoot, result, displayName, scope, env }) {
+  const render = async (store, state, dropped) => {
+    const { rendered } = await renderTodoGanttForProject({
+      repoRoot, stable: true, displayName, scope, env, readModel: store, degraded: true,
+    });
+    return { html: rendered.html, banner_html: degradedBannerHtml({
+      state, verifiedAt: result.verified_at, inconsistency: result.inconsistency, dropped }) };
+  };
+  const storeDropped = Array.isArray(result.dropped_members) ? result.dropped_members : [];
+  switch (result.state) {
+    case 'verified': {
+      const { rendered } = await renderTodoGanttForProject({
+        repoRoot, stable: true, displayName, scope, env, readModel: result.store,
+      });
+      return { html: rendered.html };
+    }
+    case 'unverified': {
+      const { store, dropped } = projectUnverifiedStore(result.store);
+      const all = [...storeDropped, ...dropped];
+      if (store.members.length === 0) {
+        return { html: emptyStateHtml({ inconsistency: result.inconsistency, dropped: all }) };
+      }
+      return render(store, 'unverified', all);
+    }
+    case 'last_verified': return render(result.store, 'last_verified', storeDropped);
+    case 'unavailable':
+      return { html: emptyStateHtml({ inconsistency: result.inconsistency, dropped: storeDropped }) };
+    default:
+      throw new TypeError(`unknown Store display state: ${result.state}`);
+  }
+}
+
+// Reached only when the display read carries no project id (unavailable) and the repository
+// registered none: the empty state is still served, under this fixed route id.
+const UNREGISTERED_PROJECT_ID = 'unregistered-project';
+
+/**
+ * Start the local live gantt from the display read, so an inconsistent store does not stop it
+ * from starting (the same stop the typed states remove from the page itself).
+ */
+export async function startTodoGanttDisplayLive({
+  repoRoot, port = 0, env = process.env, scope = DEFAULT_GANTT_SCOPE, onShutdown = null, ...readers
+}) {
+  const reader = createTodoGanttDisplayReader({ repoRoot, ...readers });
+  const { projectId: carried, planKeys } = displayResultBinding(await reader.read());
+  const projectId = carried ?? await readRegisteredProjectId({ repoRoot }) ?? UNREGISTERED_PROJECT_ID;
+  let identity = { displayName: projectId };
+  try { identity = await resolveProjectIdentity({ repoRoot, projectId, env }); } catch (error) {
+    if (carried !== null) throw error; // a readable store keeps the strict identity contract
+  }
+  const live = await startTodoGanttLiveServer({
+    projectId, displayName: identity.displayName, port, onShutdown,
+    ...createTodoGanttDisplayServing({ repoRoot, projectId, scope, env, reader }),
+  });
+  return { live, planKeys };
+}
+
 async function serveGantt({ repoRoot, port, stdout, env, scope = DEFAULT_GANTT_SCOPE }) {
-  const initialStore = await readTodoStoreStable({ repoRoot });
-  const identity = await resolveProjectIdentity({ repoRoot, projectId: initialStore.project_id, env });
   let stop;
   const stopped = new Promise((resolve) => { stop = resolve; });
-  const live = await startTodoGanttLiveServer({
-    projectId: initialStore.project_id,
-    displayName: identity.displayName,
-    port,
-    render: async () => {
-      const store = await readTodoStoreStable({ repoRoot });
-      const { rendered } = await renderTodoGanttForProject({
-        repoRoot, stable: true, displayName: identity.displayName, scope, readModel: store,
-      });
-      return { html: rendered.html, head_digest: await ganttLiveHeadDigest({ repoRoot, store }),
-        // ローカルの動的dashboardも公開daemonと同じ口を通す（毎描画で読むので差し外しが即反映される）。
-        external_pane: await readProjectExternalPane({ repoRoot, projectId: store.project_id }) };
-    },
-    readHead: async () => ganttLiveHeadDigest({
-      repoRoot, store: await readTodoStoreStable({ repoRoot }),
-    }),
-    onShutdown: process.platform === 'win32' ? stop : null,
+  const { live, planKeys } = await startTodoGanttDisplayLive({
+    repoRoot, port, env, scope, onShutdown: process.platform === 'win32' ? stop : null,
   });
   const result = { schema: 'lattice.todo_gantt_live_result.v3', project_id: live.projectId,
     resource_scope: 'project', selection_scope: scope,
-    included_plan_keys: initialStore.members.map(({ descriptor }) => descriptor.plan_key).sort(),
+    included_plan_keys: planKeys,
     media_type: 'text/html; charset=utf-8', dynamic: true,
     host: live.host, port: live.port, project_path: live.projectPath,
     url: live.url, events_url: live.eventsUrl };

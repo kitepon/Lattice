@@ -2,7 +2,16 @@
 
 ## Unreleased
 
+## 0.82.0 — 2026-11-08
+
+昨夜（11/7 23:26）計画の改訂で工程記録が整合しなくなり、公開の工程表が500になった件の修理を中心に、席へ早く配るための版。
+
+- 計画の改訂（`plan revise`）は、望む全体像と、旧taskごとの継続方針（carry / reset / retire）だけで行える。先行版・版digest・移行は機械が導き、証拠と旧版は残す。
+- 改訂で、計画をまたぐ依存（journalに記録した接続）が古い版のtopologyに結ばれたまま残る不具合を直す。Storeは改訂の公開前に、引き継げない接続を断る（`binding_stale`を公開後に残さない）。既に公開済みの後継版の接続を結び直す公開API（`rebindTodoCrossPlanDependencies`）と、Planの引き継ぎ判定（`validateBindingCarry`、`src/plan-revise.mjs`）を加える。公開後の読み取りが失敗しても、改訂が確定したことを報告する。
+- 工程の注記（note）の全履歴を、求めた時だけ返す（`includeHistory:true`）。既定の返り値は変えない。
+- Windowsで、使い回されたPIDの別プロセスを、書き込みロックの持ち主と取り違えて回復しない不具合を直す。開始時刻はハンドル無しで読み、存在の確認を先に行う。
 - Linuxほか（launchdもStartup folderも無いOS）のbridge常駐を製品に入れる。`bridge setup/reconfigure`は`<席のroot>/bridge-linux/`にsupervisorのdescriptorとpidfileを置き、`lattice-bridge-supervisor.mjs`を切り離して起こす。`todo dashboard ensure`の配送回復がmacOSのlaunchctlを探して非ゼロで終わる停止を無くす。起動・ログイン時の自動起動は持たない（箱の再起動後はsetupが`bridge reconfigure`を再実行する）。
+- 試験とCIだけの変更: sensor試験の常駐プロセスの本人確認付き片付け、CIの全手順実行、PRの古いCIの自動取り消し、macOS CIの工場Node。
 
 ## 0.81.0 — 2026-11-07
 

@@ -128,3 +128,17 @@ export async function readProjectExternalPane({ repoRoot, projectId }) {
   if (document === null || document.external_pane === undefined) return null;
   return externalPane(document.external_pane);
 }
+
+/**
+ * The project id a repository registered in its identity file, or null. A route hint for a
+ * serving process that cannot read the Store; the file's own validity is judged elsewhere.
+ */
+export async function readRegisteredProjectId({ repoRoot }) {
+  try {
+    const ref = path.join(await realpath(repoRoot), PROJECT_IDENTITY_REF);
+    const stats = await lstat(ref);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_BYTES) return null;
+    const id = JSON.parse(await readFile(ref, 'utf8')).project_id;
+    return typeof id === 'string' ? id : null;
+  } catch { return null; }
+}
