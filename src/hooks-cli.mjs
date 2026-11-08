@@ -446,6 +446,34 @@ function stripIdentity(value, identities, host) {
   return removed;
 }
 
+// Install: Lattice's own entry is replaced where it stands; other products' entries keep their
+// positions (Codex [hooks.state] keys trusted_hash by position). Only a first install appends.
+function replaceIdentity(value, identities, host, entry) {
+  let removed = 0;
+  let placed = false;
+  const name = eventName(host);
+  const list = hooksList(value, host);
+  const owned = (item) => isCommandHandler(item, host) && commandIs(item.command, identities);
+  const take = () => {
+    removed += 1;
+    if (placed) return [];
+    placed = true;
+    return [entry];
+  };
+  if (isFlatHost(host)) {
+    value.hooks[name] = list.flatMap((item) => (owned(item) ? take() : [item]));
+    if (!placed) value.hooks[name].push(entry);
+    return removed;
+  }
+  value.hooks[name] = list.flatMap((wrapper) => {
+    if (!wrapper || !Array.isArray(wrapper.hooks)) return [wrapper];
+    const handlers = wrapper.hooks.flatMap((item) => (owned(item) ? take() : [item]));
+    return handlers.length > 0 ? [{ ...wrapper, hooks: handlers }] : [];
+  });
+  if (!placed) value.hooks[name].push({ hooks: [entry] });
+  return removed;
+}
+
 function hostHandler(host, command) {
   if (host === 'claude') return { type: 'command', command, timeout: 5 };
   if (host === 'cursor') return { command, timeout: 5 };
@@ -683,12 +711,8 @@ async function mutate(host, env, stdout, uninstall, source, platform, testHooks)
     const identities = [current, ...committedIdentities(receipt)];
     const next = structuredClone(prestate.value);
     if (host === 'cursor' && next.version === undefined) next.version = 1;
-    const removed = stripIdentity(next, identities, host);
-    if (!uninstall) {
-      const entry = hostHandler(host, shell(current));
-      if (isFlatHost(host)) hooksList(next, host).push(entry);
-      else hooksList(next, host).push({ hooks: [entry] });
-    }
+    const removed = uninstall ? stripIdentity(next, identities, host)
+      : replaceIdentity(next, identities, host, hostHandler(host, shell(current)));
 
     const currentHandlers = allHandlers(prestate.value, host).filter((item) => (
       isCommandHandler(item, host) && commandIs(item.command, identities)
