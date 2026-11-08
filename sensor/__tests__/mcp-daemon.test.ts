@@ -39,11 +39,12 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { LatticeSensor } from '../src';
+import { stopDaemonAt } from '../src/mcp/daemon-registry';
 import { getDaemonSocketPath } from '../src/mcp/daemon-paths';
 import { LatticeSensorPackageVersion } from '../src/mcp/version';
 import { once } from 'events';
 import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
-import { recordSpawns, removeSpawnLog, settleLosingCandidates, spawnLogFor } from './daemon-candidates';
+import { recordSpawns, removeSpawnLog, settleLosingCandidates, readCandidateSnapshot } from './daemon-candidates';
 
 const BIN = path.resolve(__dirname, '../dist/bin/lattice-sensor.js');
 
@@ -211,16 +212,16 @@ describe('Shared MCP daemon (issue #411)', () => {
     // Racing launchers may each have spawned a daemon candidate, and a loser
     // can still be starting on a loaded machine. Stopping the winner first
     // would let it take over the fixture being removed (#1773).
-    await settleLosingCandidates(tempDir, () => readLockPid(realRoot));
-    // The daemon is detached (not a tracked child) — reap it explicitly via the
-    // pid it recorded, so a test can't leak a background daemon. Guard against
-    // our own pid: the version-mismatch test plants `pid: process.pid` in the
-    // lockfile, and we must never SIGKILL the vitest worker.
+    const deadline = Date.now() + 30_000;
+    await settleLosingCandidates(tempDir, () => readLockPid(realRoot), deadline - Date.now());
     const daemonPid = readLockPid(realRoot);
-    if (daemonPid && daemonPid !== process.pid && isAlive(daemonPid)) {
-      try { process.kill(daemonPid, 'SIGKILL'); } catch { /* race */ }
-      await waitProcessExit(daemonPid, 5000);
+    // Tests can plant this worker's PID; it is never a daemon stop target.
+    if (daemonPid && daemonPid !== process.pid) {
+      const result = await stopDaemonAt(realRoot, { preserveUnverified: true });
+      expect(result.outcome).not.toBe('unverified');
+      expect(result.outcome).not.toBe('still-running');
     }
+    await settleLosingCandidates(tempDir, () => null, deadline - Date.now());
     await new Promise((r) => setTimeout(r, 50));
     servers.length = 0;
     removeSpawnLog(tempDir);
@@ -365,16 +366,8 @@ describe('Shared MCP daemon (issue #411)', () => {
     } catch (error) {
       // Teardown removes these owned fixtures. Keep bounded causal evidence in
       // the failing result; do not turn an attach timeout into a passing retry.
-      let candidates: { status: 'observed'; items: { pid: number; alive: boolean }[] }
-        | { status: 'missing' | 'unreadable'; errorCode: string };
-      try {
-        const pids = fs.readFileSync(spawnLogFor(tempDir), 'utf8').split('\n')
-          .map(Number).filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(-16);
-        candidates = { status: 'observed', items: pids.map((pid) => ({ pid, alive: isAlive(pid) })) };
-      } catch (readError) {
-        const errorCode = (readError as NodeJS.ErrnoException).code ?? 'UNKNOWN';
-        candidates = { status: errorCode === 'ENOENT' ? 'missing' : 'unreadable', errorCode };
-      }
+      const snapshot = await readCandidateSnapshot(tempDir);
+      const candidates = { ...snapshot, total: snapshot.items.length, items: snapshot.items.slice(-16) };
       const evidence = {
         lockPid: readLockPid(realRoot),
         candidates,
