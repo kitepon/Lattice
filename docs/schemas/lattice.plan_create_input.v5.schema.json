@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_create_input.v5.schema.json",
   "title": "lattice.plan_create_input.v5",
-  "description": "Canonical initial authoring input for a phase-audited plan. Every task requires a design memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every task preserves an owner-supplied work specification without adding a product purpose. あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください v5 adds the per-task authored `done_condition`: plain text (or null when the author states none) that Lattice records and shows but never evaluates, never assigns and never records as done. Builds lattice.todo_plan.v8. The author writes intent: ids, titles, phases and edges (see `lattice plan create --template --json`). Every key whose value is constant or null may be omitted and the machine fills it: schema (this version), actor (the seat actor), recorded_at (the current time; any ISO-8601 timestamp is normalised to UTC milliseconds), input_digest (recomputed), tasks[].design_memo (NO_PLAN), tasks[].lane (main), tasks[].narrative_ref, narrative_anchor, compile_binding, parent_task_id and done_condition (null), phases[].gate_policy (heavy), phases[].predecessor_phase_ids ([]), phases[].required_evidence_slots ([\"acceptance\"]), hard_dependencies, joins and phase_accept_dependencies ([]), and project_id/plan_key of an edge reference (this input's own). Every list is sorted into canonical order. A refusal lists every problem at once in detail.problems. Edge direction: from is the prerequisite; to starts after from is done.",
+  "description": "Canonical initial authoring input for a phase-audited plan. Every task requires a design memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every task preserves an owner-supplied work specification without adding a product purpose. あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください v5 adds the per-task authored `done_condition`: plain text (or null when the author states none) that Lattice records and shows but never evaluates, never assigns and never records as done. Builds lattice.todo_plan.v8. The author writes intent: ids, titles, phases and edges (see `lattice plan create --template --json`). Every key whose value is constant or null may be omitted and the machine fills it: schema (this version), actor (the seat actor), recorded_at (the current time; an ISO-8601 date-time with an explicit zone is normalised to UTC milliseconds), input_digest (recomputed), tasks[].design_memo (NO_PLAN), tasks[].lane (main), tasks[].narrative_ref, narrative_anchor, compile_binding, parent_task_id and done_condition (null), phases[].gate_policy (heavy), phases[].predecessor_phase_ids ([]), phases[].required_evidence_slots ([\"acceptance\"]), hard_dependencies, joins and phase_accept_dependencies ([]), and project_id/plan_key of an edge reference (this input's own). Every list is sorted into canonical order. A refusal lists every problem at once in detail.problems. Edge direction: from is the prerequisite; to starts after from is done.",
   "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, sorted identifiers and edges, unique ids, combined task/phase acyclicity, byte bounds, non-empty design_memo (omitted, null or blank becomes NO_PLAN), and input_digest (recomputed). v5 additionally accepts hard_dependencies, joins, each joins[].after, phase_accept_dependencies, phases, phases[].predecessor_phase_ids and phases[].required_evidence_slots in any order or with exact duplicates: they are sorted into canonical order and de-duplicated before validation. tasks are sorted by task_id. Entries with the same key but different content are still refused.",
   "type": "object",
   "additionalProperties": false,
@@ -16,7 +16,7 @@
   "properties": {
     "schema": {
       "const": "lattice.plan_create_input.v5",
-      "description": "Omitted or null: lattice.plan_create_input.v5."
+      "description": "Omitted: lattice.plan_create_input.v5."
     },
     "project_id": {
       "$ref": "#/$defs/identifier"
@@ -33,7 +33,7 @@
     "recorded_at": {
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T",
-      "description": "Any ISO-8601 timestamp starting YYYY-MM-DDT that Date parses; the machine normalises it to UTC milliseconds (Z). Omitted or null: the current time."
+      "description": "Any ISO-8601 date-time with an explicit zone (Z or ±hh:mm) whose written fields are a real date and time; the machine normalises it to UTC milliseconds (Z). Omitted: the current time."
     },
     "tasks": {
       "type": "array",
@@ -59,7 +59,7 @@
       "items": {
         "$ref": "#/$defs/edge"
       },
-      "description": "Omitted or null: []. 入力順は問わず、機械が正準順（from、toを(project_id, plan_key, task_id)の辞書順）へ整列し完全一致の重複を除く。 辺の向き: from=前提、to=fromが終わってから始まる。同じplanの辺ならfrom/toはtask_idだけでよい。"
+      "description": "Omitted: []. 入力順は問わず、機械が正準順（from、toを(project_id, plan_key, task_id)の辞書順）へ整列し完全一致の重複を除く。 辺の向き: from=前提、to=fromが終わってから始まる。同じplanの辺ならfrom/toはtask_idだけでよい。"
     },
     "joins": {
       "type": "array",
@@ -67,7 +67,7 @@
       "items": {
         "$ref": "#/$defs/join"
       },
-      "description": "Omitted or null: []. 入力順は問わず、機械がidの昇順へ整列する。同じidで内容が違うjoinは拒否する。各afterも同様に整列し重複を除く。"
+      "description": "Omitted: []. 入力順は問わず、機械がidの昇順へ整列する。同じidで内容が違うjoinは拒否する。各afterも同様に整列し重複を除く。"
     },
     "phase_accept_dependencies": {
       "type": "array",
@@ -75,7 +75,7 @@
       "items": {
         "$ref": "#/$defs/phaseAcceptDependency"
       },
-      "description": "Omitted or null: []. 入力順は問わず、機械が正準順へ整列し完全一致の重複を除く。"
+      "description": "Omitted: []. 入力順は問わず、機械が正準順へ整列し完全一致の重複を除く。"
     },
     "input_digest": {
       "$ref": "#/$defs/authoringDigest"
@@ -161,7 +161,7 @@
         },
         "lane": {
           "$ref": "#/$defs/identifier",
-          "description": "Omitted or null: main."
+          "description": "Omitted: main."
         },
         "design_memo": {
           "type": "string",
@@ -228,7 +228,7 @@
         },
         "gate_policy": {
           "$ref": "#/$defs/identifier",
-          "description": "Omitted or null: heavy. Phase gateの呼び名。製品はこの値で分岐しないので統制語彙は無く、identifierなら何でもよい。表示に使う。慣用は 'heavy'（重監査）と 'terminal-audit'（暗黙の終端Phaseが使う）。"
+          "description": "Omitted: heavy. Phase gateの呼び名。製品はこの値で分岐しないので統制語彙は無く、identifierなら何でもよい。表示に使う。慣用は 'heavy'（重監査）と 'terminal-audit'（暗黙の終端Phaseが使う）。"
         },
         "predecessor_phase_ids": {
           "type": "array",
@@ -236,7 +236,7 @@
             "$ref": "#/$defs/identifier"
           },
           "uniqueItems": true,
-          "description": "Omitted or null: []. 先行Phase。入力順は問わず、機械がidentifierの昇順へ整列し重複を除く。"
+          "description": "Omitted: []. 先行Phase。入力順は問わず、機械がidentifierの昇順へ整列し重複を除く。"
         },
         "required_evidence_slots": {
           "type": "array",

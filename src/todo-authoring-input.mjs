@@ -190,7 +190,23 @@ export const DEFAULT_EVIDENCE_SLOT = 'acceptance';
 export const DEFAULT_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v5';
 const DEFAULT_LANE = 'main';
 const DEFAULT_GATE_POLICY = 'heavy';
-const ISO_DATE_PREFIX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/u;
+// 時差を明示したISO時刻だけを読む。時差の無い文字列はhostの現地時刻になり、hostごとに値が変わる。
+const ZONED_ISO = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.[0-9]+)?)?(Z|([+-])([0-9]{2}):([0-9]{2}))$/u;
+
+/** 書いた暦の欄がそのまま残る時差付きISO時刻ならUTCミリ秒へ。2月30日のような繰り上がりや時差無しはnull。 */
+function normalizeZonedTimestamp(text) {
+  const match = ZONED_ISO.exec(text);
+  if (match === null) return null;
+  const [, year, month, day, hour, minute, second = '00', zone, sign, offsetHour, offsetMinute] = match;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const offset = zone === 'Z' ? 0 : (sign === '-' ? -1 : 1) * (Number(offsetHour) * 60 + Number(offsetMinute));
+  const local = new Date(parsed.getTime() + offset * 60_000);
+  const written = [year, month, day, hour, minute, second].map(Number);
+  const read = [local.getUTCFullYear(), local.getUTCMonth() + 1, local.getUTCDate(),
+    local.getUTCHours(), local.getUTCMinutes(), local.getUTCSeconds()];
+  return written.every((value, index) => value === read[index]) ? parsed.toISOString() : null;
+}
 const absent = (value) => value === undefined || value === null;
 
 // a11: 辺の参照が同じplanを指すなら、作成者はtask_id/phase_idだけ書けばよい。レコードでない参照はvalidatorへ。
@@ -220,10 +236,9 @@ export function completeCreateInput(value, { env, now }) {
   const decoupled = !['lattice.plan_create_input.v1', 'lattice.plan_create_input.v2'].includes(next.schema);
   if (absent(next.actor)) next.actor = resolveTodoActor(env);
   if (absent(next.recorded_at)) next.recorded_at = now.toISOString();
-  else if (typeof next.recorded_at === 'string' && ISO_DATE_PREFIX.test(next.recorded_at)) {
-    // 厳密形でなくても読める時刻はUTCミリ秒へ寄せる。読めない文字列はvalidatorが拒否する。
-    const parsed = new Date(next.recorded_at);
-    if (!Number.isNaN(parsed.getTime())) next.recorded_at = parsed.toISOString();
+  else if (typeof next.recorded_at === 'string') {
+    // 厳密形でなくても読める時刻はUTCミリ秒へ寄せる。読めない文字列はそのまま残し、validatorが拒否する。
+    next.recorded_at = normalizeZonedTimestamp(next.recorded_at) ?? next.recorded_at;
   }
   if (absent(next.hard_dependencies)) next.hard_dependencies = [];
   if (absent(next.joins)) next.joins = [];

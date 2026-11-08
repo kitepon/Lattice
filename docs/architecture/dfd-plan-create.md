@@ -142,7 +142,7 @@ null is the machine's. Extends the u03p table above, same function
 | Field | Completion |
 |---|---|
 | `schema` | absent or null → `lattice.plan_create_input.v5` (the current create input) |
-| `recorded_at` | any string `Date` parses that starts `YYYY-MM-DDT` → its UTC `toISOString()` (milliseconds, `Z`); other strings stay and refuse |
+| `recorded_at` | an ISO-8601 date-time with an explicit zone (`Z` or `±hh:mm`) whose written fields survive the parse → its UTC `toISOString()` (milliseconds, `Z`); a rolled-over date (`2026-02-30`), a string without a zone (host-local, differs per host) or any other string stays as written and refuses at `/recorded_at` |
 | `hard_dependencies`, `joins`, `phase_accept_dependencies` (v3–v5) | absent or null → `[]` |
 | `tasks[].narrative_anchor`, `compile_binding`, `parent_task_id`, `narrative_ref` | absent → `null` |
 | `tasks[].lane` | absent or null → `main` (no product branch reads the lane name) |

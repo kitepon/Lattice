@@ -263,9 +263,12 @@ test('a11: recorded_at accepts any ISO timestamp and normalises it to UTC millis
     assert.equal(done.recorded_at, expected);
     assert.doesNotThrow(() => validatePlanCreateInput(done));
   }
-  const nonsense = completeCreateInput({ ...bareInput(), recorded_at: 'yesterday' }, { env: COMPLETE_ENV, now: FIXED_NOW });
-  assert.equal(nonsense.recorded_at, 'yesterday');
-  assert.equal(rejection(nonsense).detail.pointer, '/recorded_at');
+  // 読めない・暦が繰り上がる・時差の無い(host依存の)文字列は書いたまま残り、/recorded_atで拒否される。
+  for (const given of ['yesterday', '2026-02-30T00:00:00Z', '2026-11-08T24:00:00Z', '2026-11-08T10:00:00']) {
+    const kept = completeCreateInput({ ...bareInput(), recorded_at: given }, { env: COMPLETE_ENV, now: FIXED_NOW });
+    assert.equal(kept.recorded_at, given);
+    assert.equal(rejection(kept).detail.pointer, '/recorded_at');
+  }
   const { run } = await createFromDraft(context, bareInput((v) => ({ ...v, recorded_at: '2026-11-08T12:00:00+09:00' })));
   assert.equal(run.status, 0, run.stderr + run.stdout);
 });
