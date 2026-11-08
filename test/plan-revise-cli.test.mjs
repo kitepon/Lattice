@@ -114,11 +114,30 @@ test('light CLI reports an applied revision when carried work rebind fails, then
   assert.equal(error.detail.task_id, 'b');
   assert.equal(error.detail.revision_applied, true);
   assert.match(error.detail.revision_digest, /^[a-f0-9]{64}$/);
+  assert.match(error.detail.plan_version, /^rev-/);
   assert.equal(error.detail.next_action,
     'lattice todo start --plan work --task b --rebind --reason <text>');
   const repaired = success(root, ['todo', 'start', '--plan', 'work', '--task', 'b',
     '--rebind', '--reason', 'fixture']);
   assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
+});
+
+test('light CLI refuses before publication when the revised plan is the source of a live incoming binding', async (context) => {
+  const { root } = await fixture(context);
+  await writeFile(path.join(root, 'other.json'), JSON.stringify({ ...desired(['x']), plan_key: 'other' }));
+  success(root, ['plan', 'create', '--input', 'other.json']);
+  success(root, ['todo', 'dependency', 'connect', '--from-plan', 'work', '--from-task', 'b',
+    '--to-plan', 'other', '--to-task', 'x', '--reason', 'fixture']);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  const manifestRef = path.join(root, '.lattice/todo/manifest.json');
+  const before = await readFile(manifestRef, 'utf8');
+  const failed = run(root, ['plan', 'revise', '--input', 'revise.json', '--json']);
+  assert.notEqual(failed.status, 0);
+  const error = JSON.parse(failed.stderr);
+  assert.equal(error.code, 'STORE_INCONSISTENT');
+  assert.equal(error.detail.reason, 'binding_stale');
+  assert.equal(error.detail.revision_applied, undefined);
+  assert.equal(await readFile(manifestRef, 'utf8'), before);
 });
 
 test('artifact CLI applies v5 through revise-phase and verifies its reconciliation projection', async (context) => {

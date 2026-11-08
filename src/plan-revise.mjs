@@ -13,6 +13,8 @@ import {
 } from './todo-store.mjs';
 import { phaseTodoRevisionPlanVersion, validatePhaseTodoRevision } from './todo-revision.mjs';
 
+export { validateBindingCarry } from './plan-binding-carry.mjs';
+
 const INPUT_SCHEMA = 'lattice.plan_revise_input.v1';
 
 function fail(reason, pointer, detail = {}) {
@@ -150,9 +152,12 @@ export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env
         reason: '工程改訂後のplan versionへ作業中ToDoを結び直す',
         failureCode: 'PLAN_REBIND_PENDING' });
     } catch (error) {
-      if (error instanceof TodoStoreError && error.code === 'PLAN_REBIND_PENDING') {
+      // 公開後に起きたStoreの失敗は、改訂が確定済みであることを必ず報告する（2026-11-07
+      // 初回使用: rebind読込の素のbinding_staleが公開済み事実を隠した）
+      if (error instanceof TodoStoreError) {
         error.detail = { ...error.detail, revision_applied: !unchanged,
-          revision_digest: unchanged ? null : revision.revision_digest };
+          revision_digest: unchanged ? null : revision.revision_digest,
+          plan_version: unchanged ? member.plan.plan_version : revision.desired_plan.plan_version };
       }
       throw error;
     }
