@@ -26,7 +26,7 @@ Latticeの文書は、現行契約、現在の計画・構想、履歴、証拠�
 
 ## 現在の計画・構想
 
-- [`architecture/dfd-store-display-read.md`](architecture/dfd-store-display-read.md): Accepted next-unit Store display read contract; design only, after current recovery and connected diagram review
+- [`architecture/dfd-store-display-read.md`](architecture/dfd-store-display-read.md): Store display read contract with current unverified member data; design only, after current recovery and connected diagram review
 
 - [`plan_product-setup.md`](plan_product-setup.md): 製品所有のMCP登録・hook準備入口と公開実機受入
 
