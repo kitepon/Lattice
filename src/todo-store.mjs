@@ -5,10 +5,12 @@ import {
   projectTodoCrossPlanDependencies,
   localTaskRef,
   removedTaskRef,
+  isFinishedTodoTaskState,
   todoTaskCarrySemantics as taskSemantics,
 } from './todo-store-view.mjs';
 export {
   isDecoupledPhaseTodoPlanSchema,
+  isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
@@ -657,12 +659,8 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
     }
     const state = states.get(event.task_id);
     if (state === undefined) fail('STORE_INCONSISTENT', 'event_task_missing');
-    // retired from done (done_at kept) still counts as a finished predecessor; other retired states do not.
-    // shortcut: a historical_import done with unknown completion time has done_at null, so retiring it does not keep it finished; upgrade if such retires appear.
-    const dependenciesDone = localPredecessors(plan, event.task_id).every((id) => {
-      const predecessor = states.get(id);
-      return predecessor?.status === 'done' || (predecessor?.status === 'retired' && predecessor.done_at !== null);
-    });
+    const dependenciesDone = localPredecessors(plan, event.task_id)
+      .every((id) => isFinishedTodoTaskState(states.get(id)));
     if (event.kind === 'start') {
       if (event.payload.start_mode === 'rebind') {
         // 改訂でcarryされたin-progressの再束縛。状態・開始時刻は動かさず、start束縛だけを
@@ -742,7 +740,8 @@ function replay(plan, events, { now = new Date(), verifyEvidence, verifyImportSo
       const wasDone = state.status === 'done';
       state.status = 'retired'; state.blocked_reason = event.payload.reason;
       state.done_at = wasDone ? state.done_at : null;
-      state.evidence = null; state.test_result = null; state.imported = false;
+      // done_at and imported survive a retire from done so the finished mark stays (isFinishedTodoTaskState).
+      state.evidence = null; state.test_result = null; state.imported = wasDone ? state.imported : false;
       state.evidence_unverified = false;
       authoredStartBindings.delete(event.task_id);
       if (wasDone) {
@@ -5365,10 +5364,14 @@ export async function createSuccessorTodoPlan(options = {}) {
     }
     if (['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(previous.plan.schema)
       && !['lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) {
-      throw new TypeError('todo plan design_memo cannot be removed by successor schema');
+      fail('REVISION_INVALID', 'design_memo_schema_downgrade', {
+        predecessor_schema: previous.plan.schema, desired_schema: plan.schema,
+      });
     }
     if (previous.plan.schema === 'lattice.todo_plan.v8' && plan.schema !== 'lattice.todo_plan.v8') {
-      throw new TypeError('todo plan done_condition cannot be removed by successor schema');
+      fail('REVISION_INVALID', 'done_condition_schema_downgrade', {
+        predecessor_schema: previous.plan.schema, desired_schema: plan.schema,
+      });
     }
     verifyPlanNarrativeAnchors(repoRoot, plan, previous.plan);
     const migration = options.genesis.task_migration ?? [];
