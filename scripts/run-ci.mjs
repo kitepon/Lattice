@@ -25,12 +25,28 @@ function npmRun(step) {
   return result.status ?? 1;
 }
 
+/** PR scope: drop suites the change cannot reach (common rule verification.minimal). */
+export function scopedSteps(steps, scope) {
+  if (scope.full) return steps;
+  return steps.filter((step) => (step !== 'test' || scope.tests.length > 0)
+    && (step !== 'test:sensor' || scope.sensor));
+}
+
 if (process.argv[1] !== undefined
   && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const failed = runAll(ciSteps, npmRun);
-  for (const step of ciSteps) console.log(`${failed.includes(step) ? 'FAIL' : 'pass'} ${step}`);
+  const { collectTests, testRoot } = await import('./run-product-tests.mjs');
+  const { computeCiScope } = await import('./ci-scope.mjs');
+  const scope = await computeCiScope(process.env.LATTICE_CI_BASE || null,
+    { allTests: (await collectTests(testRoot)).sort() });
+  console.log(`CI scope: ${scope.full ? 'full gate' : 'affected range'} (${scope.reason})`);
+  if (!scope.full) process.env.LATTICE_CI_TESTS = JSON.stringify(scope.tests);
+  const steps = scopedSteps(ciSteps, scope);
+  const failed = runAll(steps, npmRun);
+  for (const step of ciSteps) {
+    console.log(`${!steps.includes(step) ? 'skip' : failed.includes(step) ? 'FAIL' : 'pass'} ${step}`);
+  }
   if (failed.length > 0) {
-    console.error(`npm run ci: ${failed.length} of ${ciSteps.length} steps failed: ${failed.join(', ')}`);
+    console.error(`npm run ci: ${failed.length} of ${steps.length} steps failed: ${failed.join(', ')}`);
     process.exitCode = 1;
   }
 }
