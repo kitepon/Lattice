@@ -13,6 +13,8 @@ import {
 } from './todo-store.mjs';
 import { phaseTodoRevisionPlanVersion, validatePhaseTodoRevision } from './todo-revision.mjs';
 
+export { validateBindingCarry } from './plan-binding-carry.mjs';
+
 const INPUT_SCHEMA = 'lattice.plan_revise_input.v1';
 
 function fail(reason, pointer, detail = {}) {
