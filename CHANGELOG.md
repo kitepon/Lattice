@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.84.1 — 2026-11-09
+
+同じOSユーザーで動く席どうしを、席の名前で見分ける修正版。
+
 - `LATTICE_SEAT_ID`を設定した席では、既定のactorの`agent`が席の名前になり、`session-context --json`の一番上に`seat_id`が出る。同じOSユーザーで動く席どうしでも、`turn.own`に他の席の工程が混ざらない（これまでは全員が`USER`の値になっていた）。`LATTICE_TODO_ACTOR_AGENT`は今までどおり優先する。`status --json`の形は変えない。
 - 書き込みのたびに出る配送の行は、配送に失敗した時だけ出す。配送できた時（`hub_delivered`）と、hubを使わない席（`bridge_only`）では出さない。`todo dashboard ensure`の結果には今までどおり載る。
 
