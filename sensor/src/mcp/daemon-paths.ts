@@ -132,8 +132,14 @@ export function canProbeDaemonIdentity(info: DaemonLockInfo): boolean {
  * Verify that the process named by a lockfile is the LatticeSensor daemon serving
  * its socket. A bare PID liveness probe is insufficient because OSes reuse PIDs
  * after an OOM/SIGKILL (#1553).
+ *
+ * The deadline bounds only a listener that accepts and stays silent: a refused
+ * or missing socket, a close, or a wrong hello still answers at once. The daemon
+ * writes its hello from its main thread, which a loaded host can deschedule for
+ * seconds right after bind; a 1s deadline turned that into "not the daemon" and
+ * refused `stop`/`index` against a healthy daemon.
  */
-export function probeDaemonIdentity(info: DaemonLockInfo, timeoutMs = 1_000): Promise<boolean> {
+export function probeDaemonIdentity(info: DaemonLockInfo, timeoutMs = 5_000): Promise<boolean> {
   if (!canProbeDaemonIdentity(info)) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
     let socket: net.Socket;
