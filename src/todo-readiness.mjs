@@ -26,12 +26,15 @@ export function createTodoReadiness(store) {
     const { plan } = member;
     const states = new Map(member.tasks.map((state) => [state.task_id, state]));
     const phaseStates = new Map((member.phases ?? []).map((phase) => [phase.phase_id, phase.status]));
-    for (const phase of member.phases ?? []) phases.set(phaseKey({ ...plan, ...phase }), phase.status);
+    for (const phase of member.phases ?? []) {
+      phases.set(phaseKey({ ...plan, ...phase }), { plan_key: plan.plan_key, phase_id: phase.phase_id, status: phase.status });
+    }
     for (const task of plan.tasks) {
       const key = taskKey({ ...plan, ...task });
       nodes.set(key, {
         status: states.get(task.task_id)?.status,
-        // retired from doneも先行として完了扱い（u12）。判定はStore replayと同じ一つの述語。
+        task_id: task.task_id,
+        // retiredは先行として完了扱い（u12/a13）。判定はStore replayと同じ一つの述語。
         finished: isFinishedTodoTaskState(states.get(task.task_id)),
         schema: plan.schema,
         plan_key: plan.plan_key,
@@ -80,19 +83,34 @@ export function createTodoReadiness(store) {
     // u03 A24: 消えた端点（Storeのendpoint_missing finding）は後続を止めない。Store replayも同じ規則。
     const predecessors = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source))
       .filter((node) => node !== undefined);
-    const predecessorsDone = predecessors.every((node) => node?.finished === true);
-    const predecessorPhasesReady = predecessors.every((node) => dependencyPhaseReady(node, nodes.get(key)));
+    const unfinished = predecessors.filter((node) => node.finished !== true);
+    const unreadyPhases = predecessors.filter((node) => !dependencyPhaseReady(node, nodes.get(key)));
+    const predecessorsDone = unfinished.length === 0;
+    const predecessorPhasesReady = unreadyPhases.length === 0;
     const taskDependenciesDone = predecessorsDone && predecessorPhasesReady;
-    const phaseAcceptReady = [...(acceptanceIncoming.get(key) ?? [])]
-      .every((source) => !phases.has(source) || phases.get(source) === 'accepted');
+    const unacceptedEdges = [...(acceptanceIncoming.get(key) ?? [])]
+      .map((source) => phases.get(source)).filter((phase) => phase !== undefined && phase.status !== 'accepted');
+    const phaseAcceptReady = unacceptedEdges.length === 0;
+    const cause = !phaseAcceptReady ? 'acceptance_edge'
+      : !predecessorsDone ? 'predecessor_unfinished'
+        : !predecessorPhasesReady ? 'acceptance_edge' : null;
+    const blockingPhases = !phaseAcceptReady ? unacceptedEdges
+      : unreadyPhases.map((node) => ({ plan_key: node.plan_key, phase_id: node.phase_id, status: node.phase_status }));
     return {
       taskDependenciesDone,
       phaseAcceptReady,
       dependenciesDone: taskDependenciesDone && phaseAcceptReady,
-      cause: !phaseAcceptReady ? 'acceptance_edge'
-        : !predecessorsDone ? 'predecessor_unfinished'
-          : !predecessorPhasesReady ? 'acceptance_edge' : null,
+      cause,
+      // a12: a refusal names what blocks, not only why.
+      blocking: cause === 'predecessor_unfinished'
+        ? { blocking_tasks: unfinished.map(({ plan_key, task_id, status }) => ({ plan_key, task_id, status })).sort(byRef) }
+        : cause === 'acceptance_edge'
+          ? { blocking_phases: uniqueRefs(blockingPhases).map((phase) => ({ ...phase })).sort(byRef) } : {},
     };
+  }
+
+  function ownPhaseStatus(key) {
+    return nodes.get(key)?.phase_status;
   }
 
   function ownPhaseReady(key) {
@@ -109,19 +127,35 @@ export function createTodoReadiness(store) {
     status: (key) => nodes.get(key)?.status,
     prerequisites,
     ownPhaseReady,
+    ownPhaseStatus,
     isReady: (key) => nodes.get(key)?.status === 'pending'
       && ownPhaseReady(key) && prerequisites(key).dependenciesDone,
     startedSuccessor,
     phaseHasStartedSuccessor: (member, phaseId) => member.plan.schema === 'lattice.todo_plan.v4'
       ? member.plan.tasks.filter(({ phase_id }) => phase_id === phaseId)
         .some((task) => startedSuccessor(taskKey({ ...member.plan, ...task })))
+        // a12: same rule as Store replay, so this order refusal is not left to replay's STORE_INCONSISTENT.
+        || (phases.get(phaseKey({ ...member.plan, phase_id: phaseId }))?.status === 'accepted'
+          && member.plan.phases.some((phase) => phase.predecessor_phase_ids.includes(phaseId)
+            && (phases.get(phaseKey({ ...member.plan, phase_id: phase.phase_id }))?.status !== 'locked'
+              || member.plan.tasks.some((task) => task.phase_id === phase.phase_id
+                && nodes.get(taskKey({ ...member.plan, ...task }))?.status !== 'pending'))))
       : [...(acceptanceOutgoing.get(phaseKey({ ...member.plan, phase_id: phaseId })) ?? [])]
         .some((key) => nodes.get(key)?.status !== 'pending'),
   };
 }
 
+const refId = (ref) => `${ref.plan_key}\0${ref.task_id ?? ref.phase_id}`;
+function byRef(left, right) {
+  return refId(left) < refId(right) ? -1 : refId(left) > refId(right) ? 1 : 0;
+}
+function uniqueRefs(refs) {
+  return [...new Map(refs.map((ref) => [refId(ref), ref])).values()];
+}
+
+// a12: an order or state rule is not an inconsistency; Store replay keeps STORE_INCONSISTENT for history.
 function refused(reason, cause, detail = {}) {
-  return { ok: false, code: 'STORE_INCONSISTENT', detail: { reason, cause, ...detail } };
+  return { ok: false, code: 'TODO_TRANSITION_REFUSED', detail: { reason, cause, ...detail } };
 }
 
 /** Prospective policy only; Store retains historical replay, evidence and identity validation. */
@@ -133,10 +167,10 @@ export function validateProspectiveEvent({ store, member, event }) {
     && event.payload.start_mode !== 'rebind';
   if (authoredStart && (!prerequisites.phaseAcceptReady
     || (!prerequisites.taskDependenciesDone && event.payload.override_reason === null))) {
-    return refused('invalid_start_transition', prerequisites.cause);
+    return refused('invalid_start_transition', prerequisites.cause, prerequisites.blocking);
   }
   if (event.kind === 'done' && event.payload.done_mode === 'authored' && !prerequisites.dependenciesDone) {
-    return refused('invalid_done_transition', prerequisites.cause);
+    return refused('invalid_done_transition', prerequisites.cause, prerequisites.blocking);
   }
   if (event.kind === 'reopen' && event.payload.override_reason === null && readiness.startedSuccessor(key)) {
     return refused('reopen_has_started_successor', 'task_state', {
@@ -150,12 +184,20 @@ export function validateProspectiveEvent({ store, member, event }) {
   // Keep merged refusal priority; replay still owns missing target/binding checks.
   const status = readiness.status(key);
   if (authoredStart && status !== undefined) {
-    if (status !== 'pending') return refused('invalid_start_transition', 'task_state');
-    if (!readiness.ownPhaseReady(key)) return refused('invalid_start_transition', 'phase_state');
+    if (status !== 'pending') return refused('invalid_start_transition', 'task_state', { status });
+    if (!readiness.ownPhaseReady(key)) {
+      return refused('invalid_start_transition', 'phase_state', { phase_status: readiness.ownPhaseStatus(key) });
+    }
   }
   if (event.kind === 'done' && event.payload.done_mode === 'authored'
     && status !== undefined && status !== 'in-progress') {
-    return refused('invalid_done_transition', 'task_state');
+    return refused('invalid_done_transition', 'task_state', { status });
+  }
+  if (event.kind === 'block' && status !== undefined && status !== 'in-progress') {
+    return refused('invalid_block_transition', 'task_state', { status });
+  }
+  if (event.kind === 'unblock' && status !== undefined && status !== 'blocked') {
+    return refused('invalid_unblock_transition', 'task_state', { status });
   }
   return { ok: true };
 }

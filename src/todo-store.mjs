@@ -1112,6 +1112,24 @@ function evidenceVerifier(manifest, repoRoot, hard, newEventDigest = null) {
   };
 }
 
+/**
+ * Read-only (a12): the evidence blob is present with its recorded digest but no ref reaches it yet,
+ * i.e. it is waiting for a commit (message evidence or an uncommitted file). Missing or changed
+ * bytes are not "uncommitted" and stay evidence_unverified refusals.
+ */
+export function isTodoEvidenceUncommitted({ repoRoot, store, evidence }) {
+  if (!validateEvidenceDescriptor(evidence)) return false;
+  const repoRef = store.manifest.repositories.find(({ repo_id: id }) => id === evidence.repo_id)?.path;
+  if (repoRef === undefined) return false;
+  const absoluteRepo = path.resolve(repoRoot, repoRef);
+  try {
+    return sha256Bytes(readEvidenceBlob(absoluteRepo, evidence.git_blob_oid)) === evidence.content_digest
+      && !reachableObjects(absoluteRepo).has(evidence.git_blob_oid);
+  } catch {
+    return false;
+  }
+}
+
 function pinnedSourceLine(repoRoot, source, cache = null) {
   // commit の型検査と blob 読みを 1 回の cat-file --batch へまとめる（object ごとの git
   // 子起動はWindowsで可視コンソールを開き、起動コストだけで走査を桁で遅くする）。

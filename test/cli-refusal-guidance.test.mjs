@@ -112,6 +112,13 @@ test('state rules name the command to run, from the CLI context', () => {
     /lattice todo start --plan main --task T1/u);
   assert.match(guide({ reason: 'invalid_done_transition', cause: 'predecessor_unfinished' }, context).next_action,
     /lattice todo show --plan main --task T1/u);
+  const named = guide({ reason: 'invalid_start_transition', cause: 'predecessor_unfinished',
+    blocking_tasks: [{ plan_key: 'other', task_id: 'P1', status: 'in-progress' }] }, context).next_action;
+  assert.match(named, /other\/P1 \(in-progress\)/u);
+  assert.match(named, /lattice todo show --plan other --task P1 --json/u);
+  assert.match(guide({ reason: 'invalid_start_transition', cause: 'acceptance_edge',
+    blocking_phases: [{ plan_key: 'other', phase_id: 'ph1', status: 'active' }] }, context).next_action,
+  /--plan other --phase ph1/u);
   assert.equal(guide({ reason: 'plan_not_active', plan_key: 'zz' }, context).pointer, '--plan');
   assert.equal(guide({ reason: 'plan_not_active', pointer: '/desired/plan_key' }, context).pointer, '/desired/plan_key');
   assert.equal(guide({ reason: 'task_not_found', requested_task_id: 'Tx' }, context).pointer, '--task');

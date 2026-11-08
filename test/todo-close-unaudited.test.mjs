@@ -310,7 +310,7 @@ test('closed_unauditedはphase_accept_dependenciesを解錠しない(ADR 0148裁
   // acceptedではないので、T3のstartは引き続き拒否される——ここがADR 0148裁定2の核心。
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T3', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } }), 'STORE_INCONSISTENT', 'invalid_start_transition');
+      payload: { override_reason: null } } }), 'TODO_TRANSITION_REFUSED', 'invalid_start_transition');
 
   // 比較対照: phase-2(T3自身のphase)は普通にactiveなので、T2は無関係に始められる
   // (closed_unauditedがdispatchを壊していないことの確認)。

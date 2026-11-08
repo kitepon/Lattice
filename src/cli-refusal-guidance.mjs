@@ -16,6 +16,13 @@ const run = (ctx, ...tail) => ['lattice', ctx.family ?? 'todo', ctx.command, ...
 const schemaCommand = (ctx) => run(ctx, '--schema', '--json');
 const showTask = (detail, ctx) => `lattice todo show --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --json`;
 const startTask = (detail, ctx) => `lattice todo start --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+// a12: name the blocking task (seat contract), falling back to the refused task's own detail.
+const blocker = (detail) => (Array.isArray(detail.blocking_tasks) ? detail.blocking_tasks.find(record) : undefined);
+const unfinishedFirst = (detail, ctx) => {
+  const first = blocker(detail);
+  if (first === undefined) return `Record done on its unfinished predecessors first (see \`${showTask(detail, ctx)}\`)`;
+  return `Record done on ${first.plan_key}/${first.task_id} (${first.status}) first (see \`lattice todo show --plan ${first.plan_key} --task ${first.task_id} --json\`)`;
+};
 
 /** The flag that carried the unreadable input: the one whose value is the refused path. */
 function inputFlag(detail, ctx) {
@@ -53,7 +60,10 @@ function acceptedValues(detail) {
   return [detail.expected];
 }
 
-const phaseAcceptFirst = (detail, ctx) => `Accept the phase this task depends on first (\`lattice todo phase accept --plan ${planOf(detail, ctx)} --phase <phase_id> --input <file>\`), then rerun.`;
+const phaseAcceptFirst = (detail, ctx) => {
+  const phase = Array.isArray(detail.blocking_phases) ? detail.blocking_phases.find(record) : undefined;
+  return `Accept the phase this task depends on first (\`lattice todo phase accept --plan ${phase?.plan_key ?? planOf(detail, ctx)} --phase ${phase?.phase_id ?? '<phase_id>'} --input <file>\`), then rerun.`;
+};
 const inputFile = (what) => ({ pointer: inputFlag, repair: (detail, ctx, pointer) => `${what} Fix the file passed to ${pointer} and rerun \`${run(ctx)}\`.` });
 const revisionDigest = (what) => ({
   pointer: '--input',
@@ -101,18 +111,24 @@ const REGISTRY = {
 
   invalid_done_transition: {
     repair: (detail, ctx) => ({
-      predecessor_unfinished: `Record done on its unfinished predecessors first; see \`${showTask(detail, ctx)}\`.`,
+      predecessor_unfinished: `${unfinishedFirst(detail, ctx)}.`,
       acceptance_edge: phaseAcceptFirst(detail, ctx),
       task_state: `It must be in-progress: run \`${startTask(detail, ctx)}\` first.`,
     })[detail.cause] ?? `Check the task state with \`${showTask(detail, ctx)}\`, then rerun.`,
   },
   invalid_start_transition: {
     repair: (detail, ctx) => ({
-      predecessor_unfinished: `Record done on its unfinished predecessors first (see \`${showTask(detail, ctx)}\`), or start with --override-reason <text>.`,
+      predecessor_unfinished: `${unfinishedFirst(detail, ctx)}, or start with --override-reason <text>.`,
       acceptance_edge: phaseAcceptFirst(detail, ctx),
       task_state: `Only a pending task can start; check its status with \`${showTask(detail, ctx)}\`.`,
       phase_state: 'Its phase is not active; check the phase status with `lattice todo status --json`.',
     })[detail.cause] ?? `Check the task state with \`${showTask(detail, ctx)}\`, then rerun.`,
+  },
+  invalid_block_transition: {
+    repair: (detail, ctx) => `Only an in-progress task can be blocked; check its status with \`${showTask(detail, ctx)}\`.`,
+  },
+  invalid_unblock_transition: {
+    repair: (detail, ctx) => `Only a blocked task can be unblocked; check its status with \`${showTask(detail, ctx)}\`.`,
   },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: split the work with \`lattice todo split --plan ${planOf(detail, ctx)} --input <file>\`, or pass --override-reason <text> to reopen anyway.`,

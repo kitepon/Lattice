@@ -68,6 +68,7 @@ import {
   createTodoStoreWriter,
   TodoStoreError,
   isPhaselessTodoPlanSchema,
+  isTodoEvidenceUncommitted,
   projectTodoCrossPlanDependencies,
   TERMINAL_AUDIT_PHASE_ID,
   todoPhaseDefinitions,
@@ -777,6 +778,45 @@ async function mutate({
  * 先に解放してから閉じる（u03 A14r）。
  * 既にretiredなら成功を返しeventは足さない（応答を失った再試行をエラーにしない）。
  */
+// a12: a transition whose target state already holds appends nothing and succeeds
+// (`unchanged: true`), so a retry after a lost response is not an error (retire's u12 precedent).
+const UNCHANGED_WHEN = {
+  start: ({ status }) => status === 'in-progress',
+  done: ({ status }) => status === 'done',
+  block: ({ status }) => status === 'blocked',
+  unblock: ({ status }) => status !== 'blocked',
+  retire: ({ status }) => status === 'retired',
+};
+
+/** Unchanged result, or null when the transition must go to the append path. */
+function unchangedTransition(store, { env, planKey, taskId, kind }) {
+  const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
+  const matches = member?.tasks.filter(({ task_id: current }) => current.toLowerCase() === taskId.toLowerCase()) ?? [];
+  // Unknown or ambiguous plan/task: the append path keeps Store's refusal.
+  if (matches.length !== 1 || !UNCHANGED_WHEN[kind](matches[0])) return null;
+  const [state] = matches;
+  const events = member.journal.events;
+  const recorded = events.findLast((event) => event.kind === kind && event.task_id === state.task_id);
+  // Another seat's in-progress task is not this seat's repeated start; keep the task_state refusal.
+  if (kind === 'start' && recorded?.actor?.agent !== resolveTodoActor(env).agent) return null;
+  const shown = recorded ?? events.findLast((event) => event.task_id === state.task_id) ?? events.at(-1);
+  const result = {
+    schema: 'lattice.todo_mutation_result.v2',
+    project_id: member.plan.project_id, plan_key: planKey, plan_version: member.plan.plan_version,
+    task_id: state.task_id, kind, sequence: shown.sequence, event_digest: shown.event_digest,
+    journal_head_digest: events.at(-1).event_digest, snapshot_digest: member.snapshot.snapshot_digest,
+    status: state.status, advisory: null, unchanged: true, result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/** block/unblock/done: an unchanged no-op first, else the append path. */
+async function mutateUnlessUnchanged(options) {
+  const store = await readTodoStore({ repoRoot: options.repoRoot });
+  return unchangedTransition(store, options) ?? options.action();
+}
+
 async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
@@ -785,20 +825,7 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     // 未知のplan/taskはStoreの既存の拒否をそのまま通す。
     return mutate({ repoRoot, env, planKey, taskId, kind: 'retire', payload: { reason }, evidenceRef: null });
   }
-  if (state.status === 'retired') {
-    const events = member.journal.events;
-    const recorded = events.findLast((event) => event.kind === 'retire' && event.task_id === taskId)
-      ?? events.at(-1);
-    const result = {
-      schema: 'lattice.todo_mutation_result.v2',
-      project_id: member.plan.project_id, plan_key: planKey, plan_version: member.plan.plan_version,
-      task_id: taskId, kind: 'retire', sequence: recorded.sequence, event_digest: recorded.event_digest,
-      journal_head_digest: events.at(-1).event_digest, snapshot_digest: member.snapshot.snapshot_digest,
-      status: 'retired', advisory: null, unchanged: true, result_digest: '',
-    };
-    result.result_digest = todoSelfDigest(result, 'result_digest');
-    return result;
-  }
+  if (state.status === 'retired') return unchangedTransition(store, { env, planKey, taskId, kind: 'retire' });
   const append = async () => {
     try {
       return await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
@@ -989,6 +1016,8 @@ async function startTask({
     });
   }
   const resolvedTaskId = readyTask?.task_id ?? taskMatches[0].task_id;
+  const unchanged = unchangedTransition(store, { env, planKey, taskId: resolvedTaskId, kind: 'start' });
+  if (unchanged !== null) return unchanged;
   // noteはjournal appendより前に読む。壊れていてもstartは通す（ADR 0166 / 0181）。
   let noteContext;
   try {
@@ -3947,8 +3976,17 @@ async function verify({ repoRoot, requestedPlanKey }) {
     await readTodoNoteEvents({ repoRoot, planKey: member.plan.plan_key });
   }
   const verifiedSourceInventories = new Map();
+  const uncommittedEvidence = [];
   for (const member of members) {
-    const unverified = member.tasks.find((task) => task.evidence_unverified);
+    const planKey = member.descriptor.plan_key;
+    // a12: evidence waiting for a commit is an item; missing or changed evidence still refuses.
+    const pending = member.tasks.filter((task) => task.evidence_unverified
+      && isTodoEvidenceUncommitted({ repoRoot, store, evidence: task.evidence }));
+    for (const { task_id: taskId, evidence } of pending) {
+      uncommittedEvidence.push({ plan_key: planKey, task_id: taskId, repo_id: evidence.repo_id, path: evidence.path,
+        next_action: `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.` });
+    }
+    const unverified = member.tasks.find((task) => task.evidence_unverified && !pending.includes(task));
     if (unverified !== undefined) {
       throw new TodoStoreError('STORE_INCONSISTENT', 'evidence_unverified', 'evidence_unverified', {
         plan_key: member.descriptor.plan_key,
@@ -4028,11 +4066,12 @@ async function verify({ repoRoot, requestedPlanKey }) {
     );
   }
   const result = {
-    schema: 'lattice.todo_verify_result.v3',
+    schema: 'lattice.todo_verify_result.v4',
     project_id: store.project_id,
     requested_plan_key: requestedPlanKey,
     verified_members: verifiedMembers,
     snapshot_stale: verifiedMembers.some((member) => member.snapshot_stale),
+    uncommitted_evidence: uncommittedEvidence,
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
@@ -4454,27 +4493,28 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
       && (flags.evidence === undefined || hasEvidence)
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
-      action = async (repoRoot) => {
-        let evidenceMessage = hasMessage ? flags.message : null;
-        if (hasEvidence && hasMessage) {
-          // The message is the record; it names the resolved file so nothing given is lost.
-          const file = await resolveDoneEvidence({
-            repoRoot, evidenceRef: flags.evidence, evidenceMessage: null,
-            planKey: flags.plan, taskId: flags.task,
+      action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
+        kind: 'done', action: async () => {
+          let evidenceMessage = hasMessage ? flags.message : null;
+          if (hasEvidence && hasMessage) {
+            // The message is the record; it names the resolved file so nothing given is lost.
+            const file = await resolveDoneEvidence({
+              repoRoot, evidenceRef: flags.evidence, evidenceMessage: null,
+              planKey: flags.plan, taskId: flags.task,
+            });
+            evidenceMessage = `${flags.message}\n\nevidence: ${file.repo_id}:${file.path}`
+              + ` (git blob ${file.git_blob_oid}, sha256 ${file.content_digest})\n`;
+          } else if (!hasEvidence && !hasMessage) {
+            evidenceMessage = DONE_WITHOUT_EVIDENCE_MESSAGE;
+          }
+          return mutate({
+            repoRoot, env, planKey: flags.plan, taskId: flags.task,
+            kind: 'done', payload: 'authored',
+            evidenceRef: evidenceMessage === null ? flags.evidence : null,
+            evidenceMessage,
+            testResultRef: flags['test-result'] ?? null,
           });
-          evidenceMessage = `${flags.message}\n\nevidence: ${file.repo_id}:${file.path}`
-            + ` (git blob ${file.git_blob_oid}, sha256 ${file.content_digest})\n`;
-        } else if (!hasEvidence && !hasMessage) {
-          evidenceMessage = DONE_WITHOUT_EVIDENCE_MESSAGE;
-        }
-        return mutate({
-          repoRoot, env, planKey: flags.plan, taskId: flags.task,
-          kind: 'done', payload: 'authored',
-          evidenceRef: evidenceMessage === null ? flags.evidence : null,
-          evidenceMessage,
-          testResultRef: flags['test-result'] ?? null,
-        });
-      };
+        } });
     }
   }
   if (action === null && argv[0] === 'retract') {
@@ -4491,10 +4531,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'],
     });
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
-      action = (repoRoot) => mutate({
-        repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'block', payload: { reason: flags.reason }, evidenceRef: null,
-      });
+      action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
+        kind: 'block', action: () => mutate({
+          repoRoot, env, planKey: flags.plan, taskId: flags.task,
+          kind: 'block', payload: { reason: flags.reason }, evidenceRef: null,
+        }) });
     }
   } else if (argv[0] === 'retire') {
     // 恒久除去（2026-08-29オーナー裁定）。planの形は変えず、状態遷移として工程を閉じる。
@@ -4511,10 +4552,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       known: ['plan', 'task'], required: ['plan', 'task'],
     });
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
-      action = (repoRoot) => mutate({
-        repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'unblock', payload: {}, evidenceRef: null,
-      });
+      action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
+        kind: 'unblock', action: () => mutate({
+          repoRoot, env, planKey: flags.plan, taskId: flags.task,
+          kind: 'unblock', payload: {}, evidenceRef: null,
+        }) });
     }
   } else if (argv[0] === 'evidence' && argv[1] === 'promote') {
     const flags = matchFlagCommand(argv, ['evidence', 'promote'], {

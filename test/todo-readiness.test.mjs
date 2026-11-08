@@ -39,12 +39,16 @@ function event(kind = 'start', payload = {}, fields = {}) {
     ...(kind === 'done' ? { done_mode: 'authored' } : {}), ...payload }, ...fields };
 }
 
+// Compares reason/cause; the a12 blocker keys have their own test below.
 function validate(input, prospective = event()) {
-  return validateProspectiveEvent({ store: input.store, member: input.target, event: prospective });
+  const result = validateProspectiveEvent({ store: input.store, member: input.target, event: prospective });
+  if (result.ok !== false) return result;
+  const { blocking_tasks, blocking_phases, status, phase_status, ...detail } = result.detail;
+  return { ...result, detail };
 }
 
 function refusal(reason, cause, detail = {}) {
-  return { ok: false, code: 'STORE_INCONSISTENT', detail: { reason, cause, ...detail } };
+  return { ok: false, code: 'TODO_TRANSITION_REFUSED', detail: { reason, cause, ...detail } };
 }
 
 function connect(input, kind = 'hard') {
@@ -174,7 +178,7 @@ test('historical/rebind starts, non-authored done, and unrelated event kinds ret
   for (const done_mode of ['historical_import', 'evidence_promotion']) {
     assert.deepEqual(validate(input, event('done', { done_mode })), { ok: true });
   }
-  for (const kind of ['block', 'unblock', 'retire', 'start_retracted', 'phase_review', 'phase_accept', 'phase_reject',
+  for (const kind of ['retire', 'start_retracted', 'phase_review', 'phase_accept', 'phase_reject',
     'phase_close_unaudited']) assert.deepEqual(validate(input, event(kind)), { ok: true });
 });
 
@@ -241,4 +245,35 @@ test('u03 A24: a cross-plan predecessor task or acceptance phase that no longer 
   input.target.plan.phase_accept_dependencies.push({ from: phaseRef('source'), to: ref('target', 'B') });
   input.store.members = [input.target];
   assert.equal(createTodoReadiness(input.store).prerequisites('project-1\0target\0B').phaseAcceptReady, true);
+});
+
+test('a12: refusals name the blocking task, phase or current state', () => {
+  const input = fixture('lattice.todo_plan.v5');
+  input.source.tasks[0].status = 'in-progress';
+  connect(input);
+  const raw = (prospective) => validateProspectiveEvent({ store: input.store, member: input.target, event: prospective });
+  assert.deepEqual(raw(event()).detail, { reason: 'invalid_start_transition', cause: 'predecessor_unfinished',
+    blocking_tasks: [{ plan_key: 'source', task_id: 'A', status: 'in-progress' }] });
+  input.target.plan.phase_accept_dependencies.push({ from: phaseRef('source'), to: ref('target', 'B') });
+  assert.deepEqual(raw(event()).detail, { reason: 'invalid_start_transition', cause: 'acceptance_edge',
+    blocking_phases: [{ plan_key: 'source', phase_id: 'phase-1', status: 'active' }] });
+  input.target.tasks[0].status = 'done';
+  input.target.plan.phase_accept_dependencies = [];
+  input.source.tasks[0].status = 'done';
+  assert.deepEqual(raw(event()), { ok: false, code: 'TODO_TRANSITION_REFUSED',
+    detail: { reason: 'invalid_start_transition', cause: 'task_state', status: 'done' } });
+  assert.deepEqual(raw(event('block', { reason: 'x' })).detail,
+    { reason: 'invalid_block_transition', cause: 'task_state', status: 'done' });
+  assert.deepEqual(raw(event('unblock')).detail,
+    { reason: 'invalid_unblock_transition', cause: 'task_state', status: 'done' });
+});
+
+test('a13: a predecessor retired from any status no longer holds its successor', () => {
+  for (const kind of ['hard', 'join', 'dynamic']) {
+    const input = fixture();
+    input.source.tasks[0] = { task_id: 'A', status: 'retired', done_at: null, imported: false, blocked_reason: 'dropped' };
+    connect(input, kind);
+    assert.deepEqual(validate(input), { ok: true });
+    assert.equal(computeReadyFrontier(input.store).some((task) => task.plan_key === 'target'), true);
+  }
 });

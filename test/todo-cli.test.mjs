@@ -270,9 +270,9 @@ test('todo verifyは全member/plan指定のexact result wireを一行で返す',
   for (const args of [['todo', 'verify'], ['todo', 'verify', '--plan', 'main']]) {
     const output = successJson(runCli(root, args));
     assertExactKeys(output, [
-      'schema', 'project_id', 'requested_plan_key', 'verified_members', 'snapshot_stale', 'result_digest',
+      'schema', 'project_id', 'requested_plan_key', 'verified_members', 'snapshot_stale', 'uncommitted_evidence', 'result_digest',
     ]);
-    assert.equal(output.schema, 'lattice.todo_verify_result.v3');
+    assert.equal(output.schema, 'lattice.todo_verify_result.v4');
     assert.equal(output.project_id, 'project-1');
     assert.equal(output.requested_plan_key, args.length === 2 ? null : 'main');
     assert.equal(output.snapshot_stale, false);
@@ -554,7 +554,7 @@ test('authoring CLIはactor欠落をdefaultで通し、順序違反・blocked中
   const before = await storeDigest(root);
   const skipped = runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T2']);
   assert.equal(skipped.status, 1);
-  assert.equal(JSON.parse(skipped.stderr).code, 'STORE_INCONSISTENT');
+  assert.equal(JSON.parse(skipped.stderr).code, 'TODO_TRANSITION_REFUSED');
   assert.equal(JSON.parse(skipped.stderr).detail.reason, 'invalid_start_transition');
   assert.equal(await storeDigest(root), before);
   successJson(runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting']));
@@ -678,7 +678,7 @@ test('--parallel-frontierはreadyでないtargetでも用法誤りにならず�
   const refused = runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T2', '--parallel-frontier']);
   assert.equal(refused.status, 1);
   const error = JSON.parse(refused.stderr);
-  assert.equal(error.code, 'STORE_INCONSISTENT');
+  assert.equal(error.code, 'TODO_TRANSITION_REFUSED');
   assert.equal(error.detail.reason, 'invalid_start_transition');
   assert.equal(await storeDigest(root), before);
 
