@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 出典つきの計画を軽い改訂（`plan revise`、`lattice.phase_todo_revision.v5`）で改訂しても、出典一覧（source inventory）が改訂後の工程に追いつく（u03i）。Storeは改訂の工程移し替えから一覧を導く。引き継いだ工程は出典を保ち、外した工程の出典は一覧から落ち、出典の無い新しい工程は一覧に載らない。続く`revise-phase`と`todo split`は、この一覧で拒否しない。v3の出典一覧は、出典の無い工程（`narrative_ref`がnull）を省いてよい。
+
 - `LATTICE_SEAT_ID`（または`LATTICE_CONFIG_DIR`）を設定した席では、CLIが使う工程表の常駐の台帳も席の置き場（`<席の置き場>/dashboard`）に置く。これまでCLIだけが共有の`~/.lattice/dashboard`を見ていて、bridgeの見る席の置き場と食い違い、同じHOMEを分け合う席はHOMEを差し替えるしかなかった。何も設定しない席は今までどおり`~/.lattice/dashboard`。
 
 ## 0.83.0 — 2026-11-08

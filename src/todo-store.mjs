@@ -4812,6 +4812,11 @@ async function effectiveSourceInventory(repoRoot, member) {
   return { inventory, recorded: base !== null };
 }
 
+/** Former name kept for Plan callers (u03 A41): the effective inventory itself. */
+export async function predecessorSourceInventory(repoRoot, previous) {
+  return (await effectiveSourceInventory(repoRoot, previous)).inventory;
+}
+
 /** u03i: Store's public read of the effective inventory (todo split builds on it). */
 export async function readTodoEffectiveSourceInventory({ repoRoot, member }) {
   return effectiveSourceInventory(path.resolve(repoRoot ?? process.cwd()), member);
