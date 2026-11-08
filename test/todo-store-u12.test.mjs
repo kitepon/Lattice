@@ -168,3 +168,13 @@ test('v5 carried phase may change membership (older revisions keep phase_carry_s
   assert.deepEqual(store.members[0].plan.tasks.map(({ phase_id }) => phase_id), ['p1', 'p2', 'p2']);
   assert.equal(store.members[0].snapshot.phases.length, 2);
 });
+
+test('one finished predicate: done, or retired from done including historical_import with unknown time', async () => {
+  const { isFinishedTodoTaskState } = await import('../src/todo-store.mjs');
+  const retired = { status: 'retired', done_at: null, imported: false };
+  assert.equal(isFinishedTodoTaskState({ status: 'done', done_at: null, imported: true }), true);
+  assert.equal(isFinishedTodoTaskState({ ...retired, done_at: '2026-11-08T00:00:00.000Z' }), true);
+  assert.equal(isFinishedTodoTaskState({ ...retired, imported: true }), true);
+  assert.equal(isFinishedTodoTaskState(retired), false);
+  assert.equal(isFinishedTodoTaskState({ status: 'in-progress', done_at: null, imported: false }), false);
+});
