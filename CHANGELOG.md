@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.84.2 — 2026-11-09
+
+計画がまだ無いrepoで、初めての`todo status`が断らないようにする修正版。
+
 - 計画がまだ無いrepoで`todo status`を打つと、`STORE_INCONSISTENT/artifact_missing`で断らず、exit 0で`lattice.todo_status_uninitialized.v1`（`plan_count: 0`と、計画の作り方`next_actions`）を返す。判定は`lattice status`と同じ`isUninitializedTodoStore`で、manifestの無いstoreに計画や他のデータが残っている時は従来どおり断る。gitの外で打った時の`REPO_UNRESOLVED`は、次の手に`--help`ではなく`git init`を示す。
 
 ## 0.84.1 — 2026-11-09
