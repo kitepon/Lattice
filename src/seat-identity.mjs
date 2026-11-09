@@ -16,8 +16,16 @@ export function resolveSeatIdentity(env = process.env) {
   return Object.freeze({ seat_id, state_dir });
 }
 
-/** status / session-context の top-level へ混ぜる欄。未設定なら空（欄を出さない）。 */
+/**
+ * session-context の top-level へ混ぜる欄。未設定なら空（欄を出さない）。
+ * 設定したのに不正な値は、断らずに無名へ落とし、捨てた値と規則を名指す（打ち間違いに気づかせる、a33）。
+ */
 export function seatIdentityFields(env = process.env) {
   const { seat_id } = resolveSeatIdentity(env);
-  return seat_id === null ? {} : { seat_id };
+  if (seat_id !== null) return { seat_id };
+  const raw = env.LATTICE_SEAT_ID;
+  // An empty value is the usual way to clear the variable, so it stays silent.
+  if (typeof raw !== 'string' || raw === '') return {};
+  return { seat_id_ignored: { value: raw.slice(0, 80),
+    rule: 'LATTICE_SEAT_ID must be 1-64 of letters, digits, ".", "_", "-", starting with a letter or digit; this seat runs anonymous' } };
 }

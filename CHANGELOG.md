@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `LATTICE_SEAT_ID`に不正な値（空でない）を設定した席は、従来どおり断らずに無名で動き、`session-context --json`の`seat_id_ignored`で捨てた値と規則を示す（a33）。空の値は解除とみなし、何も言わない。
+
 ## 0.85.2 — 2026-11-10
 
 0.85.1の使い通しの点検で、これまで通らなかった道に見つかった所を直す修正版。断りが原因の値・作業と通れる次のコマンドを名指しし、打ち間違いを`ok`で返さない。ホストへの変更：`plan_not_active`の型は`STORE_INCONSISTENT`から`PLAN_NOT_FOUND`、調整済みの計画のverifyの`next_action`は`null`から`"none"`、知らないコマンドは型のあるJSONをstderrへ返す（exit 2は同じ）。

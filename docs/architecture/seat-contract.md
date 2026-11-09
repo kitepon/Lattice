@@ -49,7 +49,8 @@ display and delivery state moves under `~/.lattice/seats/<seat_id>`
 default actor `host` become per-seat as well. This is a one-time transition:
 a start recorded before the seat first set `LATTICE_SEAT_ID` is retracted in
 the old environment, or finished first. An unset or malformed id makes the
-seat anonymous; nothing refuses.
+seat anonymous; nothing refuses. A malformed non-empty id is named in
+`session-context --json` as `seat_id_ignored {value, rule}` so the typo is visible (a33).
 
 ## Turn-start read (a3, Snow 2026-11-08)
 
