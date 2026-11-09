@@ -70,10 +70,10 @@ test('通常実行のJSON出力とexit codeは変わらない', async (t) => {
   assert.equal(result.project_id, 'project-1');
 });
 
-test('storeが無い作業ディレクトリの失敗は握り潰されない', async (t) => {
+// 計画の無いgit repoは0件の答えで成功する（0.84.2）。失敗する場所として、gitの外を使う。
+test('gitの外の作業ディレクトリの失敗は握り潰されない', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-cli-epipe-bare-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  execFileSync('git', ['init', '--quiet'], { cwd: root });
   const { code } = await runCollected(root, ['todo', 'status', '--json']);
   assert.notEqual(code, 0);
 });
