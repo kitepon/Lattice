@@ -24,7 +24,7 @@ const MODULE = /\.(mjs|cjs|js)$/u;
 const CODE = /\.(mjs|cjs|js|json)$/u; // files scanned for references
 
 /** Relative module references in one source text: static/dynamic imports, require, URLs and repo paths. */
-export function referencesIn(text, fromFile) {
+export function referencesIn(text, fromFile, modules = []) {
   const found = new Set();
   const relative = /(?:from\s+|import\(\s*|require\(\s*|new URL\(\s*)['"`](\.{1,2}\/[^'"`]+)['"`]/gu;
   for (const [, ref] of text.matchAll(relative)) {
@@ -32,6 +32,11 @@ export function referencesIn(text, fromFile) {
   }
   // Tests also reach product code by repo path strings (spawned bins, url('src/x.mjs')).
   for (const [, ref] of text.matchAll(/['"`/](?:\.\.\/)*((?:src|bin)\/[\w./-]+\.(?:mjs|cjs|js|json))/gu)) found.add(ref);
+  // Path segments (path.join(ROOT, 'bin', 'lattice.mjs')): a literal equal to a module's basename
+  // reaches every module of that name; a basename collision only over-selects, which is safe.
+  for (const [, name] of text.matchAll(/['"`]([\w.-]+\.(?:mjs|cjs|js|json))['"`]/gu)) {
+    for (const module of modules) if (path.posix.basename(module) === name) found.add(module);
+  }
   if (/sensor\/dist\b|@quolu\/lattice-sensor/u.test(text)) found.add('sensor/');
   return [...found];
 }
@@ -105,19 +110,25 @@ export async function computeCiScope(base, { allTests }) {
   let changed = diff.stdout.split('\n').filter(Boolean);
   // A release bump changes only `version`: run what reads the package files, not the full gate.
   const bumped = changed.filter((file) => /^package(-lock)?\.json$/u.test(file) && versionOnly(base, file));
-  const sources = [...await listFiles('src', 'src'), ...await listFiles('bin', 'bin'), ...await listFiles('test', 'test')];
-  const reverse = new Map();
-  for (const file of sources) {
-    const text = await readFile(path.join(repoRoot, file), 'utf8');
-    // shortcut: a bump runs only suites that read the package files themselves; main's full gate covers the rest.
+  // shortcut: a bump runs only suites that read the package files themselves; main's full gate covers the rest.
+  const graph = await referenceGraph((file, text) => {
     if (bumped.length > 0 && allTests.includes(file.slice('test/'.length)) && /package(-lock)?\.json/u.test(text)) changed.push(file);
-    for (const ref of referencesIn(text, file)) {
+  });
+  changed = changed.filter((file) => !bumped.includes(file));
+  return selectScope({ changed, tests: allTests, ...graph });
+}
+
+/** Reverse reference graph over src/, bin/ and test/ of this checkout; `visit(file, text)` sees each file. */
+export async function referenceGraph(visit = () => {}) {
+  const modules = [...await listFiles('src', 'src'), ...await listFiles('bin', 'bin')];
+  const reverse = new Map();
+  for (const file of [...modules, ...await listFiles('test', 'test')]) {
+    const text = await readFile(path.join(repoRoot, file), 'utf8');
+    visit(file, text);
+    for (const ref of referencesIn(text, file, modules)) {
       if (!reverse.has(ref)) reverse.set(ref, new Set());
       reverse.get(ref).add(file);
     }
   }
-  changed = changed.filter((file) => !bumped.includes(file));
-  return selectScope({ changed, tests: allTests,
-    importers: (file) => [...(reverse.get(file) ?? [])],
-    isImported: (file) => reverse.has(file) });
+  return { importers: (file) => [...(reverse.get(file) ?? [])], isImported: (file) => reverse.has(file) };
 }
