@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.85.0 — 2026-11-10
+
+席の側から使い通した点検（0.84.2）で見つかった止まりを直す版。別の席の改訂で作業の持ち主が移らなくなり、最初の計画が一度で作れ、断りと案内が実在するコマンドを名指しする。
+
 - `status`・`session-context`・`plan show <key>`・`sensor init|sync [path]` は、`--json` を付け忘れても同じ結果を返す。これまでは「unsupported command」や`USAGE`で断っていた。出力は元からJSONだけである。
 - `setup status` は、Latticeが登録されていないAIを`MCP_REGISTRATION_DRIFT`（不一致）と呼ばず、`MCP_NOT_REGISTERED`として登録の`lattice setup --host <host>`を示す。
 - `hooks status` は、そのAIの設定フォルダがHOMEに無い時、`unreadable`ではなく`host_absent`を返し、断られる`hooks install`を案内しない。
