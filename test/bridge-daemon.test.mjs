@@ -45,9 +45,10 @@ async function legacyBindingFixture(context) {
       bridge_path: '/old/lattice-bridge.mjs', last_heartbeat: null })}\n`);
   });
   // The bridge reserves an IPv4 port; Windows excludes IPv6 port ranges separately, so the
-  // same port on ::1 can be EACCES there. Reserve again until ::1 accepts it.
+  // same port on ::1 can be EACCES there. Reserve again until ::1 accepts it; a fresh port each
+  // time, since configureBridge otherwise reuses the saved one and every retry hits the same port.
   for (let attempt = 1; ; attempt += 1) {
-    const reserved = await configureBridge({ address: DHCP_REBOUND, env,
+    const reserved = await configureBridge({ address: DHCP_REBOUND, env, reuseCurrentPort: false,
       upstream: { mode: 'url', url: 'http://127.0.0.1:4318/' } });
     try {
       await new Promise((resolve, reject) => {
