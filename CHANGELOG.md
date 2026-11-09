@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `sensor diff` と、`--input` に値のある `plan revise`・`plan backchain` も、`--json` を付け忘れても同じ結果を返す（a24）。`--input` の付け忘れは従来どおり `--input` を名指しして断る。
+- `setup` の結果で、hooksが `wired` でない時は `state: failed` のまま、`hooks status` の状態名を `code`（例 `HOOKS_NOT_WIRED`）で示す。
+- 計画の案内の残りを直した（a22）。`plan create`のschema（v4・v5）は「全taskに設計メモが要る」ではなく、書かない・null・空なら`NO_PLAN`として記録すると書く（検査は変えない）。`plan --help`に`scope-review`を載せ、素の`plan scope-review`や欠けた引数は、使い方の1行ではなく欄と直し方を持つ`INVALID_ARGUMENTS`で返す。`todo --help`・`todo independence --help`に`independence mode`を載せ、`todo independence mode --help`が使い方を返す。全taskが終わり監査が未着手（`gate_ready`）の時、`lattice status`の`next_action`は`lattice todo phase close-unaudited --plan <key> --phase <id> --reason <text>`を示し、`todo done`の助言と`todo phase status`の案内は経緯の説明を外した1行になる。`todo verify`の`registered_unreconciled`は何もしなくてよい状態として、`--json`の`next_action`が`none`、1行表示が`nothing to do`になる。
+- 残っていた断りも、足りない引数・捨てた値・正しい工程と次のコマンドを名指しする（a23）。`todo phase review`・`phase close-unaudited`・`split`・`note`の引数の誤りは、`pointer`に足りないflagを、`next_action`にそれを足したコマンド全体を載せる（`phase review|close-unaudited`はflagの順を問わない。`note`は`--message`か`--input`のどちらか一つ）。
+- blockedの工程への`todo block --reason`、retiredの工程への`todo retire --reason`は、記録と違う理由なら`not_recorded: ['--reason']`と、残し方（`todo note`、blockなら`unblock`してから`block`し直す）を返す。`todo done`の`not_recorded`は、記録と同じ中身（同じ証拠・同じ文・同じtest result）を挙げない。
+- `todo dependency`の`DEPENDENCY_EXISTS`・`dependency_self_reference`・`dependency_task_not_found`は、`--help`だけでなく、その辺や工程を名指して`lattice plan show <key> --json`を示す（`pointer`は`--to-task`/`--from-task`）。
+- `todo note --input`と`todo done --test-result`は、plan入力と同じくrepo外の絶対pathも読む。証拠（`--evidence`）はrepo内のpathとgit blobで記録し他の席が検証するので、repo外は従来どおり断り、その理由と`--message`を示す。repo外を受けるpathが無い時の文は「repo内」と言わない。
+
 ## 0.85.0 — 2026-11-10
 
 席の側から使い通した点検（0.84.2）で見つかった止まりを直す版。別の席の改訂で作業の持ち主が移らなくなり、最初の計画が一度で作れ、断りと案内が実在するコマンドを名指しする。

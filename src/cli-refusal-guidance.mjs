@@ -49,6 +49,16 @@ const dependencyCycle = {
     return `${edgeName(detail)} would close a cycle${path === null ? '' : ` (${path})`}: leave it out, or disconnect one edge of that path with \`lattice todo dependency disconnect\`.`;
   },
 };
+// a23: dependency refusals name the edge or the task and a command that lists valid ones.
+const depFlag = (ctx, name) => ctx.flags?.[name] ?? `<${name}>`;
+const depRef = (detail) => (record(detail.ref) ? detail.ref : detail);
+const missingSide = (ref, ctx) => (ctx.flags?.['to-plan'] === ref.plan_key
+  && (ref.task_id === undefined || ctx.flags?.['to-task'] === ref.task_id) ? 'to' : 'from');
+const dependencyExists = {
+  pointer: '--to-task',
+  repair: (detail) => `${edgeName(detail)} already exists, so there is nothing to add;`
+    + ` see \`lattice plan show ${record(detail.to) ? detail.to.plan_key : '<plan>'} --json\`.`,
+};
 
 /** The flag that carried the unreadable input: the one whose value is the refused path. */
 function inputFlag(detail, ctx) {
@@ -201,6 +211,22 @@ const REGISTRY = {
   },
   dependency_cycle: dependencyCycle,
   cross_plan_dependency_cycle: dependencyCycle,
+  dependency_already_in_plan: dependencyExists,
+  cross_plan_dependency_duplicate: dependencyExists,
+  dependency_self_reference: {
+    pointer: '--to-task',
+    repair: (detail, ctx) => `--from-task and --to-task name the same task ${depFlag(ctx, 'to-plan')}/${depFlag(ctx, 'to-task')}; a task cannot depend on itself:`
+      + ` set --from-task to the task it waits on (see \`lattice plan show ${depFlag(ctx, 'to-plan')} --json\`).`,
+  },
+  dependency_task_not_found: {
+    pointer: (detail, ctx) => `--${missingSide(depRef(detail), ctx)}-task`,
+    repair: (detail) => `No task ${q(depRef(detail).task_id ?? '')} in plan ${depRef(detail).plan_key}:`
+      + ` run \`lattice plan show ${depRef(detail).plan_key} --json\` to list its task ids.`,
+  },
+  dependency_plan_not_found: {
+    pointer: (detail, ctx) => `--${missingSide(depRef(detail), ctx)}-plan`,
+    repair: (detail) => `${q(depRef(detail).plan_key ?? '')} is not an active plan: run \`lattice todo status --json\` to list the active plan keys.`,
+  },
   join_self_edge: {
     pointer: '/joins',
     repair: () => 'Remove the join whose `after` lists its own id, then rerun.',

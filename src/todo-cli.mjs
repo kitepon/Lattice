@@ -293,6 +293,8 @@ const DONE_FLAG_SPEC = Object.freeze({
 });
 
 const REASON_FLAG_SPEC = Object.freeze({ known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'] });
+const PHASE_REASON_FLAG_SPEC = Object.freeze({ known: ['plan', 'phase', 'reason'], required: ['plan', 'phase', 'reason'] });
+const NOTE_FLAG_SPEC = Object.freeze({ known: ['plan', 'task', 'message', 'input', 'supersedes'], required: ['plan'] });
 const DEPENDENCY_FLAG_SPEC = Object.freeze({
   known: ['from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
   required: ['from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
@@ -312,10 +314,15 @@ const TODO_FLAG_SPECS = Object.freeze({
   reopen: Object.freeze({ known: ['plan', 'task', 'reason', 'override-reason'], required: ['plan', 'task', 'reason'] }),
   'dependency connect': DEPENDENCY_FLAG_SPEC,
   'dependency disconnect': DEPENDENCY_FLAG_SPEC,
+  // a23: the remaining writes whose refusal pointed only at --help.
+  'phase review': PHASE_REASON_FLAG_SPEC,
+  'phase close-unaudited': PHASE_REASON_FLAG_SPEC,
+  split: Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
+  note: NOTE_FLAG_SPEC,
 });
-const IDENTIFIER_FLAGS = ['plan', 'task', 'from-plan', 'from-task', 'to-plan', 'to-task'];
+const IDENTIFIER_FLAGS = ['plan', 'task', 'phase', 'from-plan', 'from-task', 'to-plan', 'to-task'];
 const FLAG_PLACEHOLDER = { reason: '<text>', 'override-reason': '<text>', message: '<text>',
-  evidence: '<file>', 'test-result': '<file>' };
+  evidence: '<file>', 'test-result': '<file>', input: '<file>' };
 const shellWord = (value) => (/^[\w./:@-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`);
 
 /** The command again, with the flags given and a placeholder for each missing required flag. */
@@ -332,12 +339,19 @@ function repairedCommand(head, spec, flags) {
 /** `dependency connect|disconnect` flags by name (order-free), or null. */
 function dependencyFlags(argv) {
   const flags = matchFlagCommand(argv, argv.slice(0, 2), DEPENDENCY_FLAG_SPEC);
-  return flags !== null && IDENTIFIER_FLAGS.slice(2).every((name) => isTodoIdentifier(flags[name])) ? flags : null;
+  return flags !== null && IDENTIFIER_FLAGS.slice(3).every((name) => isTodoIdentifier(flags[name])) ? flags : null;
+}
+
+/** `phase review|close-unaudited` flags by name (order-free), or null. */
+function phaseReasonFlags(argv) {
+  const flags = matchFlagCommand(argv, argv.slice(0, 2), PHASE_REASON_FLAG_SPEC);
+  return flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase) ? flags : null;
 }
 
 /** A todo write's argument refusal names the flag, the rule and the command to run instead. */
 function explainArgumentRefusal(argv) {
-  const head = argv[0] === 'dependency' ? argv.slice(0, 2) : argv.slice(0, 1);
+  if (argv[0] === 'note' && argv[1] === 'list') return {};
+  const head = ['dependency', 'phase'].includes(argv[0]) ? argv.slice(0, 2) : argv.slice(0, 1);
   const spec = TODO_FLAG_SPECS[head.join(' ')];
   if (spec === undefined) return {};
   const { flags } = parseFlagMap(argv.slice(head.length));
@@ -347,7 +361,26 @@ function explainArgumentRefusal(argv) {
   }
   if (flagFailure !== null) return flagFailure;
   for (const name of IDENTIFIER_FLAGS.filter((key) => spec.known.includes(key))) {
+    if (flags[name] === undefined && !spec.required.includes(name)) continue;
     if (!isTodoIdentifier(flags[name])) return { pointer: `--${name}`, rule: 'identifier_invalid', actual: flags[name] };
+  }
+  if (argv[0] === 'note') {
+    const given = ['message', 'input'].filter((name) => typeof flags[name] === 'string' && flags[name].length > 0);
+    if (given.length === 0) {
+      return { pointer: '--message', rule: 'flag_missing',
+        next_action: `Add --message <text> (or --input <file>): \`${repairedCommand(head, { ...spec, required: [...spec.required, 'message'] }, flags)}\`.` };
+    }
+    if (flags.supersedes !== undefined && !isTodoDigest(flags.supersedes)) {
+      return { pointer: '--supersedes', rule: 'digest_invalid', actual: flags.supersedes,
+        next_action: `Pass the note_digest of the note to replace (see \`lattice todo note list --plan ${flags.plan} --json\`).` };
+    }
+    if (given.length === 2) {
+      return { pointer: '--input', rule: 'flags_exclusive',
+        next_action: `Pass either --message or --input, not both: \`${repairedCommand(head, spec, { ...flags, input: undefined })}\`.` };
+    }
+  }
+  if (spec.known.includes('input') && flags.input !== undefined && !isAuthoringPathToken(flags.input)) {
+    return { pointer: '--input', rule: 'path_token_invalid' };
   }
   for (const name of ['override-reason', 'reason']) {
     if (spec.known.includes(name) && flags[name] !== undefined
@@ -434,7 +467,8 @@ function selectNoteTask(member, requestedTaskId) {
 }
 
 async function readNoteTextInput(repoRoot, inputRef) {
-  const located = await resolveAuthoringInputPath(repoRoot, inputRef, { inlineFlag: '--message' });
+  // a23: the text is stored in the journal, so (like plan input) a file outside the repo is read too.
+  const located = await resolveAuthoringInputPath(repoRoot, inputRef, { inlineFlag: '--message', allowOutsideRepo: true });
   const bytes = await readFile(located.absolute);
   if (bytes.length > MAX_NOTE_INPUT_BYTES) {
     throw new TodoStoreError('INPUT_TOO_LARGE', 'note_input_too_large');
@@ -567,23 +601,30 @@ function looksLikeEvidenceDescriptor(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function writeEvidenceBlob(repoRoot, bytes, blobPath) {
+function writeEvidenceBlob(repoRoot, bytes, blobPath, write = true) {
   // worktree pathから作る証拠は`git add`と同じclean filterを通す。生のCRLF bytesを
   // そのままhashすると、commit先はLFへ正規化される一方、descriptorはdangling blobを
   // 指すため、commit後もhard検証を通せない。
-  const oid = gitSync(['hash-object', '-w', `--path=${blobPath}`, '--stdin'], {
+  const oid = gitSync(['hash-object', ...(write ? ['-w'] : []), `--path=${blobPath}`, '--stdin'], {
     cwd: repoRoot, input: bytes, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'],
   }).trim();
-  const storedBytes = gitSync(['cat-file', 'blob', oid], {
-    cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'],
-  });
+  let storedBytes;
+  try {
+    storedBytes = gitSync(['cat-file', 'blob', oid], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (error) {
+    // a23: a comparison-only hash writes nothing; content never stored has no digest to compare.
+    if (!write) return { git_blob_oid: oid, content_digest: null };
+    throw error;
+  }
   return {
     git_blob_oid: oid,
     content_digest: createHash('sha256').update(storedBytes).digest('hex'),
   };
 }
 
-async function resolveDoneEvidence({ repoRoot, evidenceRef, evidenceMessage, planKey, taskId }) {
+async function resolveDoneEvidence({
+  repoRoot, evidenceRef, evidenceMessage, planKey, taskId, write = true, inlineFlag = null,
+}) {
   if (typeof evidenceMessage === 'string') {
     const bytes = Buffer.from(evidenceMessage, 'utf8');
     const sourceDigest = createHash('sha256').update(bytes).digest('hex');
@@ -592,16 +633,16 @@ async function resolveDoneEvidence({ repoRoot, evidenceRef, evidenceMessage, pla
       evidence_id: evidenceIdFor(planKey, taskId),
       repo_id: 'self',
       path: evidencePath,
-      ...writeEvidenceBlob(repoRoot, bytes, evidencePath),
+      ...writeEvidenceBlob(repoRoot, bytes, evidencePath, write),
       media_type: 'text/markdown',
       anchor_digest: null,
     };
-    if (!validateEvidenceDescriptor(descriptor) || !isTodoRef(descriptor.path)) {
+    if (write && (!validateEvidenceDescriptor(descriptor) || !isTodoRef(descriptor.path))) {
       throw new TodoStoreError('INVALID_EVIDENCE', 'authored_evidence_descriptor_invalid');
     }
     return descriptor;
   }
-  const located = await resolveAuthoringInputPath(repoRoot, evidenceRef, { inlineFlag: '--message' });
+  const located = await resolveAuthoringInputPath(repoRoot, evidenceRef, { inlineFlag });
   const bytes = await readFile(located.absolute);
   let text;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
@@ -624,11 +665,11 @@ async function resolveDoneEvidence({ repoRoot, evidenceRef, evidenceMessage, pla
     evidence_id: evidenceIdFor(planKey, taskId),
     repo_id: 'self',
     path: located.inputRef,
-    ...writeEvidenceBlob(repoRoot, bytes, located.inputRef),
+    ...writeEvidenceBlob(repoRoot, bytes, located.inputRef, write),
     media_type: mediaTypeFor(located.inputRef),
     anchor_digest: null,
   };
-  if (!validateEvidenceDescriptor(descriptor)) {
+  if (write && !validateEvidenceDescriptor(descriptor)) {
     throw new TodoStoreError('INVALID_EVIDENCE', 'authored_evidence_descriptor_invalid');
   }
   return descriptor;
@@ -686,23 +727,13 @@ async function readStructureSetDraft(repoRoot, inputRef) {
 }
 
 /**
- * gate_readyの札が出た理由と次の一歩をtypedに言う(ADR 0148裁定8)。
- *
- * 0.36.0で入れた終端監査gate(ADR 0147)は、これから終わる工程だけでなく過去に完了した
- * 工程まで監査待ちにしてしまっていた——原因を言わないgateは、なぜ止まっているかを
- * 説明しないのと同じなので、ここでその経緯を明示する。次の一歩は2択で書く:
- * 今から監査する(review→accept)か、監査せず歴史として閉じる(close-unaudited、
- * 複数plan一括ならbaseline)か。
+ * gate_readyの次の一歩を1行で言う(ADR 0148裁定8・a22)。全taskが終わった席には、軽い出口
+ * (監査せず閉じるclose-unaudited)を先に、監査する道(review→accept)を後に示す。経緯の説明は載せない。
  */
 function auditGateGuidance(planKey, phaseId) {
-  return '全ToDoがdoneになり監査待ち(gate_ready)。0.36.0で入れた終端監査gateは、'
-    + 'これから終わる工程だけでなく過去に完了した工程まで監査待ちにしてしまっていた'
-    + '(ADR 0148で修正)。今から監査するなら: '
-    + `todo phase review --plan ${planKey} --phase ${phaseId} --reason <text> → `
-    + `todo phase accept --plan ${planKey} --phase ${phaseId} --input <file>。`
-    + '監査せず歴史として閉じるなら: '
-    + `todo phase close-unaudited --plan ${planKey} --phase ${phaseId} --reason <text>`
-    + '（複数planをまとめて畳むなら todo phase baseline --reason <text> [--except <plan_key>]...）。';
+  const target = `--plan ${planKey} --phase ${phaseId}`;
+  return `全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited ${target} --reason <text>`
+    + `（監査するなら lattice todo phase review ${target} --reason <text> → accept ${target} --input <file>）`;
 }
 
 /**
@@ -766,6 +797,8 @@ async function mutate({
     ? null
     : await resolveDoneEvidence({
       repoRoot, evidenceRef, evidenceMessage, planKey, taskId,
+      // Only an authored done takes --message as the inline alternative to --evidence.
+      inlineFlag: kind === 'done' && payload === 'authored' ? '--message' : null,
     });
   const testResult = testResultRef === null ? null : await readTestResultInput(repoRoot, testResultRef);
   const materializedEvidence = typeof evidenceMessage === 'string'
@@ -851,8 +884,21 @@ const UNCHANGED_WHEN = {
   retire: ({ status }) => status === 'retired',
 };
 
-/** Unchanged result, or null when the transition must go to the append path. */
-function unchangedTransition(store, { env, planKey, taskId, kind, notRecorded = [] }) {
+// a23: what a repeated transition drops (given content differing from the record), and how to keep it.
+const NOT_RECORDED_NEXT = {
+  done: (on, flags) => `was already done; ${flags} not recorded. Keep the text with \`lattice todo note ${on} --message <text>\`,`
+    + ` or replace the record: \`lattice todo reopen ${on} --reason <text>\`, then start and done again.`,
+  block: (on, flags) => `was already blocked; ${flags} not recorded. Keep the text with \`lattice todo note ${on} --message <text>\`,`
+    + ` or record the new reason: \`lattice todo unblock ${on}\`, then \`lattice todo block ${on} --reason <text>\`.`,
+  retire: (on, flags) => `was already retired (permanent); ${flags} not recorded.`
+    + ` Keep the text with \`lattice todo note ${on} --message <text>\`.`,
+};
+
+/**
+ * Unchanged result, or null when the transition must go to the append path.
+ * `dropped(recordedEvent)` returns the given flags whose content the record does not hold.
+ */
+async function unchangedTransition(store, { env, planKey, taskId, kind, dropped = async () => [] }) {
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   const matches = member?.tasks.filter(({ task_id: current }) => current.toLowerCase() === taskId.toLowerCase()) ?? [];
   // Unknown or ambiguous plan/task: the append path keeps Store's refusal.
@@ -863,18 +909,17 @@ function unchangedTransition(store, { env, planKey, taskId, kind, notRecorded = 
   // Another seat's in-progress task is not this seat's repeated start; keep the task_state refusal.
   if (kind === 'start' && recorded?.actor?.agent !== resolveTodoActor(env).agent) return null;
   const shown = recorded ?? events.findLast((event) => event.task_id === state.task_id) ?? events.at(-1);
+  const notRecorded = await dropped(recorded);
   const result = {
     schema: 'lattice.todo_mutation_result.v2',
     project_id: member.plan.project_id, plan_key: planKey, plan_version: member.plan.plan_version,
     task_id: state.task_id, kind, sequence: shown.sequence, event_digest: shown.event_digest,
     journal_head_digest: events.at(-1).event_digest, snapshot_digest: member.snapshot.snapshot_digest,
     status: state.status, advisory: null, unchanged: true,
-    // a18: a repeated done appends nothing, so say which given content was not recorded.
+    // a18: a repeated transition appends nothing, so say which given content was not recorded.
     ...(notRecorded.length === 0 ? {} : {
       not_recorded: notRecorded,
-      next_action: `${planKey}/${state.task_id} was already done; ${notRecorded.join(', ')} not recorded.`
-        + ` Keep the text with \`lattice todo note --plan ${planKey} --task ${state.task_id} --message <text>\`,`
-        + ` or replace the record: \`lattice todo reopen --plan ${planKey} --task ${state.task_id} --reason <text>\`, then start and done again.`,
+      next_action: `${planKey}/${state.task_id} ${NOT_RECORDED_NEXT[kind](`--plan ${planKey} --task ${state.task_id}`, notRecorded.join(', '))}`,
     }),
     result_digest: '',
   };
@@ -885,7 +930,46 @@ function unchangedTransition(store, { env, planKey, taskId, kind, notRecorded = 
 /** block/unblock/done: an unchanged no-op first, else the append path. */
 async function mutateUnlessUnchanged(options) {
   const store = await readTodoStore({ repoRoot: options.repoRoot });
-  return unchangedTransition(store, options) ?? options.action();
+  return (await unchangedTransition(store, options)) ?? options.action();
+}
+
+/** a23: block/retire drop a --reason that differs from the recorded one. */
+const reasonDropped = (reason) => async (recorded) => (recorded?.payload?.reason === reason ? [] : ['--reason']);
+
+/** The evidence a `todo done` records: the message (naming the file when both are given), the file, or the default text. */
+async function doneEvidenceInput({ repoRoot, flags, write = true }) {
+  const hasEvidence = isAuthoringPathToken(flags.evidence);
+  const hasMessage = typeof flags.message === 'string' && flags.message.length > 0;
+  if (hasEvidence && hasMessage) {
+    // The message is the record; it names the resolved file so nothing given is lost.
+    const file = await resolveDoneEvidence({
+      repoRoot, evidenceRef: flags.evidence, evidenceMessage: null, planKey: flags.plan, taskId: flags.task,
+      write, inlineFlag: '--message',
+    });
+    return { evidenceRef: null, evidenceMessage: `${flags.message}\n\nevidence: ${file.repo_id}:${file.path}`
+      + ` (git blob ${file.git_blob_oid}, sha256 ${file.content_digest})\n` };
+  }
+  if (hasEvidence) return { evidenceRef: flags.evidence, evidenceMessage: null };
+  return { evidenceRef: null, evidenceMessage: hasMessage ? flags.message : DONE_WITHOUT_EVIDENCE_MESSAGE };
+}
+
+/**
+ * a23: the content flags of a repeated done that the recorded done does not hold. Compared by git blob,
+ * hashed without writing; a file that cannot be read counts as differing.
+ */
+async function doneDropped({ repoRoot, flags, recorded }) {
+  const given = (names) => names.filter((name) => flags[name] !== undefined).map((name) => `--${name}`);
+  const sameEvidence = async () => {
+    const evidence = await resolveDoneEvidence({ repoRoot, ...await doneEvidenceInput({ repoRoot, flags, write: false }),
+      planKey: flags.plan, taskId: flags.task, write: false });
+    return evidence.git_blob_oid === recorded?.payload?.evidence?.git_blob_oid;
+  };
+  const sameTestResult = async () => (await readTestResultInput(repoRoot, flags['test-result'])) === recorded?.payload?.test_result;
+  const differs = async (same) => { try { return !(await same()); } catch { return true; } };
+  return [
+    ...(given(['message', 'evidence']).length > 0 && await differs(sameEvidence) ? given(['message', 'evidence']) : []),
+    ...(flags['test-result'] !== undefined && await differs(sameTestResult) ? ['--test-result'] : []),
+  ];
 }
 
 /** a18: the live tasks with an edge (plan, join or ledger) from the task being retired, sorted. */
@@ -916,7 +1000,9 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     // 未知のplan/taskはStoreの既存の拒否をそのまま通す。
     return mutate({ repoRoot, env, planKey, taskId, kind: 'retire', payload: { reason }, evidenceRef: null });
   }
-  if (state.status === 'retired') return unchangedTransition(store, { env, planKey, taskId, kind: 'retire' });
+  if (state.status === 'retired') {
+    return unchangedTransition(store, { env, planKey, taskId, kind: 'retire', dropped: reasonDropped(reason) });
+  }
   const dependents = retireDependents(store, member, taskId);
   const append = async () => {
     let result;
@@ -1116,7 +1202,7 @@ async function startTask({
     });
   }
   const resolvedTaskId = readyTask?.task_id ?? taskMatches[0].task_id;
-  const unchanged = unchangedTransition(store, { env, planKey, taskId: resolvedTaskId, kind: 'start' });
+  const unchanged = await unchangedTransition(store, { env, planKey, taskId: resolvedTaskId, kind: 'start' });
   if (unchanged !== null) return unchanged;
   // noteはjournal appendより前に読む。壊れていてもstartは通す（ADR 0166 / 0181）。
   let noteContext;
@@ -4179,9 +4265,9 @@ async function verify({ repoRoot, requestedPlanKey }) {
         meaning: 'source_inventory_verification_state',
         lifecycle_blocked: false,
         dashboard_visibility_blocked: false,
-        // 席の経路は軽い改訂（plan revise）。反映後のplanはreconciledになる。
-        schema_command: reconciled ? null : 'lattice plan revise --schema --json',
-        next_action: reconciled ? null : 'lattice plan revise --input <revision.json> --json',
+        // registered_unreconciledは何もしなくてよい状態（a22）。次の軽い改訂がreconciledにする。
+        schema_command: null,
+        next_action: reconciled ? null : 'none',
       },
     };
   });
@@ -4216,7 +4302,7 @@ async function verify({ repoRoot, requestedPlanKey }) {
 // ここへ届くのは検証が通った結果だけ。注意が要るのはsnapshot古さとcommit前の証拠）。
 function verifyVerdictLine(result) {
   const members = result.verified_members.map((member) => `${member.plan_key} ${member.reconciliation_state}${
-    member.reconciliation_state === 'reconciled' ? '' : ', lifecycle not blocked'}`);
+    member.reconciliation_state === 'reconciled' ? '' : ', nothing to do'}`);
   const notes = [];
   if (result.snapshot_stale) notes.push('snapshot stale');
   if (result.uncommitted_evidence.length > 0) {
@@ -4357,10 +4443,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && (argv.length === 3 || argv[3] === '--json')) {
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: argv[2] });
   } else if (argv[0] === 'note' && argv[1] !== 'list') {
-    const flags = matchFlagCommand(argv, ['note'], {
-      known: ['plan', 'task', 'message', 'input', 'supersedes'],
-      required: ['plan'],
-    });
+    const flags = matchFlagCommand(argv, ['note'], NOTE_FLAG_SPEC);
     const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
     const hasInput = isAuthoringPathToken(flags?.input);
     if (flags !== null && isTodoIdentifier(flags.plan)
@@ -4544,9 +4627,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       action = (repoRoot) => revise({ repoRoot, env, planKey: flags.plan, inputRef: flags.input });
     }
   } else if (argv[0] === 'split') {
-    const flags = matchFlagCommand(argv, ['split'], {
-      known: ['plan', 'input'], required: ['plan', 'input'],
-    });
+    const flags = matchFlagCommand(argv, ['split'], TODO_FLAG_SPECS.split);
     if (flags !== null && isTodoIdentifier(flags.plan) && isAuthoringPathToken(flags.input)) {
       action = (repoRoot) => splitTodo({ repoRoot, env, planKey: flags.plan, inputRef: flags.input });
     }
@@ -4567,12 +4648,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } else if (argv.length === 4 && argv[0] === 'phase' && argv[1] === 'status'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3])) {
     action = (repoRoot) => phaseStatus({ repoRoot, planKey: argv[3] });
-  } else if (argv.length === 8 && argv[0] === 'phase' && argv[1] === 'review'
-    && argv[2] === '--plan' && isTodoIdentifier(argv[3])
-    && argv[4] === '--phase' && isTodoIdentifier(argv[5])
-    && argv[6] === '--reason' && argv[7].length > 0) {
-    action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: argv[3], phaseId: argv[5],
-      kind: 'phase_review', payload: { reason: argv[7] } });
+  } else if (argv[0] === 'phase' && argv[1] === 'review'
+    && phaseReasonFlags(argv) !== null) {
+    const flags = phaseReasonFlags(argv);
+    action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
+      kind: 'phase_review', payload: { reason: flags.reason } });
   } else if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
     const outcome = argv[1];
     const flags = matchFlagCommand(argv, ['phase', outcome], {
@@ -4599,12 +4679,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && (argv.length === 8 || (argv[8] === '--override-reason' && argv[9].length > 0))) {
     action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: argv[3], phaseId: argv[5],
       kind: 'phase_reopen', payload: { reason: argv[7], override_reason: argv[9] ?? null } });
-  } else if (argv.length === 8 && argv[0] === 'phase' && argv[1] === 'close-unaudited'
-    && argv[2] === '--plan' && isTodoIdentifier(argv[3])
-    && argv[4] === '--phase' && isTodoIdentifier(argv[5])
-    && argv[6] === '--reason' && argv[7].length > 0) {
-    action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: argv[3], phaseId: argv[5],
-      kind: 'phase_close_unaudited', payload: { reason: argv[7] } });
+  } else if (argv[0] === 'phase' && argv[1] === 'close-unaudited'
+    && phaseReasonFlags(argv) !== null) {
+    const flags = phaseReasonFlags(argv);
+    action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
+      kind: 'phase_close_unaudited', payload: { reason: flags.reason } });
   } else if (argv.length >= 4 && argv[0] === 'phase' && argv[1] === 'baseline'
     && argv[2] === '--reason' && argv[3].length > 0
     && parseBaselineExceptFlags(argv.slice(4)) !== null) {
@@ -4629,36 +4708,17 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   } else if (argv[0] === 'done') {
     const flags = matchFlagCommand(argv, ['done'], DONE_FLAG_SPEC);
-    const hasEvidence = isAuthoringPathToken(flags?.evidence);
-    const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
     // u03 A58: both, one or neither of --evidence/--message is accepted.
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
-      && (flags.evidence === undefined || hasEvidence)
+      && (flags.evidence === undefined || isAuthoringPathToken(flags.evidence))
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'done', notRecorded: ['message', 'evidence', 'test-result']
-          .filter((name) => flags[name] !== undefined).map((name) => `--${name}`),
-        action: async () => {
-          let evidenceMessage = hasMessage ? flags.message : null;
-          if (hasEvidence && hasMessage) {
-            // The message is the record; it names the resolved file so nothing given is lost.
-            const file = await resolveDoneEvidence({
-              repoRoot, evidenceRef: flags.evidence, evidenceMessage: null,
-              planKey: flags.plan, taskId: flags.task,
-            });
-            evidenceMessage = `${flags.message}\n\nevidence: ${file.repo_id}:${file.path}`
-              + ` (git blob ${file.git_blob_oid}, sha256 ${file.content_digest})\n`;
-          } else if (!hasEvidence && !hasMessage) {
-            evidenceMessage = DONE_WITHOUT_EVIDENCE_MESSAGE;
-          }
-          return mutate({
-            repoRoot, env, planKey: flags.plan, taskId: flags.task,
-            kind: 'done', payload: 'authored',
-            evidenceRef: evidenceMessage === null ? flags.evidence : null,
-            evidenceMessage,
-            testResultRef: flags['test-result'] ?? null,
-          });
-        } });
+        kind: 'done', dropped: (recorded) => doneDropped({ repoRoot, flags, recorded }),
+        action: async () => mutate({
+          repoRoot, env, planKey: flags.plan, taskId: flags.task, kind: 'done', payload: 'authored',
+          ...await doneEvidenceInput({ repoRoot, flags }),
+          testResultRef: flags['test-result'] ?? null,
+        }) });
     }
   }
   if (action === null && argv[0] === 'retract') {
@@ -4672,7 +4732,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const flags = matchFlagCommand(argv, ['block'], TODO_FLAG_SPECS.block);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'block', action: () => mutate({
+        kind: 'block', dropped: reasonDropped(flags.reason), action: () => mutate({
           repoRoot, env, planKey: flags.plan, taskId: flags.task,
           kind: 'block', payload: { reason: flags.reason }, evidenceRef: null,
         }) });

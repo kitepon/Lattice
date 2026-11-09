@@ -168,6 +168,8 @@ Both are machine facts (seat contract), so they leave the author's input:
 | `--template` | no `project_id`/`plan_version`; `plan_key` = repo root name as an identifier inside a git repo, `main` outside one |
 | fresh-repo `status` / `session-context` | `next_action.command` = `lattice plan create --template --json` (a real command; `input_schema`/`schema_command` keys unchanged, status v1 is frozen) |
 | schema text | `plan_create_input.v5` no longer requires `project_id`/`plan_version`; the scope-review pointer is the full argv `lattice plan scope-review --plan-input <file> --review <scope-review.json> --json` |
+| design memo text (a22) | v4/v5 schema description says every task carries a design memo and that an omitted, null or blank one is recorded as `NO_PLAN`, matching `fillAuthoringDefaults` (no new refusal) |
+| `plan scope-review` arguments (a22) | listed in `plan --help`; `--schema --json` returns the review schema; any other argv goes through `matchFlagCommand` (`--plan-input`, `--review` required, `--json` required) and a mismatch returns typed `INVALID_ARGUMENTS`/`plan_arguments_invalid` (`planArgumentFailure`, exit 2) instead of the plain usage line |
 
 Edge direction (schema text and `--template`): `from` is the prerequisite,
 `to` starts after `from` is done.

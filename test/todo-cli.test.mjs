@@ -292,8 +292,7 @@ test('todo verifyは全member/plan指定のexact result wireを一行で返す',
     assert.deepEqual(output.verified_members[0].reconciliation_guidance, {
       meaning: 'source_inventory_verification_state', lifecycle_blocked: false,
       dashboard_visibility_blocked: false,
-      schema_command: 'lattice plan revise --schema --json',
-      next_action: 'lattice plan revise --input <revision.json> --json',
+      schema_command: null, next_action: 'none',
     });
   }
 });
@@ -311,7 +310,7 @@ test('todo verifyは--jsonが無ければ判定1行だけを返し、--jsonのwi
     [['todo', 'verify', '--plan', 'main'], '1 plan verified']]) {
     const plain = runCli(root, args);
     assert.equal(plain.status, 0, plain.stderr);
-    assert.equal(plain.stdout, `todo verify: ok, ${scope} (main registered_unreconciled, lifecycle not blocked)\n`);
+    assert.equal(plain.stdout, `todo verify: ok, ${scope} (main registered_unreconciled, nothing to do)\n`);
   }
   assert.deepEqual(successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json'])).verified_members,
     json.verified_members);

@@ -24,7 +24,9 @@ async function hookResult(host, options, statusOnly) {
     if (installed.exit !== 0) return { ...installed.result, state: 'failed' };
   }
   const status = await invoke('status');
-  return { ...status.result, state: status.exit === 0 && status.result.state === 'wired' ? 'verified' : 'failed' };
+  if (status.exit === 0 && status.result.state === 'wired') return { ...status.result, state: 'verified' };
+  // Keep setup's verified/failed, and name the hooks status state as the code (as MCP does).
+  return { ...status.result, state: 'failed', code: `HOOKS_${String(status.result.state ?? 'failed').toUpperCase()}` };
 }
 
 async function configureHost(host, options, statusOnly) {

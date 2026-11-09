@@ -186,11 +186,18 @@ test('JSONしか出さない読取は--jsonの付け忘れでも同じ結果を�
     assert.doesNotMatch(bare.stderr, /unsupported command/u);
   }
   assert.equal(run(root, ['status', '--bogus']).status, 2);
+  // a24: a plan write with --input <file> implies --json; a missing --input is still named.
+  const revise = run(root, ['plan', 'revise', '--input', 'absent.json']);
+  assert.doesNotMatch(revise.stderr, /flag_missing/u);
+  assert.match(run(root, ['plan', 'revise', '--input']).stderr, /"pointer":"--input"/u);
   for (const args of [['sensor', 'init'], ['sensor', 'sync']]) {
     const sensor = run(root, args);
     assert.equal(sensor.status, 0, `${args.join(' ')}: ${sensor.stderr}`);
     assert.equal(JSON.parse(sensor.stdout).status, 'ok');
   }
+  const diff = run(root, ['sensor', 'diff', '.', '.']);
+  assert.equal(diff.status, 0, diff.stderr);
+  assert.equal(JSON.parse(diff.stdout).command, 'diff');
 });
 
 // Windowsは末尾空白のディレクトリ自体をOSが作らせないため、この性質はPOSIXだけで検証できる。

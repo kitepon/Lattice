@@ -178,6 +178,15 @@ test('未登録のAIをstatusは不一致と呼ばず、登録のcommandを示�
   assert.match(mcp.message, /lattice setup --host codex/u);
 });
 
+test('setup statusのhooksはhooks statusの状態名をcodeで示す', { skip: process.platform === 'win32' }, async (t) => {
+  const { home, env } = await fixture(t);
+  await mkdir(path.join(home, '.claude'));
+  const hooks = (await invoke(env, ['status', '--host', 'claude'])).value.hosts[0].hooks;
+  assert.equal(hooks.state, 'failed');
+  assert.equal(hooks.code, 'HOOKS_NOT_WIRED');
+  assert.equal(hooks.next_action, 'lattice hooks install --host claude');
+});
+
 test('CODEX_HOMEとClaude設定先をMCP・hookで共有する', { skip: process.platform === 'win32' }, async (t) => {
   const { env, home } = await fixture(t);
   env.CODEX_HOME = path.join(home, 'custom codex');

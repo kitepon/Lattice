@@ -354,7 +354,7 @@ predecessor source消失は`predecessor_source_silently_dropped`として拒否�
 `lattice.todo_revision_set_result.v1`、statusはreconciliation identityを含む
 `lattice.todo_status_result.v6`、verifyはsource inventoryを再検査する`lattice.todo_verify_result.v4`を返す（v3＋commit前の証拠を項目で示す`uncommitted_evidence`、a12）。
 verify v3の各memberは`reconciliation_guidance`を持ち、`registered_unreconciled`がsource inventoryの
-検証状態であってlifecycle操作とdashboard表示を塞がないこと、および軽い改訂（`lattice plan revise --schema --json`・`lattice plan revise --input <revision.json> --json`）で解消できることを示す。`--json`が無い`todo verify`は、同じ結果から導いた判定1行だけを返す（a19）。
+検証状態であってlifecycle操作とdashboard表示を塞がず、何もしなくてよいこと（`next_action: "none"`、a22）を示す。次の軽い改訂（`lattice plan revise`）がreconciledにする。`--json`が無い`todo verify`は、同じ結果から導いた判定1行だけを返す（a19）。
 status v6の`dispatch_frontier`は`next_ready`全件を既定の同時dispatch集合とし、推奨同時数、
 frontier digest、subset選択時の理由要否を機械表示する。readyが複数でも最初の`todo start`は
 flagなしで通る。`--parallel-frontier`と`--override-reason`は方針・理由の記録であり門ではない
@@ -378,8 +378,10 @@ flagなしで通る。`--parallel-frontier`と`--override-reason`は方針・理
 監査待ち（`gate_ready`／`reviewing`／`rejected`）のPhaseを`audit_pending`欄へ
 `{plan_key, phase_id, phase_status, implicit, required_evidence_slots, next_commands}`として列挙し、
 `accepted`／`closed_unaudited`は出さない。`lattice status`は`state`を`ready`のまま変えず、
-`next_action.reason`を`no_ready_task`ではなく`audit_pending`とし、読み取り専用の
-`todo phase status --plan <key>`を案内する。優先順位は`active_run`＞`next_ready`＞`audit_pending`＞なしで、
+`next_action.reason`を`no_ready_task`ではなく`audit_pending`とする。先頭の監査待ちが`gate_ready`なら
+軽い出口`todo phase close-unaudited --plan <key> --phase <id> --reason <text>`を、`reviewing`／`rejected`なら
+読み取り専用の`todo phase status --plan <key>`を案内する（a22）。`gate_ready`の案内文は、軽い出口と
+監査する道を1行で示す。優先順位は`active_run`＞`next_ready`＞`audit_pending`＞なしで、
 ready frontierが在る間はADR 0063の並列開始コマンドが勝つ。これはgateの追加ではなく可視性の修正であり、
 dispatchも状態機械も変えない。
 

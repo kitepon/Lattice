@@ -307,7 +307,13 @@ function looksLikeProse(value) {
     || (/\s/u.test(value) && !/[/\\]/u.test(value));
 }
 
-// allowOutsideRepo: 中身のJSONを読むだけのcallerはrepo外の絶対pathも受ける(a17)。git blobを求めるcallerは既定のまま拒む。
+function outsideRepoAction(canonicalRoot, inlineFlag) {
+  return 'この引数は証拠としてrepo内のpathとgit blobで記録し、他の席がそれを検証するので、repo内のfileだけ受理する。'
+    + `repo外(/tmp等)にあるならrepo内へ写してから渡す${inlineFlag ? `か、本文を ${inlineFlag} <text> で渡す` : ''}（repo_root: ${canonicalRoot}）`;
+}
+
+// allowOutsideRepo: 中身だけを読むcaller(JSON入力・note本文・test result)はrepo外の絶対pathも受ける(a17, a23)。
+// 証拠はrepo内のpathとgit blobで記録し他の席が検証するので、既定のまま拒む。
 export async function resolveAuthoringInputPath(repoRoot, inputRef, {
   inlineFlag = null, allowOutsideRepo = false,
 } = {}) {
@@ -318,6 +324,8 @@ export async function resolveAuthoringInputPath(repoRoot, inputRef, {
   const candidate = path.isAbsolute(inputRef)
     ? inputRef
     : path.resolve(canonicalRoot, inputRef);
+  // a23: 「repo内」と言うのは、repo外を拒むcallerの時だけ。
+  const fileKind = allowOutsideRepo ? 'file path（repo外は絶対path）' : 'repo内のfile path';
   let stats;
   try { stats = await lstat(candidate); } catch {
     fail('INPUT_UNREADABLE', 'input_missing', {
@@ -325,9 +333,9 @@ export async function resolveAuthoringInputPath(repoRoot, inputRef, {
       repo_root: canonicalRoot,
       next_action: looksLikeProse(inputRef)
         ? (inlineFlag
-          ? `この引数はrepo内のfile pathを取る。文章をそのまま渡すなら ${inlineFlag} <text> を使う`
-          : 'この引数はrepo内のfile pathを取る。渡された値は本文に見える——先にfileへ書いてからそのpathを渡す')
-        : `repo内に存在するfile pathを渡す（repo_root: ${canonicalRoot}）`,
+          ? `この引数は${fileKind}を取る。文章をそのまま渡すなら ${inlineFlag} <text> を使う`
+          : `この引数は${fileKind}を取る。渡された値は本文に見える——先にfileへ書いてからそのpathを渡す`)
+        : `存在する${fileKind}を渡す（相対pathはrepo_rootから解く: ${canonicalRoot}）`,
     });
   }
   if (stats.isSymbolicLink() || !stats.isFile()) {
@@ -342,7 +350,7 @@ export async function resolveAuthoringInputPath(repoRoot, inputRef, {
     fail('INPUT_UNREADABLE', 'input_path_outside_repo', {
       input_ref: inputRef,
       repo_root: canonicalRoot,
-      next_action: `repo内のfileだけ受理する。repo外(/tmp等)にあるならrepo内へ写してから渡す（repo_root: ${canonicalRoot}）`,
+      next_action: outsideRepoAction(canonicalRoot, inlineFlag),
     });
   }
   if (stats.size > MAX_AUTHORING_INPUT_BYTES) fail('INPUT_TOO_LARGE', 'input_size_limit_exceeded');
@@ -351,7 +359,7 @@ export async function resolveAuthoringInputPath(repoRoot, inputRef, {
     fail('INPUT_UNREADABLE', 'input_path_outside_repo', {
       input_ref: inputRef,
       repo_root: canonicalRoot,
-      next_action: `repo内のfileだけ受理する。repo外(/tmp等)にあるならrepo内へ写してから渡す（repo_root: ${canonicalRoot}）`,
+      next_action: outsideRepoAction(canonicalRoot, inlineFlag),
     });
   }
   return {
