@@ -397,4 +397,23 @@ a13-retired-predecessor. Table 1 steps 20–21 keep their order of checks.
 | Plan: `todo done` help (a12) | — | `done --plan <key> --task <id> [--evidence <file>] [--message <text>]`: both, one or neither (A58). | — |
 | Store + Plan: retired predecessor (a13) | task state | `isFinishedTodoTaskState(state)` = status done or retired. Store replay dependenciesDone, readiness predecessorsDone and status `unmet_dependencies` share it, so a retired predecessor no longer holds its successors. The order gate for unfinished (non-retired) predecessors and phase acceptance gates stay. | Old readers replay a start/done recorded after a retired-unfinished predecessor as STORE_INCONSISTENT/invalid_start_transition; same rollout as plan v8 (seats update before writing one). |
 
+## Refusals name the field, the cause and the next command (a18; Ludmila 2026-11-10)
+
+Plan bellteam-adoption-20261108, task a18-refusal-names-field (0.84.2 seat
+walkthrough). Seat contract: a refusal names the field and the rule. No order of
+checks changes; only refusal detail, codes of two dependency refusals and
+additive result keys.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: argument refusal (cli `explainArgumentRefusal`) | argv of `start`, `retract`, `block`, `unblock`, `retire`, `reopen`, `done`, `dependency connect|disconnect` | One flag spec per command (`TODO_FLAG_SPECS`) is both the parser (`matchFlagCommand`) and the explanation (`explainFlagCommand`): `INVALID_ARGUMENTS/todo_arguments_invalid` with `pointer` = the flag (`--reason`), `rule` = `flag_missing`/`flag_unknown`/`identifier_invalid`/…, and `next_action` = the full command with the missing flag (`lattice todo block --plan P --task T --reason <text>`). `dependency connect|disconnect` parse by flag name (order-free), like the other writes. | — |
+| Plan: unknown subcommand | argv[0] | `available_commands` lists every dispatched command, `dependency` and `retract` included, so a dependency argument error is `INVALID_ARGUMENTS`, never `UNKNOWN_SUBCOMMAND`. | — |
+| Plan: transition guidance (cli-refusal-guidance) | a12 detail (`cause`, `status`, `blocking_tasks`) | `task_state` by status: blocked → `lattice todo unblock`; done → `lattice todo reopen --reason <text>`; in-progress (another seat) → it is already started; retired → retire is permanent. `predecessor_unfinished` by the first blocker's status: pending → start it, in-progress → record done on it, blocked → unblock it, each with its command. | — |
+| Plan: repeated `done` (a12 unchanged) | flags of the repeated call | Still no event. The result adds `not_recorded: ['--message'/'--evidence'/'--test-result', …]` (the content flags given) and `next_action` = keep the text with `lattice todo note --plan P --task T --message <text>`, or replace the record with `lattice todo reopen …`. Absent when no content flag was given. | — |
+| Plan: retire with dependents | unlocked read before append: plan edges, joins, live ledger edges | The retire result adds `dependents: [{plan_key, task_id, status}]` (tasks with an edge from the retired task, sorted) and, when non-empty, `next_action` saying they no longer wait on it (a13) with `lattice todo status --json`. Unchanged retire keeps its shape. | — |
+| Store: merged cycle detail | `validateMergedGraph` DFS | `merged_cycle` detail adds `cycle: [{plan_key, task_id}/{plan_key, phase_id}]` (the closed path, first node repeated last). Code stays STORE_INCONSISTENT for a stored graph. | — |
+| Plan: connect closing a cycle | same-plan light revision or ledger | `DEPENDENCY_CYCLE` with `from`, `to`, `cycle`; reason `dependency_cycle` (same plan) or `cross_plan_dependency_cycle` (ledger, unchanged); `next_action` names the existing path that the new edge would close. Never STORE_INCONSISTENT. | Nothing is written. |
+| Plan: disconnect of a missing edge | plan body edges, live ledger edges | `DEPENDENCY_NOT_FOUND` (was DEPENDENCY_INVALID): same plan → reason `dependency_not_found` with `from`, `to`, `predecessors` (the to-task's current in-plan predecessors) and next_action `lattice plan show P --json`; cross-plan keeps reason `cross_plan_dependency_not_found`. | — |
+| Plan: `plan show` `depends_on_count` | plan edges, task states | An edge whose from or to task is retired is not counted (a13: retire removes its edges from readiness). | — |
+
 Patent: lifecycle transitions are outside claims 1–12.

@@ -6,6 +6,11 @@
 - `setup status` は、Latticeが登録されていないAIを`MCP_REGISTRATION_DRIFT`（不一致）と呼ばず、`MCP_NOT_REGISTERED`として登録の`lattice setup --host <host>`を示す。
 - `hooks status` は、そのAIの設定フォルダがHOMEに無い時、`unreadable`ではなく`host_absent`を返し、断られる`hooks install`を案内しない。
 - 席の契約に、最初の計画の書き込みで席の工程表（dashboard）が起きることを書いた。
+- 断る時は、足りない引数・原因の工程・次に打つコマンドを名指しする（a18）。`todo block`・`retire`・`reopen`・`retract`・`unblock`・`start`・`dependency connect|disconnect`の引数の誤りは、`pointer`に足りないflag（`--reason`など）を、`next_action`にそのflagを足したコマンド全体を載せる。`todo dependency`の引数の誤りは`UNKNOWN_SUBCOMMAND`ではなく`INVALID_ARGUMENTS`になり、flagの順は問わない。
+- `todo start`の断りは、blockedなら`todo unblock`を、doneなら`todo reopen --reason`を示す。前の工程がまだpendingなら「先にそれをstartする」と示す（これまでは「doneを記録せよ」だった）。
+- done済みの工程に`--message`などを付けてもう一度`todo done`すると、従来どおり何も書かず`unchanged: true`で返し、`not_recorded`で記録しなかったflagを、`next_action`で`todo note`か`todo reopen`を示す。
+- 依存の循環を閉じる`dependency connect`は`STORE_INCONSISTENT/merged_cycle`ではなく`DEPENDENCY_CYCLE`で断り、`cycle`に閉じる道の工程を並べる。無い辺の`disconnect`は`DEPENDENCY_NOT_FOUND`になり、同じplanなら`dependency_not_found`と、その工程の今の前の工程（`predecessors`）を示す。
+- 他の工程が依存している工程を`todo retire`すると、結果の`dependents`にその工程を載せ、もう待たないことを`next_action`で伝える。`plan show`の`depends_on_count`は、retiredの工程との辺を数えない。
 
 ## 0.84.2 — 2026-11-09
 

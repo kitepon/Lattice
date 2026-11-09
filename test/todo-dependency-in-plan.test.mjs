@@ -136,7 +136,7 @@ test('same-plan disconnect still tombstones a ledger edge and refuses a missing 
   const missing = run(root, ['todo', 'dependency', 'disconnect', ...edgeArgs('a', 'b'), '--reason', '再除去']);
   assert.notEqual(missing.status, 0);
   const text = missing.stderr + missing.stdout;
-  assert.match(text, /cross_plan_dependency_not_found/u);
+  assert.match(text, /DEPENDENCY_NOT_FOUND.*dependency_not_found/u);
   assert.match(text, /lattice plan show work --json/u);
 });
 

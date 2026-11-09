@@ -18,10 +18,36 @@ const showTask = (detail, ctx) => `lattice todo show --plan ${planOf(detail, ctx
 const startTask = (detail, ctx) => `lattice todo start --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
 // a12: name the blocking task (seat contract), falling back to the refused task's own detail.
 const blocker = (detail) => (Array.isArray(detail.blocking_tasks) ? detail.blocking_tasks.find(record) : undefined);
+// a18: the step that moves the blocker on depends on its status (a pending one is started first).
 const unfinishedFirst = (detail, ctx) => {
   const first = blocker(detail);
   if (first === undefined) return `Record done on its unfinished predecessors first (see \`${showTask(detail, ctx)}\`)`;
-  return `Record done on ${first.plan_key}/${first.task_id} (${first.status}) first (see \`lattice todo show --plan ${first.plan_key} --task ${first.task_id} --json\`)`;
+  const name = `${first.plan_key}/${first.task_id} (${first.status})`;
+  const on = `--plan ${first.plan_key} --task ${first.task_id}`;
+  return ({
+    pending: `Start ${name} first with \`lattice todo start ${on}\`, then record done on it`,
+    blocked: `Unblock ${name} with \`lattice todo unblock ${on}\`, then record done on it`,
+  })[first.status] ?? `Record done on ${name} first with \`lattice todo done ${on} --message <text>\` (see \`lattice todo show ${on} --json\`)`;
+};
+const startState = (detail, ctx) => {
+  const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+  return ({
+    blocked: `It is blocked: run \`lattice todo unblock ${on}\`; that resumes it (no start needed).`,
+    done: `It is done: to work on it again run \`lattice todo reopen ${on} --reason <text>\`.`,
+    'in-progress': `It is already in-progress under another seat; see \`${showTask(detail, ctx)}\`.`,
+    retired: `It is retired, which is permanent; see \`${showTask(detail, ctx)}\`.`,
+  })[detail.status] ?? `Only a pending task can start; check its status with \`${showTask(detail, ctx)}\`.`;
+};
+const cyclePath = (detail) => (Array.isArray(detail.cycle)
+  ? detail.cycle.filter(record).map((node) => `${node.plan_key}/${node.task_id ?? `phase:${node.phase_id}`}`).join(' -> ')
+  : null);
+const edgeName = (detail) => (record(detail.from) && record(detail.to)
+  ? `${detail.from.plan_key}/${detail.from.task_id} -> ${detail.to.plan_key}/${detail.to.task_id}` : 'this dependency');
+const dependencyCycle = {
+  repair: (detail) => {
+    const path = cyclePath(detail);
+    return `${edgeName(detail)} would close a cycle${path === null ? '' : ` (${path})`}: leave it out, or disconnect one edge of that path with \`lattice todo dependency disconnect\`.`;
+  },
 };
 
 /** The flag that carried the unreadable input: the one whose value is the refused path. */
@@ -120,7 +146,7 @@ const REGISTRY = {
     repair: (detail, ctx) => ({
       predecessor_unfinished: `${unfinishedFirst(detail, ctx)}, or start with --override-reason <text>.`,
       acceptance_edge: phaseAcceptFirst(detail, ctx),
-      task_state: `Only a pending task can start; check its status with \`${showTask(detail, ctx)}\`.`,
+      task_state: startState(detail, ctx),
       phase_state: 'Its phase is not active; check the phase status with `lattice todo status --json`.',
     })[detail.cause] ?? `Check the task state with \`${showTask(detail, ctx)}\`, then rerun.`,
   },
@@ -171,8 +197,10 @@ const REGISTRY = {
   },
   merged_cycle: {
     pointer: '/hard_dependencies',
-    repair: () => 'Remove one dependency (including cross-plan ones) that closes the cycle, then rerun.',
+    repair: (detail) => `Remove one dependency (including cross-plan ones) that closes the cycle${cyclePath(detail) === null ? '' : ` ${cyclePath(detail)}`}, then rerun.`,
   },
+  dependency_cycle: dependencyCycle,
+  cross_plan_dependency_cycle: dependencyCycle,
   join_self_edge: {
     pointer: '/joins',
     repair: () => 'Remove the join whose `after` lists its own id, then rerun.',

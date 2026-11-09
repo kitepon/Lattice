@@ -869,15 +869,19 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
 
   // 依存の本数: このplanの中でそのtaskへ入ってくるhard_dependencies辺と、joinで
   // 合流するafter辺の合計。cross-plan参照は数えない（plan showは単一planの投影のため）。
+  // retiredの端点を持つ辺は数えない（a13: retireは辺を除く。a18）。
+  const retired = (ref) => ref.plan_key === planKey && stateByTaskId.get(ref.task_id)?.status === 'retired';
   const dependsOnCount = new Map(plan.tasks.map((task) => [task.task_id, 0]));
   for (const edge of plan.hard_dependencies) {
-    if (edge.to.plan_key === planKey && dependsOnCount.has(edge.to.task_id)) {
+    if (edge.to.plan_key === planKey && dependsOnCount.has(edge.to.task_id)
+      && !retired(edge.from) && !retired(edge.to)) {
       dependsOnCount.set(edge.to.task_id, dependsOnCount.get(edge.to.task_id) + 1);
     }
   }
   for (const join of plan.joins) {
-    if (join.before.plan_key === planKey && dependsOnCount.has(join.before.task_id)) {
-      dependsOnCount.set(join.before.task_id, dependsOnCount.get(join.before.task_id) + join.after.length);
+    if (join.before.plan_key === planKey && dependsOnCount.has(join.before.task_id) && !retired(join.before)) {
+      dependsOnCount.set(join.before.task_id,
+        dependsOnCount.get(join.before.task_id) + join.after.filter((ref) => !retired(ref)).length);
     }
   }
 
