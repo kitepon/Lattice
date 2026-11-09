@@ -3202,7 +3202,9 @@ async function independenceCompile({ repoRoot, planKey, inputRef }) {
       {
         plan_key: planKey,
         missing_task_ids: missingReady,
-        next_action: independenceCompileCommand(planKey),
+        // a35: compiling the same set again cannot add them; the template keeps what is declared.
+        next_action: `Declare ${missingReady.join(', ')} in the witness set. ${witnessRoute(planKey)}`
+          + ' The template keeps the declarations already recorded, so only the new tasks need filling.',
       },
     );
   }
@@ -3532,7 +3534,9 @@ async function witnessDraftTemplateFor({ repoRoot, planKey }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
-  return witnessDraftTemplate({ projectId: member.plan.project_id, planKey,
+  // a35: start from what is already declared. An unreadable set only loses the prefill, not the template.
+  const witnessSet = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
+  return witnessDraftTemplate({ projectId: member.plan.project_id, planKey, witnessSet,
     taskIds: member.tasks.filter(({ status }) => !['done', 'retired'].includes(status)).map(({ task_id: id }) => id) });
 }
 

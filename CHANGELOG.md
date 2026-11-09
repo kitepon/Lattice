@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 同じfileを所有して書く2つの作業を、並列の判定が衝突として見る（a35、特許の主張4）。sensorの裏付けが無い`owns`は資源にならないのに、書き込みの重なりは「ownsの資源で扱う」として飛ばしていたため、`independence compile`が`conflict_count: 0`を返し、2つを同じ並列グループに入れて両方startさせていた。今はownsの資源が実際に両方を含む時だけ飛ばし、それ以外は衝突として直列にする。別々のfileは従来どおり並列。
+- 調整方式の宣言は版でなく計画に属する（a35）。`plan revise`で作業を足しても、新しい版が自分で宣言していなければ、前の版の宣言を引き継いで読む（何も書き写さない）。
+- witness setに無いready工程があるcompileの断り（`INDEPENDENCE_READY_UNDECLARED`）は、同じcompileではなく、足りない工程を名指してひな形→scaffold→compileの道を示す。`witness scaffold --template`は記録済みのwitness setの宣言（owns・reads・writes・unknowns・concern_anchors・capacity）を引き継ぎ、新しい工程だけを空で出す。
+- reopenで開き直した作業には取り消すstartが無い。in-progressの工程のreopenの断りは、startで開いた時だけ`retract`を示し、それ以外は開いている理由（`opened_by`）と`done`を示す。`retract`の`authored_start_binding_missing`も理由と`done`を示す。`todo --help`に`retract`を載せた。
+- retired の工程への`todo done`は「startせよ」でなく、retireは永久でstartもdoneもできないことと、まだ要る作業なら`plan revise`で新しい工程として足すことを示す。blockedなら`unblock`を示す。
+
 ## 0.85.3 — 2026-11-10
 
 0.85.2の使い通しの点検で見つかった、席を止める所と誤らせる所を直す修正版。witness方式の入力の形が分かり、計画の改訂が作成と同じ形で書け、v5の計画で審査が通り、doneでない作業のreopenと打ち間違えた席の名前を名指す。

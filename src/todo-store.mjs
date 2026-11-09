@@ -798,6 +798,21 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
   return [...states.values()].sort((left, right) => left.task_id < right.task_id ? -1 : left.task_id > right.task_id ? 1 : 0);
 }
 
+/**
+ * a35: what put the task in progress in this plan version: 'start' (authored, retractable),
+ * 'historical_import', 'reopen', or null (no event here, e.g. carried by a revision).
+ * Only an authored start has something for `todo retract` to undo.
+ */
+function todoOpenedBy(member, taskId) {
+  let openedBy = null;
+  for (const event of member.journal.events) {
+    if (event.task_id !== taskId) continue;
+    if (event.kind === 'start') openedBy = event.payload.start_mode === 'historical_import' ? 'historical_import' : 'start';
+    else if (event.kind === 'reopen') openedBy = 'reopen';
+  }
+  return openedBy;
+}
+
 /** 最新のauthored startだけを撤回対象として返す。readとappendの双方で同じbindingを検証する。 */
 export function resolveTodoStartRetractionBinding(store, { planKey, taskId, actor }) {
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
@@ -817,7 +832,8 @@ export function resolveTodoStartRetractionBinding(store, { planKey, taskId, acto
     else if (event.kind === 'done' || event.kind === 'start_retracted') binding = null;
   }
   if (binding === null) {
-    fail('START_RETRACTION_INVALID', 'authored_start_binding_missing', { task_id: canonicalTaskId });
+    fail('START_RETRACTION_INVALID', 'authored_start_binding_missing', {
+      plan_key: planKey, task_id: canonicalTaskId, opened_by: todoOpenedBy(member, canonicalTaskId) });
   }
   if (binding.actor.host !== actor.host || binding.actor.session !== actor.session
     || binding.actor.agent !== actor.agent) {
@@ -1574,7 +1590,8 @@ async function readTodoStoreView(options = {}) {
     // 調整方式の宣言(ob03)。lifecycle journalとは別chainから読む。phasesと同じく
     // snapshot artifactの形式には縛られない導出ビューで、未宣言はnull（「まだ選んでいない」）。
     const planScoped = await readPlanScopedJournal(repoRoot, descriptor.journal_ref);
-    const coordination = projectTodoCoordination(planScoped.events);
+    const coordination = projectTodoCoordination(planScoped.events)
+      ?? await inheritedTodoCoordination(repoRoot, plan);
     loaded.push({ descriptor, plan, revision, journal, plan_scoped: planScoped,
       snapshot: snapshotStale ? expectedSnapshot : snapshot,
       tasks, phases, coordination, snapshot_stale: snapshotStale });
@@ -1587,25 +1604,49 @@ async function readTodoStoreView(options = {}) {
   };
 }
 
+/** The plan's other retained versions, by plan digest (unreadable ones are skipped). */
+async function retainedPlanVersions(repoRoot, activePlan) {
+  const base = `${STORE_ROOT_REF}/plans/${activePlan.plan_key}`;
+  const byDigest = new Map();
+  let names = [];
+  try { names = await readdir(path.resolve(repoRoot, base)); } catch { /* no retained versions */ }
+  for (const version of names) {
+    if (version === activePlan.plan_version || !isTodoIdentifier(version)) continue;
+    const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
+      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
+    }).catch(() => null);
+    if (plan !== null) byDigest.set(plan.plan_digest, { plan, journalRef: `${base}/${version}/journal/active.jsonl` });
+  }
+  return byDigest;
+}
+
+/**
+ * a35: the coordination declaration belongs to the plan, not to one version (ADR 0160 Decision 2).
+ * A revision starts an empty plan-scoped chain, so a version that has not declared its own reads the
+ * newest declaration along its retained predecessors. Read only: nothing is copied into the new chain.
+ * An unreadable predecessor ends the walk as undeclared, which is what the version showed before a35.
+ */
+async function inheritedTodoCoordination(repoRoot, plan) {
+  if (!plan.predecessor_plan_digest) return null;
+  const byDigest = await retainedPlanVersions(repoRoot, plan);
+  for (let digest = plan.predecessor_plan_digest, steps = 0; digest && steps < byDigest.size; steps += 1) {
+    const predecessor = byDigest.get(digest);
+    if (predecessor === undefined) return null;
+    const chain = await readPlanScopedJournal(repoRoot, predecessor.journalRef).catch(() => null);
+    if (chain === null) return null;
+    const declared = projectTodoCoordination(chain.events);
+    if (declared !== null) return declared;
+    digest = predecessor.plan.predecessor_plan_digest;
+  }
+  return null;
+}
+
 /**
  * Composes the source plan's recorded task migrations back to the version whose topology the
  * connection names (u03): returns the source task id it maps to now, 'removed', or null (unknown).
  */
 async function carriedSourceTask(repoRoot, source, ref, versionsCache) {
-  if (!versionsCache.has(source)) {
-    const base = `${STORE_ROOT_REF}/plans/${source.plan.plan_key}`;
-    const byDigest = new Map();
-    let names = [];
-    try { names = await readdir(path.resolve(repoRoot, base)); } catch { /* no retained versions */ }
-    for (const version of names) {
-      if (version === source.plan.plan_version || !isTodoIdentifier(version)) continue;
-      const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
-        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
-      }).catch(() => null);
-      if (plan !== null) byDigest.set(plan.plan_digest, { plan, journalRef: `${base}/${version}/journal/active.jsonl` });
-    }
-    versionsCache.set(source, byDigest);
-  }
+  if (!versionsCache.has(source)) versionsCache.set(source, await retainedPlanVersions(repoRoot, source.plan));
   const byDigest = versionsCache.get(source);
   // Newest first: the active genesis maps its predecessor's ids onto the active ids.
   const migrations = [source.journal.events[0].payload.task_migration ?? []];
@@ -1698,7 +1739,7 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
     if (target.plan_scoped.events.length === owner.plan_scoped.events.length) continue;
     await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), target.plan_scoped.activeBytes);
     owner.plan_scoped = target.plan_scoped;
-    owner.coordination = projectTodoCoordination(target.plan_scoped.events);
+    owner.coordination = projectTodoCoordination(target.plan_scoped.events) ?? owner.coordination;
   }
   store.cross_plan_findings = findings;
   return repairs;
@@ -2169,7 +2210,8 @@ function resolveTargetedEvent(input, storeMember) {
     const status = storeMember.tasks?.find(({ task_id: id }) => id === input.task_id)?.status;
     if (status !== undefined && status !== 'done') {
       fail('TODO_TRANSITION_REFUSED', 'invalid_reopen_transition', {
-        cause: 'task_state', status, plan_key: storeMember.plan.plan_key, task_id: input.task_id });
+        cause: 'task_state', status, plan_key: storeMember.plan.plan_key, task_id: input.task_id,
+        ...(status === 'in-progress' ? { opened_by: todoOpenedBy(storeMember, input.task_id) } : {}) });
     }
     const targetDigest = resolveDoneBindingDigest(storeMember, input.task_id);
     if (targetDigest === null) fail('STORE_INCONSISTENT', 'invalid_reopen_binding');
@@ -2401,7 +2443,7 @@ async function appendPlanScopedEvent({ repoRoot, member, input, assertHeld }) {
   return {
     event, plan: member.plan, snapshot: member.snapshot,
     plan_scoped_head_digest: event.event_digest,
-    coordination: projectTodoCoordination(events),
+    coordination: projectTodoCoordination(events) ?? member.coordination ?? null,
   };
 }
 
