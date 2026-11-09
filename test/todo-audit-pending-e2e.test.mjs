@@ -190,8 +190,8 @@ test('(b) 監査待ちの3状態はそれぞれ実行できる遷移だけを案
   const review = ok(run(root, ['todo', 'phase', 'review', '--plan', 'audited',
     '--phase', TERMINAL_AUDIT, '--reason', '終端監査を開始'], ACTOR_ENV));
   assert.deepEqual(commandsOf(), [
-    `lattice todo phase accept --plan audited --phase ${TERMINAL_AUDIT} --input <file>`,
-    `lattice todo phase reject --plan audited --phase ${TERMINAL_AUDIT} --input <file>`,
+    `lattice todo phase accept --plan audited --phase ${TERMINAL_AUDIT} --evidence <file>`,
+    `lattice todo phase reject --plan audited --phase ${TERMINAL_AUDIT} --reason <text> --evidence <file>`,
   ]);
 
   const evidence = evidenceFor(root, 'reject');

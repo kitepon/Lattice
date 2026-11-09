@@ -36,6 +36,15 @@ function seatAgent(env) {
   return isTodoIdentifier(seat_id) ? seat_id : null;
 }
 
+const anonymousAgent = (env) => (isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT)
+  ? env.LATTICE_TODO_ACTOR_AGENT : sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'));
+
+/** a36: the agent this env writes now, and the one it wrote before setting LATTICE_SEAT_ID. No I/O. */
+export function todoActorAgents(env) {
+  const anonymous = anonymousAgent(env);
+  return { agent: isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT) ? anonymous : seatAgent(env) ?? anonymous, anonymous };
+}
+
 // u03s A57: a set but non-identifier value is treated like an unset one (no refusal).
 export function resolveTodoActor(env) {
   return {
@@ -46,9 +55,7 @@ export function resolveTodoActor(env) {
       ? env.LATTICE_TODO_ACTOR_SESSION
       : 'session',
     // Seats on one machine share USER; the seat id keeps their `own` tasks apart (seat-contract).
-    agent: isTodoIdentifier(env.LATTICE_TODO_ACTOR_AGENT)
-      ? env.LATTICE_TODO_ACTOR_AGENT
-      : seatAgent(env) ?? sanitizeActorIdentifier(env.USER ?? env.LOGNAME, 'agent'),
+    agent: todoActorAgents(env).agent,
   };
 }
 

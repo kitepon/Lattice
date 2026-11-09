@@ -3,6 +3,10 @@
 ## Unreleased
 
 - `plan create --input <file> --json`と`todo independence mode ... --json`は、`--json`を受け付けて結果を変えない（これまでは`flag_unknown`で断り、何も作らなかった）。`plan scope-review`は`--json`を付け忘れても断らない（a37）。
+- `todo phase review`と`todo phase close-unaudited`をgate_readyでないPhaseへ打つと、`STORE_INCONSISTENT`でなく`TODO_TRANSITION_REFUSED/phase_gate_not_ready`で断り、`phase_status`と、その状態に合う次のコマンドを示す（a36）。監査中なら`phase accept … --evidence <file>`、まだ作業が残るなら`todo status --json`。ホストへの変更：この断りの型が変わる。
+- 監査中（reviewing）の`audit_pending.next_commands`は、`accept … --evidence <file>`と`reject … --reason <text> --evidence <file>`を示す（必須slotが複数なら`accept … --input <file>`）。`phase status`はreviewingとrejectedのPhaseにも`guidance`を返し、gate_readyの案内の監査の道も`--evidence`にした。
+- 別の席がstartした工程を`todo reopen`すると、結果に`started_by`（最後にstartした席）と、この席へ移す`lattice todo start … --rebind --reason <text>`を`next_action`で添える。工程は従来どおり最後にstartした席の`turn.own`に残る。
+- 作業中の工程への`todo start`の断りは、持っている席を`started_by`で名指す。`LATTICE_SEAT_ID`を付ける前の自分の無名のstartなら、そう言い、席の契約の一度だけの直し方（`LATTICE_SEAT_ID`を外して`todo retract`、またはそこで`todo done`）を示す。別の席なら、移す`--rebind`のstartを示す。
 
 ## 0.85.3 — 2026-11-10
 

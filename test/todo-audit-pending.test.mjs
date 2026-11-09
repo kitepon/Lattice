@@ -38,9 +38,12 @@ test('次コマンドはstoreの遷移guardが受理するものだけを案内�
     'lattice todo phase close-unaudited --plan p --phase terminal-audit --reason <text>',
   ]);
   assert.deepEqual(auditPendingNextCommands('p', 'terminal-audit', 'reviewing'), [
-    'lattice todo phase accept --plan p --phase terminal-audit --input <file>',
-    'lattice todo phase reject --plan p --phase terminal-audit --input <file>',
+    'lattice todo phase accept --plan p --phase terminal-audit --evidence <file>',
+    'lattice todo phase reject --plan p --phase terminal-audit --reason <text> --evidence <file>',
   ]);
+  // a36: several required slots cannot share one --evidence file, so accept names --input.
+  assert.equal(auditPendingNextCommands('p', 'terminal-audit', 'reviewing', 2)[0],
+    'lattice todo phase accept --plan p --phase terminal-audit --input <file>');
   assert.deepEqual(auditPendingNextCommands('p', 'terminal-audit', 'rejected'), [
     'lattice todo phase reopen --plan p --phase terminal-audit --reason <text>',
   ]);

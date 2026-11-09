@@ -2,6 +2,8 @@
 // (next_action) in one detail. Pure: reads only the error and the CLI context, no I/O.
 // Refusal sites keep their own keys; this fills the three keys the seat contract requires.
 
+import { auditPendingNextCommands, isAuditPendingPhaseStatus } from './todo-audit-pending.mjs';
+
 const PLACEHOLDER = /^[a-z_]+$/u;
 // a27: one placeholder per flag for every missing-flag text (plan and todo alike).
 export const FLAG_PLACEHOLDER = Object.freeze({
@@ -35,12 +37,26 @@ const unfinishedFirst = (detail, ctx) => {
     blocked: `Unblock ${name} with \`lattice todo unblock ${on}\`, then record done on it`,
   })[first.status] ?? `Record done on ${name} first with \`lattice todo done ${on} --message <text>\` (see \`lattice todo show ${on} --json\`)`;
 };
+// a36: a start without LATTICE_SEAT_ID is recorded under the OS user; after the seat sets its id that
+// start looks like another seat's. Say so and give the seat contract's one-time fix.
+const inProgressHolder = (detail, ctx, on) => {
+  const holder = typeof detail.started_by === 'string' ? detail.started_by : null;
+  const actors = record(ctx.actors) ? ctx.actors : {};
+  if (holder !== null && holder === actors.anonymous && holder !== actors.agent) {
+    return `It is in-progress under '${holder}', the name a start gets without LATTICE_SEAT_ID: most likely this seat's own`
+      + ` start from before it set LATTICE_SEAT_ID. One-time fix (seat contract): with LATTICE_SEAT_ID unset, undo that start`
+      + ` with \`lattice todo retract ${on} --reason <text>\` and start it again here, or finish it there first with`
+      + ` \`lattice todo done ${on} --message <text>\`.`;
+  }
+  return `It is already in-progress under ${holder === null ? 'another seat' : `seat '${holder}'`}; see \`${showTask(detail, ctx)}\`.`
+    + ` To move it to this seat run \`lattice todo start ${on} --rebind --reason <text>\`.`;
+};
 const startState = (detail, ctx) => {
   const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
   return ({
     blocked: `It is blocked: run \`lattice todo unblock ${on}\`; that resumes it (no start needed).`,
     done: `It is done: to work on it again run \`lattice todo reopen ${on} --reason <text>\`.`,
-    'in-progress': `It is already in-progress under another seat; see \`${showTask(detail, ctx)}\`.`,
+    'in-progress': inProgressHolder(detail, ctx, on),
     retired: `It is retired, which is permanent; see \`${showTask(detail, ctx)}\`.`,
   })[detail.status] ?? `Only a pending task can start; check its status with \`${showTask(detail, ctx)}\`.`;
 };
@@ -199,6 +215,28 @@ const REGISTRY = {
         blocked: `It is blocked: resume it with \`lattice todo unblock ${on}\`.`,
         retired: `Retire is permanent, so it stays closed; see \`${showTask(detail, ctx)}\`.`,
       }[detail.status] ?? `Check its state with \`${showTask(detail, ctx)}\`.`);
+    },
+  },
+  phase_gate_not_ready: {
+    // a36: review and close-unaudited need gate_ready; name the phase state and the step that fits it.
+    repair: (detail, ctx) => {
+      const phase = detail.phase_id ?? ctx.flags?.phase ?? '<phase>';
+      const plan = planOf(detail, ctx);
+      const on = `--plan ${plan} --phase ${phase}`;
+      const status = detail.phase_status;
+      const head = `Phase ${plan}/${phase} is ${status ?? 'not gate_ready'}; review and close-unaudited need gate_ready. `;
+      if (isAuditPendingPhaseStatus(status) && status !== 'gate_ready') {
+        const [first, second] = auditPendingNextCommands(plan, phase, status, strings(detail.required_evidence_slots).length || 1);
+        return head + (status === 'reviewing'
+          ? `It is already in review: decide it with \`${first}\`, or \`${second}\`.`
+          : `Its review was rejected: run \`${first}\`, then review it again.`);
+      }
+      return head + ({
+        active: `Not all of its tasks are done: record done on them (\`lattice todo status --json\` lists them), then rerun.`,
+        locked: `Its predecessor phases are not accepted yet; see \`lattice todo phase status --plan ${plan}\`.`,
+        accepted: `It is already decided; to audit it again run \`lattice todo phase reopen ${on} --reason <text>\` first.`,
+        closed_unaudited: `It is already closed; to audit it run \`lattice todo phase reopen ${on} --reason <text>\` first.`,
+      }[status] ?? `See \`lattice todo phase status --plan ${plan}\`.`);
     },
   },
   reopen_has_started_successor: {

@@ -4,7 +4,7 @@ import {
   isPhaseTodoPlanSchema,
   projectTodoCrossPlanDependencies,
 } from './todo-store-view.mjs';
-import { TodoStoreError } from './todo-store.mjs';
+import { TodoStoreError, todoPhaseDefinitions } from './todo-store.mjs';
 
 function taskKey(ref) {
   return `${ref.project_id}\0${ref.plan_key}\0${ref.task_id}`;
@@ -187,6 +187,17 @@ export function validateProspectiveEvent({ store, member, event }) {
         + ` \`lattice todo reopen ${on} --reason <text> --override-reason <text>\`.`,
     });
   }
+  // a36: review and close-unaudited need gate_ready; any other phase state is ordinary, not damage.
+  if (event.kind === 'phase_review' || event.kind === 'phase_close_unaudited') {
+    const phase = (member.phases ?? []).find(({ phase_id: id }) => id === event.phase_id);
+    if (phase !== undefined && phase.status !== 'gate_ready') {
+      const definition = todoPhaseDefinitions(member.plan).find(({ phase_id: id }) => id === event.phase_id);
+      return refused('phase_gate_not_ready', 'phase_state', {
+        plan_key: member.plan.plan_key, phase_id: event.phase_id, phase_status: phase.status,
+        required_evidence_slots: [...(definition?.required_evidence_slots ?? [])],
+      });
+    }
+  }
   if (event.kind === 'phase_reopen' && event.payload.override_reason === null
     && readiness.phaseHasStartedSuccessor(member, event.phase_id)) {
     return refused('phase_reopen_has_started_successor', 'task_state');
@@ -194,7 +205,12 @@ export function validateProspectiveEvent({ store, member, event }) {
   // Keep merged refusal priority; replay still owns missing target/binding checks.
   const status = readiness.status(key);
   if (authoredStart && status !== undefined) {
-    if (status !== 'pending') return refused('invalid_start_transition', 'task_state', { status });
+    if (status !== 'pending') {
+      // a36: name who holds an in-progress task, so the refusal can tell an own anonymous start apart.
+      const holder = status === 'in-progress' ? member.journal.events
+        .findLast((entry) => entry.kind === 'start' && entry.task_id === event.task_id)?.actor?.agent : undefined;
+      return refused('invalid_start_transition', 'task_state', { status, ...(holder === undefined ? {} : { started_by: holder }) });
+    }
     if (!readiness.ownPhaseReady(key)) {
       return refused('invalid_start_transition', 'phase_state', { phase_status: readiness.ownPhaseStatus(key) });
     }
