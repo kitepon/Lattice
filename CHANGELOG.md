@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.85.2 — 2026-11-10
+
+0.85.1の使い通しの点検で、これまで通らなかった道に見つかった所を直す修正版。断りが原因の値・作業と通れる次のコマンドを名指しし、打ち間違いを`ok`で返さない。ホストへの変更：`plan_not_active`の型は`STORE_INCONSISTENT`から`PLAN_NOT_FOUND`、調整済みの計画のverifyの`next_action`は`null`から`"none"`、知らないコマンドは型のあるJSONをstderrへ返す（exit 2は同じ）。
+
 - 知らないコマンドや引数は、素の文でなく`cli_error.v2`の`USAGE`（`next_action: lattice --help`、exit 2は同じ）で返す（a29）。
 - `sensor init|sync`に無いpathを渡すと、`ok`でなく`LATTICE_SENSOR_PATH_MISSING`で名指す。`sensor diff`の`--subtree-a|b`が索引のどのfileにも当たらない時は、`LATTICE_SENSOR_DIFF_SUBTREE_EMPTY`で名指す。
 - AIの設定フォルダが一つも無いHOMEの`setup`は、`HOST_NOT_PRESENT`に文と`lattice setup --host <...>`を添える。`hooks`の引数の付け忘れは、付け忘れた`--host`と完全なコマンドを示す。
