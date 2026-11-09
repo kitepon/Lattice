@@ -103,10 +103,9 @@ test('a repeated block, retire or done names only content that differs from the 
 
 test('dependency refusals name the edge or the task and a command that lists valid ones', async (context) => {
   const root = await fixture(context);
-  const exists = refused(root, ['todo', 'dependency', 'connect', ...edge('a', 'b'), '--reason', 'again']);
-  assert.equal(exists.code, 'DEPENDENCY_EXISTS');
-  assert.equal(exists.detail.pointer, '--to-task');
-  assert.match(exists.detail.next_action, /work\/a -> work\/b already exists.*lattice plan show work --json/u);
+  // a28: an existing edge now succeeds unchanged (todo-refusal-names-field-a28); the guidance stays for Store refusals.
+  const exists = success(root, ['todo', 'dependency', 'connect', ...edge('a', 'b'), '--reason', 'again']);
+  assert.match(exists.next_action, /work\/a -> work\/b already exists.*lattice plan show work --json/u);
 
   const self = refused(root, ['todo', 'dependency', 'connect', ...edge('a', 'a'), '--reason', 'self']);
   assert.equal(self.detail.reason, 'dependency_self_reference');

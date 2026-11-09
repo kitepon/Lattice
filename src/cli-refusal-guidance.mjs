@@ -167,7 +167,7 @@ const REGISTRY = {
     repair: (detail, ctx) => `Only a blocked task can be unblocked; check its status with \`${showTask(detail, ctx)}\`.`,
   },
   reopen_has_started_successor: {
-    repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: split the work with \`lattice todo split --plan ${planOf(detail, ctx)} --input <file>\`, or pass --override-reason <text> to reopen anyway.`,
+    repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,
   },
   requested_plan_mismatch: {
     pointer: '--plan',

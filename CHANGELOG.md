@@ -6,6 +6,10 @@
 - `sensor init|sync`に無いpathを渡すと、`ok`でなく`LATTICE_SENSOR_PATH_MISSING`で名指す。`sensor diff`の`--subtree-a|b`が索引のどのfileにも当たらない時は、`LATTICE_SENSOR_DIFF_SUBTREE_EMPTY`で名指す。
 - AIの設定フォルダが一つも無いHOMEの`setup`は、`HOST_NOT_PRESENT`に文と`lattice setup --host <...>`を添える。`hooks`の引数の付け忘れは、付け忘れた`--host`と完全なコマンドを示す。
 - helpとusageで、付け忘れても補う`--json`を`[--json]`と書く（`status`・`session-context`・`sensor`）。
+- 後続の工程がもう始まっている工程の`todo reopen`は、始まった後続（`started_successors`）を名指し、通る道`lattice todo reopen … --reason <text> --override-reason <text>`を示す（a28）。これまでは進行中の工程のための`todo split`を示していた。
+- `todo phase accept|reject|reopen`・`evidence promote`・`independence compile`の引数の誤りは、足りないflag（`--evidence`・`--reason`・`--input`）とそれを足したコマンド全体を示す。`phase reopen`はflagの順を問わない。
+- `todo show`・`todo note list`・`todo structure`は`--json`を付け忘れても同じJSONを返し、flagの順を問わない。そのコマンドに無いflag（`todo status --plan`など）は`pointer`で名指し、受けるflagと打てるコマンド（`lattice plan show <key> --json`など）を示す。`todo`だけ、または`todo dependency`・`phase`・`evidence`だけでは、`subcommand_missing`で使えるコマンドと例を示す。
+- 既にある辺への`todo dependency connect`は、`DEPENDENCY_EXISTS`（exit 1）ではなく、done・block・retireの繰り返しと同じく何も書かずに`unchanged: true`で返し、その辺を名指す（`lattice.todo_dependency_unchanged_result.v1`）。無い辺の`disconnect`は従来どおり`DEPENDENCY_NOT_FOUND`で断る。
 
 ## 0.85.1 — 2026-11-10
 
