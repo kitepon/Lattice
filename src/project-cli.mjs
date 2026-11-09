@@ -200,7 +200,7 @@ async function summarizeIndependence({ repoRoot, store, todo }) {
           .some(({ unknowns }) => unknowns.some(({ kind }) => kind === 'record_stale')),
         conflictWithActive: projected.frontier.conflicts_with_active[0]?.severability ?? null,
         conflictBetweenReady: projected.frontier.serialize_pairs[0]?.severability ?? null,
-        coordinationMode: member.coordination?.mode ?? null,
+        coordinationMode: member.coordination?.mode ?? null, planKey,
       }),
       unreadable_reason: null,
       parallel_groups: projected.frontier.parallel_groups.map(({ task_ids: ids }) => [...ids]),

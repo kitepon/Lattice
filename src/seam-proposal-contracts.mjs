@@ -335,7 +335,8 @@ function projectionGuidance(value, coverage, components) {
   if (!exactRecord(value, ['code', 'message', 'next_action'])
     || !SEAM_PROPOSAL_GUIDANCE_CODES.includes(value.code)
     || !boundedText(value.message)
-    || !isTodoIdentifier(value.next_action)) return false;
+    || !(value.next_action === 'none'
+      || (boundedText(value.next_action) && value.next_action.startsWith('lattice ')))) return false;
   const unknownKinds = Array.isArray(components)
     ? components.flatMap((component) => (Array.isArray(component?.unknowns)
       ? component.unknowns.map((unknown) => unknown?.kind) : []))

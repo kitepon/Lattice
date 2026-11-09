@@ -510,10 +510,13 @@ function activeConflictEntry(value) {
  * 案内。単一正本のcatalogが返した形をそのまま載せる（ADR 0130 Decision 1・2）。
  * 面ごとに文言を組み立て直さないため、ここではshapeだけを検査する。
  */
+// next_actionは実在コマンド（`lattice ...`）か'none'（a19）。
+const commandOrNone = (value) => value === 'none' || (boundedText(value) && value.startsWith('lattice '));
+
 function guidanceEntry(value) {
   return exactRecord(value, ['code', 'message', 'next_action'])
     && TODO_INDEPENDENCE_GUIDANCE_CODES.includes(value.code)
-    && boundedText(value.message) && isTodoIdentifier(value.next_action);
+    && boundedText(value.message) && commandOrNone(value.next_action);
 }
 
 /**

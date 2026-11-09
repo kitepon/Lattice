@@ -1035,7 +1035,7 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
         .filter((task) => task.plan_key === planKey).map(({ task_id: id }) => id),
       self_unknowns: [{ kind: 'witness_missing', ref: unusable ?? 'no_independence_record' }],
       guidance: selectIndependenceGuidance({
-        coverage: 'missing', taskDeclared: false, taskStale: false, coordinationMode,
+        coverage: 'missing', taskDeclared: false, taskStale: false, coordinationMode, planKey,
       }),
     };
   }
@@ -1084,7 +1084,7 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
       conflictWithActive: conflictsWithActive[0]?.severability ?? null,
       conflictBetweenReady: readyConflict?.severability ?? null,
       verdictsAbsent: selfUnknowns.some(({ kind }) => kind === 'plan_verdicts_absent'),
-      coordinationMode,
+      coordinationMode, planKey,
     }),
   };
 }
@@ -2984,7 +2984,7 @@ async function independenceCompile({ repoRoot, planKey, inputRef }) {
       {
         plan_key: planKey,
         missing_task_ids: missingReady,
-        next_action: 'add_task_to_witness_set_then_compile',
+        next_action: independenceCompileCommand(planKey),
       },
     );
   }
@@ -3152,7 +3152,7 @@ async function independence({ repoRoot, requestedPlanKey }) {
       conflictBetweenReady: projected.frontier.serialize_pairs[0]?.severability ?? null,
       // 案内の正本は1つ（ADR 0130 Decision 1）。着手する人と読みに来た人が同じ状況について
       // 違う文言を受け取らないよう、調整方式もここへ渡す。
-      coordinationMode: member?.coordination?.mode ?? null,
+      coordinationMode: member?.coordination?.mode ?? null, planKey,
       verdictsAbsent: projected.frontier.unknown
         .some(({ unknowns }) => unknowns.some(({ kind }) => kind === 'plan_verdicts_absent')),
     }),
@@ -3216,6 +3216,8 @@ async function seamProfile({ repoRoot, planKey, filePath }) {
   return profile;
 }
 
+const independenceCompileCommand = (planKey, input = '<file>') => `lattice todo independence compile --plan ${planKey} --input ${input}`;
+
 async function seamProposalCompile({ repoRoot, planKey }) {
   const currentBaseSha = currentHeadSha(repoRoot);
   const store = await readTodoStore({ repoRoot });
@@ -3231,31 +3233,31 @@ async function seamProposalCompile({ repoRoot, planKey }) {
       'SEAM_PROPOSAL_COMPILE_UNAVAILABLE',
       independenceArtifact === null ? 'independence_artifact_absent' : 'independence_artifact_superseded',
       undefined,
-      { next_action: 'compile_independence' },
+      { next_action: independenceCompileCommand(planKey) },
     );
   }
   if (independenceArtifact.outcome !== 'compiled') {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'independence_outcome_not_compiled', undefined, {
       outcome: independenceArtifact.outcome,
-      next_action: 'recompile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
   if (independenceArtifact.base_sha !== currentBaseSha) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'independence_artifact_stale', undefined, {
       independence_base_sha: independenceArtifact.base_sha,
       current_base_sha: currentBaseSha,
-      next_action: 'recompile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
   const witnessSet = await readTodoWitnessSet({ repoRoot, planKey });
   if (witnessSet === null) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'witness_set_absent', undefined, {
-      next_action: 'declare_witness_set_then_compile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
   if (witnessSet.witness_set_digest !== independenceArtifact.witness_set_digest) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'witness_set_changed', undefined, {
-      next_action: 'recompile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
 
@@ -3352,7 +3354,7 @@ async function witnessScaffold({ repoRoot, planKey, inputRef }) {
     observed_paths: paths,
     task_count: Object.keys(witnessSet.manual_witness).length,
     witness_set_digest: witnessSet.witness_set_digest,
-    next_action: 'compile_independence',
+    next_action: independenceCompileCommand(planKey, ref),
   };
 }
 
@@ -3396,13 +3398,13 @@ async function seamProposalApply({ repoRoot, planKey, pathNames = {}, land = fal
   const artifact = await readTodoSeamProposalArtifact({ repoRoot, store, planKey });
   if (artifact === null) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'seam_proposal_absent', undefined, {
-      plan_key: planKey, next_action: 'compile_seam_proposal',
+      plan_key: planKey, next_action: `lattice todo seam-proposal compile --plan ${planKey}`,
     });
   }
   const witnessSet = await readTodoWitnessSet({ repoRoot, planKey });
   if (witnessSet === null) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'witness_set_absent', undefined, {
-      plan_key: planKey, next_action: 'declare_witness_set_then_compile_independence',
+      plan_key: planKey, next_action: independenceCompileCommand(planKey),
     });
   }
   const baseArtifact = await readTodoIndependenceArtifact({ repoRoot, store, planKey });
@@ -3532,6 +3534,7 @@ async function seamProposal({ repoRoot, requestedPlanKey }) {
     guidance: selectSeamProposalGuidance({
       coverage,
       unknownKinds: components.flatMap(({ unknowns }) => unknowns.map(({ kind }) => kind)),
+      planKey,
     }),
     component_count: artifact === null ? null : components.length,
     conflict_resource_count: artifact === null ? null : components
@@ -3767,7 +3770,7 @@ async function seamProposalsForGantt({ repoRoot, store }) {
         plan_key: planKey,
         coverage: 'superseded',
         unreadable_reason: `${error.code}:${error.detail?.reason ?? error.message}`,
-        guidance: selectSeamProposalGuidance({ coverage: 'superseded' }),
+        guidance: selectSeamProposalGuidance({ coverage: 'superseded', planKey }),
         component_count: null,
         conflict_resource_count: null,
         components: [],
@@ -3780,7 +3783,7 @@ async function seamProposalsForGantt({ repoRoot, store }) {
         plan_key: planKey,
         coverage: 'missing',
         unreadable_reason: null,
-        guidance: selectSeamProposalGuidance({ coverage: 'missing' }),
+        guidance: selectSeamProposalGuidance({ coverage: 'missing', planKey }),
         component_count: null,
         conflict_resource_count: null,
         components: [],
@@ -3816,7 +3819,7 @@ async function seamProposalsForGantt({ repoRoot, store }) {
       plan_key: planKey,
       coverage,
       unreadable_reason: unreadableReason,
-      guidance: selectSeamProposalGuidance({ coverage }),
+      guidance: selectSeamProposalGuidance({ coverage, planKey }),
       component_count: components.length,
       conflict_resource_count: components
         .reduce((count, component) => count + component.conflicts.length, 0),
@@ -4176,9 +4179,9 @@ async function verify({ repoRoot, requestedPlanKey }) {
         meaning: 'source_inventory_verification_state',
         lifecycle_blocked: false,
         dashboard_visibility_blocked: false,
-        schema_command: reconciled ? null : 'lattice todo revise --schema --json',
-        next_action: reconciled ? null
-          : `lattice todo revise --plan ${member.descriptor.plan_key} --input <revision.json>`,
+        // 席の経路は軽い改訂（plan revise）。反映後のplanはreconciledになる。
+        schema_command: reconciled ? null : 'lattice plan revise --schema --json',
+        next_action: reconciled ? null : 'lattice plan revise --input <revision.json> --json',
       },
     };
   });
@@ -4207,6 +4210,21 @@ async function verify({ repoRoot, requestedPlanKey }) {
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+// `todo verify`の人間向け1行。--jsonと同じresultから導く（verifyは不整合を例外で拒否するので、
+// ここへ届くのは検証が通った結果だけ。注意が要るのはsnapshot古さとcommit前の証拠）。
+function verifyVerdictLine(result) {
+  const members = result.verified_members.map((member) => `${member.plan_key} ${member.reconciliation_state}${
+    member.reconciliation_state === 'reconciled' ? '' : ', lifecycle not blocked'}`);
+  const notes = [];
+  if (result.snapshot_stale) notes.push('snapshot stale');
+  if (result.uncommitted_evidence.length > 0) {
+    notes.push(`${result.uncommitted_evidence.length} uncommitted evidence (commit it, then rerun)`);
+  }
+  const count = result.verified_members.length;
+  return `todo verify: ${notes.length === 0 ? 'ok' : 'attention'}, ${count} plan${count === 1 ? '' : 's'} verified`
+    + `${notes.map((note) => `, ${note}`).join('')} (${members.join('; ')})`;
 }
 
 async function rebuildSnapshot({ repoRoot, planKey }) {
@@ -4306,6 +4324,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
 
   const automatedStructureRealize = parseAutomatedStructureRealizeArgs(argv);
   let action = null;
+  let plainVerify = false; // a19: `todo verify`は--jsonが無ければ1行の判定だけを返す
   if (argv.length === 2 && argv[0] === 'repair-eol' && argv[1] === '--json') {
     // 壊れたstoreを読めない時の入口なので、dashboard所有権pre-hookを通さない。
     action = (repoRoot) => repairStoreEol({ repoRoot });
@@ -4478,10 +4497,12 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     action = (repoRoot) => seamProposal({ repoRoot, requestedPlanKey: argv[2] });
   } else if ((argv.length === 1 && argv[0] === 'verify')
     || (argv.length === 2 && argv[0] === 'verify' && argv[1] === '--json')) {
+    plainVerify = argv.length === 1;
     action = (repoRoot) => verify({ repoRoot, requestedPlanKey: null });
   } else if ((argv.length === 3 || argv.length === 4) && argv[0] === 'verify'
     && argv[1] === '--plan' && isTodoIdentifier(argv[2])
     && (argv.length === 3 || argv[3] === '--json')) {
+    plainVerify = argv.length === 3;
     action = (repoRoot) => verify({ repoRoot, requestedPlanKey: argv[2] });
   } else if (argv.length === 4 && argv[0] === 'snapshot' && argv[1] === '--rebuild'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3])) {
@@ -4740,7 +4761,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const result = atomicCommit
       ? await commitTodoStoreMutation({ repoRoot, argv, action, env })
       : await action(repoRoot);
-    if (result !== null) stdout.write(`${JSON.stringify(result)}\n`);
+    if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     return 0;
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'

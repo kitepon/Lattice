@@ -346,7 +346,7 @@ test('conversation planのpull startとboundary holdは同じtyped next action�
         started.intake_readiness.coordination_mode,
         started.intake_readiness.next_action],
       ['pull_independence_required', false, 'conversation',
-        'compile_independence_or_choose_non_pull_execution'],
+        `lattice todo independence compile --plan ${PLAN_KEY} --input <file>`],
     );
 
     await startTask(root, 'A', '2026-08-09T00:01:00.000Z');
