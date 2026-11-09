@@ -177,7 +177,8 @@ test('identityが揃った旧v2記録は旧契約由来のsupersededとして要
   const [summary] = value.independence;
   assert.equal(summary.coverage, 'superseded');
   assert.equal(summary.guidance.code, 'independence_contract_superseded');
-  assert.equal(summary.guidance.next_action, 'recompile_independence');
+  assert.equal(summary.guidance.next_action,
+    `lattice todo independence compile --plan ${summary.plan_key} --input <file>`);
   assert.equal(summary.unreadable_reason, null);
 });
 

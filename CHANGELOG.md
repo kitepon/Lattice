@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- helpと案内が、実在するコマンドだけを名指すようにした（a19）。並列可否の案内の`next_action`は、`declare_coordination_mode`のような名前ではなく`lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>`などの実行できるコマンド（なければ`none`）で、`todo start`の助言・`todo status`・`session-context`・`independence`が同じ文を返す。`todo --help`から、すでに助言になった「未宣言・失効なら`todo start`は拒否する」の古い一文と、`migrate`の「plan createは空store初期化専用」、actorの値が不正なら拒否するという古い説明を直した。`todo dependency --help`は`connect`と`disconnect`の両方を示す。`todo verify`は`--json`が無ければ判定1行だけを返し（`--json`の中身は変えない）、`registered_unreconciled`の案内は席の経路の`lattice plan revise`を指す。
+
 ## 0.84.2 — 2026-11-09
 
 計画がまだ無いrepoで初めての`todo status`が断らないようにし、WindowsでMCPの起動記録が止まる不具合を直す修正版。

@@ -250,7 +250,7 @@ test('記録が無いread入口はmissingとguidanceを返し、sensor初期化�
   assert.equal(projection.conflict_resource_count, null);
   assert.deepEqual(projection.components, []);
   assert.equal(projection.guidance.code, 'seam_proposal_unrecorded');
-  assert.equal(projection.guidance.next_action, 'compile_seam_proposal');
+  assert.equal(projection.guidance.next_action, `lattice todo seam-proposal compile --plan ${projection.plan_key}`);
   assert.match(projection.guidance.message, /記録が存在しない/u);
 });
 
@@ -403,7 +403,8 @@ test('storeはproposalをplan versionへ並置し、read投影はexact targetを
   // 記録は現在と一致しているが、componentは所有者へ束縛できていない。鮮度だけを述べると
   // 「一致している」で終わり、束縛できなかった事実と次の一歩が読み手へ届かない。
   assert.equal(projection.guidance.code, 'seam_proposal_binding_missing');
-  assert.equal(projection.guidance.next_action, 'declare_concern_anchors_then_recompile');
+  assert.equal(projection.guidance.next_action,
+    `lattice todo independence compile --plan ${projection.plan_key} --input <file>`);
 
   const duplicate = structuredClone(projection);
   duplicate.components.push(structuredClone(duplicate.components[0]));
