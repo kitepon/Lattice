@@ -37,6 +37,16 @@ export default defineConfig({
     // Suites that spawn the built CLI need a current dist/ (#1879).
     globalSetup: ['./__tests__/global-setup-dist.ts'],
     /**
+     * These are integration tests against real git, SQLite and worker threads,
+     * not unit tests: one index/sync runs 10-15 synchronous git spawns. On the
+     * Windows runner a spawn costs 100 ms to over 1 s under load, so passing
+     * git-index-currency tests already took 6-8 s against vitest's 5 s / 10 s
+     * defaults, and failing runs measured 8-15 s tests and a 30 s hook. The
+     * budget only catches a hang; a hang still fails here within a minute.
+     */
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
+    /**
      * Several MCP integration tests (mcp-daemon, mcp-initialize, mcp-ppid-watchdog,
      * mcp-roots) spawn `dist/bin/lattice-sensor.js serve --mcp` with `process.execPath`
      * and rely on the child inheriting `process.env`. On a Node >= 25 dev machine
