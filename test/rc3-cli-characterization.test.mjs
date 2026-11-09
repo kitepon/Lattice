@@ -56,7 +56,9 @@ function assertRejected(args) {
   const received = args.length === 0 ? '(none)' : args.join(' ');
   assert.equal(result.status, 2, received);
   assert.equal(result.stdout, '', received);
-  assert.equal(result.stderr, `lattice: unsupported command or arguments: ${received}\n`);
+  const error = JSON.parse(result.stderr);
+  assert.deepEqual([error.schema, error.code, error.message, error.detail.next_action],
+    ['lattice.cli_error.v2', 'USAGE', `unsupported command or arguments: ${received}`, 'lattice --help']);
 }
 
 test('--versionはpackage versionだけをstdoutへ返しexit 0で終わる', () => {

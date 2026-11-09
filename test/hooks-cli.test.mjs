@@ -259,9 +259,13 @@ test('P3 hermetic guard: 全spawnのHOME/XDGは一時dirで、実HOME settings�
 test('P3 C1: hooks の未知subcommandはtyped usageとして拒否される', () => {
   const result = runCli(['hooks', 'unknown', '--host', 'claude']);
   assert.equal(result.status, 2);
-  assert.deepEqual(Object.keys(JSON.parse(result.stdout)), ['schema', 'code', 'message']);
+  assert.deepEqual(Object.keys(JSON.parse(result.stdout)), ['schema', 'code', 'message', 'detail']);
   assert.equal(JSON.parse(result.stdout).code, 'USAGE');
+  assert.equal(JSON.parse(result.stdout).detail.next_action, 'lattice hooks --help');
   assert.equal(result.stderr, '');
+  // a29: a known subcommand without --host names the flag and the full command.
+  const bare = JSON.parse(runCli(['hooks', 'status']).stdout);
+  assert.deepEqual([bare.detail.pointer, bare.detail.next_action], ['--host', 'lattice hooks status --host <claude|codex|cursor>']);
 });
 
 test('P3 実CLI: Claude/Codex/Cursorのinstall/status/uninstallとemitは隔離HOMEだけを使う', async (t) => {

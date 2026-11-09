@@ -230,7 +230,10 @@ class CliContractError extends Error {
 
 function usageFailure(stderr, args) {
   const received = args.length === 0 ? '(none)' : args.join(' ');
-  stderr.write(`lattice: unsupported command or arguments: ${received}\n`);
+  // Typed like every other refusal, with a next step (a29); the message keeps the old wording.
+  stderr.write(`${JSON.stringify({ schema: CLI_ERROR_SCHEMA, code: 'USAGE',
+    message: `unsupported command or arguments: ${received}`,
+    detail: { arguments: args, next_action: 'lattice --help' } })}\n`);
   return 2;
 }
 

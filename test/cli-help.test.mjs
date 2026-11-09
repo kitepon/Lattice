@@ -53,7 +53,7 @@ test('未知namespace helpは従来どおりusage違反として拒否する', (
   const result = runCli(['help', 'unknown']);
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
-  assert.equal(result.stderr, 'lattice: unsupported command or arguments: help unknown\n');
+  assert.equal(JSON.parse(result.stderr).message, 'unsupported command or arguments: help unknown');
 });
 
 test('run helpはpull runの生成からintake完了までを公開する', () => {

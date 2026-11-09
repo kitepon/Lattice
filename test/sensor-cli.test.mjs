@@ -49,6 +49,13 @@ test('lattice sensorは未知commandをtyped usage errorで拒否する', () => 
   assert.equal(JSON.parse(result.stderr).code, 'USAGE');
 });
 
+test('lattice sensor syncは無いpathをokにせず名指す(a29)', () => {
+  const result = run(['sensor', 'sync', 'no-such-dir-a29'], ROOT);
+  assert.equal(result.status, 1);
+  const error = JSON.parse(result.stderr);
+  assert.deepEqual([error.code, error.detail.path], ['LATTICE_SENSOR_PATH_MISSING', 'no-such-dir-a29']);
+});
+
 test('lattice sensor syncは未初期化をtyped errorとnext actionで返す', async (t) => {
   const repo = await mkdtemp(path.join(tmpdir(), 'lattice-sensor-uninitialized-'));
   t.after(() => rm(repo, { recursive: true, force: true }));

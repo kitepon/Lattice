@@ -118,6 +118,8 @@ export async function runSetupCli({ argv, stdout, env = process.env, platform = 
   const state = !hosts.length || features.some((feature) => feature.state === 'failed') ? 'failed'
     : features.every((feature) => feature.state === 'verified') ? 'ready' : 'partial';
   stdout.write(`${JSON.stringify({ schema: 'lattice.setup_result.v1', operation: statusOnly ? 'status' : 'setup',
-    platform, state, ...(hosts.length ? {} : { code: 'HOST_NOT_PRESENT' }), hosts: results })}\n`);
+    platform, state, ...(hosts.length ? {} : { code: 'HOST_NOT_PRESENT',
+      message: 'このHOMEにはAIの設定フォルダがありません',
+      next_action: 'lattice setup --host <claude|codex|grok|cursor>' }), hosts: results })}\n`);
   return state === 'ready' ? 0 : 1;
 }
