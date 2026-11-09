@@ -184,6 +184,18 @@ const REGISTRY = {
   invalid_unblock_transition: {
     repair: (detail, ctx) => `Only a blocked task can be unblocked; check its status with \`${showTask(detail, ctx)}\`.`,
   },
+  invalid_reopen_transition: {
+    // a32: only a done task can be reopened; say the state and the step that fits it.
+    repair: (detail, ctx) => {
+      const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+      return `Only a done task can be reopened; ${planOf(detail, ctx)}/${taskOf(detail, ctx)} is ${detail.status ?? 'not done'}. ` + ({
+        'in-progress': `It is still open: finish it with \`lattice todo done ${on}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`,
+        pending: `It has not started: run \`lattice todo start ${on}\`.`,
+        blocked: `It is blocked: resume it with \`lattice todo unblock ${on}\`.`,
+        retired: `Retire is permanent, so it stays closed; see \`${showTask(detail, ctx)}\`.`,
+      }[detail.status] ?? `Check its state with \`${showTask(detail, ctx)}\`.`);
+    },
+  },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,
   },

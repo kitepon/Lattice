@@ -95,7 +95,7 @@ test('公開subcommand helpは正規構文をstore非依存で表示する', () 
   const cases = [
     [['todo', 'show', '--help'], /show --plan <key> --task <id> --json/u],
     [['todo', 'note', '--help'], /--message <text>\|--input <file>/u],
-    [['help', 'todo', 'note', 'list'], /note list --plan <key> \[--task <id>\] --json/u],
+    [['help', 'todo', 'note', 'list'], /note list --plan <key> \[--task <id>\] \[--json\]/u],
     [['todo', 'reopen', '--help'], /--override-reason <text>/u],
     [['todo', 'phase', 'accept', '-h'], /--input <file>/u],
     [['help', 'todo', 'done'], /--evidence <file>/u],

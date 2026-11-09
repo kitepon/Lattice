@@ -117,13 +117,14 @@ test('reopenのtarget_done_digestはgenesisのcarryへ束縛される', async (t
   assert.equal(reopen.payload.target_done_digest, genesisDigest);
 });
 
-test('doneでないtaskのreopenはinvalid_reopen_bindingのまま', async (t) => {
+test('doneでないtaskのreopenは状態を名指すinvalid_reopen_transitionで断る（a32）', async (t) => {
   const { root, writer } = await carriedDoneFixture(t);
   await assert.rejects(
     appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
       event: { kind: 'reopen', task_id: 'T2', actor: ACTOR, recorded_at: NOW,
         payload: { reason: 'T2 was never done', override_reason: null } } }),
-    (error) => error instanceof TodoStoreError && error.code === 'STORE_INCONSISTENT'
-      && error.detail.reason === 'invalid_reopen_binding',
+    (error) => error instanceof TodoStoreError && error.code === 'TODO_TRANSITION_REFUSED'
+      && error.detail.reason === 'invalid_reopen_transition' && error.detail.cause === 'task_state'
+      && typeof error.detail.status === 'string' && error.detail.status !== 'done',
   );
 });

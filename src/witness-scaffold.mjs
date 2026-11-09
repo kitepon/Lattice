@@ -51,28 +51,65 @@ function reject(reasons) {
   return { witnessSet: null, queries: [], reasons: sortedUnique(reasons) };
 }
 
-/** 下書きの形。AIが書く欄だけを持ち、観測で埋まる欄は持たない。 */
-export function validateWitnessDraft(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  if (!DRAFT_SCHEMAS.includes(value.schema)) return false;
-  if (!isTodoIdentifier(value.project_id) || !isTodoIdentifier(value.plan_key)) return false;
-  if (value.capacity === null || typeof value.capacity !== 'object'
-    || !Number.isSafeInteger(value.capacity.executors) || value.capacity.executors < 1) return false;
-  if (value.tasks === null || typeof value.tasks !== 'object' || Array.isArray(value.tasks)) return false;
+const DRAFT_TOP_LEVEL_KEYS = Object.freeze(['schema', 'project_id', 'plan_key', 'capacity', 'tasks']);
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const refList = (value) => value === undefined || (Array.isArray(value) && value.every(isTodoRef));
+
+/** 1 taskの下書きの最初の違反（相対path）、無ければnull。validateWitnessDraftと同じ規則。 */
+function explainDraftTask(task, schema) {
+  if (!plainObject(task)) return { reason: 'not_an_object', path: '' };
+  if (draftOwnEntries(task, schema) === null) return { reason: 'invalid_owns', path: '/owns' };
+  for (const key of ['reads', 'writes']) {
+    if (!refList(task[key])) return { reason: 'invalid_repo_relative_paths', path: `/${key}` };
+  }
+  if (task.unknowns !== undefined && !(Array.isArray(task.unknowns) && task.unknowns.every((entry) => plainObject(entry)
+    && isTodoIdentifier(entry.kind) && typeof entry.ref === 'string' && entry.ref.length > 0))) {
+    return { reason: 'invalid_unknowns', path: '/unknowns' };
+  }
+  if (task.concern_anchors !== undefined && !(Array.isArray(task.concern_anchors)
+    && task.concern_anchors.every((anchor) => plainObject(anchor) && isTodoRef(anchor.within)
+      && Array.isArray(anchor.symbols) && anchor.symbols.length > 0 && anchor.symbols.every(isTodoIdentifier)))) {
+    return { reason: 'invalid_concern_anchors', path: '/concern_anchors' };
+  }
+  return null;
+}
+
+/**
+ * 下書きの形。AIが書く欄だけを持ち、観測で埋まる欄は持たない。
+ * a32: 拒否は最初に落ちた欄（JSON pointer）と理由、topの欠けたkeyを名指す。
+ */
+export function explainWitnessDraft(value) {
+  const reject = (reason, at, extra = {}) => ({ valid: false, reason, path: at, ...extra });
+  if (!plainObject(value)) return reject('not_an_object', '/');
+  const missing = DRAFT_TOP_LEVEL_KEYS.filter((key) => !Object.hasOwn(value, key));
+  if (missing.length > 0) return reject('missing_top_level_keys', '/', { missing_keys: missing });
+  if (!DRAFT_SCHEMAS.includes(value.schema)) return reject('schema_mismatch', '/schema', { expected: DRAFT_SCHEMAS });
+  if (!isTodoIdentifier(value.project_id)) return reject('invalid_identifier', '/project_id');
+  if (!isTodoIdentifier(value.plan_key)) return reject('invalid_identifier', '/plan_key');
+  if (!plainObject(value.capacity) || !Number.isSafeInteger(value.capacity.executors) || value.capacity.executors < 1) {
+    return reject('invalid_capacity', '/capacity/executors');
+  }
+  if (!plainObject(value.tasks)) return reject('not_an_object', '/tasks');
   const entries = Object.entries(value.tasks);
-  if (entries.length === 0) return false;
-  return entries.every(([taskId, task]) => isTodoIdentifier(taskId)
-    && task !== null && typeof task === 'object' && !Array.isArray(task)
-    && draftOwnEntries(task, value.schema) !== null
-    && (task.reads === undefined || (Array.isArray(task.reads) && task.reads.every(isTodoRef)))
-    && (task.writes === undefined || (Array.isArray(task.writes) && task.writes.every(isTodoRef)))
-    && (task.unknowns === undefined || (Array.isArray(task.unknowns)
-      && task.unknowns.every((entry) => entry !== null && typeof entry === 'object'
-        && isTodoIdentifier(entry.kind) && typeof entry.ref === 'string' && entry.ref.length > 0)))
-    && (task.concern_anchors === undefined || (Array.isArray(task.concern_anchors)
-      && task.concern_anchors.every((anchor) => anchor !== null && typeof anchor === 'object'
-        && isTodoRef(anchor.within) && Array.isArray(anchor.symbols)
-        && anchor.symbols.length > 0 && anchor.symbols.every(isTodoIdentifier)))));
+  if (entries.length === 0) return reject('empty_tasks', '/tasks');
+  for (const [taskId, task] of entries) {
+    if (!isTodoIdentifier(taskId)) return reject('invalid_identifier', `/tasks/${taskId}`);
+    const failure = explainDraftTask(task, value.schema);
+    if (failure !== null) return reject(failure.reason, `/tasks/${taskId}${failure.path}`);
+  }
+  return { valid: true };
+}
+
+export function validateWitnessDraft(value) {
+  return explainWitnessDraft(value).valid;
+}
+
+/** a32: the starting draft for a plan: every task still to do, with nothing declared yet. */
+export function witnessDraftTemplate({ projectId, planKey, taskIds }) {
+  return {
+    schema: WITNESS_DRAFT_SCHEMA_V2, project_id: projectId, plan_key: planKey, capacity: { executors: 1 },
+    tasks: Object.fromEntries([...taskIds].sort(compareText).map((taskId) => [taskId, { owns: [], reads: [], writes: [] }])),
+  };
 }
 
 function queryIdFor(index) {
