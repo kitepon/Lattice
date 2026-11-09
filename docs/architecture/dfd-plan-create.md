@@ -115,7 +115,7 @@ Create input arrays are sorted by the machine-completed create input step below
 
 Seat contract (boundaries.md): the AI writes intent; the machine derives facts.
 Before validation, `plan create` and `plan revise` (its `desired`) complete every
-`lattice.plan_create_input.v1`–`v5` object with `completeCreateInput(value, {env, now})`
+`lattice.plan_create_input.v1`–`v5` object with `completeCreateInput(value, {env, now, projectId, planVersion})`
 in `todo-authoring-input.mjs` (pure apart from the injected env/clock):
 
 | Field | Completion | Row |
@@ -152,6 +152,22 @@ null is the machine's. Extends the u03p table above, same function
 | `phases[].gate_policy` | absent or null → `heavy` (display name only, schema note) |
 | `phases[].predecessor_phase_ids` | absent or null → `[]` |
 | edge refs: `hard_dependencies[].from/to`, `joins[].after[]/before`, `phase_accept_dependencies[].from/to` | absent `project_id`/`plan_key` → the input's own; an author only writes `task_id`/`phase_id` for an in-plan edge |
+
+### Identity derived by the machine (a17, 2026-11-10)
+
+Seat walkthrough 0.84.2: a first plan still took several attempts because
+`project_id`/`plan_version` were required and the template invented them.
+Both are machine facts (seat contract), so they leave the author's input:
+
+| Field | Completion / refusal |
+|---|---|
+| `project_id` | absent or null → `runPlanCreate` passes the store's `project_id` when a manifest exists (read with `readTodoStore`), else the git repo root directory name as a todo identifier (lower-case, invalid runs → `-`, edge symbols trimmed, fallback `project`). Written but different from the store's → `INPUT_INVALID` / `project_id_mismatch` at `/project_id` with `expected` (store id), `actual`, next_action "omit it or set it to the store id", raised before Store is called (Store's own `STORE_WRITE_CONFLICT` check stays as the backstop) |
+| `plan_version` | absent or null → `v1` for create; `plan revise` passes the active plan's version (the successor version is machine-computed anyway) |
+| `plan revise` `desired.project_id` | same fill (`member.plan.project_id`); a different value refuses `plan_revise_identity_mismatch` at `/desired/project_id` with expected/actual; `plan_key` mismatch is unchanged |
+| `--input <file>` location | `readAuthoringJsonFile` only reads JSON content, so an absolute path outside the repo is accepted (`resolveAuthoringInputPath` option `allowOutsideRepo`, `inputRef` = the absolute path). `todo note --input` and `--evidence` need repo files (git blobs) and keep the outside-repo refusal |
+| `--template` | no `project_id`/`plan_version`; `plan_key` = repo root name as an identifier inside a git repo, `main` outside one |
+| fresh-repo `status` / `session-context` | `next_action.command` = `lattice plan create --template --json` (a real command; `input_schema`/`schema_command` keys unchanged, status v1 is frozen) |
+| schema text | `plan_create_input.v5` no longer requires `project_id`/`plan_version`; the scope-review pointer is the full argv `lattice plan scope-review --plan-input <file> --review <scope-review.json> --json` |
 
 Edge direction (schema text and `--template`): `from` is the prerequisite,
 `to` starts after `from` is done.

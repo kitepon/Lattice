@@ -77,7 +77,7 @@ if (help !== null) {
   && args[2] === '--template' && args[3] === '--json') {
   const { projectCliFailure, runPlanCreateTemplate } = await import('../src/project-cli.mjs');
   try {
-    process.exitCode = await runPlanCreateTemplate({ stdout: process.stdout });
+    process.exitCode = await runPlanCreateTemplate({ stdout: process.stdout, cwd: process.cwd() });
   } catch (error) {
     process.exitCode = projectCliFailure(process.stderr, error);
   }

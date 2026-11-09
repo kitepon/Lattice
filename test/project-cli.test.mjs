@@ -63,7 +63,7 @@ test('status --jsonは未初期化repoを成功として発見し実在する次
   assert.equal(result.state, 'uninitialized');
   assert.equal(result.store.ref, '.lattice/todo');
   assert.equal(result.can_create_plan, true);
-  assert.equal(result.next_action.command, 'lattice plan create --input .lattice/plan-create.json');
+  assert.equal(result.next_action.command, 'lattice plan create --template --json');
   assert.equal(result.next_action.input_schema, 'lattice.plan_create_input.v5');
   assert.equal(result.next_action.schema_command, 'lattice plan create --schema-version 5 --json');
   assert.equal(result.result_digest, todoSelfDigest(result, 'result_digest'));
@@ -824,4 +824,59 @@ test('statusは公開未設定をstderrへ返し、既存の工程状態契約�
   assert.equal(validateProjectStatus(JSON.parse(stdout)), true);
   // a15: a seat without a bridge gets no delivery line on stderr.
   assert.equal(stderr, '');
+});
+
+// a17: project_id・plan_versionは機械が決める。templateの出力をそのまま渡せば1回で通る。
+test('plan createはtemplateの出力をそのまま受け、project_idはrepo root名から導く', async (context) => {
+  const root = await workspace(context);
+  const template = run(root, ['plan', 'create', '--template', '--json']);
+  assert.equal(template.status, 0, template.stderr);
+  const body = JSON.parse(template.stdout);
+  assert.equal('project_id' in body, false);
+  assert.equal('plan_version' in body, false);
+  const expected = path.basename(root).toLowerCase();
+  assert.equal(body.plan_key, expected);
+  await writeFile(path.join(root, 'plan.json'), template.stdout);
+  const created = run(root, ['plan', 'create', '--input', 'plan.json']);
+  assert.equal(created.status, 0, created.stderr);
+  const result = JSON.parse(created.stdout);
+  assert.equal(result.project_id, expected);
+  assert.equal(result.plan_version, 'v1');
+
+  // 2つ目のplanもproject_idなしでstoreへ足せ、違うproject_idはStoreへ渡す前に断る。
+  const second = { ...body, plan_key: 'second' };
+  await writeFile(path.join(root, 'second.json'), JSON.stringify(second));
+  const added = run(root, ['plan', 'create', '--input', 'second.json']);
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(JSON.parse(added.stdout).project_id, expected);
+
+  await writeFile(path.join(root, 'wrong.json'), JSON.stringify({ ...body, plan_key: 'third', project_id: 'other' }));
+  const wrong = run(root, ['plan', 'create', '--input', 'wrong.json']);
+  assert.equal(wrong.status, 1);
+  const { code, detail } = JSON.parse(wrong.stderr);
+  assert.equal(code, 'INPUT_INVALID');
+  assert.equal(detail.pointer, '/project_id');
+  assert.equal(detail.rule, 'project_id_mismatch');
+  assert.equal(detail.expected, expected);
+  assert.equal(detail.actual, 'other');
+  assert.match(detail.next_action, new RegExp(`Omit project_id .*"${expected}"`, 'u'));
+});
+
+test('plan create --inputはrepo外の絶対pathのJSONも読める', async (context) => {
+  const root = await workspace(context);
+  const outside = await mkdtemp(path.join(tmpdir(), 'lattice-project-input-'));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const file = path.join(outside, 'plan.json');
+  await writeFile(file, run(root, ['plan', 'create', '--template', '--json']).stdout);
+  const created = run(root, ['plan', 'create', '--input', file]);
+  assert.equal(created.status, 0, created.stderr);
+  assert.equal(JSON.parse(created.stdout).schema, 'lattice.plan_create_result.v1');
+});
+
+test('plan create --templateはgit repo外ではplan_keyをmainにする', async (context) => {
+  const outside = await mkdtemp(path.join(tmpdir(), 'lattice-project-nogit-'));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const template = run(outside, ['plan', 'create', '--template', '--json']);
+  assert.equal(template.status, 0, template.stderr);
+  assert.equal(JSON.parse(template.stdout).plan_key, 'main');
 });

@@ -12,6 +12,7 @@
 - 依存の循環を閉じる`dependency connect`は`STORE_INCONSISTENT/merged_cycle`ではなく`DEPENDENCY_CYCLE`で断り、`cycle`に閉じる道の工程を並べる。無い辺の`disconnect`は`DEPENDENCY_NOT_FOUND`になり、同じplanなら`dependency_not_found`と、その工程の今の前の工程（`predecessors`）を示す。
 - 他の工程が依存している工程を`todo retire`すると、結果の`dependents`にその工程を載せ、もう待たないことを`next_action`で伝える。`plan show`の`depends_on_count`は、retiredの工程との辺を数えない。
 - 別の席が`plan revise`・`todo dependency connect|disconnect`・`plan backchain`で計画を改訂しても、作業中の工程は始めた席の`turn.own`に残る（a16）。改訂後の版へ結び直すstartは、改訂した席でなく、運ぶ前のstartを記録した席の`actor`で記録する。
+- 最初のplanを`plan create --template --json`の出力そのままで1回で作れる（a17）。`project_id`と`plan_version`は機械が決める欄になり、書かなければstoreのid（storeが無ければrepo root名）と`v1`で埋まる（`plan revise`の`desired`は現行planの値）。storeと違う`project_id`は`INPUT_INVALID/project_id_mismatch`（`/project_id`、期待値つき）で、Storeへ渡す前に断る。`--template`は`project_id`・`plan_version`を載せず、`plan_key`はrepo root名から導く。`--input`はrepo外の絶対pathも読める。計画のないrepoの`status`の`next_action`は実在する`lattice plan create --template --json`を指し、schemaの説明の`plan scope-review`も実際に打てる引数つきに直した。
 
 ## 0.84.2 — 2026-11-09
 
