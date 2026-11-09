@@ -217,3 +217,23 @@ test('artifact CLI applies v5 through revise-phase and verifies its reconciliati
   assert.equal(member.revision_digest, preview.revision.revision_digest);
   assert.equal(member.reconciliation_digest, preview.revision.revision_digest);
 });
+
+test('light CLI fills project_id/plan_version of desired and names a wrong project_id', async (context) => {
+  const { root } = await fixture(context);
+  const input = intent();
+  delete input.desired.project_id;
+  delete input.desired.plan_version;
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(input));
+  const preview = success(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
+  assert.equal(preview.revision.project_id, 'example');
+
+  input.desired.project_id = 'other';
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(input));
+  const refused = run(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
+  assert.equal(refused.status, 1);
+  const { detail } = JSON.parse(refused.stderr);
+  assert.equal(detail.rule, 'plan_revise_identity_mismatch');
+  assert.equal(detail.pointer, '/desired/project_id');
+  assert.equal(detail.expected, 'example');
+  assert.equal(detail.actual, 'other');
+});

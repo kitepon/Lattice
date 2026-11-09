@@ -249,7 +249,8 @@ lattice plan create --template --json           # 作者が書くkeyだけの最
 ```
 
 ```bash
-lattice plan create --input .lattice/plan-create.json
+lattice plan create --template --json > plan.json   # 書き換えてから作成する。project_id・plan_versionは機械が決める
+lattice plan create --input plan.json
 ```
 
 `invalid`をMarkdown fallbackへ丸めず、`next_action`に従ってstoreを診断してください。

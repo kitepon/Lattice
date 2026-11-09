@@ -320,7 +320,7 @@ test('a11: --template prints a minimal v5 input that plan create accepts as is',
   assert.equal(printed.stderr, '');
   const template = JSON.parse(printed.stdout);
   assert.deepEqual(Object.keys(template).sort(),
-    ['hard_dependencies', 'phases', 'plan_key', 'plan_version', 'project_id', 'schema', 'tasks']);
+    ['hard_dependencies', 'phases', 'plan_key', 'schema', 'tasks']);
   assert.equal(template.schema, 'lattice.plan_create_input.v5');
   assert.deepEqual(template.hard_dependencies[0].from, { task_id: template.hard_dependencies[0].from.task_id });
   const { root, run } = await createFromDraft(context, template);

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 最初のplanを`plan create --template --json`の出力そのままで1回で作れる（a17）。`project_id`と`plan_version`は機械が決める欄になり、書かなければstoreのid（storeが無ければrepo root名）と`v1`で埋まる（`plan revise`の`desired`は現行planの値）。storeと違う`project_id`は`INPUT_INVALID/project_id_mismatch`（`/project_id`、期待値つき）で、Storeへ渡す前に断る。`--template`は`project_id`・`plan_version`を載せず、`plan_key`はrepo root名から導く。`--input`はrepo外の絶対pathも読める。計画のないrepoの`status`の`next_action`は実在する`lattice plan create --template --json`を指し、schemaの説明の`plan scope-review`も実際に打てる引数つきに直した。
+
 ## 0.84.2 — 2026-11-09
 
 計画がまだ無いrepoで初めての`todo status`が断らないようにし、WindowsでMCPの起動記録が止まる不具合を直す修正版。

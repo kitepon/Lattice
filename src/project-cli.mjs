@@ -278,7 +278,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
       store: { ref: STORE_REF, absolute_path: storeAbsolute },
       active_plans: [], active_runs: [], can_create_plan: true,
       next_action: {
-        command: 'lattice plan create --input .lattice/plan-create.json',
+        command: 'lattice plan create --template --json',
         input_schema: CURRENT_CREATE_INPUT_SCHEMA,
         schema_command: CURRENT_CREATE_SCHEMA_COMMAND,
       },
@@ -721,13 +721,34 @@ export function validatePlanCreateInput(input) {
     });
 }
 
+/** a17: repo root名をtodo identifierへ寄せる。小文字化し、使えない文字は'-'へ、前後の記号は落とす。 */
+function identifierFromRepoRoot(repoRoot, fallback) {
+  const name = path.basename(repoRoot).toLowerCase().replace(/[^0-9a-z._-]+/gu, '-')
+    .replace(/^[^0-9a-z]+|[^0-9a-z]+$/gu, '').slice(0, 128);
+  return isTodoIdentifier(name) ? name : fallback;
+}
+
 export async function runPlanCreate({
   cwd, inputRef, stdout, inputValue = null, featureChain = null, env = process.env,
 }) {
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved');
-  const input = completeCreateInput(
-    inputValue ?? await readCanonicalInput(repoRoot, inputRef), { env, now: new Date() });
+  const manifest = await lstat(path.join(repoRoot, MANIFEST_REF)).catch((error) => {
+    if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
+    return null;
+  });
+  // a17: project_idは機械が決める。storeがあればそのid、無ければrepo root名。
+  const projectId = manifest === null
+    ? identifierFromRepoRoot(repoRoot, 'project') : (await readTodoStore({ repoRoot })).project_id;
+  const given = inputValue ?? await readCanonicalInput(repoRoot, inputRef);
+  if (manifest !== null && isPlainRecord(given) && given.project_id !== undefined
+    && given.project_id !== null && given.project_id !== projectId) {
+    throw new TodoStoreError('INPUT_INVALID', 'project_id_mismatch', undefined, {
+      pointer: '/project_id', expected: projectId, actual: given.project_id,
+      next_action: `Omit project_id (the machine fills "${projectId}") or set it to "${projectId}".`,
+    });
+  }
+  const input = completeCreateInput(given, { env, now: new Date(), projectId, planVersion: 'v1' });
   validatePlanCreateInput(input);
   // dispatch_shapeは結果へ載せる観測であり、直列度では初期化を拒まない（ADR 0180）。
   const dispatchShape = computeTodoDispatchShapeForPlan({
@@ -754,10 +775,6 @@ export async function runPlanCreate({
     genesis: { actor: input.actor, recorded_at: input.recorded_at, provenance: null },
     ...(featureChain === null ? {} : { featureChain }),
   };
-  const manifest = await lstat(path.join(repoRoot, MANIFEST_REF)).catch((error) => {
-    if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) throw error;
-    return null;
-  });
   const store = manifest === null
     ? await initializeAuthoredTodoStore({ ...options,
       projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }] })
@@ -812,15 +829,14 @@ export async function runPlanCreateSchema({ stdout, version = 5 }) {
 }
 
 /**
- * `plan create --template --json`（a11）。作者が書くkeyだけの最小のv5入力を出す。
- * 機械が埋めるkey(actor・recorded_at・input_digest・定数のkey・辺のproject_id/plan_key)は載せない。
- * 決定的で、storeもrepositoryも読まない。id・題名を書き換えれば`plan create`がそのまま受理する。
+ * `plan create --template --json`（a11・a17）。作者が書くkeyだけの最小のv5入力を出す。
+ * 機械が決めるkey(project_id・plan_version・actor・recorded_at・input_digest・定数のkey・辺のproject_id/plan_key)は載せない。
+ * plan_keyだけは、git repo内ならrepo root名から導いた値、repo外なら'main'。
+ * 決定的で、storeを読まない。id・題名を書き換えれば`plan create`がそのまま受理する。
  */
 export const PLAN_CREATE_TEMPLATE = Object.freeze({
   schema: DONE_CONDITION_CREATE_INPUT_SCHEMA,
-  project_id: 'my-project',
-  plan_key: 'my-plan',
-  plan_version: 'v1',
+  plan_key: 'main',
   phases: [
     { phase_id: 'p1', title: 'First phase' },
     { phase_id: 'p2', title: 'Second phase' },
@@ -834,8 +850,11 @@ export const PLAN_CREATE_TEMPLATE = Object.freeze({
   hard_dependencies: [{ from: { task_id: 't1' }, to: { task_id: 't3' } }],
 });
 
-export async function runPlanCreateTemplate({ stdout }) {
-  stdout.write(`${JSON.stringify(PLAN_CREATE_TEMPLATE)}\n`);
+export async function runPlanCreateTemplate({ stdout, cwd = process.cwd() }) {
+  const repoRoot = resolveRepoRoot(cwd);
+  const template = repoRoot === null ? PLAN_CREATE_TEMPLATE
+    : { ...PLAN_CREATE_TEMPLATE, plan_key: identifierFromRepoRoot(repoRoot, 'main') };
+  stdout.write(`${JSON.stringify(template)}\n`);
   return 0;
 }
 
