@@ -7,6 +7,11 @@
 - 監査中（reviewing）の`audit_pending.next_commands`は、`accept … --evidence <file>`と`reject … --reason <text> --evidence <file>`を示す（必須slotが複数なら`accept … --input <file>`）。`phase status`はreviewingとrejectedのPhaseにも`guidance`を返し、gate_readyの案内の監査の道も`--evidence`にした。
 - 別の席がstartした工程を`todo reopen`すると、結果に`started_by`（最後にstartした席）と、この席へ移す`lattice todo start … --rebind --reason <text>`を`next_action`で添える。工程は従来どおり最後にstartした席の`turn.own`に残る。
 - 作業中の工程への`todo start`の断りは、持っている席を`started_by`で名指す。`LATTICE_SEAT_ID`を付ける前の自分の無名のstartなら、そう言い、席の契約の一度だけの直し方（`LATTICE_SEAT_ID`を外して`todo retract`、またはそこで`todo done`）を示す。別の席なら、移す`--rebind`のstartを示す。
+- 同じfileを所有して書く2つの作業を、並列の判定が衝突として見る（a35、特許の主張4）。sensorの裏付けが無い`owns`は資源にならないのに、書き込みの重なりは「ownsの資源で扱う」として飛ばしていたため、`independence compile`が`conflict_count: 0`を返し、2つを同じ並列グループに入れて両方startさせていた。今はownsの資源が実際に両方を含む時だけ飛ばし、それ以外は衝突として直列にする。別々のfileは従来どおり並列。
+- 調整方式の宣言は版でなく計画に属する（a35）。`plan revise`で作業を足しても、新しい版が自分で宣言していなければ、前の版の宣言を引き継いで読む（何も書き写さない）。
+- witness setに無いready工程があるcompileの断り（`INDEPENDENCE_READY_UNDECLARED`）は、同じcompileではなく、足りない工程を名指してひな形→scaffold→compileの道を示す。`witness scaffold --template`は記録済みのwitness setの宣言（owns・reads・writes・unknowns・concern_anchors・capacity）を引き継ぎ、新しい工程だけを空で出す。
+- reopenで開き直した作業には取り消すstartが無い。in-progressの工程のreopenの断りは、startで開いた時だけ`retract`を示し、それ以外は開いている理由（`opened_by`）と`done`を示す。`retract`の`authored_start_binding_missing`も理由と`done`を示す。`todo --help`に`retract`を載せた。
+- retired の工程への`todo done`は「startせよ」でなく、retireは永久でstartもdoneもできないことと、まだ要る作業なら`plan revise`で新しい工程として足すことを示す。blockedなら`unblock`を示す。
 
 ## 0.85.3 — 2026-11-10
 

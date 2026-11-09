@@ -113,6 +113,9 @@ Write commands:
         # readyならflagなしで着手する。flagの順は問わない。
         # --parallel-frontierと--override-reasonは方針・理由の記録。
         # --serial-confirmedは互換のため受理する。いずれも門ではない
+  retract --plan <key> --task <id> --reason <text>
+        # 自分の席が記録したstartを取り消してpendingへ戻す。reopenやimportで開いた工程には
+        # 取り消すstartが無いので、doneで閉じる
   block --plan <key> --task <id> --reason <text>
   unblock --plan <key> --task <id>
   retire --plan <key> --task <id> --reason <text>

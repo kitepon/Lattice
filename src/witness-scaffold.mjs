@@ -104,11 +104,31 @@ export function validateWitnessDraft(value) {
   return explainWitnessDraft(value).valid;
 }
 
-/** a32: the starting draft for a plan: every task still to do, with nothing declared yet. */
-export function witnessDraftTemplate({ projectId, planKey, taskIds }) {
+/**
+ * a32: the starting draft for a plan: every task still to do.
+ * a35: a task the recorded witness set already declares starts from that declaration (the inverse of
+ * buildWitnessSet: owns back to draft entries, writes without the owned paths it adds), so adding one
+ * task after a revision does not mean rewriting the others.
+ */
+export function witnessDraftTemplate({ projectId, planKey, taskIds, witnessSet = null }) {
+  const recorded = witnessSet?.plan_key === planKey ? witnessSet.manual_witness : {};
+  const draftTask = (witness) => {
+    if (witness === undefined) return { owns: [], reads: [], writes: [] };
+    const owned = new Set(witness.owns.map(({ target }) => target));
+    return {
+      owns: witness.owns.map(({ target, creates }) => (creates ? { path: target, creates: true } : target)),
+      reads: [...witness.reads],
+      writes: witness.writes.filter((target) => !owned.has(target)),
+      ...(witness.unknowns.length > 0 ? { unknowns: witness.unknowns.map(({ kind, ref }) => ({ kind, ref })) } : {}),
+      ...(witness.concern_anchors?.length > 0 ? {
+        concern_anchors: witness.concern_anchors.map(({ within, symbols }) => ({ within: within.target, symbols: [...symbols] })),
+      } : {}),
+    };
+  };
   return {
-    schema: WITNESS_DRAFT_SCHEMA_V2, project_id: projectId, plan_key: planKey, capacity: { executors: 1 },
-    tasks: Object.fromEntries([...taskIds].sort(compareText).map((taskId) => [taskId, { owns: [], reads: [], writes: [] }])),
+    schema: WITNESS_DRAFT_SCHEMA_V2, project_id: projectId, plan_key: planKey,
+    capacity: { executors: witnessSet?.plan_key === planKey ? witnessSet.capacity.executors : 1 },
+    tasks: Object.fromEntries([...taskIds].sort(compareText).map((taskId) => [taskId, draftTask(recorded[taskId])])),
   };
 }
 

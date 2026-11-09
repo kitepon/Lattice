@@ -940,7 +940,8 @@ test('next_ready が witness に無い compile は拒否する', async (context)
   const error = parse(compiled.stderr);
   assert.equal(error.code, 'INDEPENDENCE_READY_UNDECLARED');
   assert.deepEqual(error.detail.missing_task_ids, ['T2']);
-  assert.equal(error.detail.next_action, `lattice todo independence compile --plan ${error.detail.plan_key} --input <file>`);
+  // a35: compiling the same set again cannot add T2; the way on is the template route.
+  assert.match(error.detail.next_action, /^Declare T2 in the witness set\. .*scaffold --template --plan main/u);
 });
 
 // T1だけを宣言したcompiled記録をstoreへ書く（baseは現在のHEAD）。
