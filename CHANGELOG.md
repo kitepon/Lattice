@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.85.4 — 2026-11-10
+
+0.85.3の使い通しの点検で見つかった、誤らせる所を直す修正版。同じfileを持って書く2つの作業を、並列の判定が衝突として見る（これまでは見落として並列にしていた）。改訂後もwitness方式が引き継がれ、phaseの前提・reopen・retract・retire済みへのdoneが通れる次の一手を示す。ホストへの変更：`phase_gate_not_ready`の型は`STORE_INCONSISTENT`から`TODO_TRANSITION_REFUSED`。
+
 - `plan create --input <file> --json`と`todo independence mode ... --json`は、`--json`を受け付けて結果を変えない（これまでは`flag_unknown`で断り、何も作らなかった）。`plan scope-review`は`--json`を付け忘れても断らない（a37）。
 - `todo phase review`と`todo phase close-unaudited`をgate_readyでないPhaseへ打つと、`STORE_INCONSISTENT`でなく`TODO_TRANSITION_REFUSED/phase_gate_not_ready`で断り、`phase_status`と、その状態に合う次のコマンドを示す（a36）。監査中なら`phase accept … --evidence <file>`、まだ作業が残るなら`todo status --json`。ホストへの変更：この断りの型が変わる。
 - 監査中（reviewing）の`audit_pending.next_commands`は、`accept … --evidence <file>`と`reject … --reason <text> --evidence <file>`を示す（必須slotが複数なら`accept … --input <file>`）。`phase status`はreviewingとrejectedのPhaseにも`guidance`を返し、gate_readyの案内の監査の道も`--evidence`にした。
