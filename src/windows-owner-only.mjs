@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync, rmSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -27,16 +27,41 @@ function systemTool(name, env = process.env) {
   return join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', name);
 }
 
-function run(tool, args) {
-  const result = spawnSync(systemTool(tool), args, { encoding: 'utf8', windowsHide: true, timeout: COMMAND_TIMEOUT_MS });
+/**
+ * 子processの出力をpipeで受けない。別threadが同時に起こした長生きのprocess（sensorのdaemonなど）が
+ * pipeの書き口を継ぐと、道具が終わってもpipeが閉じず、timeoutまで待ってから失敗するため。
+ * 出力が要る時は、自分で開いたfileへ書かせ、そのfdから読む。
+ */
+function run(tool, args, stdout = 'ignore') {
+  const result = spawnSync(systemTool(tool), args, { stdio: ['ignore', stdout, 'ignore'], windowsHide: true, timeout: COMMAND_TIMEOUT_MS });
   if (result.error || result.status !== 0) throw Error('store_unsafe');
-  return result.stdout;
 }
 
-/** このprocessを動かしている利用者のSID。process中は変わらないので1回だけ聞く。 */
-export function windowsSelfSid() {
+const scratchFile = (scratchDir) => join(scratchDir, `.acl-${process.pid}-${randomBytes(6).toString('hex')}`);
+
+/** 出力を`scratchDir`のfileへ書かせ、自分のfdから読む。置き場所の条件は`readWindowsDacl`と同じ。 */
+function runCapturingStdout(tool, args, scratchDir) {
+  const file = scratchFile(scratchDir);
+  const fd = openSync(file, 'wx+', 0o600);
+  try {
+    run(tool, args, fd);
+    const bytes = Buffer.alloc(fstatSync(fd).size);
+    readSync(fd, bytes, 0, bytes.length, 0);
+    return bytes.toString('utf8');
+  } finally {
+    closeSync(fd);
+    // 同時に起きたprocessが写しを継いでいても、共有削除で開いてあるので名前は消える。残っても`.acl-`の名前は数えない。
+    try { rmSync(file, { force: true }); } catch { /* scratch residue only */ }
+  }
+}
+
+/**
+ * このprocessを動かしている利用者のSID。process中は変わらないので1回だけ聞く。
+ * `whoami`の出力は`scratchDir`（`readWindowsDacl`へ渡すのと同じフォルダ）へ置いてすぐ消す。
+ */
+export function windowsSelfSid(scratchDir) {
   if (cachedSelfSid === null) {
-    const sid = run('whoami.exe', ['/user', '/fo', 'csv', '/nh']).trim().split(',').at(-1).replaceAll('"', '');
+    const sid = runCapturingStdout('whoami.exe', ['/user', '/fo', 'csv', '/nh'], scratchDir).trim().split(',').at(-1).replaceAll('"', '');
     if (!SELF_SID.test(sid)) throw Error('store_unsafe');
     cachedSelfSid = sid;
   }
@@ -71,7 +96,7 @@ export const isAclScratchName = (name) => SCRATCH_NAME.test(name);
  * 場所へ置くと、読む前に中身を書き換えられる。
  */
 export function readWindowsDacl(path, scratchDir) {
-  const scratch = join(scratchDir, `.acl-${process.pid}-${randomBytes(6).toString('hex')}`);
+  const scratch = scratchFile(scratchDir);
   try {
     run('icacls.exe', [path, '/save', scratch]);
     const lines = readFileSync(scratch, 'utf16le').replaceAll('\ufeff', '').split(/\r?\n/).filter((line) => line !== '');

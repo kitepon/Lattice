@@ -104,7 +104,7 @@ test('置き場: Windowsは%LOCALAPPDATA%の下、ほかはXDGの場所。XDGの
 windowsTest('Windows: storeのフォルダを本人・SYSTEM・Administratorsだけに絞り、中のfileも同じ権限になる', async () => {
   const workspace = await makeWorkspace();
   try {
-    const sid = windowsSelfSid();
+    const sid = windowsSelfSid(workspace.root);
     // 同じ親の下に作っただけのフォルダは、親の権限を継ぎ、他のaccountが読める。
     const plain = path.join(workspace.parent, 'plain');
     await mkdir(plain);
@@ -155,7 +155,7 @@ windowsTest('Windows: 先に在る空のフォルダは絞って使い、中身�
   const empty = await makeWorkspace();
   const occupied = await makeWorkspace();
   try {
-    const sid = windowsSelfSid();
+    const sid = windowsSelfSid(empty.root);
     // 親の権限を継いだままの空のフォルダ（作った直後に止まった時の形）。
     await mkdir(empty.storeDir);
     assert.equal(daclIsOwnerOnly(readWindowsDacl(empty.storeDir, empty.storeDir), sid), false);
@@ -193,7 +193,7 @@ windowsTest('Windows: CLIは既定の置き場（%LOCALAPPDATA%\\Lattice）へ�
     const recorded = recordRuntimeError(CLI_FAILED, { env, version: '0.75.0' });
     assert.equal(recorded.status, 'recorded');
     assert.equal(existsSync(path.join(storeDir, 'runtime-errors.json')), true);
-    const sid = windowsSelfSid();
+    const sid = windowsSelfSid(storeDir);
     assert.equal(daclIsOwnerOnly(readWindowsDacl(storeDir, storeDir), sid), true);
 
     const snapshot = await runJson(['snapshot'], env);
