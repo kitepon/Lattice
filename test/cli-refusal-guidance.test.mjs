@@ -255,8 +255,5 @@ test('plan create/revise/backchain argument refusals name the flag, rule and rep
   const unknown = run(['plan', 'revise', '--input', 'x.json', '--bogus', '--json']);
   assert.equal(unknown.pointer, '--bogus');
   assert.equal(unknown.rule, 'flag_unknown');
-  const missingJson = run(['plan', 'backchain', '--input', 'x.json']);
-  assert.equal(missingJson.pointer, '--json');
-  assert.equal(missingJson.rule, 'flag_missing');
-  assert.match(missingJson.next_action, /Add --json to `lattice plan backchain`/u);
+  // A missing --json on plan revise/backchain is implied since a24, so it is no refusal here.
 });

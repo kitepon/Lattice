@@ -30,7 +30,8 @@ dependency connect. Every other command remains but is not part of seat guidance
 Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
 Reads and sensor commands that only ever print JSON (`status`, `session-context`,
-`plan show <key>`, `sensor init|sync [path]`) imply a missing `--json` (a20).
+`plan show <key>`, `sensor init|sync|diff`, and `plan revise|backchain --input <file>`)
+imply a missing `--json` (a20, a24).
 
 The first plan write of a seat starts its local display: a dashboard supervisor
 and dashboard process under the seat root, on 127.0.0.1 (see function map,

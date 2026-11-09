@@ -276,12 +276,19 @@ function observeInternalFailure(error, commandKind) {
   }).catch(() => {});
 }
 
-// These reads and sensor commands only ever print JSON, so a missing --json is implied.
+// These commands only ever print JSON, so a missing --json is implied (a20, a24). Plan writes are
+// (revise, backchain) implied only once --input carries a value, so a missing --input is still named as such.
 function withImpliedJson(argv) {
-  if (argv.includes('--json') || argv.some((word) => word.startsWith('-'))) return argv;
-  const implied = (argv.length === 1 && (argv[0] === 'status' || argv[0] === 'session-context'))
-    || (argv.length === 3 && argv[0] === 'plan' && argv[1] === 'show')
-    || (argv[0] === 'sensor' && (argv[1] === 'init' || argv[1] === 'sync') && argv.length <= 3);
+  if (argv.includes('--json') || argv.includes('--help') || argv.includes('-h')) return argv;
+  const [command, sub] = argv;
+  const bare = !argv.some((word) => word.startsWith('-'));
+  const input = argv.indexOf('--input');
+  const implied = (bare && argv.length === 1 && (command === 'status' || command === 'session-context'))
+    || (bare && argv.length === 3 && command === 'plan' && sub === 'show')
+    || (bare && command === 'sensor' && (sub === 'init' || sub === 'sync') && argv.length <= 3)
+    || (command === 'sensor' && sub === 'diff')
+    || (command === 'plan' && (sub === 'revise' || sub === 'backchain')
+      && input > 1 && typeof argv[input + 1] === 'string' && !argv[input + 1].startsWith('-'));
   return implied ? [...argv, '--json'] : argv;
 }
 

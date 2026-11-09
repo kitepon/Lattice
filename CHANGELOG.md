@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `sensor diff` と、`--input` に値のある `plan revise`・`plan backchain` も、`--json` を付け忘れても同じ結果を返す（a24）。`--input` の付け忘れは従来どおり `--input` を名指しして断る。
+- `setup` の結果で、hooksが `wired` でない時は `state: failed` のまま、`hooks status` の状態名を `code`（例 `HOOKS_NOT_WIRED`）で示す。
+
 ## 0.85.0 — 2026-11-10
 
 席の側から使い通した点検（0.84.2）で見つかった止まりを直す版。別の席の改訂で作業の持ち主が移らなくなり、最初の計画が一度で作れ、断りと案内が実在するコマンドを名指しする。
