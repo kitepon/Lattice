@@ -686,23 +686,13 @@ async function readStructureSetDraft(repoRoot, inputRef) {
 }
 
 /**
- * gate_readyの札が出た理由と次の一歩をtypedに言う(ADR 0148裁定8)。
- *
- * 0.36.0で入れた終端監査gate(ADR 0147)は、これから終わる工程だけでなく過去に完了した
- * 工程まで監査待ちにしてしまっていた——原因を言わないgateは、なぜ止まっているかを
- * 説明しないのと同じなので、ここでその経緯を明示する。次の一歩は2択で書く:
- * 今から監査する(review→accept)か、監査せず歴史として閉じる(close-unaudited、
- * 複数plan一括ならbaseline)か。
+ * gate_readyの次の一歩を1行で言う(ADR 0148裁定8・a22)。全taskが終わった席には、軽い出口
+ * (監査せず閉じるclose-unaudited)を先に、監査する道(review→accept)を後に示す。経緯の説明は載せない。
  */
 function auditGateGuidance(planKey, phaseId) {
-  return '全ToDoがdoneになり監査待ち(gate_ready)。0.36.0で入れた終端監査gateは、'
-    + 'これから終わる工程だけでなく過去に完了した工程まで監査待ちにしてしまっていた'
-    + '(ADR 0148で修正)。今から監査するなら: '
-    + `todo phase review --plan ${planKey} --phase ${phaseId} --reason <text> → `
-    + `todo phase accept --plan ${planKey} --phase ${phaseId} --input <file>。`
-    + '監査せず歴史として閉じるなら: '
-    + `todo phase close-unaudited --plan ${planKey} --phase ${phaseId} --reason <text>`
-    + '（複数planをまとめて畳むなら todo phase baseline --reason <text> [--except <plan_key>]...）。';
+  const target = `--plan ${planKey} --phase ${phaseId}`;
+  return `全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited ${target} --reason <text>`
+    + `（監査するなら lattice todo phase review ${target} --reason <text> → accept ${target} --input <file>）`;
 }
 
 /**
@@ -4179,9 +4169,9 @@ async function verify({ repoRoot, requestedPlanKey }) {
         meaning: 'source_inventory_verification_state',
         lifecycle_blocked: false,
         dashboard_visibility_blocked: false,
-        // 席の経路は軽い改訂（plan revise）。反映後のplanはreconciledになる。
-        schema_command: reconciled ? null : 'lattice plan revise --schema --json',
-        next_action: reconciled ? null : 'lattice plan revise --input <revision.json> --json',
+        // registered_unreconciledは何もしなくてよい状態（a22）。次の軽い改訂がreconciledにする。
+        schema_command: null,
+        next_action: reconciled ? null : 'none',
       },
     };
   });
@@ -4216,7 +4206,7 @@ async function verify({ repoRoot, requestedPlanKey }) {
 // ここへ届くのは検証が通った結果だけ。注意が要るのはsnapshot古さとcommit前の証拠）。
 function verifyVerdictLine(result) {
   const members = result.verified_members.map((member) => `${member.plan_key} ${member.reconciliation_state}${
-    member.reconciliation_state === 'reconciled' ? '' : ', lifecycle not blocked'}`);
+    member.reconciliation_state === 'reconciled' ? '' : ', nothing to do'}`);
   const notes = [];
   if (result.snapshot_stale) notes.push('snapshot stale');
   if (result.uncommitted_evidence.length > 0) {

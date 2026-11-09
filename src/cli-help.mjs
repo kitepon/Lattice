@@ -36,6 +36,9 @@ Commands:
   backchain --input <file> [--dry-run] --json
       # 各工程の必要・提供機能を照合し、初回又は既存storeへのplan登録まで行う
   show <plan_key> --json             # task・依存辺・phase・状態をplan本体から1コマンドで投影する
+  scope-review --plan-input <file> --review <scope-review.json> --json
+      # 書き終えたplanの全taskが持ち主の作業仕様の内にあるかを、登録前に検査する
+  scope-review --schema --json       # review入力のJSON Schemaを返す
   compile --request <request.json>
   compile --schema --json            # lattice.run_request.v1 の JSON Schema を出す
   verify --request <request.json> --plan <plan.json>
@@ -122,6 +125,8 @@ Write commands:
   dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
   dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
       # 開発中に発見した依存を明示接続する。同一plan内の辺はplan本体を軽い改訂で書き換え（plan_versionが変わる）、plan跨ぎは台帳に積む。依存の自動推定は行わない
+  independence mode --plan <key> --set <witness|conversation> --reason <text>
+      # このplanの調整方式（witness検証で並列するか、会話で調整するか）を記録する
   independence compile --plan <key> --input <file>  # witness setとsensorから並列可否を記録する
   independence witness migrate --plan <key>  # revision後の宣言をtask migrationで写す
   independence witness scaffold --plan <key> --input <draft>  # 下書きとfresh観測から宣言を書き出す
@@ -274,7 +279,9 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo note': 'todo note --plan <key> [--task <id>] (--message <text>|--input <file>) | list --plan <key> [--task <id>] --json',
   'todo note list': 'todo note list --plan <key> [--task <id>] --json',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
-  'todo independence': 'todo independence [--plan <key>] [--json] | compile --plan <key> --input <file> | witness migrate --plan <key>',
+  'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation> --reason <text>'
+    + ' | compile --plan <key> --input <file> | witness migrate --plan <key> | witness scaffold --plan <key> --input <draft>',
+  'todo independence mode': 'todo independence mode --plan <key> --set <witness|conversation> --reason <text>',
   'todo structure': 'todo structure --schema --json | [--plan <key>] --json | input --plan <key> --input <file> [--dry-run --json] | compile --plan <key> --input <file> | realize --plan <key> --task <id> (--planned|--realized <actual-structure.json>) [--commit <HEAD|sha>]... | realize --plan <key> --task <id> --input <full-realization.json> | finalize --plan <key> --json',
   'todo seam-profile': 'todo seam-profile --plan <key> --file <path> [--json]',
   'todo seam-proposal': 'todo seam-proposal [--plan <key>] [--json] | compile --plan <key>',

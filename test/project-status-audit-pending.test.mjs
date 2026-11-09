@@ -6,7 +6,7 @@
 // 1. 優先順位 active_run > next_ready > audit_pending > なし（ready frontierを監査で上書きしない）
 // 2. ready taskが尽きても監査待ちが在れば`reason: 'audit_pending'`で次コマンドまで案内する
 // 3. `state`は`ready`のまま（閉じたenumでhostが分岐に使う。信号はreasonが持つ）
-// 4. 案内するcommandはverbatim実行可能で読み取り専用である
+// 4. gate_readyなら案内は軽い出口close-unaudited 1行で、`<text>`を埋めればそのまま通る（a22）
 // 5. 監査が着けば`no_ready_task`へ戻る
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -110,22 +110,18 @@ test('ready taskが尽きても監査待ちが在れば残作業なしと答え�
   const result = discovery();
   // 事故の現場: 実装前はここが`no_ready_task`で、AIは正しくそれを信じて完了報告していた。
   assert.equal(result.next_action.reason, 'audit_pending');
-  assert.equal(result.next_action.command, 'lattice todo phase status --plan main');
+  assert.equal(result.next_action.command,
+    'lattice todo phase close-unaudited --plan main --phase phase-1 --reason <text>');
   // stateは閉じたenumでhostが分岐に使う。信号はreasonが持ち、stateは動かさない。
   assert.equal(result.state, 'ready');
   assert.equal(result.schema, 'lattice.project_status.v1');
   assert.deepEqual(result.active_runs, []);
 
-  // 案内するcommandはverbatim実行可能で、journalを書き換えない読み取り専用である。
-  const guided = run(root, result.next_action.command.split(' ').slice(1));
+  // 案内は`<text>`を埋めればそのまま実行でき、phase-1を監査なしで閉じる。
+  const guided = run(root, result.next_action.command.replace('<text>', 'finished').split(' ').slice(1), ACTOR_ENV);
   assert.equal(guided.status, 0, guided.stderr);
-  const before = run(root, ['todo', 'status', '--json']).stdout;
-  run(root, result.next_action.command.split(' ').slice(1));
-  assert.equal(run(root, ['todo', 'status', '--json']).stdout, before);
-  // 全taskがdoneでもphase-2はphase-1待ちでlocked。監査待ちはphase-1だけであり、
-  // next_actionはそのplanを指す。
-  assert.deepEqual(JSON.parse(guided.stdout).phases.map(({ phase_id, status }) => [phase_id, status]),
-    [['phase-1', 'gate_ready'], ['phase-2', 'locked']]);
+  const phases = JSON.parse(run(root, ['todo', 'phase', 'status', '--plan', 'main']).stdout).phases;
+  assert.equal(phases.find(({ phase_id: id }) => id === 'phase-1').status, 'closed_unaudited');
 });
 
 test('監査が着けばno_ready_taskへ戻る', async (context) => {

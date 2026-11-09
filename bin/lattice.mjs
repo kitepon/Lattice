@@ -97,17 +97,6 @@ if (help !== null) {
   } catch (error) {
     process.exitCode = projectCliFailure(process.stderr, error);
   }
-} else if (args.length === 7 && args[0] === 'plan' && args[1] === 'scope-review'
-  && args[2] === '--plan-input' && args[4] === '--review' && args[6] === '--json') {
-  const { runPlanScopeReview } = await import('../src/plan-scope-review.mjs');
-  const { projectCliFailure } = await import('../src/project-cli.mjs');
-  try {
-    process.exitCode = await runPlanScopeReview({
-      cwd: process.cwd(), planInputRef: args[3], reviewRef: args[5], stdout: process.stdout,
-    });
-  } catch (error) {
-    process.exitCode = projectCliFailure(process.stderr, error);
-  }
 } else if (args.length === 4 && args[0] === 'plan' && args[1] === 'scope-review'
   && args[2] === '--schema' && args[3] === '--json') {
   const { runPlanScopeReviewSchema } = await import('../src/plan-scope-review.mjs');
@@ -116,6 +105,25 @@ if (help !== null) {
     process.exitCode = await runPlanScopeReviewSchema({ stdout: process.stdout });
   } catch (error) {
     process.exitCode = projectCliFailure(process.stderr, error);
+  }
+} else if (args[0] === 'plan' && args[1] === 'scope-review') {
+  // 引数違反も欄と直し方をtypedに返す（a22）。素の`plan scope-review`をusage文1行で落とさない。
+  const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
+  const spec = { known: ['plan-input', 'review', 'json'], required: ['plan-input', 'review'], booleans: ['json'] };
+  const flags = matchFlagCommand(args, ['plan', 'scope-review'], spec);
+  if (flags === null || flags.json !== true) {
+    const { planArgumentFailure } = await import('../src/project-cli.mjs');
+    process.exitCode = planArgumentFailure(process.stderr, args, spec);
+  } else {
+    const { runPlanScopeReview } = await import('../src/plan-scope-review.mjs');
+    const { projectCliFailure } = await import('../src/project-cli.mjs');
+    try {
+      process.exitCode = await runPlanScopeReview({
+        cwd: process.cwd(), planInputRef: flags['plan-input'], reviewRef: flags.review, stdout: process.stdout,
+      });
+    } catch (error) {
+      process.exitCode = projectCliFailure(process.stderr, error);
+    }
   }
 } else if (args.length === 4 && args[0] === 'plan' && args[1] === 'revise'
   && args[2] === '--schema' && args[3] === '--json') {
