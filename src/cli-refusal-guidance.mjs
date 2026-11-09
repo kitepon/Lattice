@@ -93,7 +93,12 @@ function keyDifference(detail, ctx, pointer) {
   const parts = [];
   if (missing.length > 0) parts.push(`add keys ${names(missing)}`);
   if (extra.length > 0) parts.push(`remove keys ${names(extra)}`);
-  return `At ${pointer} ${parts.join(' and ') || `use exactly the keys ${names(expected)}`}.`;
+  // a31: 計画の目的・最終成果・受入はplan createでなくbackchainのgoalが持つ（seat contract）。
+  const goalHint = ctx.family === 'plan' && ctx.command === 'create' && pointer === '/'
+    && extra.some((key) => key === 'goal' || key === 'title')
+    ? ' A plan is named by plan_key; its purpose, final outcome and acceptance go in `goal` of `lattice plan backchain` (see `lattice plan backchain --schema --json`).'
+    : '';
+  return `At ${pointer} ${parts.join(' and ') || `use exactly the keys ${names(expected)}`}.${goalHint}`;
 }
 
 function acceptedValues(detail) {
@@ -183,6 +188,18 @@ const REGISTRY = {
   },
   invalid_unblock_transition: {
     repair: (detail, ctx) => `Only a blocked task can be unblocked; check its status with \`${showTask(detail, ctx)}\`.`,
+  },
+  invalid_reopen_transition: {
+    // a32: only a done task can be reopened; say the state and the step that fits it.
+    repair: (detail, ctx) => {
+      const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+      return `Only a done task can be reopened; ${planOf(detail, ctx)}/${taskOf(detail, ctx)} is ${detail.status ?? 'not done'}. ` + ({
+        'in-progress': `It is still open: finish it with \`lattice todo done ${on}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`,
+        pending: `It has not started: run \`lattice todo start ${on}\`.`,
+        blocked: `It is blocked: resume it with \`lattice todo unblock ${on}\`.`,
+        retired: `Retire is permanent, so it stays closed; see \`${showTask(detail, ctx)}\`.`,
+      }[detail.status] ?? `Check its state with \`${showTask(detail, ctx)}\`.`);
+    },
   },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,
@@ -330,7 +347,8 @@ const REGISTRY = {
 
   plan_revise_schema_invalid: {
     pointer: '--input',
-    repair: (detail, ctx) => `Use schema ${q(detail.expected)}; see \`${schemaCommand(ctx)}\`.`,
+    // a31: 包みの形を名指す。素のplan create入力も受けるので、まずそれを勧める。
+    repair: (detail, ctx) => `Pass the whole desired plan in the same shape as \`lattice plan create\` (start from \`lattice plan create --template --json\`), or wrap it as {"schema":${JSON.stringify(detail.expected)},"desired":<that plan>,"continuity":[...]} to state carry/reset/retire yourself; see \`${schemaCommand(ctx)}\`.`,
   },
   plan_revise_requires_source_revision: {
     repair: (detail) => `This plan carries source revisions: use ${detail.next_action ?? '`lattice todo revise-phase --plan <plan> --input <file>`'}.`,

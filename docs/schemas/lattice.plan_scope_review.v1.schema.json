@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_scope_review.v1.schema.json",
   "title": "lattice.plan_scope_review.v1",
-  "description": "AI-authored review performed after the complete plan is written and before it is registered. Every planned task is judged against the owner-supplied work specifications; task splitting and parallelization are allowed, but a new product purpose is not.",
-  "$comment": "Lattice validates complete task coverage, known work-spec references, verdict consistency, and digest binding. The operating AI owns the semantic judgment.",
+  "description": "AI-authored review performed after the complete plan is written and before it is registered. Every planned task is judged against the owner-supplied work specifications; task splitting and parallelization are allowed, but a new product purpose is not. The plan input may be a plan create input v4 or v5 (the template default; a missing schema reads as v5) or a todo extraction v3/v4.",
+  "$comment": "Lattice validates complete task coverage, known work-spec references, verdict consistency, and digest binding. The operating AI owns the semantic judgment. authoring_digest and review_digest may be omitted: the machine computes both (authoring_digest is the plan input's input_digest, or extraction_digest, computed from its content); a written value must match.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "authoring_digest", "work_specs", "task_assessments", "verdict", "review_digest"
+    "schema", "work_specs", "task_assessments", "verdict"
   ],
   "properties": {
     "schema": { "const": "lattice.plan_scope_review.v1" },

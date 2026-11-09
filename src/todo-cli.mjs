@@ -168,8 +168,8 @@ import { collectTodoIndependenceAuthoritativeObservation } from './todo-independ
 import { applySeamProposal } from './seam-apply.mjs';
 import { todoPlanPrecedences } from './seam-verification.mjs';
 import {
-  WITNESS_DRAFT_SCHEMA, buildWitnessObservationQuerySet, buildWitnessSet, serializeWitnessSet,
-  validateWitnessDraft,
+  WITNESS_DRAFT_SCHEMA, buildWitnessObservationQuerySet, buildWitnessSet, explainWitnessDraft, serializeWitnessSet,
+  witnessDraftTemplate,
 } from './witness-scaffold.mjs';
 import {
   completePhaseTodoRevision, explainPhaseTodoRevision, explainTodoRevision, explainTodoRevisionSet,
@@ -215,7 +215,18 @@ const TODO_SCHEMA_COMMANDS = Object.freeze({
   structure: {
     title: 'lattice.todo_structure_set.v1', file: 'lattice.todo_structure_set.v1.schema.json',
   },
+  // a32: the witness route's two inputs, so a seat that chose `--set witness` can find their shape.
+  'independence witness scaffold': {
+    title: 'lattice.todo_witness_draft.v2', file: 'lattice.todo_witness_draft.v2.schema.json',
+  },
+  'independence compile': { title: 'lattice.todo_witness_set.v5', file: 'lattice.todo_witness_set.v5.schema.json' },
 });
+const witnessTemplateCommand = (planKey) => `lattice todo independence witness scaffold --template --plan ${planKey}`;
+const WITNESS_DRAFT_SCHEMA_COMMAND = 'lattice todo independence witness scaffold --schema --json';
+/** a32: where a witness set comes from: the template, filled, through scaffold (which adds digest and observations). */
+const witnessRoute = (planKey) => `Start from \`${witnessTemplateCommand(planKey)}\` (draft shape: \`${WITNESS_DRAFT_SCHEMA_COMMAND}\`),`
+  + ` fill each task's owns/reads/writes, then run \`lattice todo independence witness scaffold --plan ${planKey} --input <draft>\`;`
+  + ' it writes the witness set that `independence compile` reads (shape: `lattice todo independence compile --schema --json`).';
 
 async function runTodoSchemaCommand(command, stdout) {
   const spec = TODO_SCHEMA_COMMANDS[command];
@@ -325,11 +336,15 @@ const TODO_FLAG_SPECS = Object.freeze({
   'phase reopen': Object.freeze({ known: ['plan', 'phase', 'reason', 'override-reason'], required: ['plan', 'phase', 'reason'] }),
   'evidence promote': Object.freeze({ known: ['plan', 'task', 'evidence'], required: ['plan', 'task', 'evidence'] }),
   'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
+  'independence mode': Object.freeze({ known: ['plan', 'set', 'reason'], required: ['plan', 'set', 'reason'] }),
+  'independence witness scaffold': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
   structure: Object.freeze({ known: ['plan', 'json'], required: [], booleans: ['json'] }),
   status: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
 });
+const WITNESS_TEMPLATE_FLAG_SPEC = Object.freeze({
+  known: ['template', 'plan', 'json'], required: ['plan'], booleans: ['template', 'json'] });
 // a28: command groups, their subcommands and the one a refusal shows as the example.
 const TODO_SUBCOMMANDS = Object.freeze({
   dependency: { names: ['connect', 'disconnect'], example: 'connect' },
@@ -402,9 +417,12 @@ function explainMissingSubcommand(argv) {
 function explainArgumentRefusal(argv) {
   const missingSubcommand = explainMissingSubcommand(argv);
   if (missingSubcommand !== null) return missingSubcommand;
-  const head = GROUP_COMMANDS.includes(argv[0]) && typeof argv[1] === 'string' && !argv[1].startsWith('--')
-    ? argv.slice(0, 2) : argv.slice(0, 1);
-  const spec = TODO_FLAG_SPECS[head.join(' ')];
+  const head = argv[0] === 'independence' && argv[1] === 'witness' ? argv.slice(0, 3)
+    : GROUP_COMMANDS.includes(argv[0]) && typeof argv[1] === 'string' && !argv[1].startsWith('--')
+      ? argv.slice(0, 2) : argv.slice(0, 1);
+  // a32: `scaffold --template` is a read with its own flags.
+  const spec = head.join(' ') === 'independence witness scaffold' && argv.includes('--template')
+    ? WITNESS_TEMPLATE_FLAG_SPEC : TODO_FLAG_SPECS[head.join(' ')];
   if (spec === undefined) return {};
   const { flags } = parseFlagMap(argv.slice(head.length));
   const flagFailure = explainFlagCommand(argv, head, spec);
@@ -493,7 +511,7 @@ function supportsAtomicStoreCommit(argv) {
   if (command === 'note') return argv[1] !== 'list';
   if (command === 'independence') {
     return argv[1] === 'mode'
-      || (argv[1] === 'witness' && ['migrate', 'scaffold'].includes(argv[2]));
+      || (argv[1] === 'witness' && ['migrate', 'scaffold'].includes(argv[2]) && !argv.includes('--template'));
   }
   if (command === 'snapshot') return argv[1] === '--rebuild';
   if (command === 'migrate') return !argv.includes('--dry-run') && !argv.includes('--schema');
@@ -782,11 +800,23 @@ async function readJsonInput(repoRoot, inputRef, { validate, invalidCode, expect
   return descriptor;
 }
 
+const WITNESS_SET_TOP_LEVEL_KEYS = ['schema', 'project_id', 'plan_key', 'capacity', 'sensor_query_set',
+  'manual_witness', 'witness_set_digest'];
+/** a32: the top-level keys a witness set lacks or should not have. */
+function witnessSetKeyDiff(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const keys = Object.keys(value);
+  return { missing_keys: WITNESS_SET_TOP_LEVEL_KEYS.filter((key) => !keys.includes(key)),
+    unexpected_keys: keys.filter((key) => !WITNESS_SET_TOP_LEVEL_KEYS.includes(key)).sort() };
+}
+
 /** 安全読み取りとcanonical JSON規律を共有したまま、witness set契約で検証する。 */
-async function readWitnessSetInput(repoRoot, inputRef) {
+async function readWitnessSetInput(repoRoot, inputRef, planKey = '<key>') {
   let explained = null;
+  let witnessInput;
   const witnessSet = await readJsonInput(repoRoot, inputRef, {
     validate: (value) => {
+      witnessInput = value;
       explained = explainTodoWitnessSet(value);
       return explained.valid;
     },
@@ -794,7 +824,8 @@ async function readWitnessSetInput(repoRoot, inputRef) {
   }).catch((error) => {
     if (error?.code === 'INVALID_TODO_WITNESS_SET' && explained !== null) {
       throw new TodoStoreError('INVALID_TODO_WITNESS_SET', explained.reason, undefined, {
-        input_ref: inputRef, path: explained.path,
+        input_ref: inputRef, path: explained.path, pointer: explained.path || '/',
+        ...witnessSetKeyDiff(witnessInput), next_action: witnessRoute(planKey),
       });
     }
     throw error;
@@ -2269,8 +2300,7 @@ async function splitTodo({ repoRoot, env, planKey, inputRef }) {
   const witnessSet = await readTodoWitnessSet({ repoRoot, planKey });
   if (witnessSet === null) {
     throw new TodoStoreError('WITNESS_MIGRATION_UNAVAILABLE', 'witness_set_absent', undefined, {
-      witness_ref: todoWitnessRef(planKey),
-      next_action: `lattice todo independence witness scaffold --plan ${planKey} --input <draft>`,
+      witness_ref: todoWitnessRef(planKey), next_action: witnessRoute(planKey),
     });
   }
   const compiled = await compileTodoSplit({ repoRoot, member, proposal });
@@ -3143,7 +3173,7 @@ async function structure({ repoRoot, requestedPlanKey }) {
 }
 
 async function independenceCompile({ repoRoot, planKey, inputRef }) {
-  const witnessSet = await readWitnessSetInput(repoRoot, inputRef);
+  const witnessSet = await readWitnessSetInput(repoRoot, inputRef, planKey);
   const storeForReady = await readTodoStore({ repoRoot });
   const memberForReady = storeForReady.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (!memberForReady) {
@@ -3233,7 +3263,7 @@ async function independenceWitnessMigrate({ repoRoot, planKey }) {
   const witnessSet = await readTodoWitnessSet({ repoRoot, planKey });
   if (witnessSet === null) {
     throw new TodoStoreError('WITNESS_MIGRATION_UNAVAILABLE', 'witness_set_absent', undefined, {
-      witness_ref: todoWitnessRef(planKey),
+      witness_ref: todoWitnessRef(planKey), next_action: witnessRoute(planKey),
     });
   }
   const revision = member.revision;
@@ -3497,10 +3527,29 @@ async function seamProposalCompile({ repoRoot, planKey }) {
  * 推定はしない。何を所有し何を触るかは下書きが述べ、ここが供給するのはAIには作れないもの——
  * affected testのfresh観測、query setとprovenanceの配線、canonical bytesと自己digest——だけである。
  */
+/** a32: the starting draft for `planKey`: its tasks that are not done or retired, nothing declared yet. */
+async function witnessDraftTemplateFor({ repoRoot, planKey }) {
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
+  if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
+  return witnessDraftTemplate({ projectId: member.plan.project_id, planKey,
+    taskIds: member.tasks.filter(({ status }) => !['done', 'retired'].includes(status)).map(({ task_id: id }) => id) });
+}
+
 async function witnessScaffold({ repoRoot, planKey, inputRef }) {
+  let explained = null;
   const draft = await readJsonInput(repoRoot, inputRef, {
-    validate: validateWitnessDraft,
+    validate: (value) => (explained = explainWitnessDraft(value)).valid,
     invalidCode: 'WITNESS_DRAFT_INVALID',
+  }).catch((error) => {
+    // a32: name the failing field and where the draft shape is, not a schema command that does not exist.
+    if (error?.code === 'WITNESS_DRAFT_INVALID' && explained !== null && !explained.valid) {
+      const { valid: _valid, reason, path: at, ...keys } = explained;
+      throw new TodoStoreError('WITNESS_DRAFT_INVALID', reason, undefined, {
+        input_ref: inputRef, pointer: at, ...keys, next_action: witnessRoute(planKey),
+      });
+    }
+    throw error;
   });
   if (draft.plan_key !== planKey) {
     throw new TodoStoreError('INPUT_INVALID', 'witness_draft_plan_mismatch', undefined, {
@@ -4244,7 +4293,7 @@ function writesTodoStore(argv) {
     case 'migrate': return !argv.includes('--dry-run');
     case 'snapshot': return argv.includes('--rebuild');
     case 'independence': return second === 'compile'
-      || (second === 'witness' && ['migrate', 'scaffold'].includes(third));
+      || (second === 'witness' && ['migrate', 'scaffold'].includes(third) && !argv.includes('--template'));
     case 'structure': return ['compile', 'realize', 'finalize'].includes(second)
       || (second === 'input' && !argv.includes('--dry-run'));
     case 'seam-proposal': return ['compile', 'apply', 'land'].includes(second);
@@ -4478,10 +4527,10 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
 
   // `--schema --json`はstoreを読まない決定的な出力（`plan create --schema`と同じ規律）。
   // 通常dispatchより前に処理し、repoRoot解決やdashboard daemon起動を経由させない。
-  if (argv.length === 3 && argv[1] === '--schema' && argv[2] === '--json'
-    && Object.hasOwn(TODO_SCHEMA_COMMANDS, argv[0])) {
+  if (argv.length >= 3 && argv.at(-2) === '--schema' && argv.at(-1) === '--json'
+    && Object.hasOwn(TODO_SCHEMA_COMMANDS, argv.slice(0, -2).join(' '))) {
     try {
-      await runTodoSchemaCommand(argv[0], stdout);
+      await runTodoSchemaCommand(argv.slice(0, -2).join(' '), stdout);
       return 0;
     } catch (error) {
       return failInternally(error);
@@ -4565,12 +4614,14 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } else if (argv.length === 5 && argv[0] === 'independence' && argv[1] === 'witness'
     && argv[2] === 'migrate' && argv[3] === '--plan' && isTodoIdentifier(argv[4])) {
     action = (repoRoot) => independenceWitnessMigrate({ repoRoot, planKey: argv[4] });
-  } else if (argv.length === 8 && argv[0] === 'independence' && argv[1] === 'mode'
-    && argv[2] === '--plan' && isTodoIdentifier(argv[3]) && argv[4] === '--set'
-    && TODO_COORDINATION_MODES.includes(argv[5]) && argv[6] === '--reason' && argv[7].length > 0) {
-    action = (repoRoot) => independenceMode({
-      repoRoot, env, planKey: argv[3], mode: argv[5], reason: argv[7],
-    });
+  } else if (argv[0] === 'independence' && argv[1] === 'mode'
+    && matchFlagCommand(argv, ['independence', 'mode'], TODO_FLAG_SPECS['independence mode']) !== null) {
+    const flags = matchFlagCommand(argv, ['independence', 'mode'], TODO_FLAG_SPECS['independence mode']);
+    if (isTodoIdentifier(flags.plan) && TODO_COORDINATION_MODES.includes(flags.set)) {
+      action = (repoRoot) => independenceMode({
+        repoRoot, env, planKey: flags.plan, mode: flags.set, reason: flags.reason,
+      });
+    }
   } else if (argv[0] === 'dependency' && argv[1] === 'connect'
     && dependencyFlags(argv) !== null) {
     const flags = dependencyFlags(argv);
@@ -4643,10 +4694,18 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } else if (argv.length === 4 && argv[0] === 'seam-proposal' && argv[1] === 'apply'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3])) {
     action = (repoRoot) => seamProposalApply({ repoRoot, planKey: argv[3] });
-  } else if (argv.length === 7 && argv[0] === 'independence' && argv[1] === 'witness'
-    && argv[2] === 'scaffold' && argv[3] === '--plan' && isTodoIdentifier(argv[4])
-    && argv[5] === '--input' && isAuthoringPathToken(argv[6])) {
-    action = (repoRoot) => witnessScaffold({ repoRoot, planKey: argv[4], inputRef: argv[6] });
+  } else if (argv[0] === 'independence' && argv[1] === 'witness' && argv[2] === 'scaffold'
+    && argv.includes('--template')) {
+    const flags = matchFlagCommand(argv, ['independence', 'witness', 'scaffold'], WITNESS_TEMPLATE_FLAG_SPEC);
+    if (flags !== null && isTodoIdentifier(flags.plan)) {
+      action = (repoRoot) => witnessDraftTemplateFor({ repoRoot, planKey: flags.plan });
+    }
+  } else if (argv[0] === 'independence' && argv[1] === 'witness' && argv[2] === 'scaffold') {
+    const flags = matchFlagCommand(argv, ['independence', 'witness', 'scaffold'],
+      TODO_FLAG_SPECS['independence witness scaffold']);
+    if (flags !== null && isTodoIdentifier(flags.plan) && isAuthoringPathToken(flags.input)) {
+      action = (repoRoot) => witnessScaffold({ repoRoot, planKey: flags.plan, inputRef: flags.input });
+    }
   } else if (argv.length === 6 && argv[0] === 'seam-proposal' && argv[1] === 'land'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3])
     && argv[4] === '--names' && isAuthoringPathToken(argv[5])) {

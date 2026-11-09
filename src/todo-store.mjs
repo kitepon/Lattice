@@ -2165,6 +2165,12 @@ function resolveTargetedEvent(input, storeMember) {
   if (input.kind === 'reopen' && exactRecord(input.payload, [
     'reason', 'override_reason',
   ])) {
+    // a32: only a done task reopens; any other state is the seat's order, not a damaged store.
+    const status = storeMember.tasks?.find(({ task_id: id }) => id === input.task_id)?.status;
+    if (status !== undefined && status !== 'done') {
+      fail('TODO_TRANSITION_REFUSED', 'invalid_reopen_transition', {
+        cause: 'task_state', status, plan_key: storeMember.plan.plan_key, task_id: input.task_id });
+    }
     const targetDigest = resolveDoneBindingDigest(storeMember, input.task_id);
     if (targetDigest === null) fail('STORE_INCONSISTENT', 'invalid_reopen_binding');
     return {

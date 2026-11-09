@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `LATTICE_SEAT_ID`に不正な値（空でない）を設定した席は、従来どおり断らずに無名で動き、`session-context --json`の`seat_id_ignored`で捨てた値と規則を示す（a33）。空の値は解除とみなし、何も言わない。
+- 席が書く計画の入力を、席の契約に合わせた（a31）。`plan scope-review`は`plan create --template`の既定のv5（schemaを省いた入力もv5として読む）を受け、`authoring_digest`と`review_digest`は省けば機械が計算する（書けば照合し、違えば期待値を返す）。`plan revise --input`は`plan create`と同じ形の計画をそのまま受け、継続方針は機械が算出する。`{"schema":"lattice.plan_revise_input.v1","desired":…,"continuity":[…]}`の包みも従来どおり受け、包みが違う時の断りと`plan revise --help`は両方の形を示す。現行planの無いplan_keyのreviseは、欄を足せと言わずに、keyを名指して`plan create`を案内する。席の契約の「席が書くもの」は、計画をplan_keyで名指し、目的・最終成果・受入は`plan backchain`の`goal`に書くと直した。`plan create`へ`goal`・`title`を書いた時の断りは、その書き場所を示す。
+- witness方式を選んだ席が、入力の形をCLIだけで知れる（a32）。`lattice todo independence witness scaffold --schema --json`は席が書く下書き（`lattice.todo_witness_draft.v2`）の、`lattice todo independence compile --schema --json`はcompileが読むwitness set（`lattice.todo_witness_set.v5`）のJSON Schemaを返す。`lattice todo independence witness scaffold --template --plan <key>`は、まだdoneでもretiredでもない工程を並べた下書きのひな形を返す。
+- witnessの断りは、存在しない`todo independence --schema --json`ではなく、ひな形・下書きの形・scaffoldを順に示す。下書きの断り（`WITNESS_DRAFT_INVALID`）は落ちた欄を`pointer`で、topの欠けたkeyを`missing_keys`で名指す。`independence compile`の`INVALID_TODO_WITNESS_SET`も`missing_keys`・`unexpected_keys`と`pointer`を返す。witness setが無い`witness migrate`も同じ道を示す。並列可否が未記録の案内（`independence_unrecorded`）の次の一手はひな形のコマンドになった。`independence mode`の引数の誤りは足りないflagを名指す。
+- doneでない工程（作業中・未着手・blocked・retired）の`todo reopen`は、`STORE_INCONSISTENT/invalid_reopen_binding`ではなく`TODO_TRANSITION_REFUSED/invalid_reopen_transition`で断り、今の状態と「doneの工程だけ開き直せる」こと、その状態に合う次の一手（`done`/`retract`、`start`、`unblock`）を示す。
+
 ## 0.85.2 — 2026-11-10
 
 0.85.1の使い通しの点検で、これまで通らなかった道に見つかった所を直す修正版。断りが原因の値・作業と通れる次のコマンドを名指しし、打ち間違いを`ok`で返さない。ホストへの変更：`plan_not_active`の型は`STORE_INCONSISTENT`から`PLAN_NOT_FOUND`、調整済みの計画のverifyの`next_action`は`null`から`"none"`、知らないコマンドは型のあるJSONをstderrへ返す（exit 2は同じ）。

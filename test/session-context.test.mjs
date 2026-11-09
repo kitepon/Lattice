@@ -232,7 +232,16 @@ test('seats sharing one USER are told apart by LATTICE_SEAT_ID: seat_id on top, 
   assert.deepEqual(b.turn.own.map(({ task_id: id }) => id), ['T2']);
   const anonymous = parse(run(root, ['session-context', '--json'], { ...seatEnv('seat-a'), LATTICE_SEAT_ID: '' }).stdout);
   assert.equal('seat_id' in anonymous, false);
+  assert.equal('seat_id_ignored' in anonymous, false);
   assert.equal(anonymous.turn.actor.agent, 'bell');
+  // a33: a mistyped id still never refuses, but the seat is told what was ignored and why.
+  const typo = run(root, ['session-context', '--json'], { ...seatEnv('seat-a'), LATTICE_SEAT_ID: 'bad id!' });
+  assert.equal(typo.status, 0, typo.stderr);
+  const ignored = parse(typo.stdout);
+  assert.equal('seat_id' in ignored, false);
+  assert.equal(ignored.seat_id_ignored.value, 'bad id!');
+  assert.match(ignored.seat_id_ignored.rule, /anonymous/u);
+  assert.equal(ignored.result_digest, todoSelfDigest(ignored, 'result_digest'));
 });
 
 test('a16: a revision by another seat keeps the carried start with the seat that started it', async (context) => {

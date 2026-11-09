@@ -174,6 +174,14 @@ export function resolvePlanRevision({ member, input, env = process.env, now = ne
     fail('plan_revise_schema_invalid', '/', { expected: INPUT_SCHEMA });
   }
   if (input.schema !== INPUT_SCHEMA) fail('plan_revise_schema_invalid', '/', { expected: INPUT_SCHEMA });
+  // a31: 無いplanは補完の前に断る。補完は現行planの値を使うので、無いplanでは「欄を足せ」に化ける。
+  if (member === undefined) {
+    const planKey = typeof input.desired?.plan_key === 'string' ? input.desired.plan_key : null;
+    fail('plan_not_active', '/desired/plan_key', {
+      plan_key: planKey,
+      next_action: `No active plan ${planKey === null ? 'with that plan_key' : `'${planKey}'`}: make it as a new plan with \`lattice plan create --input <file>\` (the plan itself, without the revise wrapper); to revise an existing one, set plan_key to one listed by \`lattice todo status --json\`.`,
+    });
+  }
   // a17: 改訂は既存planの上で行うので、project_id・plan_versionは書かなければ現行planの値で埋まる。
   const desired = completeCreateInput(input.desired, {
     env, now, projectId: member?.plan.project_id, planVersion: member?.plan.plan_version,
@@ -192,7 +200,6 @@ export function resolvePlanRevision({ member, input, env = process.env, now = ne
       actual: desired.schema, next_action: 'lattice plan create --schema-version 5 --json',
     });
   }
-  if (member === undefined) fail('plan_not_active', '/desired/plan_key');
   if (member.plan.schema === 'lattice.todo_plan.v6'
     || member.journal.events[0].schema === 'lattice.todo_event.v2'
     || [...member.plan.tasks, ...desired.tasks].some((task) => task.narrative_anchor !== null)) {
@@ -310,12 +317,45 @@ export function desiredFromPlan(plan, { env = process.env, now = new Date() } = 
  * 公開→履歴note→作業中taskの結び直しまで行って、結果artifactを返す(印字はしない)。
  * notes: 履歴noteへ足す plan scope の追加note([{task_id, body}])。公開後に改訂noteと同じ経路で追記する。
  */
+/**
+ * a31: 作成・追加・改訂は同じ入力の形を持つ（seat contract）。`desired`で包まないplan create入力は
+ * そのまま望む全体として読み、継続方針は機械が算出する。包んだ形（continuity付き）もそのまま受ける。
+ */
+export function isBareCreateInput(input) {
+  return input !== null && typeof input === 'object' && !Array.isArray(input)
+    && !('desired' in input) && Array.isArray(input.tasks)
+    && (input.schema === undefined || /^lattice\.plan_create_input\.v[0-9]+$/u.test(input.schema));
+}
+
+/** 包まない入力の拒否は、包みの`/desired`を名指さない。 */
+function unwrapPointers(error) {
+  const detail = error?.detail;
+  if (detail === null || typeof detail !== 'object') return error;
+  if (typeof detail.pointer === 'string' && detail.pointer.startsWith('/desired')) {
+    detail.pointer = detail.pointer.slice('/desired'.length) || '/';
+  }
+  if (typeof detail.next_action === 'string') {
+    detail.next_action = detail.next_action.replaceAll('/desired/', '/');
+  }
+  for (const problem of Array.isArray(detail.problems) ? detail.problems : []) {
+    if (typeof problem?.pointer === 'string' && problem.pointer.startsWith('/desired')) {
+      problem.pointer = problem.pointer.slice('/desired'.length) || '/';
+    }
+  }
+  return error;
+}
+
 export async function applyPlanRevision({
-  repoRoot, input, env = process.env, dryRun = false, notes: extraNotes = [],
+  repoRoot, input: authored, env = process.env, dryRun = false, notes: extraNotes = [],
 }) {
+  const bare = isBareCreateInput(authored);
+  const input = bare ? { schema: INPUT_SCHEMA, desired: authored } : authored;
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === input?.desired?.plan_key);
-  const { desired, continuity } = resolvePlanRevision({ member, input, env, now: new Date() });
+  let resolved;
+  try { resolved = resolvePlanRevision({ member, input, env, now: new Date() }); }
+  catch (error) { throw bare ? unwrapPointers(error) : error; }
+  const { desired, continuity } = resolved;
   // 集合の並びは正準化済みなので、同じ内容の別の並びは「変更なし」になる。
   const unchanged = continuity.every(({ policy }) => policy === 'carry')
     && canonicalizeTodoArtifact(planSeed(desired, null, member.plan))
