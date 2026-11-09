@@ -2,6 +2,8 @@
 // (next_action) in one detail. Pure: reads only the error and the CLI context, no I/O.
 // Refusal sites keep their own keys; this fills the three keys the seat contract requires.
 
+import { auditPendingNextCommands, isAuditPendingPhaseStatus } from './todo-audit-pending.mjs';
+
 const PLACEHOLDER = /^[a-z_]+$/u;
 // a27: one placeholder per flag for every missing-flag text (plan and todo alike).
 export const FLAG_PLACEHOLDER = Object.freeze({
@@ -35,14 +37,37 @@ const unfinishedFirst = (detail, ctx) => {
     blocked: `Unblock ${name} with \`lattice todo unblock ${on}\`, then record done on it`,
   })[first.status] ?? `Record done on ${name} first with \`lattice todo done ${on} --message <text>\` (see \`lattice todo show ${on} --json\`)`;
 };
+// a36: a start without LATTICE_SEAT_ID is recorded under the OS user; after the seat sets its id that
+// start looks like another seat's. Say so and give the seat contract's one-time fix.
+const inProgressHolder = (detail, ctx, on) => {
+  const holder = typeof detail.started_by === 'string' ? detail.started_by : null;
+  const actors = record(ctx.actors) ? ctx.actors : {};
+  if (holder !== null && holder === actors.anonymous && holder !== actors.agent) {
+    return `It is in-progress under '${holder}', the name a start gets without LATTICE_SEAT_ID: most likely this seat's own`
+      + ` start from before it set LATTICE_SEAT_ID. One-time fix (seat contract): with LATTICE_SEAT_ID unset, undo that start`
+      + ` with \`lattice todo retract ${on} --reason <text>\` and start it again here, or finish it there first with`
+      + ` \`lattice todo done ${on} --message <text>\`.`;
+  }
+  return `It is already in-progress under ${holder === null ? 'another seat' : `seat '${holder}'`}; see \`${showTask(detail, ctx)}\`.`
+    + ` To move it to this seat run \`lattice todo start ${on} --rebind --reason <text>\`.`;
+};
 const startState = (detail, ctx) => {
   const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
   return ({
     blocked: `It is blocked: run \`lattice todo unblock ${on}\`; that resumes it (no start needed).`,
     done: `It is done: to work on it again run \`lattice todo reopen ${on} --reason <text>\`.`,
-    'in-progress': `It is already in-progress under another seat; see \`${showTask(detail, ctx)}\`.`,
+    'in-progress': inProgressHolder(detail, ctx, on),
     retired: `It is retired, which is permanent; see \`${showTask(detail, ctx)}\`.`,
   })[detail.status] ?? `Only a pending task can start; check its status with \`${showTask(detail, ctx)}\`.`;
+};
+// a35: done needs in-progress; the way there depends on where the task is now (start cannot leave retired).
+const doneState = (detail, ctx) => {
+  const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+  return ({
+    blocked: `It is blocked: run \`lattice todo unblock ${on}\` (it resumes in-progress), then done.`,
+    retired: `${planOf(detail, ctx)}/${taskOf(detail, ctx)} is retired, which is permanent: it cannot be started or finished. `
+      + 'If the work is still needed, add it as a new task with `lattice plan revise --input <file>`.',
+  })[detail.status] ?? `It must be in-progress: run \`${startTask(detail, ctx)}\` first.`;
 };
 const cyclePath = (detail) => (Array.isArray(detail.cycle)
   ? detail.cycle.filter(record).map((node) => `${node.plan_key}/${node.task_id ?? `phase:${node.phase_id}`}`).join(' -> ')
@@ -67,6 +92,16 @@ const dependencyExists = {
 };
 
 /** The flag that carried the unreadable input: the one whose value is the refused path. */
+const OPENED_BY_TEXT = Object.freeze({
+  reopen: ' because it was reopened', historical_import: ' from a historical import',
+  start: ' from a start',
+});
+/** a35: why an in-progress task is open, as a clause ('' when the store did not say). */
+function openedByText(detail) {
+  return Object.hasOwn(OPENED_BY_TEXT, detail.opened_by ?? '') ? OPENED_BY_TEXT[detail.opened_by]
+    : detail.opened_by === null ? ' with no start recorded in this plan version' : '';
+}
+
 function inputFlag(detail, ctx) {
   const flags = record(ctx.flags) ? ctx.flags : {};
   const byValue = Object.keys(flags).find((name) => flags[name] === detail.input_ref);
@@ -172,7 +207,7 @@ const REGISTRY = {
     repair: (detail, ctx) => ({
       predecessor_unfinished: `${unfinishedFirst(detail, ctx)}.`,
       acceptance_edge: phaseAcceptFirst(detail, ctx),
-      task_state: `It must be in-progress: run \`${startTask(detail, ctx)}\` first.`,
+      task_state: doneState(detail, ctx),
     })[detail.cause] ?? `Check the task state with \`${showTask(detail, ctx)}\`, then rerun.`,
   },
   invalid_start_transition: {
@@ -194,12 +229,43 @@ const REGISTRY = {
     repair: (detail, ctx) => {
       const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
       return `Only a done task can be reopened; ${planOf(detail, ctx)}/${taskOf(detail, ctx)} is ${detail.status ?? 'not done'}. ` + ({
-        'in-progress': `It is still open: finish it with \`lattice todo done ${on}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`,
+        // a35: retract undoes only an authored start; a reopened task has none.
+        'in-progress': detail.opened_by === 'start'
+          ? `It is still open: finish it with \`lattice todo done ${on}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`
+          : `It is still open${openedByText(detail)}: finish it with \`lattice todo done ${on}\`.`,
         pending: `It has not started: run \`lattice todo start ${on}\`.`,
         blocked: `It is blocked: resume it with \`lattice todo unblock ${on}\`.`,
         retired: `Retire is permanent, so it stays closed; see \`${showTask(detail, ctx)}\`.`,
       }[detail.status] ?? `Check its state with \`${showTask(detail, ctx)}\`.`);
     },
+  },
+  phase_gate_not_ready: {
+    // a36: review and close-unaudited need gate_ready; name the phase state and the step that fits it.
+    repair: (detail, ctx) => {
+      const phase = detail.phase_id ?? ctx.flags?.phase ?? '<phase>';
+      const plan = planOf(detail, ctx);
+      const on = `--plan ${plan} --phase ${phase}`;
+      const status = detail.phase_status;
+      const head = `Phase ${plan}/${phase} is ${status ?? 'not gate_ready'}; review and close-unaudited need gate_ready. `;
+      if (isAuditPendingPhaseStatus(status) && status !== 'gate_ready') {
+        const [first, second] = auditPendingNextCommands(plan, phase, status, strings(detail.required_evidence_slots).length || 1);
+        return head + (status === 'reviewing'
+          ? `It is already in review: decide it with \`${first}\`, or \`${second}\`.`
+          : `Its review was rejected: run \`${first}\`, then review it again.`);
+      }
+      return head + ({
+        active: `Not all of its tasks are done: record done on them (\`lattice todo status --json\` lists them), then rerun.`,
+        locked: `Its predecessor phases are not accepted yet; see \`lattice todo phase status --plan ${plan}\`.`,
+        accepted: `It is already decided; to audit it again run \`lattice todo phase reopen ${on} --reason <text>\` first.`,
+        closed_unaudited: `It is already closed; to audit it run \`lattice todo phase reopen ${on} --reason <text>\` first.`,
+      }[status] ?? `See \`lattice todo phase status --plan ${plan}\`.`);
+    },
+  },
+  authored_start_binding_missing: {
+    // a35: say why there is nothing to retract and the step that closes the task instead.
+    repair: (detail, ctx) => `retract undoes only a start recorded by \`lattice todo start\`; `
+      + `${planOf(detail, ctx)}/${taskOf(detail, ctx)} is in progress${openedByText(detail)}, so there is no start to undo. `
+      + `Finish it with \`lattice todo done --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}\`.`,
   },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,

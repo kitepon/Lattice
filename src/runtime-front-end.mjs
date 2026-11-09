@@ -581,6 +581,47 @@ export function compileRuntimePlanV1(options = {}) {
   }
   if (ambiguous.length > 0) return nonDispatchable('QUERY_DRIFT', { ambiguous_targets: ambiguous });
 
+  // observation set resources。
+  const resources = [];
+  for (const [key, group] of [...ownGroups.entries()].sort((left, right) => compareText(left[0], right[0]))) {
+    const coveringQueryId = coveringByTarget.get(key);
+    if (coveringQueryId === undefined) continue; // 未束縛ownsは既にunknownへ落ちている
+    const outcome = outcomeByQueryId.get(coveringQueryId);
+    // covering bindingのexpectを、実際にこのtargetを束縛したwitnessから再取得する。
+    let representative;
+    for (const todoId of group.todoIds) {
+      representative = bindingsByTodo.get(todoId).find((entry) => (
+        entry.query_id === coveringQueryId && bindingCoversOwn(entry, group.own)
+      ));
+      if (representative !== undefined) break;
+    }
+    if (representative === undefined) fail(`covering binding不整合: ${group.own.target}`);
+    if (predictionsOnly && resolveBindingStatus(representative, outcome) !== 'ready') continue;
+    const status = statusOutcome.status !== 'ready'
+      ? statusOutcome.status
+      : resolveBindingStatus(representative, outcome);
+    resources.push({
+      resource_id: `own-${group.own.kind}-${sha16(group.own.target)}`,
+      kind: group.own.kind,
+      target: group.own.target,
+      todo_ids: [...group.todoIds].sort(compareText),
+      provenance: [
+        {
+          source: 'sensor',
+          evidence_ref: coveringQueryId,
+          evidence_digest: outcome.portable_digest,
+          status,
+        },
+        candidateProvenance(request),
+      ],
+    });
+  }
+
+  const ownResourceCovers = (target, leftId, rightId) => resources.some((resource) => (
+    resource.kind === 'path' && resource.target === target
+    && resource.todo_ids.includes(leftId) && resource.todo_ids.includes(rightId)
+  ));
+
   // 最新契約ではwrite scopeは予測である。既知の交差はserial conflictへ使うが、
   // 予測が足りないこと自体はunknownへ落とさない。
   const predictedWriteGroups = [];
@@ -588,15 +629,13 @@ export function compileRuntimePlanV1(options = {}) {
     for (let right = left + 1; right < todoIds.length; right += 1) {
       const leftWitness = request.manual_witness[todoIds[left]];
       const rightWitness = request.manual_witness[todoIds[right]];
-      const leftOwnPaths = new Set(leftWitness.owns.filter((own) => own.kind === 'path').map((own) => own.target));
-      const rightOwnPaths = new Set(rightWitness.owns.filter((own) => own.kind === 'path').map((own) => own.target));
       for (const leftPath of leftWitness.writes) {
         for (const rightPath of rightWitness.writes) {
           if (!pathPrefixOverlap(leftPath, rightPath)) continue;
-          // 同一targetを両者がownsで所有主張している場合はwrite conflictとして
-          // resource経由で扱われる。owns解決のない交差だけをunknownにする。
-          if (leftOwnPaths.has(leftPath) && rightOwnPaths.has(rightPath)
-            && leftPath === rightPath) continue;
+          // 同一targetを両者がownsで所有主張し、そのowns resourceが実際に両者を含む時だけ
+          // write conflictはresource経由で扱われる。予測契約では裏付けの無いownsはresourceに
+          // ならないので、ここで飛ばすと衝突が消える（a35、主張4）。
+          if (leftPath === rightPath && ownResourceCovers(leftPath, todoIds[left], todoIds[right])) continue;
           if (predictionsOnly) {
             predictedWriteGroups.push({
               target: [leftPath, rightPath].sort(compareText).join(' ↔ '),
@@ -681,42 +720,6 @@ export function compileRuntimePlanV1(options = {}) {
       if (!bareResourceGroups.has(resourceId)) bareResourceGroups.set(resourceId, new Set());
       bareResourceGroups.get(resourceId).add(todoId);
     }
-  }
-
-  // observation set resources。
-  const resources = [];
-  for (const [key, group] of [...ownGroups.entries()].sort((left, right) => compareText(left[0], right[0]))) {
-    const coveringQueryId = coveringByTarget.get(key);
-    if (coveringQueryId === undefined) continue; // 未束縛ownsは既にunknownへ落ちている
-    const outcome = outcomeByQueryId.get(coveringQueryId);
-    // covering bindingのexpectを、実際にこのtargetを束縛したwitnessから再取得する。
-    let representative;
-    for (const todoId of group.todoIds) {
-      representative = bindingsByTodo.get(todoId).find((entry) => (
-        entry.query_id === coveringQueryId && bindingCoversOwn(entry, group.own)
-      ));
-      if (representative !== undefined) break;
-    }
-    if (representative === undefined) fail(`covering binding不整合: ${group.own.target}`);
-    if (predictionsOnly && resolveBindingStatus(representative, outcome) !== 'ready') continue;
-    const status = statusOutcome.status !== 'ready'
-      ? statusOutcome.status
-      : resolveBindingStatus(representative, outcome);
-    resources.push({
-      resource_id: `own-${group.own.kind}-${sha16(group.own.target)}`,
-      kind: group.own.kind,
-      target: group.own.target,
-      todo_ids: [...group.todoIds].sort(compareText),
-      provenance: [
-        {
-          source: 'sensor',
-          evidence_ref: coveringQueryId,
-          evidence_digest: outcome.portable_digest,
-          status,
-        },
-        candidateProvenance(request),
-      ],
-    });
   }
 
   const stateGroups = new Map();

@@ -457,3 +457,37 @@ the input shape from the CLI alone.
 | store: reopen of a task that is not done | member task status before binding | `resolveTargetedEvent` refuses `TODO_TRANSITION_REFUSED/invalid_reopen_transition` (cause `task_state`, `status`) for in-progress, pending, blocked or retired; the guidance says only a done task can be reopened and gives the step for that state (done/retract, start, unblock, nothing for retired). `invalid_reopen_binding` stays only for a done task without a done binding (real inconsistency). | Nothing is written. |
 
 Patent: lifecycle transitions are outside claims 1–12.
+
+## Phase gate, reopen holder and an own anonymous start name the next step (a36; Alice 2026-11-10)
+
+Plan bellteam-adoption-20261108 r9, task a36-lifecycle-hints (0.85.3 seat
+walkthrough items 3, 5, 8). No order of checks changes. Only the code of a phase gate
+refusal, guidance text and additive result/detail keys change.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: `validateProspectiveEvent` phase gate | locked store `member.phases` (derived status), phase definitions | `phase_review` / `phase_close_unaudited` on a phase whose status is not `gate_ready` refuses `TODO_TRANSITION_REFUSED/phase_gate_not_ready` (was replay's `STORE_INCONSISTENT`), cause `phase_state`, detail `plan_key`, `phase_id`, `phase_status`, `required_evidence_slots`. Replay keeps `STORE_INCONSISTENT` for history. | guidance by `phase_status`: active → finish its tasks (`todo status --json`); locked → predecessor phases (`phase status`); reviewing → `phase accept ... --evidence <file>` or `phase reject ... --reason <text> --evidence <file>`; rejected → `phase reopen`; accepted / closed_unaudited → `phase reopen` first. |
+| todo-audit-pending: `auditPendingNextCommands(plan, phase, status, slotCount = 1)` | status, required slot count | reviewing: accept `--evidence <file>` (one slot; several slots: `--input <file>`), reject `--reason <text> --evidence <file>`. Used by `todo status` `audit_pending`, the phase gate guidance and `phase status`. | — |
+| cli: `phase status` guidance | `member.phases`, definitions | gate_ready text's audited route ends `accept ... --evidence <file>`; reviewing and rejected phases get a guidance line from the same commands (was null). | — |
+| cli: `todo reopen` holder (`reopenTask`) | after the reopen: current journal's latest `start` actor of the task | `turn.own` keeps the task under its latest starter (seat contract, unchanged). When that agent is not this seat (or there is no start in this version), the result adds `started_by` (agent or null) and `next_action` = `lattice todo start --plan P --task T --rebind --reason <text>`. Same seat: result unchanged. | — |
+| Plan: start of an in-progress task held by another agent | latest `start` actor in the current journal | `invalid_start_transition` (`task_state`, in-progress) adds `started_by`. The CLI guidance context carries `todoActorAgents(env)` = `{agent, anonymous}` (anonymous = the agent with `LATTICE_SEAT_ID` unset; no I/O). | `started_by === anonymous !== agent` → this seat's own start from before `LATTICE_SEAT_ID`: one-time fix with `LATTICE_SEAT_ID` unset, `todo retract ... --reason <text>` then start here, or finish it there (`todo done ... --message <text>`). Otherwise names `seat '<agent>'` and the `--rebind` start that moves it. |
+
+Patent: lifecycle transitions are outside claims 1–12.
+
+## Writing the same file is a conflict; revision, retract and retired give a way on (a35; Ludmila 2026-11-10)
+
+Plan bellteam-adoption-20261108 r9, task a35-independence-conflict (0.85.3 seat
+walkthrough, evidence/walkthrough-0.85.3-20261110.log lines 655/687).
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| runtime-front-end `compileRuntimePlanV1`: owns resources, then write–write pairs (claim 4) | witness `owns`, `writes`; sensor bindings | Owns resources are built first (same order in `resources`). A write–write pair on one path is skipped only when an owns resource with that target **actually contains both tasks**; otherwise it becomes a predicted write conflict (prediction contract) or `undeclared_write_overlap` unknown (declarative contract). Before a35 the skip only checked that both tasks *declared* the owns; in the prediction contract an owns path without a ready sensor binding builds no resource, so two tasks that own and write `src/c.js` compiled with `conflict_count: 0` and were grouped parallel. | — |
+| witness-scaffold → compile | draft `owns` (scaffold adds every owned path to `writes`) | Two tasks owning/writing one file: `conflict_count: 1`, `serialize_pairs [[P,Q] conflict]`, no shared parallel group. Disjoint files stay parallel; a bound owns resource still gives exactly one conflict. | — |
+| store `readTodoStore`: coordination of a revised version | this version's `plan-scoped.jsonl`; retained `plans/<k>/<v>/` along `predecessor_plan_digest` | `member.coordination` = this version's newest `coordination_mode`, else the newest one along its retained predecessors (`inheritedTodoCoordination`, read only, nothing copied). The declaration belongs to the plan (ADR 0160 Decision 2). A later declaration in the new version wins. | An unreadable predecessor chain ends the walk as undeclared (the pre-a35 result). |
+| cli: compile with ready tasks missing from the witness set | witness set, next_ready | `INDEPENDENCE_READY_UNDECLARED` next_action = "Declare <ids> in the witness set" + the template → scaffold → compile route (it pointed at the same compile before). | — |
+| cli: witness draft template | plan + task states, recorded witness set `.lattice/todo/witness/<k>.json` | Tasks the recorded set declares start from that declaration (owns back to draft entries, writes without owned paths, reads, unknowns, concern_anchors) and `capacity` comes from the set; new tasks start empty. | Unreadable set: template without prefill. |
+| store: why an in-progress task is open | journal events of the task | `todoOpenedBy` = last of authored `start` / `historical_import` / `reopen`, or null (carried by a revision). Reopen refusal (`invalid_reopen_transition`, in-progress) and retract refusal (`authored_start_binding_missing`) carry it as `opened_by`. | Nothing is written. |
+| guid: reopen / retract / done refusals | detail `status`, `opened_by` | Reopen of an in-progress task offers `retract` only when `opened_by` is `start`; otherwise done, naming why it is open. `authored_start_binding_missing` says retract undoes only a recorded start and points at done. `invalid_done_transition` (task_state): retired → retired is permanent, add a new task with `plan revise`; blocked → unblock; else start. `todo --help` lists `retract`. | — |
+
+Patent: claim 4 (conflict predicate write-vs-read/write) — a35 restores it for owned writes;
+nothing is relaxed. Lifecycle hints are outside claims 1–12.

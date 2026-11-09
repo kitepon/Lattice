@@ -48,8 +48,9 @@ if (help !== null) {
 } else if (args[0] === 'plan' && args[1] === 'create'
   && args[2] !== '--schema' && args[2] !== '--schema-version' && args[2] !== '--template') {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
-  const spec = { known: ['input', 'serialization-reviewed'], required: ['input'],
-    booleans: ['serialization-reviewed'] };
+  // --json is a no-op on this write: its output is JSON either way (a37).
+  const spec = { known: ['input', 'serialization-reviewed', 'json'], required: ['input'],
+    booleans: ['serialization-reviewed', 'json'] };
   const flags = matchFlagCommand(args, ['plan', 'create'], spec);
   if (flags === null) {
     // usage違反も欄（flag）・規則・直し方を返す（u05）。受け取った引数もdetailに残す。
@@ -111,7 +112,8 @@ if (help !== null) {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
   const spec = { known: ['plan-input', 'review', 'json'], required: ['plan-input', 'review'], booleans: ['json'] };
   const flags = matchFlagCommand(args, ['plan', 'scope-review'], spec);
-  if (flags === null || flags.json !== true) {
+  // --json is optional: the output is JSON either way (a37).
+  if (flags === null) {
     const { planArgumentFailure } = await import('../src/project-cli.mjs');
     process.exitCode = planArgumentFailure(process.stderr, args, spec);
   } else {
