@@ -139,7 +139,8 @@ test('案内は方式で変わる——未宣言は督促でなく選択を指�
   // witness: 未compileが一級で出る。督促が出るのは選んだplanだけ。
   const witness = selectIndependenceGuidance({ ...base, coordinationMode: 'witness' });
   assert.equal(witness.code, 'independence_unrecorded');
-  assert.equal(witness.next_action, 'lattice todo independence compile --plan <key> --input <file>');
+  // a32: the first step of the witness route is the draft template.
+  assert.equal(witness.next_action, 'lattice todo independence witness scaffold --template --plan <key>');
 
   // 既定は witness。宣言を渡さない既存の呼び出し側の挙動を変えない。
   assert.deepEqual(selectIndependenceGuidance(base), witness);

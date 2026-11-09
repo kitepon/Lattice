@@ -80,7 +80,8 @@ const CATALOG = Object.freeze({
   }),
   independence_unrecorded: Object.freeze({
     message: 'このplanの並列可否はまだ判定していない。競合が無いのではなく、記録が存在しない。',
-    next_action: 'lattice todo independence compile --plan <key> --input <file>',
+    // a32: the first step of the witness route is the draft template, not a file the seat cannot shape.
+    next_action: 'lattice todo independence witness scaffold --template --plan <key>',
   }),
   independence_task_undeclared: Object.freeze({
     message: 'この工程はwitness setで宣言されていないため、記録には含まれていない。',
@@ -309,7 +310,7 @@ export function selectSeamProposalGuidance({ coverage, unknownKinds = [], planKe
  * 足さないと、能力はあるのに機械が黙る面が残る（ADR 0130）。
  */
 export const TODO_INDEPENDENCE_WORKFLOW = Object.freeze([
-  '1. 宣言する: .lattice/todo/witness/<plan_key>.json へ、ToDoごとのowns／reads／writes／affected_testsを書く',
+  '1. 宣言する: lattice todo independence witness scaffold --template --plan <key> が出す下書き（形は lattice todo independence witness scaffold --schema --json）へToDoごとのowns／reads／writesを書き、lattice todo independence witness scaffold --plan <key> --input <draft> が .lattice/todo/witness/<plan_key>.json を書く（affected_testsと自己digestは機械が埋める。形は lattice todo independence compile --schema --json）',
   '   係争資源しか所有していないToDoは、ownsまたはwritesの内側で自分が触るsymbolをconcern_anchorsへ宣言できる（witness set v2）。並列可否の判定には写らず、切断候補の束縛だけに効く',
   '   remaining の A 工程（まだ done でない ready / blocked）も同じ witness に含める。現在の ready だけを compile すると、次の frontier の start の助言が未検証（independence_task_undeclared）になる',
   '2. 判定する: lattice todo independence compile --plan <key> --input <ref>（実sensorを引く。pretty-printやdigest未計算の下書きは機械が直す）。next_ready が witness に無い compile は拒否する',

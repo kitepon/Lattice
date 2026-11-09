@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.todo_witness_draft.v2.schema.json",
+  "title": "lattice.todo_witness_draft.v2",
+  "description": "What a seat writes to declare, per ToDo, which repo files it owns, reads and writes. `lattice todo independence witness scaffold --plan <key> --input <draft>` turns it into the witness set (lattice.todo_witness_set.v5) that `independence compile` reads, adding what a seat cannot write by hand: fresh affected-test observations, the sensor query wiring and the self-digest. Start from `lattice todo independence witness scaffold --template --plan <key>`.",
+  "$comment": "v1 is still accepted; it allows only string `owns`. Include every task that is not done yet (ready, blocked and later ones), not only the current ready ones.",
+  "type": "object",
+  "required": ["schema", "project_id", "plan_key", "capacity", "tasks"],
+  "properties": {
+    "schema": { "enum": ["lattice.todo_witness_draft.v2", "lattice.todo_witness_draft.v1"] },
+    "project_id": { "$ref": "#/$defs/identifier" },
+    "plan_key": { "$ref": "#/$defs/identifier" },
+    "capacity": {
+      "type": "object",
+      "required": ["executors"],
+      "properties": {
+        "executors": { "type": "integer", "minimum": 1, "description": "How many tasks may run at once." }
+      }
+    },
+    "tasks": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/task" },
+      "description": "Keyed by task_id."
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$" },
+    "repoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Repo-relative path. Absolute paths, backslashes and '..' traversal are rejected."
+    },
+    "task": {
+      "type": "object",
+      "required": ["owns"],
+      "properties": {
+        "owns": {
+          "type": "array",
+          "description": "Files this task owns. A file that does not exist yet is written as {\"path\": <file>, \"creates\": true} (v2 only).",
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/repoRelativePath" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "creates"],
+                "properties": {
+                  "path": { "$ref": "#/$defs/repoRelativePath" },
+                  "creates": { "const": true }
+                }
+              }
+            ]
+          }
+        },
+        "reads": { "type": "array", "items": { "$ref": "#/$defs/repoRelativePath" } },
+        "writes": { "type": "array", "items": { "$ref": "#/$defs/repoRelativePath" } },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "ref"],
+            "properties": {
+              "kind": { "$ref": "#/$defs/identifier" },
+              "ref": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "concern_anchors": {
+          "type": "array",
+          "description": "Symbols this task touches inside a contested file it owns or writes; used only to bind seam proposals.",
+          "items": {
+            "type": "object",
+            "required": ["within", "symbols"],
+            "properties": {
+              "within": { "$ref": "#/$defs/repoRelativePath" },
+              "symbols": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/identifier" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
