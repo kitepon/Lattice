@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.85.3 — 2026-11-10
+
+0.85.2の使い通しの点検で見つかった、席を止める所と誤らせる所を直す修正版。witness方式の入力の形が分かり、計画の改訂が作成と同じ形で書け、v5の計画で審査が通り、doneでない作業のreopenと打ち間違えた席の名前を名指す。
+
 - `LATTICE_SEAT_ID`に不正な値（空でない）を設定した席は、従来どおり断らずに無名で動き、`session-context --json`の`seat_id_ignored`で捨てた値と規則を示す（a33）。空の値は解除とみなし、何も言わない。
 - 席が書く計画の入力を、席の契約に合わせた（a31）。`plan scope-review`は`plan create --template`の既定のv5（schemaを省いた入力もv5として読む）を受け、`authoring_digest`と`review_digest`は省けば機械が計算する（書けば照合し、違えば期待値を返す）。`plan revise --input`は`plan create`と同じ形の計画をそのまま受け、継続方針は機械が算出する。`{"schema":"lattice.plan_revise_input.v1","desired":…,"continuity":[…]}`の包みも従来どおり受け、包みが違う時の断りと`plan revise --help`は両方の形を示す。現行planの無いplan_keyのreviseは、欄を足せと言わずに、keyを名指して`plan create`を案内する。席の契約の「席が書くもの」は、計画をplan_keyで名指し、目的・最終成果・受入は`plan backchain`の`goal`に書くと直した。`plan create`へ`goal`・`title`を書いた時の断りは、その書き場所を示す。
 - witness方式を選んだ席が、入力の形をCLIだけで知れる（a32）。`lattice todo independence witness scaffold --schema --json`は席が書く下書き（`lattice.todo_witness_draft.v2`）の、`lattice todo independence compile --schema --json`はcompileが読むwitness set（`lattice.todo_witness_set.v5`）のJSON Schemaを返す。`lattice todo independence witness scaffold --template --plan <key>`は、まだdoneでもretiredでもない工程を並べた下書きのひな形を返す。
