@@ -269,14 +269,14 @@ function assertExactKeys(value, expected) {
 
 test('todo verifyは全member/plan指定のexact result wireを一行で返す', async (context) => {
   const root = await workspace(context);
-  for (const args of [['todo', 'verify'], ['todo', 'verify', '--plan', 'main']]) {
+  for (const args of [['todo', 'verify', '--json'], ['todo', 'verify', '--plan', 'main', '--json']]) {
     const output = successJson(runCli(root, args));
     assertExactKeys(output, [
       'schema', 'project_id', 'requested_plan_key', 'verified_members', 'snapshot_stale', 'uncommitted_evidence', 'result_digest',
     ]);
     assert.equal(output.schema, 'lattice.todo_verify_result.v4');
     assert.equal(output.project_id, 'project-1');
-    assert.equal(output.requested_plan_key, args.length === 2 ? null : 'main');
+    assert.equal(output.requested_plan_key, args.length === 3 ? null : 'main');
     assert.equal(output.snapshot_stale, false);
     assert.equal(output.result_digest, todoSelfDigest(output, 'result_digest'));
     assert.equal(output.verified_members.length, 1);
@@ -292,20 +292,29 @@ test('todo verifyは全member/plan指定のexact result wireを一行で返す',
     assert.deepEqual(output.verified_members[0].reconciliation_guidance, {
       meaning: 'source_inventory_verification_state', lifecycle_blocked: false,
       dashboard_visibility_blocked: false,
-      schema_command: 'lattice todo revise --schema --json',
-      next_action: 'lattice todo revise --plan main --input <revision.json>',
+      schema_command: 'lattice plan revise --schema --json',
+      next_action: 'lattice plan revise --input <revision.json> --json',
     });
   }
 });
 
-test('todo status/verifyは末尾--jsonをflag無しJSON wireの互換aliasとして受理する', async (context) => {
+test('todo statusは末尾--jsonをflag無しJSON wireの互換aliasとして受理する', async (context) => {
   const root = await workspace(context);
   assert.deepEqual(successJson(runCli(root, ['todo', 'status', '--json'])),
     successJson(runCli(root, ['todo', 'status'])));
-  assert.deepEqual(successJson(runCli(root, ['todo', 'verify', '--json'])),
-    successJson(runCli(root, ['todo', 'verify'])));
-  assert.deepEqual(successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json'])),
-    successJson(runCli(root, ['todo', 'verify', '--plan', 'main'])));
+});
+
+test('todo verifyは--jsonが無ければ判定1行だけを返し、--jsonのwireは変えない（a19）', async (context) => {
+  const root = await workspace(context);
+  const json = successJson(runCli(root, ['todo', 'verify', '--json']));
+  for (const [args, scope] of [[['todo', 'verify'], '1 plan verified'],
+    [['todo', 'verify', '--plan', 'main'], '1 plan verified']]) {
+    const plain = runCli(root, args);
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.equal(plain.stdout, `todo verify: ok, ${scope} (main registered_unreconciled, lifecycle not blocked)\n`);
+  }
+  assert.deepEqual(successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json'])).verified_members,
+    json.verified_members);
 });
 
 test('todo bindingsはcompile_binding付きTaskをTODO identityつきで投影する', async (context) => {
@@ -332,7 +341,7 @@ test('todo reviseはcanonical revisionだけを発行しstatus/verifyへreconcil
   const status = successJson(runCli(root, ['todo', 'status']));
   assert.equal(status.member_heads[0].reconciliation_state, 'reconciled');
   assert.equal(status.member_heads[0].revision_digest, revision.revision_digest);
-  const verified = successJson(runCli(root, ['todo', 'verify', '--plan', 'main']));
+  const verified = successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
   assert.equal(verified.verified_members[0].reconciliation_state, 'reconciled');
   assert.equal(verified.verified_members[0].source_inventory_count, 2);
   assert.equal(verified.verified_members[0].active_task_count, 2);
@@ -416,7 +425,7 @@ test('todo verifyはactive phase v1/v2でも履歴上のsource inventoryを検�
   successJson(runCli(root, ['todo', 'revise-phase', '--plan', 'main', '--input',
     'phase-revision.json']));
 
-  const verified = successJson(runCli(root, ['todo', 'verify', '--plan', 'main']));
+  const verified = successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
   assert.equal(verified.verified_members[0].source_inventory_count, 2);
   assert.equal(verified.verified_members[0].active_task_count, 2);
   await writeFile(path.join(root, 'plan.md'), '- [ ] T1 drifted\n- [ ] T2\n');
@@ -1106,7 +1115,7 @@ for (const [name, mutate] of snapshotCases) {
     await mutate(root);
     const journalBefore = await fileBytes(root, journalRef);
     const manifestBefore = await fileBytes(root, manifestRef);
-    const verify = successJson(runCli(root, ['todo', 'verify']));
+    const verify = successJson(runCli(root, ['todo', 'verify', '--json']));
     assert.equal(verify.snapshot_stale, false);
     assert.equal(verify.verified_members[0].snapshot_stale, false);
     assert.deepEqual(await fileBytes(root, journalRef), journalBefore);
@@ -1121,7 +1130,7 @@ for (const [name, mutate] of snapshotCases) {
     assert.equal(rebuilt.result_digest, todoSelfDigest(rebuilt, 'result_digest'));
     assert.deepEqual(await fileBytes(root, journalRef), journalBefore);
     assert.deepEqual(await fileBytes(root, manifestRef), manifestBefore);
-    assert.equal(successJson(runCli(root, ['todo', 'verify'])).snapshot_stale, false);
+    assert.equal(successJson(runCli(root, ['todo', 'verify', '--json'])).snapshot_stale, false);
 
     const rebuiltBytes = await fileBytes(root, snapshotRef);
     const second = successJson(runCli(root, ['todo', 'snapshot', '--rebuild', '--plan', 'main']));

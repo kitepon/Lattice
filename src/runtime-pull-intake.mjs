@@ -347,7 +347,7 @@ async function pullPlanReadiness({ repoRoot, planKey }) {
     && witnessSet?.witness_set_digest === artifact.witness_set_digest;
   return pullIntakeReadinessGuidance({
     coordinationMode: member.coordination?.mode ?? null,
-    ready,
+    ready, planKey,
   });
 }
 
@@ -396,7 +396,7 @@ function pathTouches(boundary, changed) {
 async function boundaryVerdict({ repoRoot, store, member, meta, taskId, intakeBase }) {
   const pullRequired = pullIntakeReadinessGuidance({
     coordinationMode: member.coordination?.mode ?? null,
-    ready: false,
+    ready: false, planKey: meta.plan_key,
   });
   let artifact;
   let witnessSet;

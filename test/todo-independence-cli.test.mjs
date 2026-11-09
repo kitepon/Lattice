@@ -130,7 +130,8 @@ test('既知の旧artifactはsupersededとしてindependence・session-context�
     assert.equal(projection.coverage, 'superseded');
     assert.equal(projection.compiled_base_sha, null);
     assert.equal(projection.guidance.code, 'independence_contract_superseded');
-    assert.equal(projection.guidance.next_action, 'recompile_independence');
+    assert.equal(projection.guidance.next_action,
+      `lattice todo independence compile --plan ${projection.plan_key} --input <file>`);
     assert.deepEqual(projection.frontier.unknown, [
       {
         task_id: 'T1',
@@ -772,7 +773,8 @@ test('案内はadvisoryと投影の両方へ同じ文言で載る', async (conte
   // 8件のToDo全部を素通りされた当のものである（オーナー裁定C①）。
   const projection = parse(runCli(root, ['independence', '--json']).stdout);
   assert.equal(projection.guidance.code, 'coordination_mode_undeclared');
-  assert.equal(projection.guidance.next_action, 'declare_coordination_mode');
+  assert.equal(projection.guidance.next_action,
+    `lattice todo independence mode --plan ${projection.plan_key} --set <witness|conversation> --reason <text>`);
   assert.match(projection.guidance.message, /調整方式をまだ選んでいない/u);
 
   const actorEnv = {
@@ -841,7 +843,8 @@ test('進行中との競合では案内が切断可能性まで述べる', async
   assert.equal(start('T1').status, 0);
   const advisory = parse(start('T2').stdout).advisory;
   assert.equal(advisory.guidance.code, 'independence_conflict_with_active');
-  assert.equal(advisory.guidance.next_action, 'serialize_or_split_boundary');
+  assert.equal(advisory.guidance.next_action,
+    'lattice todo dependency connect --from-plan main --from-task <id> --to-plan main --to-task <id> --reason <text>');
   // pathの衝突なので、分割で並列化しうることまで述べる。
   assert.match(advisory.guidance.message, /refactorで並列化しうる/u);
 });
@@ -937,7 +940,7 @@ test('next_ready が witness に無い compile は拒否する', async (context)
   const error = parse(compiled.stderr);
   assert.equal(error.code, 'INDEPENDENCE_READY_UNDECLARED');
   assert.deepEqual(error.detail.missing_task_ids, ['T2']);
-  assert.equal(error.detail.next_action, 'add_task_to_witness_set_then_compile');
+  assert.equal(error.detail.next_action, `lattice todo independence compile --plan ${error.detail.plan_key} --input <file>`);
 });
 
 // T1だけを宣言したcompiled記録をstoreへ書く（baseは現在のHEAD）。
@@ -981,7 +984,8 @@ test('記録がある未宣言 task の start も止めず、未宣言は助言�
   assert.equal(startedT2.kind, 'start');
   assert.equal(startedT2.task_id, 'T2');
   assert.equal(startedT2.advisory.guidance.code, 'independence_task_undeclared');
-  assert.equal(startedT2.advisory.guidance.next_action, 'add_task_to_witness_set_then_compile');
+  assert.equal(startedT2.advisory.guidance.next_action,
+    'lattice todo independence compile --plan main --input <file>');
 
   const declared = runCli(root, ['start', '--plan', 'main', '--task', 'T1']);
   assert.equal(declared.status, 0, declared.stderr);

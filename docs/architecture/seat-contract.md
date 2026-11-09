@@ -29,6 +29,13 @@ Write a plan (create, add and revise share one input shape), read state
 dependency connect. Every other command remains but is not part of seat guidance.
 Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
+Reads and sensor commands that only ever print JSON (`status`, `session-context`,
+`plan show <key>`, `sensor init|sync [path]`) imply a missing `--json` (a20).
+
+The first plan write of a seat starts its local display: a dashboard supervisor
+and dashboard process under the seat root, on 127.0.0.1 (see function map,
+Dashboard + network). A seat does nothing to start or stop it; a dashboard
+failure never rejects the write.
 
 A seat may say who it is with `LATTICE_SEAT_ID` (letters, digits, `.`, `_`, `-`;
 up to 64). The machine derives `seat_id`; it appears at the top level of
@@ -54,7 +61,7 @@ assigns nothing.
 |---|---|
 | `turn.actor` | `{host, session, agent}` the CLI would write with now (`resolveTodoActor(env)`: `LATTICE_TODO_ACTOR_*`, else the seat defaults). |
 | `turn.startable` | `todo.next_ready` as is (`plan_key, task_id, label, done_condition`). |
-| `turn.own` | This seat's in-progress and blocked tasks: a task whose status is `in-progress` or `blocked` and whose latest `start` event in its plan's current journal was recorded with `actor.agent === turn.actor.agent`. Entry `{plan_key, task_id, label, status, started_at, blocked_reason, done_condition}`, sorted by plan_key then task_id. Done tasks are history and stay in `todo status`/`todo show`. A carried task whose start lies in a predecessor version appears after its rebind start (blocked carried tasks without one are not listed). |
+| `turn.own` | This seat's in-progress and blocked tasks: a task whose status is `in-progress` or `blocked` and whose latest `start` event in its plan's current journal was recorded with `actor.agent === turn.actor.agent`. Entry `{plan_key, task_id, label, status, started_at, blocked_reason, done_condition}`, sorted by plan_key then task_id. Done tasks are history and stay in `todo status`/`todo show`. A carried task whose start lies in a predecessor version appears after its rebind start (blocked carried tasks without one are not listed). The rebind start that `plan revise`, `todo dependency connect/disconnect` or `plan backchain` records keeps the actor of the start it carries, so a revision by another seat never moves the task out of its starter's `turn.own` (a16). |
 | `turn.warning` | Present only when the store is missing or unreadable: `{reason}` (the status reason). `startable` and `own` are then `[]`; the read never refuses. |
 
 `lattice status --json` keeps `lattice.project_status.v1` exactly; when a store

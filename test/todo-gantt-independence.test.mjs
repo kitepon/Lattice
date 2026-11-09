@@ -75,7 +75,7 @@ const seamProjection = ({
   project_id: PROJECT,
   plan_key: planKey,
   coverage,
-  guidance: selectSeamProposalGuidance({ coverage }),
+  guidance: selectSeamProposalGuidance({ coverage, planKey }),
   component_count: coverage === 'missing' ? null : componentCount,
   conflict_resource_count: coverage === 'missing' ? null : components
     .reduce((total, component) => total + component.conflicts.length, 0),

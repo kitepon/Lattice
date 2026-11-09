@@ -949,10 +949,20 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
     adjacency.get(from).push(to);
   }
   const colors = new Map();
+  const stack = [];
+  // a18: name the closed path (first node repeated last), not just that one exists.
+  const nodeRef = (key) => {
+    const parts = key.split('\0');
+    return parts[0] === 'phase' ? { plan_key: parts[2], phase_id: parts[3] } : { plan_key: parts[1], task_id: parts[2] };
+  };
   const visit = (node) => {
-    if (colors.get(node) === 1) fail('STORE_INCONSISTENT', 'merged_cycle');
+    if (colors.get(node) === 1) {
+      fail('STORE_INCONSISTENT', 'merged_cycle', { cycle: [...stack.slice(stack.indexOf(node)), node].map(nodeRef) });
+    }
     if (colors.get(node) === 2) return;
-    colors.set(node, 1); for (const next of adjacency.get(node)) visit(next); colors.set(node, 2);
+    colors.set(node, 1); stack.push(node);
+    for (const next of adjacency.get(node)) visit(next);
+    stack.pop(); colors.set(node, 2);
   };
   for (const node of adjacency.keys()) visit(node);
   // A join binds `before` once per member: keep one finding per identity, in code-unit order.
@@ -1012,7 +1022,7 @@ function validateCrossPlanDependencyTransition(store, owner, input) {
     validateMergedGraph(store.members, [...existing, { from, to }]);
   } catch (error) {
     if (error instanceof TodoStoreError && error.detail?.reason === 'merged_cycle') {
-      fail('DEPENDENCY_CYCLE', 'cross_plan_dependency_cycle', { from, to });
+      fail('DEPENDENCY_CYCLE', 'cross_plan_dependency_cycle', { from, to, cycle: error.detail.cycle });
     }
     throw error;
   }
@@ -2248,7 +2258,7 @@ export async function appendTodoEvent(options = {}) {
         const target = events.find((entry) => entry.kind === 'cross_plan_dependency'
           && entry.event_digest === digest);
         if (target === undefined) {
-          fail('DEPENDENCY_INVALID', 'cross_plan_dependency_not_found', { target_event_digest: digest });
+          fail('DEPENDENCY_NOT_FOUND', 'cross_plan_dependency_not_found', { target_event_digest: digest });
         }
         if (events.some((entry) => entry.kind === 'cross_plan_dependency_removed'
           && entry.payload.target_event_digest === digest)) {

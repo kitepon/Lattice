@@ -22,7 +22,7 @@
           "$ref": "lattice.plan_create_input.v5.schema.json"
         }
       ],
-      "description": "同じproject_idとplan_keyのcreate-v4またはv5入力。actor・recorded_at・input_digest・空の設計メモは機械が補い、集合と配列の並びは正準化する。v5は終了条件done_conditionを持つ（plan v8を作る）。v4でも先行planがv8なら、書かない終了条件は先行planの値を引き継ぐ。plan_versionは入力形を保つために記載し、後継versionは機械算出値に置き換える。新taskはpending。消すtaskへの参照も明示的に取り除く。"
+      "description": "同じplan_keyのcreate-v4またはv5入力。project_idとplan_versionは書かなければ現行planの値で機械が補う（project_idを書くなら現行planと同じ値）。actor・recorded_at・input_digest・空の設計メモは機械が補い、集合と配列の並びは正準化する。v5は終了条件done_conditionを持つ（plan v8を作る）。v4でも先行planがv8なら、書かない終了条件は先行planの値を引き継ぐ。plan_versionは入力形を保つために記載し、後継versionは機械算出値に置き換える。新taskはpending。消すtaskへの参照も明示的に取り除く。"
     },
     "continuity": {
       "type": "array",

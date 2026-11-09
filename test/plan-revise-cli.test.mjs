@@ -100,9 +100,18 @@ test('light CLI refuses dangling references before publishing a successor', asyn
 test('light CLI reports an applied revision when carried work rebind fails, then repairs it', async (context) => {
   const { root } = await fixture(context);
   success(root, ['todo', 'start', '--plan', 'work', '--task', 'b']);
+  // revise-phase carries b without a rebind start, so the next light revision finds no carried
+  // start actor for b (a16) and falls back to the env actor after publication.
   await writeFile(path.join(root, 'revise.json'), JSON.stringify(intent()));
+  const revisionInput = { ...success(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']).revision };
+  delete revisionInput.revision_digest;
+  await writeFile(path.join(root, 'revision.json'), JSON.stringify(revisionInput));
+  success(root, ['todo', 'revise-phase', '--plan', 'work', '--input', 'revision.json']);
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify({ schema: 'lattice.plan_revise_input.v1',
+    desired: desired(['a', 'b', 'd', 'e']),
+    continuity: [decision('a', 'carry'), decision('b', 'carry'), decision('d', 'carry')] }));
   // An invalid actor no longer refuses (u03s A57), so the rebind failure is injected in process:
-  // the actor is read only by the post-publication rebind, and reading it throws.
+  // the actor is read only by that post-publication fallback, and reading it throws.
   const env = new Proxy({ ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0',
     LATTICE_RUNTIME_ERROR_REPORTING: '0' }, {
     get(target, key) {
@@ -216,4 +225,24 @@ test('artifact CLI applies v5 through revise-phase and verifies its reconciliati
   assert.equal(member.reconciliation_state, 'reconciled');
   assert.equal(member.revision_digest, preview.revision.revision_digest);
   assert.equal(member.reconciliation_digest, preview.revision.revision_digest);
+});
+
+test('light CLI fills project_id/plan_version of desired and names a wrong project_id', async (context) => {
+  const { root } = await fixture(context);
+  const input = intent();
+  delete input.desired.project_id;
+  delete input.desired.plan_version;
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(input));
+  const preview = success(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
+  assert.equal(preview.revision.project_id, 'example');
+
+  input.desired.project_id = 'other';
+  await writeFile(path.join(root, 'revise.json'), JSON.stringify(input));
+  const refused = run(root, ['plan', 'revise', '--input', 'revise.json', '--dry-run', '--json']);
+  assert.equal(refused.status, 1);
+  const { detail } = JSON.parse(refused.stderr);
+  assert.equal(detail.rule, 'plan_revise_identity_mismatch');
+  assert.equal(detail.pointer, '/desired/project_id');
+  assert.equal(detail.expected, 'example');
+  assert.equal(detail.actual, 'other');
 });

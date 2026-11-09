@@ -446,7 +446,7 @@ test('旧契約supersededとplan改訂supersededは異なるguidanceを返す', 
   assert.deepEqual(legacyContract, {
     code: 'independence_contract_superseded',
     message: '記録は旧契約versionで書かれており、現在の並列可否の判定としては読めない。現在の契約での再compileが次の一歩になる。',
-    next_action: 'recompile_independence',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   });
 
   const revisedPlan = selectIndependenceGuidance({
@@ -456,7 +456,7 @@ test('旧契約supersededとplan改訂supersededは異なるguidanceを返す', 
     taskStale: false,
   });
   assert.equal(revisedPlan.code, 'independence_superseded');
-  assert.equal(revisedPlan.next_action, 'migrate_witness_set_then_compile');
+  assert.equal(revisedPlan.next_action, 'lattice todo independence witness migrate --plan <key>');
   assert.notEqual(legacyContract.code, revisedPlan.code);
 
   const conflictWins = selectIndependenceGuidance({

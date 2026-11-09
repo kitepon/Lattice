@@ -47,6 +47,7 @@ async function configureHost(host, options, statusOnly) {
     if (!statusOnly) action = await writeSetupFile(paths.mcp, before, updateMcpConfig(before.text, paths.format, desired));
     const saved = (await readSetupFile(paths.mcp)).text;
     const entry = mcpEntry(saved, paths.format);
+    if (!entry && statusOnly) throw setupError('MCP_NOT_REGISTERED', `LatticeのMCPは未登録です。lattice setup --host ${host} で登録します`);
     if (!entry || entry.command !== desired.command || JSON.stringify(entry.args) !== JSON.stringify(desired.args)) {
       throw setupError('MCP_REGISTRATION_DRIFT', 'MCP登録が現在のLattice実行体と一致しません');
     }

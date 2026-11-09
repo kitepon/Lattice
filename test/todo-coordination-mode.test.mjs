@@ -128,7 +128,8 @@ test('案内は方式で変わる——未宣言は督促でなく選択を指�
   // 作業を指す督促が、8件で素通りされた当のものである。
   const undeclared = selectIndependenceGuidance({ ...base, coordinationMode: null });
   assert.equal(undeclared.code, 'coordination_mode_undeclared');
-  assert.equal(undeclared.next_action, 'declare_coordination_mode');
+  assert.equal(undeclared.next_action,
+    'lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>');
 
   // conversation: 選択を尊重して督促しない。
   const conversation = selectIndependenceGuidance({ ...base, coordinationMode: 'conversation' });
@@ -138,7 +139,7 @@ test('案内は方式で変わる——未宣言は督促でなく選択を指�
   // witness: 未compileが一級で出る。督促が出るのは選んだplanだけ。
   const witness = selectIndependenceGuidance({ ...base, coordinationMode: 'witness' });
   assert.equal(witness.code, 'independence_unrecorded');
-  assert.equal(witness.next_action, 'declare_witness_set_then_compile');
+  assert.equal(witness.next_action, 'lattice todo independence compile --plan <key> --input <file>');
 
   // 既定は witness。宣言を渡さない既存の呼び出し側の挙動を変えない。
   assert.deepEqual(selectIndependenceGuidance(base), witness);
@@ -158,7 +159,7 @@ test('conversationの一般案内は督促せず、pull設備だけがindependen
     [required.code, required.plan_binding_ready,
       required.coordination_mode, required.next_action],
     ['pull_independence_required', false, 'conversation',
-      'compile_independence_or_choose_non_pull_execution'],
+      'lattice todo independence compile --plan <key> --input <file>'],
   );
 
   const ready = pullIntakeReadinessGuidance({

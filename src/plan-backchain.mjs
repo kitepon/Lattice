@@ -544,9 +544,26 @@ async function activeIntentUnchanged({ repoRoot, member, chain, authoring }) {
   });
 }
 
+/**
+ * 公開前のmemberから、作業中taskごとに最新startの記録者を集める（task_id → actor）。
+ * 改訂後のrebind startがこの記録者を保つので、別の席が改訂しても`turn.own`は始めた席に残る（a16）。
+ * shortcut: このmemberにstartが無いtask（revise-phaseで運ばれたもの）は今の席で結び直す。古い版の
+ * journalまで遡る必要が出たらStoreの保持版readerを使う。
+ */
+export function carriedStartActors(member) {
+  const actors = new Map();
+  if (member === null || member === undefined) return actors;
+  const inProgress = new Set(member.tasks.filter(({ status }) => status === 'in-progress')
+    .map(({ task_id: taskId }) => taskId));
+  for (const event of member.journal.events) {
+    if (event.kind === 'start' && inProgress.has(event.task_id)) actors.set(event.task_id, event.actor);
+  }
+  return actors;
+}
+
 export async function rebindCarriedWork({ repoRoot, planKey, env,
   reason = 'ゴール変更後のplan versionへ作業中ToDoを結び直す',
-  failureCode = 'BACKCHAIN_REBIND_PENDING' }) {
+  failureCode = 'BACKCHAIN_REBIND_PENDING', carriedActors = new Map() }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
   const rebound = [];
@@ -557,7 +574,7 @@ export async function rebindCarriedWork({ repoRoot, planKey, env,
     const { rebindStart } = await import('./todo-cli.mjs');
     try {
       await rebindStart({ repoRoot, env, planKey, taskId: state.task_id,
-        reason });
+        reason, actor: carriedActors.get(state.task_id) ?? null });
     } catch (error) {
       throw new TodoStoreError(failureCode, 'carried_task_rebind_failed', undefined, {
         task_id: state.task_id, plan_version: member.plan.plan_version,
@@ -658,7 +675,8 @@ export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, 
     };
   }
   const reboundTaskIds = unchanged || revision !== null
-    ? await rebindCarriedWork({ repoRoot, planKey: chain.plan_key, env }) : [];
+    ? await rebindCarriedWork({ repoRoot, planKey: chain.plan_key, env,
+      carriedActors: carriedStartActors(member) }) : [];
   const finalStore = await readTodoStore({ repoRoot });
   const finalMember = finalStore.members.find(({ plan }) => plan.plan_key === chain.plan_key);
   const result = {

@@ -6,7 +6,7 @@ import { gitSync } from './git-process.mjs';
 import { completeCreateInput, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { validatePlanCreateInput } from './project-cli.mjs';
 import {
-  compileBackchainRevision, planSeed, readPlanBackchainBinding, rebindCarriedWork,
+  carriedStartActors, compileBackchainRevision, planSeed, readPlanBackchainBinding, rebindCarriedWork,
 } from './plan-backchain.mjs';
 import {
   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter, readTodoStore, TodoStoreError,
@@ -174,7 +174,10 @@ export function resolvePlanRevision({ member, input, env = process.env, now = ne
     fail('plan_revise_schema_invalid', '/', { expected: INPUT_SCHEMA });
   }
   if (input.schema !== INPUT_SCHEMA) fail('plan_revise_schema_invalid', '/', { expected: INPUT_SCHEMA });
-  const desired = completeCreateInput(input.desired, { env, now });
+  // a17: 改訂は既存planの上で行うので、project_id・plan_versionは書かなければ現行planの値で埋まる。
+  const desired = completeCreateInput(input.desired, {
+    env, now, projectId: member?.plan.project_id, planVersion: member?.plan.plan_version,
+  });
   try { validatePlanCreateInput(desired); }
   catch (error) {
     if (typeof error?.detail?.pointer === 'string') {
@@ -200,7 +203,13 @@ export function resolvePlanRevision({ member, input, env = process.env, now = ne
   if (!['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(member.plan.schema)) {
     fail('predecessor_plan_schema_unsupported', '/desired/plan_key');
   }
-  if (desired.project_id !== member.plan.project_id || desired.plan_key !== member.plan.plan_key) {
+  if (desired.project_id !== member.plan.project_id) {
+    fail('plan_revise_identity_mismatch', '/desired/project_id', {
+      expected: member.plan.project_id, actual: desired.project_id,
+      next_action: `Omit /desired/project_id (the machine fills "${member.plan.project_id}") or set it to "${member.plan.project_id}".`,
+    });
+  }
+  if (desired.plan_key !== member.plan.plan_key) {
     fail('plan_revise_identity_mismatch', '/desired/plan_key');
   }
   const continuity = computeContinuity(member, input,
@@ -338,7 +347,7 @@ export async function applyPlanRevision({
     try {
       reboundTaskIds = await rebindCarriedWork({ repoRoot, planKey: revision.plan_key, env,
         reason: '工程改訂後のplan versionへ作業中ToDoを結び直す',
-        failureCode: 'PLAN_REBIND_PENDING' });
+        failureCode: 'PLAN_REBIND_PENDING', carriedActors: carriedStartActors(member) });
     } catch (error) {
       // 公開後に起きたStoreの失敗は、改訂が確定済みであることを必ず報告する（2026-11-07
       // 初回使用: rebind読込の素のbinding_staleが公開済み事実を隠した）

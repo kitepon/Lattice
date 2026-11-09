@@ -23,7 +23,9 @@ test('全codeが説明と次の一歩を持つ', () => {
     const guidance = todoIndependenceGuidance(code);
     assert.equal(guidance.code, code);
     assert.ok(guidance.message.length > 0, `${code} has no message`);
-    assert.ok(guidance.next_action.length > 0, `${code} has no next_action`);
+    // a19: 次の一歩は実在コマンドか'none'だけ。planKeyを渡すと`<key>`が置き換わる。
+    assert.match(guidance.next_action, /^(none|lattice [a-z-]+ .+)$/u, `${code} next_action`);
+    assert.ok(!todoIndependenceGuidance(code, { planKey: 'p-1' }).next_action.includes('<key>'), code);
   }
 });
 
@@ -144,7 +146,7 @@ test('verdictが1つも無い記録を、検証済みとして述べない', () 
     verdictsAbsent: true,
   });
   assert.equal(absent.code, 'independence_verdicts_absent');
-  assert.equal(absent.next_action, 'resolve_unknowns_then_recompile');
+  assert.equal(absent.next_action, 'lattice todo independence compile --plan <key> --input <file>');
   // 「干渉しない」ではなく「まだ判定していない」と述べる。不在を証拠にしない。
   assert.match(absent.message, /証拠にならない/u);
 
@@ -188,7 +190,7 @@ test('束縛できなかったseam提案は、次の一歩を持つ案内を返�
     coverage: 'verified', unknownKinds: ['semantic_owner_binding_missing'],
   });
   assert.equal(missing.code, 'seam_proposal_binding_missing');
-  assert.equal(missing.next_action, 'declare_concern_anchors_then_recompile');
+  assert.equal(missing.next_action, 'lattice todo independence compile --plan <key> --input <file>');
   // 宣言を直しただけでは提案は変わらない。そこまで述べないと同じunknownで止まる。
   assert.match(missing.message, /independence compile.*seam-proposal compile/u);
 
@@ -225,7 +227,7 @@ test('記録が古い間は、束縛失敗より先に鮮度を述べる', () =>
       coverage, unknownKinds: ['concern_anchor_overlap'],
     });
     assert.match(guidance.code, /^seam_proposal_(stale|superseded|unrecorded)$/u);
-    assert.equal(guidance.next_action, 'compile_seam_proposal');
+    assert.equal(guidance.next_action, 'lattice todo seam-proposal compile --plan <key>');
   }
 });
 

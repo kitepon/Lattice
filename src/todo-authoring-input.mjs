@@ -231,12 +231,15 @@ function fillEach(next, key, fill) {
   next[key] = next[key].map((entry) => (isRecord(entry) ? fill(entry) : entry));
 }
 
-export function completeCreateInput(value, { env, now }) {
+// a17: project_id・plan_versionは機械が決める事実。書かなければ呼び出し側が渡した値(storeのid等)で埋める。
+export function completeCreateInput(value, { env, now, projectId, planVersion }) {
   if (!isRecord(value)) return value;
   const next = { ...value };
   // a11: schemaを書かなければ現行のcreate入力(v5)。他のschemaを持つ値は作成入力でないのでそのまま返す。
   if (absent(next.schema)) next.schema = DEFAULT_CREATE_INPUT_SCHEMA;
   if (typeof next.schema !== 'string' || !CREATE_INPUT_SCHEMA.test(next.schema)) return value;
+  if (absent(next.project_id) && projectId !== undefined) next.project_id = projectId;
+  if (absent(next.plan_version) && planVersion !== undefined) next.plan_version = planVersion;
   const fillNode = (ref) => fillRef(ref, next.project_id, next.plan_key);
   const phaseInput = next.schema !== 'lattice.plan_create_input.v1';
   const memoInput = ['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5'].includes(next.schema);
@@ -304,7 +307,10 @@ function looksLikeProse(value) {
     || (/\s/u.test(value) && !/[/\\]/u.test(value));
 }
 
-export async function resolveAuthoringInputPath(repoRoot, inputRef, { inlineFlag = null } = {}) {
+// allowOutsideRepo: 中身のJSONを読むだけのcallerはrepo外の絶対pathも受ける(a17)。git blobを求めるcallerは既定のまま拒む。
+export async function resolveAuthoringInputPath(repoRoot, inputRef, {
+  inlineFlag = null, allowOutsideRepo = false,
+} = {}) {
   if (typeof inputRef !== 'string' || inputRef.length === 0) {
     fail('INPUT_UNREADABLE', 'input_ref_invalid', { input_ref: inputRef });
   }
@@ -328,6 +334,10 @@ export async function resolveAuthoringInputPath(repoRoot, inputRef, { inlineFlag
     fail('INPUT_UNREADABLE', 'unsafe_input_path', { input_ref: inputRef });
   }
   const resolved = await realpath(candidate);
+  if (allowOutsideRepo && !within(canonicalRoot, resolved)) {
+    if (stats.size > MAX_AUTHORING_INPUT_BYTES) fail('INPUT_TOO_LARGE', 'input_size_limit_exceeded');
+    return { absolute: resolved, inputRef: resolved, maxBytes: MAX_AUTHORING_INPUT_BYTES };
+  }
   if (!within(canonicalRoot, resolved) || resolved === canonicalRoot) {
     fail('INPUT_UNREADABLE', 'input_path_outside_repo', {
       input_ref: inputRef,
@@ -355,7 +365,7 @@ export async function readAuthoringJsonFile(repoRoot, inputRef, {
   invalidCode = 'INVALID_JSON',
   inlineFlag = null,
 } = {}) {
-  const located = await resolveAuthoringInputPath(repoRoot, inputRef, { inlineFlag });
+  const located = await resolveAuthoringInputPath(repoRoot, inputRef, { inlineFlag, allowOutsideRepo: true });
   const bytes = await readFile(located.absolute);
   if (bytes.length > located.maxBytes) fail('INPUT_TOO_LARGE', 'input_size_limit_exceeded');
   let text;

@@ -275,6 +275,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
+  'retract', 'dependency',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -291,15 +292,74 @@ const DONE_FLAG_SPEC = Object.freeze({
   required: ['plan', 'task'],
 });
 
-/** `todo done`のargument拒否を、直すflagと規則で名指す。他のcommandは従来どおり（空）。 */
+const REASON_FLAG_SPEC = Object.freeze({ known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'] });
+const DEPENDENCY_FLAG_SPEC = Object.freeze({
+  known: ['from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
+  required: ['from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
+});
+// a18: one spec per write command is both its parser and the explanation of its refusal.
+const TODO_FLAG_SPECS = Object.freeze({
+  start: Object.freeze({
+    known: ['plan', 'task', 'parallel-frontier', 'override-reason', 'serial-confirmed', 'rebind', 'reason'],
+    required: ['plan', 'task'],
+    booleans: ['parallel-frontier', 'serial-confirmed', 'rebind'],
+  }),
+  done: DONE_FLAG_SPEC,
+  block: REASON_FLAG_SPEC,
+  retire: REASON_FLAG_SPEC,
+  retract: REASON_FLAG_SPEC,
+  unblock: Object.freeze({ known: ['plan', 'task'], required: ['plan', 'task'] }),
+  reopen: Object.freeze({ known: ['plan', 'task', 'reason', 'override-reason'], required: ['plan', 'task', 'reason'] }),
+  'dependency connect': DEPENDENCY_FLAG_SPEC,
+  'dependency disconnect': DEPENDENCY_FLAG_SPEC,
+});
+const IDENTIFIER_FLAGS = ['plan', 'task', 'from-plan', 'from-task', 'to-plan', 'to-task'];
+const FLAG_PLACEHOLDER = { reason: '<text>', 'override-reason': '<text>', message: '<text>',
+  evidence: '<file>', 'test-result': '<file>' };
+const shellWord = (value) => (/^[\w./:@-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`);
+
+/** The command again, with the flags given and a placeholder for each missing required flag. */
+function repairedCommand(head, spec, flags) {
+  const words = ['lattice', 'todo', ...head];
+  for (const name of spec.known) {
+    if (typeof flags[name] === 'string' && flags[name].length > 0) words.push(`--${name}`, shellWord(flags[name]));
+    else if (flags[name] === true && spec.booleans?.includes(name)) words.push(`--${name}`);
+    else if (spec.required.includes(name)) words.push(`--${name}`, FLAG_PLACEHOLDER[name] ?? `<${name}>`);
+  }
+  return words.join(' ');
+}
+
+/** `dependency connect|disconnect` flags by name (order-free), or null. */
+function dependencyFlags(argv) {
+  const flags = matchFlagCommand(argv, argv.slice(0, 2), DEPENDENCY_FLAG_SPEC);
+  return flags !== null && IDENTIFIER_FLAGS.slice(2).every((name) => isTodoIdentifier(flags[name])) ? flags : null;
+}
+
+/** A todo write's argument refusal names the flag, the rule and the command to run instead. */
 function explainArgumentRefusal(argv) {
-  if (argv[0] !== 'done') return {};
-  const flagFailure = explainFlagCommand(argv, ['done'], DONE_FLAG_SPEC);
+  const head = argv[0] === 'dependency' ? argv.slice(0, 2) : argv.slice(0, 1);
+  const spec = TODO_FLAG_SPECS[head.join(' ')];
+  if (spec === undefined) return {};
+  const { flags } = parseFlagMap(argv.slice(head.length));
+  const flagFailure = explainFlagCommand(argv, head, spec);
+  if (flagFailure?.rule === 'flag_missing') {
+    return { ...flagFailure, next_action: `Add ${flagFailure.pointer} ${FLAG_PLACEHOLDER[flagFailure.pointer.slice(2)] ?? '<value>'}: \`${repairedCommand(head, spec, flags)}\`.` };
+  }
   if (flagFailure !== null) return flagFailure;
-  const { flags } = parseFlagMap(argv.slice(1));
-  for (const name of ['plan', 'task']) {
+  for (const name of IDENTIFIER_FLAGS.filter((key) => spec.known.includes(key))) {
     if (!isTodoIdentifier(flags[name])) return { pointer: `--${name}`, rule: 'identifier_invalid', actual: flags[name] };
   }
+  for (const name of ['override-reason', 'reason']) {
+    if (spec.known.includes(name) && flags[name] !== undefined
+      && !(typeof flags[name] === 'string' && flags[name].length > 0)) {
+      return { pointer: `--${name}`, rule: 'flag_missing', next_action: `Give --${name} a non-empty <text>: \`${repairedCommand(head, spec, flags)}\`.` };
+    }
+  }
+  if (argv[0] === 'start' && flags.rebind === true && !(typeof flags.reason === 'string' && flags.reason.length > 0)) {
+    return { pointer: '--reason', rule: 'flag_missing',
+      next_action: `--rebind needs --reason <text>: \`${repairedCommand(head, { ...spec, required: [...spec.required, 'reason'] }, flags)}\`.` };
+  }
+  if (argv[0] !== 'done') return {};
   const hasMessage = typeof flags.message === 'string' && flags.message.length > 0;
   if (flags.message !== undefined && !hasMessage) return { pointer: '--message', rule: 'flag_missing' };
   if (flags.evidence !== undefined && !isAuthoringPathToken(flags.evidence)) {
@@ -699,9 +759,9 @@ function reopenAdvisory(plan, phases, taskId) {
 async function mutate({
   repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
-  testResultRef = null,
+  testResultRef = null, actor: carriedActor = null,
 }) {
-  const actor = resolveTodoActor(env);
+  const actor = carriedActor ?? resolveTodoActor(env);
   const evidence = evidenceRef === null && evidenceMessage === null
     ? null
     : await resolveDoneEvidence({
@@ -792,7 +852,7 @@ const UNCHANGED_WHEN = {
 };
 
 /** Unchanged result, or null when the transition must go to the append path. */
-function unchangedTransition(store, { env, planKey, taskId, kind }) {
+function unchangedTransition(store, { env, planKey, taskId, kind, notRecorded = [] }) {
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   const matches = member?.tasks.filter(({ task_id: current }) => current.toLowerCase() === taskId.toLowerCase()) ?? [];
   // Unknown or ambiguous plan/task: the append path keeps Store's refusal.
@@ -808,7 +868,15 @@ function unchangedTransition(store, { env, planKey, taskId, kind }) {
     project_id: member.plan.project_id, plan_key: planKey, plan_version: member.plan.plan_version,
     task_id: state.task_id, kind, sequence: shown.sequence, event_digest: shown.event_digest,
     journal_head_digest: events.at(-1).event_digest, snapshot_digest: member.snapshot.snapshot_digest,
-    status: state.status, advisory: null, unchanged: true, result_digest: '',
+    status: state.status, advisory: null, unchanged: true,
+    // a18: a repeated done appends nothing, so say which given content was not recorded.
+    ...(notRecorded.length === 0 ? {} : {
+      not_recorded: notRecorded,
+      next_action: `${planKey}/${state.task_id} was already done; ${notRecorded.join(', ')} not recorded.`
+        + ` Keep the text with \`lattice todo note --plan ${planKey} --task ${state.task_id} --message <text>\`,`
+        + ` or replace the record: \`lattice todo reopen --plan ${planKey} --task ${state.task_id} --reason <text>\`, then start and done again.`,
+    }),
+    result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
@@ -820,6 +888,26 @@ async function mutateUnlessUnchanged(options) {
   return unchangedTransition(store, options) ?? options.action();
 }
 
+/** a18: the live tasks with an edge (plan, join or ledger) from the task being retired, sorted. */
+function retireDependents(store, member, taskId) {
+  const planKey = member.plan.plan_key;
+  const fromIt = (ref) => ref.plan_key === planKey && ref.task_id === taskId;
+  const targets = [
+    ...member.plan.hard_dependencies.filter((edge) => fromIt(edge.from)).map((edge) => edge.to),
+    ...member.plan.joins.filter((join) => join.after.some(fromIt)).map((join) => join.before),
+    ...projectTodoCrossPlanDependencies(store.members).filter((edge) => fromIt(edge.from)).map((edge) => edge.to),
+  ];
+  const byKey = new Map();
+  for (const ref of targets) {
+    const status = store.members.find(({ plan }) => plan.plan_key === ref.plan_key)
+      ?.tasks.find(({ task_id: id }) => id === ref.task_id)?.status;
+    if (status !== undefined && status !== 'retired') {
+      byKey.set(`${ref.plan_key}\0${ref.task_id}`, { plan_key: ref.plan_key, task_id: ref.task_id, status });
+    }
+  }
+  return [...byKey.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([, task]) => task);
+}
+
 async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
@@ -829,13 +917,22 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     return mutate({ repoRoot, env, planKey, taskId, kind: 'retire', payload: { reason }, evidenceRef: null });
   }
   if (state.status === 'retired') return unchangedTransition(store, { env, planKey, taskId, kind: 'retire' });
+  const dependents = retireDependents(store, member, taskId);
   const append = async () => {
+    let result;
     try {
-      return await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
+      result = await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
         payload: { reason, prior_status: state.status }, evidenceRef: null });
     } catch (error) {
       throw retireStateConflict(error, { planKey, taskId, priorStatus: state.status });
     }
+    const { result_digest: _replaced, ...recorded } = result;
+    const named = { ...recorded, dependents, ...(dependents.length === 0 ? {} : {
+      next_action: `${dependents.map((task) => `${task.plan_key}/${task.task_id} (${task.status})`).join(', ')}`
+        + ` no longer wait on ${planKey}/${taskId}; see \`lattice todo status --json\`.`,
+    }), result_digest: '' };
+    named.result_digest = todoSelfDigest(named, 'result_digest');
+    return named;
   };
   if (state.status !== 'in-progress') return append();
   // Runtime binds an intake to the latest literal start and ignores later done/reopen, so the
@@ -938,7 +1035,7 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
         .filter((task) => task.plan_key === planKey).map(({ task_id: id }) => id),
       self_unknowns: [{ kind: 'witness_missing', ref: unusable ?? 'no_independence_record' }],
       guidance: selectIndependenceGuidance({
-        coverage: 'missing', taskDeclared: false, taskStale: false, coordinationMode,
+        coverage: 'missing', taskDeclared: false, taskStale: false, coordinationMode, planKey,
       }),
     };
   }
@@ -987,7 +1084,7 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
       conflictWithActive: conflictsWithActive[0]?.severability ?? null,
       conflictBetweenReady: readyConflict?.severability ?? null,
       verdictsAbsent: selfUnknowns.some(({ kind }) => kind === 'plan_verdicts_absent'),
-      coordinationMode,
+      coordinationMode, planKey,
     }),
   };
 }
@@ -1069,7 +1166,8 @@ async function startTask({
 // literal startだけを束縛に使いcarryを推定しないため、改訂を跨いだ進行中工程の
 // 再開はこの入口だけが正規経路になる。advisory・independence gateは初回startで
 // 済んでいるため再適用しない。
-export async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
+// actor: 改訂が運ぶstartの記録者。渡せば現在の席でなくその記録者でrebind startを積む（a16）。
+export async function rebindStart({ repoRoot, env, planKey, taskId, reason, actor = null }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active');
@@ -1101,7 +1199,7 @@ export async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
   }
   return mutate({
     repoRoot, env, planKey, taskId, kind: 'start',
-    payload: { start_mode: 'rebind', reason }, evidenceRef: null, noteContext,
+    payload: { start_mode: 'rebind', reason }, evidenceRef: null, noteContext, actor,
   });
 }
 
@@ -1290,11 +1388,21 @@ async function dependencyRevision({
     ? [...desired.hard_dependencies, { from, to }]
     : desired.hard_dependencies.filter((edge) => !(edge.from.task_id === fromTaskId
       && edge.to.task_id === toTaskId));
-  const applied = await applyPlanRevision({
-    repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
-    notes: [{ task_id: fromTaskId,
-      body: `dependency ${operation} ${fromTaskId}→${toTaskId}: ${reason}` }],
-  });
+  let applied;
+  try {
+    applied = await applyPlanRevision({
+      repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
+      notes: [{ task_id: fromTaskId,
+        body: `dependency ${operation} ${fromTaskId}→${toTaskId}: ${reason}` }],
+    });
+  } catch (error) {
+    // a18: the new edge closes a cycle; nothing stored is inconsistent, so name the edge and the path.
+    if (operation === 'connect' && error instanceof TodoStoreError && error.detail?.reason === 'merged_cycle') {
+      throw new TodoStoreError('DEPENDENCY_CYCLE', 'dependency_cycle', undefined, {
+        from, to, cycle: error.detail.cycle ?? null });
+    }
+    throw error;
+  }
   const result = {
     schema: 'lattice.todo_dependency_revision_result.v1', project_id: store.project_id,
     plan_key: planKey, operation, from, to, reason, actor: desired.actor,
@@ -1421,11 +1529,20 @@ async function dependencyDisconnectLedger({
     && dependency.to.plan_key === toPlanKey && dependency.to.task_id === toTaskId
   ));
   if (live.length === 0) {
-    throw new TodoStoreError('DEPENDENCY_INVALID', 'cross_plan_dependency_not_found', undefined, {
-      from: { plan_key: fromPlanKey, task_id: fromTaskId },
-      to: { plan_key: toPlanKey, task_id: toTaskId },
-      ...(fromPlanKey === toPlanKey ? { next_action: `lattice plan show ${fromPlanKey} --json` } : {}),
-    });
+    const from = { plan_key: fromPlanKey, task_id: fromTaskId };
+    const to = { plan_key: toPlanKey, task_id: toTaskId };
+    if (fromPlanKey === toPlanKey) {
+      const member = store.members.find(({ plan }) => plan.plan_key === toPlanKey);
+      const predecessors = (member?.plan.hard_dependencies ?? [])
+        .filter((edge) => edge.to.task_id === toTaskId).map((edge) => edge.from.task_id).sort();
+      throw new TodoStoreError('DEPENDENCY_NOT_FOUND', 'dependency_not_found', undefined, {
+        from, to, predecessors,
+        next_action: `${toPlanKey} has no dependency ${fromTaskId} -> ${toTaskId}`
+          + ` (${toTaskId} depends on ${predecessors.length === 0 ? 'nothing in this plan' : predecessors.join(', ')});`
+          + ` see \`lattice plan show ${toPlanKey} --json\`.`,
+      });
+    }
+    throw new TodoStoreError('DEPENDENCY_NOT_FOUND', 'cross_plan_dependency_not_found', undefined, { from, to });
   }
   const [target] = live;
   const owner = store.members.find((member) => (member.plan_scoped?.events ?? [])
@@ -2867,7 +2984,7 @@ async function independenceCompile({ repoRoot, planKey, inputRef }) {
       {
         plan_key: planKey,
         missing_task_ids: missingReady,
-        next_action: 'add_task_to_witness_set_then_compile',
+        next_action: independenceCompileCommand(planKey),
       },
     );
   }
@@ -3035,7 +3152,7 @@ async function independence({ repoRoot, requestedPlanKey }) {
       conflictBetweenReady: projected.frontier.serialize_pairs[0]?.severability ?? null,
       // 案内の正本は1つ（ADR 0130 Decision 1）。着手する人と読みに来た人が同じ状況について
       // 違う文言を受け取らないよう、調整方式もここへ渡す。
-      coordinationMode: member?.coordination?.mode ?? null,
+      coordinationMode: member?.coordination?.mode ?? null, planKey,
       verdictsAbsent: projected.frontier.unknown
         .some(({ unknowns }) => unknowns.some(({ kind }) => kind === 'plan_verdicts_absent')),
     }),
@@ -3099,6 +3216,8 @@ async function seamProfile({ repoRoot, planKey, filePath }) {
   return profile;
 }
 
+const independenceCompileCommand = (planKey, input = '<file>') => `lattice todo independence compile --plan ${planKey} --input ${input}`;
+
 async function seamProposalCompile({ repoRoot, planKey }) {
   const currentBaseSha = currentHeadSha(repoRoot);
   const store = await readTodoStore({ repoRoot });
@@ -3114,31 +3233,31 @@ async function seamProposalCompile({ repoRoot, planKey }) {
       'SEAM_PROPOSAL_COMPILE_UNAVAILABLE',
       independenceArtifact === null ? 'independence_artifact_absent' : 'independence_artifact_superseded',
       undefined,
-      { next_action: 'compile_independence' },
+      { next_action: independenceCompileCommand(planKey) },
     );
   }
   if (independenceArtifact.outcome !== 'compiled') {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'independence_outcome_not_compiled', undefined, {
       outcome: independenceArtifact.outcome,
-      next_action: 'recompile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
   if (independenceArtifact.base_sha !== currentBaseSha) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'independence_artifact_stale', undefined, {
       independence_base_sha: independenceArtifact.base_sha,
       current_base_sha: currentBaseSha,
-      next_action: 'recompile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
   const witnessSet = await readTodoWitnessSet({ repoRoot, planKey });
   if (witnessSet === null) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'witness_set_absent', undefined, {
-      next_action: 'declare_witness_set_then_compile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
   if (witnessSet.witness_set_digest !== independenceArtifact.witness_set_digest) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'witness_set_changed', undefined, {
-      next_action: 'recompile_independence',
+      next_action: independenceCompileCommand(planKey),
     });
   }
 
@@ -3235,7 +3354,7 @@ async function witnessScaffold({ repoRoot, planKey, inputRef }) {
     observed_paths: paths,
     task_count: Object.keys(witnessSet.manual_witness).length,
     witness_set_digest: witnessSet.witness_set_digest,
-    next_action: 'compile_independence',
+    next_action: independenceCompileCommand(planKey, ref),
   };
 }
 
@@ -3279,13 +3398,13 @@ async function seamProposalApply({ repoRoot, planKey, pathNames = {}, land = fal
   const artifact = await readTodoSeamProposalArtifact({ repoRoot, store, planKey });
   if (artifact === null) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'seam_proposal_absent', undefined, {
-      plan_key: planKey, next_action: 'compile_seam_proposal',
+      plan_key: planKey, next_action: `lattice todo seam-proposal compile --plan ${planKey}`,
     });
   }
   const witnessSet = await readTodoWitnessSet({ repoRoot, planKey });
   if (witnessSet === null) {
     throw new TodoStoreError('SEAM_PROPOSAL_COMPILE_UNAVAILABLE', 'witness_set_absent', undefined, {
-      plan_key: planKey, next_action: 'declare_witness_set_then_compile_independence',
+      plan_key: planKey, next_action: independenceCompileCommand(planKey),
     });
   }
   const baseArtifact = await readTodoIndependenceArtifact({ repoRoot, store, planKey });
@@ -3415,6 +3534,7 @@ async function seamProposal({ repoRoot, requestedPlanKey }) {
     guidance: selectSeamProposalGuidance({
       coverage,
       unknownKinds: components.flatMap(({ unknowns }) => unknowns.map(({ kind }) => kind)),
+      planKey,
     }),
     component_count: artifact === null ? null : components.length,
     conflict_resource_count: artifact === null ? null : components
@@ -3650,7 +3770,7 @@ async function seamProposalsForGantt({ repoRoot, store }) {
         plan_key: planKey,
         coverage: 'superseded',
         unreadable_reason: `${error.code}:${error.detail?.reason ?? error.message}`,
-        guidance: selectSeamProposalGuidance({ coverage: 'superseded' }),
+        guidance: selectSeamProposalGuidance({ coverage: 'superseded', planKey }),
         component_count: null,
         conflict_resource_count: null,
         components: [],
@@ -3663,7 +3783,7 @@ async function seamProposalsForGantt({ repoRoot, store }) {
         plan_key: planKey,
         coverage: 'missing',
         unreadable_reason: null,
-        guidance: selectSeamProposalGuidance({ coverage: 'missing' }),
+        guidance: selectSeamProposalGuidance({ coverage: 'missing', planKey }),
         component_count: null,
         conflict_resource_count: null,
         components: [],
@@ -3699,7 +3819,7 @@ async function seamProposalsForGantt({ repoRoot, store }) {
       plan_key: planKey,
       coverage,
       unreadable_reason: unreadableReason,
-      guidance: selectSeamProposalGuidance({ coverage }),
+      guidance: selectSeamProposalGuidance({ coverage, planKey }),
       component_count: components.length,
       conflict_resource_count: components
         .reduce((count, component) => count + component.conflicts.length, 0),
@@ -4059,9 +4179,9 @@ async function verify({ repoRoot, requestedPlanKey }) {
         meaning: 'source_inventory_verification_state',
         lifecycle_blocked: false,
         dashboard_visibility_blocked: false,
-        schema_command: reconciled ? null : 'lattice todo revise --schema --json',
-        next_action: reconciled ? null
-          : `lattice todo revise --plan ${member.descriptor.plan_key} --input <revision.json>`,
+        // 席の経路は軽い改訂（plan revise）。反映後のplanはreconciledになる。
+        schema_command: reconciled ? null : 'lattice plan revise --schema --json',
+        next_action: reconciled ? null : 'lattice plan revise --input <revision.json> --json',
       },
     };
   });
@@ -4090,6 +4210,21 @@ async function verify({ repoRoot, requestedPlanKey }) {
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+// `todo verify`の人間向け1行。--jsonと同じresultから導く（verifyは不整合を例外で拒否するので、
+// ここへ届くのは検証が通った結果だけ。注意が要るのはsnapshot古さとcommit前の証拠）。
+function verifyVerdictLine(result) {
+  const members = result.verified_members.map((member) => `${member.plan_key} ${member.reconciliation_state}${
+    member.reconciliation_state === 'reconciled' ? '' : ', lifecycle not blocked'}`);
+  const notes = [];
+  if (result.snapshot_stale) notes.push('snapshot stale');
+  if (result.uncommitted_evidence.length > 0) {
+    notes.push(`${result.uncommitted_evidence.length} uncommitted evidence (commit it, then rerun)`);
+  }
+  const count = result.verified_members.length;
+  return `todo verify: ${notes.length === 0 ? 'ok' : 'attention'}, ${count} plan${count === 1 ? '' : 's'} verified`
+    + `${notes.map((note) => `, ${note}`).join('')} (${members.join('; ')})`;
 }
 
 async function rebuildSnapshot({ repoRoot, planKey }) {
@@ -4189,6 +4324,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
 
   const automatedStructureRealize = parseAutomatedStructureRealizeArgs(argv);
   let action = null;
+  let plainVerify = false; // a19: `todo verify`は--jsonが無ければ1行の判定だけを返す
   if (argv.length === 2 && argv[0] === 'repair-eol' && argv[1] === '--json') {
     // 壊れたstoreを読めない時の入口なので、dashboard所有権pre-hookを通さない。
     action = (repoRoot) => repairStoreEol({ repoRoot });
@@ -4255,25 +4391,19 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     action = (repoRoot) => independenceMode({
       repoRoot, env, planKey: argv[3], mode: argv[5], reason: argv[7],
     });
-  } else if (argv.length === 12 && argv[0] === 'dependency' && argv[1] === 'connect'
-    && argv[2] === '--from-plan' && isTodoIdentifier(argv[3])
-    && argv[4] === '--from-task' && isTodoIdentifier(argv[5])
-    && argv[6] === '--to-plan' && isTodoIdentifier(argv[7])
-    && argv[8] === '--to-task' && isTodoIdentifier(argv[9])
-    && argv[10] === '--reason' && argv[11].length > 0) {
+  } else if (argv[0] === 'dependency' && argv[1] === 'connect'
+    && dependencyFlags(argv) !== null) {
+    const flags = dependencyFlags(argv);
     action = (repoRoot) => dependencyConnect({
-      repoRoot, env, fromPlanKey: argv[3], fromTaskId: argv[5],
-      toPlanKey: argv[7], toTaskId: argv[9], reason: argv[11],
+      repoRoot, env, fromPlanKey: flags['from-plan'], fromTaskId: flags['from-task'],
+      toPlanKey: flags['to-plan'], toTaskId: flags['to-task'], reason: flags.reason,
     });
-  } else if (argv.length === 12 && argv[0] === 'dependency' && argv[1] === 'disconnect'
-    && argv[2] === '--from-plan' && isTodoIdentifier(argv[3])
-    && argv[4] === '--from-task' && isTodoIdentifier(argv[5])
-    && argv[6] === '--to-plan' && isTodoIdentifier(argv[7])
-    && argv[8] === '--to-task' && isTodoIdentifier(argv[9])
-    && argv[10] === '--reason' && argv[11].length > 0) {
+  } else if (argv[0] === 'dependency' && argv[1] === 'disconnect'
+    && dependencyFlags(argv) !== null) {
+    const flags = dependencyFlags(argv);
     action = (repoRoot) => dependencyDisconnect({
-      repoRoot, env, fromPlanKey: argv[3], fromTaskId: argv[5],
-      toPlanKey: argv[7], toTaskId: argv[9], reason: argv[11],
+      repoRoot, env, fromPlanKey: flags['from-plan'], fromTaskId: flags['from-task'],
+      toPlanKey: flags['to-plan'], toTaskId: flags['to-task'], reason: flags.reason,
     });
   } else if (argv[0] === 'independence' && argv[1] === 'compile') {
     const flags = matchFlagCommand(argv, ['independence', 'compile'], {
@@ -4367,10 +4497,12 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     action = (repoRoot) => seamProposal({ repoRoot, requestedPlanKey: argv[2] });
   } else if ((argv.length === 1 && argv[0] === 'verify')
     || (argv.length === 2 && argv[0] === 'verify' && argv[1] === '--json')) {
+    plainVerify = argv.length === 1;
     action = (repoRoot) => verify({ repoRoot, requestedPlanKey: null });
   } else if ((argv.length === 3 || argv.length === 4) && argv[0] === 'verify'
     && argv[1] === '--plan' && isTodoIdentifier(argv[2])
     && (argv.length === 3 || argv[3] === '--json')) {
+    plainVerify = argv.length === 3;
     action = (repoRoot) => verify({ repoRoot, requestedPlanKey: argv[2] });
   } else if (argv.length === 4 && argv[0] === 'snapshot' && argv[1] === '--rebuild'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3])) {
@@ -4479,11 +4611,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const exceptPlanKeys = parseBaselineExceptFlags(argv.slice(4));
     action = (repoRoot) => phaseBaseline({ repoRoot, env, reason: argv[3], exceptPlanKeys });
   } else if (argv[0] === 'start') {
-    const flags = matchFlagCommand(argv, ['start'], {
-      known: ['plan', 'task', 'parallel-frontier', 'override-reason', 'serial-confirmed', 'rebind', 'reason'],
-      required: ['plan', 'task'],
-      booleans: ['parallel-frontier', 'serial-confirmed', 'rebind'],
-    });
+    const flags = matchFlagCommand(argv, ['start'], TODO_FLAG_SPECS.start);
     if (flags !== null && flags.rebind === true) {
       if (isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
         && typeof flags.reason === 'string' && flags.reason.length > 0) {
@@ -4508,7 +4636,9 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       && (flags.evidence === undefined || hasEvidence)
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'done', action: async () => {
+        kind: 'done', notRecorded: ['message', 'evidence', 'test-result']
+          .filter((name) => flags[name] !== undefined).map((name) => `--${name}`),
+        action: async () => {
           let evidenceMessage = hasMessage ? flags.message : null;
           if (hasEvidence && hasMessage) {
             // The message is the record; it names the resolved file so nothing given is lost.
@@ -4532,18 +4662,14 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   }
   if (action === null && argv[0] === 'retract') {
-    const flags = matchFlagCommand(argv, ['retract'], {
-      known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'],
-    });
+    const flags = matchFlagCommand(argv, ['retract'], TODO_FLAG_SPECS.retract);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
       action = (repoRoot) => retractStart({
         repoRoot, env, planKey: flags.plan, taskId: flags.task, reason: flags.reason,
       });
     }
   } else if (argv[0] === 'block') {
-    const flags = matchFlagCommand(argv, ['block'], {
-      known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'],
-    });
+    const flags = matchFlagCommand(argv, ['block'], TODO_FLAG_SPECS.block);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'block', action: () => mutate({
@@ -4553,18 +4679,14 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   } else if (argv[0] === 'retire') {
     // 恒久除去（2026-08-29オーナー裁定）。planの形は変えず、状態遷移として工程を閉じる。
-    const flags = matchFlagCommand(argv, ['retire'], {
-      known: ['plan', 'task', 'reason'], required: ['plan', 'task', 'reason'],
-    });
+    const flags = matchFlagCommand(argv, ['retire'], TODO_FLAG_SPECS.retire);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
       action = (repoRoot) => retireTask({
         repoRoot, env, planKey: flags.plan, taskId: flags.task, reason: flags.reason,
       });
     }
   } else if (argv[0] === 'unblock') {
-    const flags = matchFlagCommand(argv, ['unblock'], {
-      known: ['plan', 'task'], required: ['plan', 'task'],
-    });
+    const flags = matchFlagCommand(argv, ['unblock'], TODO_FLAG_SPECS.unblock);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'unblock', action: () => mutate({
@@ -4584,10 +4706,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       });
     }
   } else if (argv[0] === 'reopen') {
-    const flags = matchFlagCommand(argv, ['reopen'], {
-      known: ['plan', 'task', 'reason', 'override-reason'],
-      required: ['plan', 'task', 'reason'],
-    });
+    const flags = matchFlagCommand(argv, ['reopen'], TODO_FLAG_SPECS.reopen);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
       && (flags['override-reason'] === undefined
         || (typeof flags['override-reason'] === 'string' && flags['override-reason'].length > 0))) {
@@ -4642,7 +4761,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const result = atomicCommit
       ? await commitTodoStoreMutation({ repoRoot, argv, action, env })
       : await action(repoRoot);
-    if (result !== null) stdout.write(`${JSON.stringify(result)}\n`);
+    if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     return 0;
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'

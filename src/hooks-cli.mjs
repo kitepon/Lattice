@@ -788,8 +788,13 @@ async function status(host, env, stdout, source, platform, testHooks) {
     writeJson(stdout, statusResult(host, target, null, 'unreadable', 0, false, 0));
     return 1;
   }
-  if (platform === 'win32' || await hostDirectory(env, host) === null) {
+  if (platform === 'win32') {
     writeJson(stdout, statusResult(host, target, shell(argv), 'unreadable', 0, false, 0));
+    return 1;
+  }
+  // The AI is not installed in this HOME; install would refuse HOST_NOT_PRESENT, so name no next action.
+  if (await hostDirectory(env, host) === null) {
+    writeJson(stdout, { ...statusResult(host, target, shell(argv), 'host_absent', 0, false, 0), next_action: null });
     return 1;
   }
   let config;

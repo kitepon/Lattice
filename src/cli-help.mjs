@@ -101,7 +101,7 @@ Write commands:
       # ToDoへ作業継続に必要な方針・調査結果・注意をappend-onlyで追記する
   migrate --input <extraction.json> [--serialization-reviewed] [--json]
   migrate --input <extraction.json> --dry-run --json [--serialization-reviewed]
-      # 既存storeへplanを追加する（plan createは空store初期化専用）。
+      # 既存storeへplanを追加する（extractionからの取り込み。新規planの作成はplan create）。
       # pretty-print・digest未計算・repo内絶対pathは機械が直す。空の設計メモは拒否する。
       # 結果へdispatch_shapeを載せる。--serialization-reviewedは互換のため受理するだけで門ではない
   start --plan <key> --task <id> [--parallel-frontier|--override-reason <text> [--serial-confirmed]]
@@ -160,7 +160,8 @@ Write commands:
       # 自動実行はしない(明示コマンドのみ)。--exceptで指定したplanは対象から除外する
 
 Write commandsはLATTICE_TODO_ACTOR_HOST / SESSION / AGENTを受理する。
-欠落はhost／session／agentのdefaultを使う。渡した値がidentifierとして不正なら拒否する。
+欠落、またはidentifierとして不正な値はunsetと同じに扱い（拒否しない）、host／session／agentのdefaultを使う。
+agentのdefaultはLATTICE_SEAT_IDがあればその席id、なければOSのuser名。
 
 storeだけを書き換えるcommandの末尾へ--commit-storeを付けると、共有Git lockを取得し、
 生じた.lattice/todoの変更だけをcommitしてreceiptを返す。
@@ -172,8 +173,6 @@ ${TODO_INDEPENDENCE_WORKFLOW.join('\n')}
 
 判定していない工程は「競合が無い」ではなく「未検査」として扱われ、
 todo startのadvisoryとtodo independenceの投影が、その状況と次の一歩を返す。
-記録があるのに対象工程が未宣言・失効なら todo start は拒否する。
-next_ready が witness に無い independence compile も拒否する。
 競合の同時起動は助言のまま。並列既定はstatusのdispatch_frontierとnext_actionが案内する。
 `,
   sensor: `Usage: lattice sensor <init|sync> [path] --json
@@ -306,7 +305,10 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo reopen': 'todo reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]',
   'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
   'todo evidence promote': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
-  'todo dependency': 'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+  'todo dependency': [
+    'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+    'todo dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+  ].join('\n       lattice '),
   'todo dependency connect': 'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   'todo dependency disconnect': 'todo dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   'todo split': 'todo split --plan <key> --input <file>',

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.todo_extraction.v3.schema.json",
   "title": "lattice.todo_extraction.v3",
-  "description": "AI-authored ToDo migration artifact. Every task carries a non-blank Markdown design_memo. After the complete plan is written, run `lattice plan scope-review` and confirm that every registered task preserves an owner-supplied work specification without adding a product purpose. If no plan exists, write NO_PLAN explicitly.",
+  "description": "AI-authored ToDo migration artifact. Every task carries a non-blank Markdown design_memo. After the complete plan is written, run `lattice plan scope-review --plan-input <file> --review <scope-review.json> --json` (the review input: `lattice plan scope-review --schema --json`) and confirm that every registered task preserves an owner-supplied work specification without adding a product purpose. If no plan exists, write NO_PLAN explicitly.",
   "$comment": "あなたがこのToDoに対して、何も考えていないならば、設計メモに `NO_PLAN` と書いてください。Runtime validation also enforces UTF-8 byte bounds, exact keys, strict sort order, referential integrity, disposition consistency, and the canonical self-digest.",
   "type": "object",
   "additionalProperties": false,

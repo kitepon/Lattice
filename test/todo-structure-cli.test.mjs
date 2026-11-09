@@ -214,7 +214,8 @@ test('baselineが実commitでもHEAD祖先でなければdry-runで区別する'
   assert.equal(result.violations.some(({ code }) => code === 'baseline_not_ancestor'), true);
 });
 
-test('repo外inputはtyped INPUT_UNREADABLEで拒否する', async (context) => {
+// a17: JSONの中身だけを読む入力は、repo外の絶対pathでも読む（拒んで守るものが無い）。
+test('repo外inputも中身を読み、内容の不備はinput検査が返す', async (context) => {
   const fixture = await workspace(context);
   const outside = path.join(tmpdir(), `lattice-outside-${process.pid}.json`);
   await writeFile(outside, '{}\n');
@@ -222,10 +223,9 @@ test('repo外inputはtyped INPUT_UNREADABLEで拒否する', async (context) => 
   const execution = runCli(fixture.root, [
     'structure', 'input', '--plan', 'main', '--input', outside, '--dry-run', '--json',
   ]);
-  assert.equal(execution.status, 1);
-  const error = parse(execution.stderr);
-  assert.equal(error.code, 'INPUT_UNREADABLE');
-  assert.equal(error.detail.reason, 'input_path_outside_repo');
+  assert.notEqual(execution.status, null, execution.stderr);
+  assert.doesNotMatch(execution.stderr, /input_path_outside_repo/u);
+  assert.equal(parse(execution.stdout).valid, false);
 });
 
 test('structure artifactの4種の破損をstatus/verifyで診断し、明示inputからcanonical復旧する', async (context) => {

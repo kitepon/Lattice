@@ -144,7 +144,8 @@ test('(b) 調整方式は未宣言から宣言へ動き、statusとguidanceが�
   assert.deepEqual(before.coordination, [], '未宣言のplanは欄へ出ない（member_headsに居て、ここに居ない）');
   const beforeStart = json(root, ['todo', 'start', '--plan', 'main', '--task', 'T1', '--parallel-frontier'], ACTOR_ENV);
   assert.equal(beforeStart.advisory.guidance.code, 'coordination_mode_undeclared');
-  assert.equal(beforeStart.advisory.guidance.next_action, 'declare_coordination_mode');
+  assert.equal(beforeStart.advisory.guidance.next_action,
+    'lattice todo independence mode --plan main --set <witness|conversation> --reason <text>');
 
   const declared = json(root, ['todo', 'independence', 'mode', '--plan', 'main',
     '--set', 'conversation', '--reason', '卓の会話で調整する'], ACTOR_ENV);

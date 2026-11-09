@@ -7,6 +7,7 @@
  * 文は事実と次の一歩だけを述べ、指示しない。どのreadyを取るかはhostが所有する
  * （ADR 0063 Decision 5）。命令形にするとLatticeがagentを統制する面へ滑る。
  * 未検証の工程も start は拒否しない（u03 B1–B6、ADR 0182 を置き換える）。助言として返す。
+ * next_actionは実在するコマンドか'none'だけ（a19）。planKeyを渡すと`<key>`が置き換わる。
  */
 
 export const TODO_INDEPENDENCE_GUIDANCE_CODES = Object.freeze([
@@ -71,7 +72,7 @@ const CATALOG = Object.freeze({
   }),
   coordination_mode_undeclared: Object.freeze({
     message: 'このplanは調整方式をまだ選んでいない。witness検証で並列するか、会話で調整するかが決まっていない。',
-    next_action: 'declare_coordination_mode',
+    next_action: 'lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>',
   }),
   coordination_conversation: Object.freeze({
     message: 'このplanは会話調整を選んでいる。並列可否は宣言と判定ではなく、卓の合意が持つ。',
@@ -79,35 +80,35 @@ const CATALOG = Object.freeze({
   }),
   independence_unrecorded: Object.freeze({
     message: 'このplanの並列可否はまだ判定していない。競合が無いのではなく、記録が存在しない。',
-    next_action: 'declare_witness_set_then_compile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   independence_task_undeclared: Object.freeze({
     message: 'この工程はwitness setで宣言されていないため、記録には含まれていない。',
-    next_action: 'add_task_to_witness_set_then_compile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   independence_contract_superseded: Object.freeze({
     message: '記録は旧契約versionで書かれており、現在の並列可否の判定としては読めない。現在の契約での再compileが次の一歩になる。',
-    next_action: 'recompile_independence',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   independence_superseded: Object.freeze({
     message: 'planが改訂され、記録は別のtopologyについての判定になっている。',
-    next_action: 'migrate_witness_set_then_compile',
+    next_action: 'lattice todo independence witness migrate --plan <key>',
   }),
   independence_stale_for_task: Object.freeze({
     message: '記録後にこの工程の宣言境界が変更されたため、記録時点の判定は現在のcodeを指していない。',
-    next_action: 'recompile_independence',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   independence_conflict_with_active: Object.freeze({
     message: '作業中の工程と同じ資源を書く記録がある。並行すると衝突する。',
-    next_action: 'serialize_or_split_boundary',
+    next_action: 'lattice todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   }),
   independence_conflict_between_ready: Object.freeze({
     message: '他のready工程と同じ資源を書く記録がある。同時に着手すると衝突する。',
-    next_action: 'serialize_or_split_boundary',
+    next_action: 'lattice todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   }),
   independence_verdicts_absent: Object.freeze({
     message: '判定が途中で止まっており、記録はどの組についてもverdictを持たない。自分にunknownが無いことは、他と干渉しない証拠にならない。',
-    next_action: 'resolve_unknowns_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   independence_verified: Object.freeze({
     message: '記録時点の宣言境界では、他のready工程と干渉しない。',
@@ -115,39 +116,39 @@ const CATALOG = Object.freeze({
   }),
   seam_proposal_unrecorded: Object.freeze({
     message: 'このplanのseam提案はまだ生成していない。提案対象が無いのではなく、記録が存在しない。',
-    next_action: 'compile_seam_proposal',
+    next_action: 'lattice todo seam-proposal compile --plan <key>',
   }),
   seam_proposal_superseded: Object.freeze({
     message: '参照元のplanまたは並列可否記録が更新され、このseam提案は現在の競合についての記録ではない。',
-    next_action: 'compile_seam_proposal',
+    next_action: 'lattice todo seam-proposal compile --plan <key>',
   }),
   seam_proposal_stale: Object.freeze({
     message: 'seam提案の生成後にHEADが進み、記録時点の構造証拠は現在のcodeを指していない。',
-    next_action: 'compile_seam_proposal',
+    next_action: 'lattice todo seam-proposal compile --plan <key>',
   }),
   seam_proposal_binding_overlap: Object.freeze({
     message: `同じ資源について、複数のToDoが同じsymbolを自分の担当として宣言している。どちら側へ切るか決まらないため、切断候補を束縛できない。${BINDING_RECOMPILE_HINT}`,
-    next_action: 'split_overlapping_concern_anchors_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   seam_proposal_binding_outside_resource: Object.freeze({
     message: `concern_anchorsが挙げたsymbolが、withinで指した資源の外にある。その資源の分割を説明しないので束縛へ使えない。${BINDING_RECOMPILE_HINT}`,
-    next_action: 'correct_concern_anchors_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   seam_proposal_binding_symbol_unresolved: Object.freeze({
     message: `concern_anchorsが挙げたsymbolを、sensorが同名同pathで解決できなかった。近い別symbolへは寄せないため、束縛は成立していない。${BINDING_RECOMPILE_HINT}`,
-    next_action: 'correct_concern_anchors_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   seam_proposal_binding_resource_unresolved: Object.freeze({
     message: `concern_anchorsのwithinが指す資源をsensorで解決できなかった。宣言がどの資源についてのものか確定しない。${BINDING_RECOMPILE_HINT}`,
-    next_action: 'correct_concern_anchors_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   seam_proposal_binding_ambiguous: Object.freeze({
     message: `宣言したsymbolが切断候補の複数側へ当たるため、どのToDoがどちらを所有するか一意に決まらない。${BINDING_RECOMPILE_HINT}`,
-    next_action: 'narrow_concern_anchors_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   seam_proposal_binding_missing: Object.freeze({
     message: `係争資源の中でどのToDoが何を触るかが宣言されていないため、切断候補を所有者へ束縛できない。依存線でも呼び出し辺でも所有は決まらない。${BINDING_RECOMPILE_HINT}`,
-    next_action: 'declare_concern_anchors_then_recompile',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   seam_proposal_verified: Object.freeze({
     message: 'seam提案の記録は現在のplan、並列可否記録、HEADと一致している。',
@@ -159,7 +160,7 @@ const PULL_INTAKE_READINESS = Object.freeze({
   required: Object.freeze({
     code: 'pull_independence_required',
     message: 'pull設備のintakeには有効なindependence artifactが必須である。conversation調整はwitness督促を消すが、この実行前提は満たさない。',
-    next_action: 'compile_independence_or_choose_non_pull_execution',
+    next_action: 'lattice todo independence compile --plan <key> --input <file>',
   }),
   ready: Object.freeze({
     code: 'pull_independence_ready',
@@ -174,7 +175,9 @@ const SEVERABILITY_HINT = Object.freeze({
   serial: '共有stateまたはeffectの衝突なので、分割では切り離せない。',
 });
 
-export function todoIndependenceGuidance(code, { severability = null } = {}) {
+const withPlanKey = (command, planKey) => (planKey === null ? command : command.replaceAll('<key>', () => planKey));
+
+export function todoIndependenceGuidance(code, { severability = null, planKey = null } = {}) {
   const entry = CATALOG[code];
   if (entry === undefined) {
     throw new TypeError(`unknown independence guidance code: ${code}`);
@@ -183,17 +186,19 @@ export function todoIndependenceGuidance(code, { severability = null } = {}) {
   return {
     code,
     message: hint === null ? entry.message : `${entry.message}${hint}`,
-    next_action: entry.next_action,
+    next_action: withPlanKey(entry.next_action, planKey),
   };
 }
 
-export function pullIntakeReadinessGuidance({ coordinationMode = null, ready }) {
+export function pullIntakeReadinessGuidance({ coordinationMode = null, ready, planKey = null }) {
   if (![null, 'witness', 'conversation'].includes(coordinationMode)
     || typeof ready !== 'boolean') {
     throw new TypeError('pull intake readiness input is invalid');
   }
+  const readiness = ready ? PULL_INTAKE_READINESS.ready : PULL_INTAKE_READINESS.required;
   return {
-    ...(ready ? PULL_INTAKE_READINESS.ready : PULL_INTAKE_READINESS.required),
+    ...readiness,
+    next_action: withPlanKey(readiness.next_action, planKey),
     plan_binding_ready: ready,
     coordination_mode: coordinationMode,
   };
@@ -238,23 +243,23 @@ export function scopeExpansionRecommendations(scopeExpanded) {
 export function selectIndependenceGuidance({
   coverage, taskDeclared, taskStale, conflictWithActive = null, conflictBetweenReady = null,
   contractSuperseded = false, readyCount = null, verdictsAbsent = false,
-  coordinationMode = 'witness',
+  coordinationMode = 'witness', planKey = null,
 }) {
   // 着手候補が無いなら述べる対象が無い。ここを通さないと、readyが空のとき
   // 「未検査taskが1件も無い」が空虚に真になり、記録が古くても検証済みへ倒れる。
-  if (readyCount === 0) return todoIndependenceGuidance('independence_no_ready_frontier');
+  if (readyCount === 0) return todoIndependenceGuidance('independence_no_ready_frontier', { planKey });
   if (conflictWithActive !== null) {
     return todoIndependenceGuidance('independence_conflict_with_active', {
-      severability: conflictWithActive,
+      severability: conflictWithActive, planKey,
     });
   }
   if (conflictBetweenReady !== null) {
     return todoIndependenceGuidance('independence_conflict_between_ready', {
-      severability: conflictBetweenReady,
+      severability: conflictBetweenReady, planKey,
     });
   }
   if (contractSuperseded) {
-    return todoIndependenceGuidance('independence_contract_superseded');
+    return todoIndependenceGuidance('independence_contract_superseded', { planKey });
   }
   // 記録が無い時に何を言うかは、planがどちらの方式を選んだかで変わる（ob03・裁定C①）。
   // 会話調整を選んだplanへ未compileを督促するのは、選択を尊重しないことになる。未宣言の
@@ -262,17 +267,17 @@ export function selectIndependenceGuidance({
   // 当のものである。督促が一級で出るのはwitnessを選んだplanだけとする。
   // 既定を`witness`にしてあるのは、宣言を渡さない既存の呼び出し側の挙動を変えないためである。
   if (coverage === 'missing') {
-    if (coordinationMode === 'conversation') return todoIndependenceGuidance('coordination_conversation');
-    if (coordinationMode === null) return todoIndependenceGuidance('coordination_mode_undeclared');
-    return todoIndependenceGuidance('independence_unrecorded');
+    if (coordinationMode === 'conversation') return todoIndependenceGuidance('coordination_conversation', { planKey });
+    if (coordinationMode === null) return todoIndependenceGuidance('coordination_mode_undeclared', { planKey });
+    return todoIndependenceGuidance('independence_unrecorded', { planKey });
   }
-  if (coverage === 'superseded') return todoIndependenceGuidance('independence_superseded');
-  if (!taskDeclared) return todoIndependenceGuidance('independence_task_undeclared');
-  if (taskStale) return todoIndependenceGuidance('independence_stale_for_task');
+  if (coverage === 'superseded') return todoIndependenceGuidance('independence_superseded', { planKey });
+  if (!taskDeclared) return todoIndependenceGuidance('independence_task_undeclared', { planKey });
+  if (taskStale) return todoIndependenceGuidance('independence_stale_for_task', { planKey });
   // 記録は新しく、この工程自身にも問題が無い。それでもverdictが1つも無いなら、
   // 述べられるのは「干渉しない」ではなく「まだ何も判定していない」である。
-  if (verdictsAbsent) return todoIndependenceGuidance('independence_verdicts_absent');
-  return todoIndependenceGuidance('independence_verified');
+  if (verdictsAbsent) return todoIndependenceGuidance('independence_verdicts_absent', { planKey });
+  return todoIndependenceGuidance('independence_verified', { planKey });
 }
 
 /**
@@ -292,8 +297,8 @@ export function seamProposalGuidanceCode({ coverage, unknownKinds = [] }) {
   return binding === undefined ? 'seam_proposal_verified' : binding[1];
 }
 
-export function selectSeamProposalGuidance({ coverage, unknownKinds = [] }) {
-  return todoIndependenceGuidance(seamProposalGuidanceCode({ coverage, unknownKinds }));
+export function selectSeamProposalGuidance({ coverage, unknownKinds = [], planKey = null }) {
+  return todoIndependenceGuidance(seamProposalGuidanceCode({ coverage, unknownKinds }), { planKey });
 }
 
 /**

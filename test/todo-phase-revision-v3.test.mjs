@@ -484,7 +484,7 @@ test('todo verifyはactive phase v3を正規verifierへrouteしsource digest dri
   await applyPhaseTodoRevision({ repoRoot: root, writer, revision, actor: ACTOR,
     recordedAt: COMMIT_AT, now: COMMIT_AT });
   assert.equal(await verifyPhaseTodoRevisionSources({ repoRoot: root, revision }), true);
-  const verified = spawnSync(process.execPath, [CLI, 'todo', 'verify'], { cwd: root, encoding: 'utf8' });
+  const verified = spawnSync(process.execPath, [CLI, 'todo', 'verify', '--json'], { cwd: root, encoding: 'utf8' });
   assert.equal(verified.status, 0, verified.stderr);
   assert.equal(JSON.parse(verified.stdout).verified_members[0].revision_digest,
     revision.revision_digest);
@@ -503,7 +503,7 @@ test('todo verifyはactive phase v3を正規verifierへrouteしsource digest dri
   await assert.rejects(verifyPhaseTodoRevisionSources({ repoRoot: root, revision }),
     (error) => error.code === 'RECONCILIATION_INCOMPLETE'
       && error.detail.reason === 'source_digest_mismatch');
-  const drifted = spawnSync(process.execPath, [CLI, 'todo', 'verify'], { cwd: root, encoding: 'utf8' });
+  const drifted = spawnSync(process.execPath, [CLI, 'todo', 'verify', '--json'], { cwd: root, encoding: 'utf8' });
   assert.equal(drifted.status, 1);
   const failure = JSON.parse(drifted.stderr);
   assert.equal(failure.code, 'RECONCILIATION_INCOMPLETE');

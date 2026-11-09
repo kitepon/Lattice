@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `status`・`session-context`・`plan show <key>`・`sensor init|sync [path]` は、`--json` を付け忘れても同じ結果を返す。これまでは「unsupported command」や`USAGE`で断っていた。出力は元からJSONだけである。
+- `setup status` は、Latticeが登録されていないAIを`MCP_REGISTRATION_DRIFT`（不一致）と呼ばず、`MCP_NOT_REGISTERED`として登録の`lattice setup --host <host>`を示す。
+- `hooks status` は、そのAIの設定フォルダがHOMEに無い時、`unreadable`ではなく`host_absent`を返し、断られる`hooks install`を案内しない。
+- 席の契約に、最初の計画の書き込みで席の工程表（dashboard）が起きることを書いた。
+- 断る時は、足りない引数・原因の工程・次に打つコマンドを名指しする（a18）。`todo block`・`retire`・`reopen`・`retract`・`unblock`・`start`・`dependency connect|disconnect`の引数の誤りは、`pointer`に足りないflag（`--reason`など）を、`next_action`にそのflagを足したコマンド全体を載せる。`todo dependency`の引数の誤りは`UNKNOWN_SUBCOMMAND`ではなく`INVALID_ARGUMENTS`になり、flagの順は問わない。
+- `todo start`の断りは、blockedなら`todo unblock`を、doneなら`todo reopen --reason`を示す。前の工程がまだpendingなら「先にそれをstartする」と示す（これまでは「doneを記録せよ」だった）。
+- done済みの工程に`--message`などを付けてもう一度`todo done`すると、従来どおり何も書かず`unchanged: true`で返し、`not_recorded`で記録しなかったflagを、`next_action`で`todo note`か`todo reopen`を示す。
+- 依存の循環を閉じる`dependency connect`は`STORE_INCONSISTENT/merged_cycle`ではなく`DEPENDENCY_CYCLE`で断り、`cycle`に閉じる道の工程を並べる。無い辺の`disconnect`は`DEPENDENCY_NOT_FOUND`になり、同じplanなら`dependency_not_found`と、その工程の今の前の工程（`predecessors`）を示す。
+- 他の工程が依存している工程を`todo retire`すると、結果の`dependents`にその工程を載せ、もう待たないことを`next_action`で伝える。`plan show`の`depends_on_count`は、retiredの工程との辺を数えない。
+- 別の席が`plan revise`・`todo dependency connect|disconnect`・`plan backchain`で計画を改訂しても、作業中の工程は始めた席の`turn.own`に残る（a16）。改訂後の版へ結び直すstartは、改訂した席でなく、運ぶ前のstartを記録した席の`actor`で記録する。
+- 最初のplanを`plan create --template --json`の出力そのままで1回で作れる（a17）。`project_id`と`plan_version`は機械が決める欄になり、書かなければstoreのid（storeが無ければrepo root名）と`v1`で埋まる（`plan revise`の`desired`は現行planの値）。storeと違う`project_id`は`INPUT_INVALID/project_id_mismatch`（`/project_id`、期待値つき）で、Storeへ渡す前に断る。`--template`は`project_id`・`plan_version`を載せず、`plan_key`はrepo root名から導く。`--input`はrepo外の絶対pathも読める。計画のないrepoの`status`の`next_action`は実在する`lattice plan create --template --json`を指し、schemaの説明の`plan scope-review`も実際に打てる引数つきに直した。
+- helpと案内が、実在するコマンドだけを名指すようにした（a19）。並列可否の案内の`next_action`は、`declare_coordination_mode`のような名前ではなく`lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>`などの実行できるコマンド（なければ`none`）で、`todo start`の助言・`todo status`・`session-context`・`independence`が同じ文を返す。`todo --help`から、すでに助言になった「未宣言・失効なら`todo start`は拒否する」の古い一文と、`migrate`の「plan createは空store初期化専用」、actorの値が不正なら拒否するという古い説明を直した。`todo dependency --help`は`connect`と`disconnect`の両方を示す。`todo verify`は`--json`が無ければ判定1行だけを返し（`--json`の中身は変えない）、`registered_unreconciled`の案内は席の経路の`lattice plan revise`を指す。
+
 ## 0.84.2 — 2026-11-09
 
 計画がまだ無いrepoで初めての`todo status`が断らないようにし、WindowsでMCPの起動記録が止まる不具合を直す修正版。
