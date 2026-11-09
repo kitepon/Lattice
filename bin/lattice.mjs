@@ -7,7 +7,7 @@ import packageJson from '../package.json' with { type: 'json' };
 
 installPipeCloseGuard();
 
-const args = process.argv.slice(2);
+const args = withImpliedJson(process.argv.slice(2));
 // 作業ディレクトリを読まないsurface。cwdが消えた席（閉じたworktree）からでも動かす。
 const CWD_FREE_COMMANDS = new Set(['runtime-errors', 'bridge', 'hooks', 'setup', 'factory-diagnostics']);
 // 内部故障の観測（下のobserveInternalFailure）が終わるのを、exit前に待つための置き場。
@@ -274,6 +274,15 @@ function observeInternalFailure(error, commandKind) {
   pendingObservation = import('../src/runtime-errors.mjs').then(({ observeEscapedCliFailure }) => {
     observeEscapedCliFailure({ error, commandKind, version: packageJson.version });
   }).catch(() => {});
+}
+
+// These reads and sensor commands only ever print JSON, so a missing --json is implied.
+function withImpliedJson(argv) {
+  if (argv.includes('--json') || argv.some((word) => word.startsWith('-'))) return argv;
+  const implied = (argv.length === 1 && (argv[0] === 'status' || argv[0] === 'session-context'))
+    || (argv.length === 3 && argv[0] === 'plan' && argv[1] === 'show')
+    || (argv[0] === 'sensor' && (argv[1] === 'init' || argv[1] === 'sync') && argv.length <= 3);
+  return implied ? [...argv, '--json'] : argv;
 }
 
 function workingDirectory() {

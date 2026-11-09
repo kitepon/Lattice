@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `status`・`session-context`・`plan show <key>`・`sensor init|sync [path]` は、`--json` を付け忘れても同じ結果を返す。これまでは「unsupported command」や`USAGE`で断っていた。出力は元からJSONだけである。
+- `setup status` は、Latticeが登録されていないAIを`MCP_REGISTRATION_DRIFT`（不一致）と呼ばず、`MCP_NOT_REGISTERED`として登録の`lattice setup --host <host>`を示す。
+- `hooks status` は、そのAIの設定フォルダがHOMEに無い時、`unreadable`ではなく`host_absent`を返し、断られる`hooks install`を案内しない。
+- 席の契約に、最初の計画の書き込みで席の工程表（dashboard）が起きることを書いた。
+
 ## 0.84.2 — 2026-11-09
 
 計画がまだ無いrepoで初めての`todo status`が断らないようにし、WindowsでMCPの起動記録が止まる不具合を直す修正版。

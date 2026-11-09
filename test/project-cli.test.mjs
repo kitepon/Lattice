@@ -177,6 +177,22 @@ test('status --jsonはSHA-256 Git HEADもtyped projectとして返す', async (c
   assert.equal(validateProjectStatus(result), true);
 });
 
+test('JSONしか出さない読取は--jsonの付け忘れでも同じ結果を返す', async (context) => {
+  const root = await workspace(context);
+  for (const args of [['status'], ['session-context'], ['plan', 'show', 'absent-plan']]) {
+    const bare = run(root, args);
+    const flagged = run(root, [...args, '--json']);
+    assert.equal(bare.status, flagged.status, `${args.join(' ')}: ${bare.stderr}`);
+    assert.doesNotMatch(bare.stderr, /unsupported command/u);
+  }
+  assert.equal(run(root, ['status', '--bogus']).status, 2);
+  for (const args of [['sensor', 'init'], ['sensor', 'sync']]) {
+    const sensor = run(root, args);
+    assert.equal(sensor.status, 0, `${args.join(' ')}: ${sensor.stderr}`);
+    assert.equal(JSON.parse(sensor.stdout).status, 'ok');
+  }
+});
+
 // Windowsは末尾空白のディレクトリ自体をOSが作らせないため、この性質はPOSIXだけで検証できる。
 test('status --jsonは末尾空白を含むrepo rootを改変しない',
   { skip: process.platform === 'win32' }, async (context) => {

@@ -168,6 +168,16 @@ test('明示hostで新規作成、host省略で既存だけを検出する', asy
   assert.equal((await invoke(env, ['--host', 'codex', '--host', 'claude'])).exit, 2);
 });
 
+test('未登録のAIをstatusは不一致と呼ばず、登録のcommandを示す', async (t) => {
+  const { home, env } = await fixture(t);
+  env.CODEX_HOME = path.join(home, 'codex');
+  await mkdir(env.CODEX_HOME);
+  await writeFile(path.join(env.CODEX_HOME, 'config.toml'), '[mcp_servers.other]\ncommand = "other"\n');
+  const mcp = (await invoke(env, ['status', '--host', 'codex'])).value.hosts[0].mcp;
+  assert.equal(mcp.code, 'MCP_NOT_REGISTERED');
+  assert.match(mcp.message, /lattice setup --host codex/u);
+});
+
 test('CODEX_HOMEとClaude設定先をMCP・hookで共有する', { skip: process.platform === 'win32' }, async (t) => {
   const { env, home } = await fixture(t);
   env.CODEX_HOME = path.join(home, 'custom codex');

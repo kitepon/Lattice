@@ -29,6 +29,13 @@ Write a plan (create, add and revise share one input shape), read state
 dependency connect. Every other command remains but is not part of seat guidance.
 Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
+Reads and sensor commands that only ever print JSON (`status`, `session-context`,
+`plan show <key>`, `sensor init|sync [path]`) imply a missing `--json` (a20).
+
+The first plan write of a seat starts its local display: a dashboard supervisor
+and dashboard process under the seat root, on 127.0.0.1 (see function map,
+Dashboard + network). A seat does nothing to start or stop it; a dashboard
+failure never rejects the write.
 
 A seat may say who it is with `LATTICE_SEAT_ID` (letters, digits, `.`, `_`, `-`;
 up to 64). The machine derives `seat_id`; it appears at the top level of

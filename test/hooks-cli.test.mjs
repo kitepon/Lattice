@@ -973,12 +973,14 @@ test('P3 C4: self identityが0件なら status は not_wired を返す', async (
   assert.equal(value.foreign_candidate_count, 0);
 });
 
-// C4: dir/file不能、symlink、不正JSONはunreadable、非POSIXはtyped unsupportedである。
+// C4: AIの設定dirが無ければhost_absent、file不能、symlink、不正JSONはunreadable、非POSIXはtyped unsupportedである。
 test('P3 C4: config不能/symlink/不正JSONはstatus unreadable、platform非対応はtyped errorを返す', async (t) => {
   const absentHost = await hooksFixture(t, 'claude', { createHost: false });
   const absent = runCli(['hooks', 'status', '--host', 'claude'], options(absentHost));
   assert.equal(absent.status, 1);
-  assert.equal(JSON.parse(absent.stdout).state, 'unreadable');
+  assert.equal(JSON.parse(absent.stdout).state, 'host_absent');
+  // install would refuse HOST_NOT_PRESENT, so status must not point at it.
+  assert.equal(JSON.parse(absent.stdout).next_action, null);
   const invalid = await hooksFixture(t, 'claude', { config: '{bad' });
   const malformed = runCli(['hooks', 'status', '--host', 'claude'], options(invalid));
   assert.equal(malformed.status, 1);
