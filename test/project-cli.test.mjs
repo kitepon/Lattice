@@ -751,12 +751,13 @@ test('plan show --jsonはtask・依存本数・topologyを投影し、未知key�
   assert.equal(missing.stdout, '');
   const failure = JSON.parse(missing.stderr);
   assert.equal(failure.schema, 'lattice.cli_error.v2');
-  assert.equal(failure.code, 'STORE_INCONSISTENT');
+  assert.equal(failure.code, 'PLAN_NOT_FOUND');
   assert.equal(failure.message, 'plan_not_active');
   assert.equal(failure.detail.plan_key, 'no-such-plan');
   assert.match(failure.detail.next_action, /lattice todo status --json/u);
   assert.equal(failure.detail.rule, 'plan_not_active');
-  assert.equal(failure.detail.pointer, '--plan');
+  // plan showのkeyは位置引数（a27）。
+  assert.equal(failure.detail.pointer, '<plan_key>');
 });
 
 test('plan show --jsonはPhase定義とPhase状態を併せて投影する', async (context) => {

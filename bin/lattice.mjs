@@ -122,7 +122,7 @@ if (help !== null) {
         cwd: process.cwd(), planInputRef: flags['plan-input'], reviewRef: flags.review, stdout: process.stdout,
       });
     } catch (error) {
-      process.exitCode = projectCliFailure(process.stderr, error);
+      process.exitCode = projectCliFailure(process.stderr, error, { command: 'scope-review', flags });
     }
   }
 } else if (args.length === 4 && args[0] === 'plan' && args[1] === 'revise'

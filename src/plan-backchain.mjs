@@ -59,19 +59,58 @@ function registeredTasks(authoring) {
   });
 }
 
+const CHAIN_KEYS = Object.freeze([
+  'schema', 'authoring_ref', 'project_id', 'plan_key', 'plan_version',
+  'goal', 'features', 'tasks', 'chain_digest',
+]);
+
+/**
+ * a27: 上位の形の違反をすべて、pointer付きで返す。`authoring_ref`はfileを読む前にここで見るので、
+ * 欠けた・壊れたrefが`--input`のpathの誤りに見えることはない。
+ */
+export function backchainShapeProblems(chain) {
+  if (chain === null || typeof chain !== 'object' || Array.isArray(chain)) {
+    return [{ violation_kind: 'type', pointer: '/', expected: { type: 'object' },
+      actual: { type: Array.isArray(chain) ? 'array' : chain === null ? 'null' : typeof chain } }];
+  }
+  const problems = [];
+  const allowed = [...CHAIN_KEYS, 'continuity'];
+  const actual = Object.keys(chain).sort();
+  const missing = CHAIN_KEYS.filter((key) => !actual.includes(key)).sort();
+  const unexpected = actual.filter((key) => !allowed.includes(key));
+  if (missing.length > 0 || unexpected.length > 0) {
+    problems.push({ violation_kind: 'unexpected_or_missing_keys', pointer: '/',
+      expected: { keys: [...CHAIN_KEYS].sort() }, actual: { keys: actual },
+      missing_keys: missing, unexpected_keys: unexpected });
+  }
+  if ('schema' in chain && chain.schema !== BACKCHAIN_SCHEMA) {
+    problems.push({ violation_kind: 'const_mismatch', pointer: '/schema',
+      expected: { one_of: [BACKCHAIN_SCHEMA] }, actual: chain.schema });
+  }
+  if (!isTodoRef(chain.authoring_ref)) {
+    problems.push({ violation_kind: 'authoring_ref_invalid', pointer: '/authoring_ref',
+      expected: { format: 'repo_relative_path_to_plan_create_input' }, actual: chain.authoring_ref ?? null });
+  }
+  for (const field of ['project_id', 'plan_key', 'plan_version']) {
+    if (field in chain && !isTodoIdentifier(chain[field])) {
+      problems.push({ violation_kind: 'identifier_invalid', pointer: `/${field}`,
+        expected: { format: 'todo_identifier' }, actual: chain[field] });
+    }
+  }
+  return problems;
+}
+
+function failOnShape(chain) {
+  const problems = backchainShapeProblems(chain);
+  if (problems.length > 0) fail('schema_invalid', problems[0].pointer, { ...problems[0], problems });
+}
+
 /**
  * AIの機能分解を検査する。意味の正しさを推測せず、最終機能からの到達性と
  * producer/consumer の契約が閉じていることだけを機械が保証する。
  */
 export function validatePlanBackchain(chain, authoring) {
-  const keys = [
-    'schema', 'authoring_ref', 'project_id', 'plan_key', 'plan_version',
-    'goal', 'features', 'tasks', 'chain_digest',
-  ];
-  if (!(exactRecord(chain, keys) || exactRecord(chain, [...keys, 'continuity']))
-    || chain.schema !== BACKCHAIN_SCHEMA || !isTodoRef(chain.authoring_ref)
-    || !isTodoIdentifier(chain.project_id) || !isTodoIdentifier(chain.plan_key)
-    || !isTodoIdentifier(chain.plan_version)) fail('schema_invalid', '/');
+  failOnShape(chain);
   if (chain.continuity !== undefined && (!Array.isArray(chain.continuity)
     || chain.continuity.length > 512
     || !chain.continuity.every((entry) => exactRecord(entry, ['task_id', 'policy', 'reason'])
@@ -590,6 +629,7 @@ export async function rebindCarriedWork({ repoRoot, planKey, env,
 export async function runPlanBackchain({ cwd, inputRef, stdout, dryRun = false, env = process.env }) {
   const repoRoot = gitRoot(cwd);
   const chain = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'PLAN_BACKCHAIN_INVALID' });
+  failOnShape(chain);
   const authoring = completeCreateInput(await readAuthoringJsonFile(repoRoot, chain.authoring_ref, {
     invalidCode: 'PLAN_BACKCHAIN_INVALID',
   }), { env, now: new Date() });

@@ -73,7 +73,7 @@ test('同じtask_idで内容が違えば、落ちたindexと直前の値を返�
     return value;
   });
   assert.equal(detail.pointer, '/tasks/1/task_id');
-  assert.equal(detail.violation_kind, 'unsorted');
+  assert.equal(detail.violation_kind, 'duplicate');
   assert.equal(detail.expected.greater_than, 't1');
 });
 
@@ -117,7 +117,7 @@ test('入力に無関係なkeyが混ざれば、期待するkey一覧を返す',
   assert.ok(detail.actual.keys.includes('stray'));
 });
 
-test('hard dependenciesの順序違反は機械が並べ替え、循環はfieldと規則を返す', async (context) => {
+test('hard dependenciesの順序違反は機械が並べ替え、循環は作業を名指して返す（a27）', async (context) => {
   const detail = await reject(context, (value) => {
     const [task] = value.tasks;
     value.tasks = ['a', 'b', 'c'].map((task_id) => ({ ...task, task_id }));
@@ -127,5 +127,6 @@ test('hard dependenciesの順序違反は機械が並べ替え、循環はfield�
     ];
     return value;
   });
-  assert.equal(detail.reason, 'dispatch_shape_dependency_cycle');
+  assert.equal(detail.violation_kind, 'dependency_cycle_in_input');
+  assert.deepEqual(detail.cycle, ['a', 'b', 'c', 'a']);
 });

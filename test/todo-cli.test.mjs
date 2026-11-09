@@ -1214,7 +1214,7 @@ test('存在しないplanはtyped exit 1でstore bytes不変', async (context) =
     const result = runCli(root, args);
     assert.equal(result.status, 1);
     assert.equal(result.stdout, '');
-    assert.equal(JSON.parse(result.stderr).code, 'STORE_INCONSISTENT');
+    assert.equal(JSON.parse(result.stderr).code, 'PLAN_NOT_FOUND');
     assert.equal(await storeDigest(root), before);
   }
 });

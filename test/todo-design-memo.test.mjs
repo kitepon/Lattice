@@ -130,7 +130,8 @@ test('v3 migrate後のshowとstartは同じ設計メモを自動供給する', a
   };
   const shown = await invoke(['show', '--plan', 'design-memo', '--task', 'T1', '--json']);
   assert.deepEqual(shown.design_memo, {
-    status: 'available', markdown: memo, prompt: TODO_DESIGN_MEMO_PROMPT,
+    // a27: 書かれたmemoへ促しを繰り返さない。
+    status: 'available', markdown: memo, prompt: null,
   });
   const started = await invoke(['start', '--plan', 'design-memo', '--task', 'T1']);
   assert.deepEqual(started.design_memo, shown.design_memo);

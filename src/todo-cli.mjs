@@ -1,7 +1,7 @@
 import { retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
-import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
+import { FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
@@ -228,7 +228,7 @@ async function runTodoSchemaCommand(command, stdout) {
 function typedFailure(stderr, error, context = {}) {
   const payload = {
     schema: CLI_ERROR_SCHEMA,
-    code: error.code,
+    code: publicRefusalCode(error.code, error.detail?.reason),
     message: error.message,
     detail: withRefusalGuidance(error, context),
   };
@@ -338,8 +338,7 @@ const TODO_SUBCOMMANDS = Object.freeze({
 });
 const GROUP_COMMANDS = ['dependency', 'phase', 'evidence', 'independence', 'note', 'structure'];
 const IDENTIFIER_FLAGS = ['plan', 'task', 'phase', 'from-plan', 'from-task', 'to-plan', 'to-task'];
-const FLAG_PLACEHOLDER = { reason: '<text>', 'override-reason': '<text>', message: '<text>',
-  evidence: '<file>', 'test-result': '<file>', input: '<file>' };
+// The shared table is FLAG_PLACEHOLDER (cli-refusal-guidance, a27).
 const placeholder = (name) => FLAG_PLACEHOLDER[name] ?? `<${name}>`;
 const shellWord = (value) => (/^[\w./:@-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`);
 
@@ -1163,7 +1162,8 @@ async function startStructureContext({ repoRoot, store, planKey, taskId }) {
 
 function designMemoProjection(task) {
   if (typeof task.design_memo === 'string') {
-    return { status: 'available', markdown: task.design_memo, prompt: TODO_DESIGN_MEMO_PROMPT };
+    // 書かれたmemo（NO_PLANを含む）には促しを繰り返さない（a27）。促しは欠けたmemoにだけ要る。
+    return { status: 'available', markdown: task.design_memo, prompt: null };
   }
   return { status: 'missing_legacy', markdown: null, prompt: TODO_DESIGN_MEMO_PROMPT };
 }
@@ -4367,9 +4367,9 @@ async function verify({ repoRoot, requestedPlanKey }) {
         meaning: 'source_inventory_verification_state',
         lifecycle_blocked: false,
         dashboard_visibility_blocked: false,
-        // registered_unreconciledは何もしなくてよい状態（a22）。次の軽い改訂がreconciledにする。
+        // どちらの状態も何もしなくてよい（a22）。値はnoneに揃える（a27）。次の軽い改訂がreconciledにする。
         schema_command: null,
-        next_action: reconciled ? null : 'none',
+        next_action: 'none',
       },
     };
   });
