@@ -190,6 +190,13 @@ test('JSONしか出さない読取は--jsonの付け忘れでも同じ結果を�
   const revise = run(root, ['plan', 'revise', '--input', 'absent.json']);
   assert.doesNotMatch(revise.stderr, /flag_missing/u);
   assert.match(run(root, ['plan', 'revise', '--input']).stderr, /"pointer":"--input"/u);
+  // a37: --json on a write never changes the outcome; scope-review takes it optionally.
+  for (const args of [['plan', 'create', '--input', 'absent.json', '--json'],
+    ['todo', 'independence', 'mode', '--plan', 'absent', '--set', 'conversation', '--reason', 'r', '--json'],
+    ['plan', 'scope-review', '--plan-input', 'absent.json', '--review', 'absent-review.json']]) {
+    const result = run(root, args);
+    assert.doesNotMatch(result.stderr, /flag_unknown|flag_missing/u, args.join(' '));
+  }
   for (const args of [['sensor', 'init'], ['sensor', 'sync']]) {
     const sensor = run(root, args);
     assert.equal(sensor.status, 0, `${args.join(' ')}: ${sensor.stderr}`);

@@ -4292,7 +4292,7 @@ function writesTodoStore(argv) {
     case 'note': return second !== 'list';
     case 'migrate': return !argv.includes('--dry-run');
     case 'snapshot': return argv.includes('--rebuild');
-    case 'independence': return second === 'compile'
+    case 'independence': return second === 'compile' || second === 'mode'
       || (second === 'witness' && ['migrate', 'scaffold'].includes(third) && !argv.includes('--template'));
     case 'structure': return ['compile', 'realize', 'finalize'].includes(second)
       || (second === 'input' && !argv.includes('--dry-run'));

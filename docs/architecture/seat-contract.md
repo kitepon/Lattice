@@ -31,7 +31,8 @@ Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
 Reads and sensor commands that only ever print JSON (`status`, `session-context`,
 `plan show <key>`, `sensor init|sync|diff`, and `plan revise|backchain --input <file>`)
-imply a missing `--json` (a20, a24).
+imply a missing `--json` (a20, a24); `plan scope-review` takes it optionally, and `plan create`
+and `todo independence mode` accept it as a no-op (a37).
 
 The first plan write of a seat starts its local display: a dashboard supervisor
 and dashboard process under the seat root, on 127.0.0.1 (see function map,

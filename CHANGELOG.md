@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `plan create --input <file> --json`と`todo independence mode ... --json`は、`--json`を受け付けて結果を変えない（これまでは`flag_unknown`で断り、何も作らなかった）。`plan scope-review`は`--json`を付け忘れても断らない（a37）。
+
 ## 0.85.3 — 2026-11-10
 
 0.85.2の使い通しの点検で見つかった、席を止める所と誤らせる所を直す修正版。witness方式の入力の形が分かり、計画の改訂が作成と同じ形で書け、v5の計画で審査が通り、doneでない作業のreopenと打ち間違えた席の名前を名指す。
