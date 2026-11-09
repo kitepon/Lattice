@@ -118,9 +118,13 @@ export function createTodoReadiness(store) {
     return node?.schema !== 'lattice.todo_plan.v4' || node.phase_status === 'active';
   }
 
-  function startedSuccessor(key) {
-    return [...(outgoing.get(key) ?? [])].some((successor) => nodes.get(successor)?.status !== 'pending');
+  /** a28: the successors that already left pending, sorted, so a refusal can name them. */
+  function startedSuccessors(key) {
+    return [...(outgoing.get(key) ?? [])].map((successor) => nodes.get(successor))
+      .filter((node) => node !== undefined && node.status !== 'pending')
+      .map(({ plan_key, task_id, status }) => ({ plan_key, task_id, status })).sort(byRef);
   }
+  const startedSuccessor = (key) => startedSuccessors(key).length > 0;
 
   return {
     key: taskKey,
@@ -131,6 +135,7 @@ export function createTodoReadiness(store) {
     isReady: (key) => nodes.get(key)?.status === 'pending'
       && ownPhaseReady(key) && prerequisites(key).dependenciesDone,
     startedSuccessor,
+    startedSuccessors,
     phaseHasStartedSuccessor: (member, phaseId) => member.plan.schema === 'lattice.todo_plan.v4'
       ? member.plan.tasks.filter(({ phase_id }) => phase_id === phaseId)
         .some((task) => startedSuccessor(taskKey({ ...member.plan, ...task })))
@@ -173,8 +178,13 @@ export function validateProspectiveEvent({ store, member, event }) {
     return refused('invalid_done_transition', prerequisites.cause, prerequisites.blocking);
   }
   if (event.kind === 'reopen' && event.payload.override_reason === null && readiness.startedSuccessor(key)) {
+    const started = readiness.startedSuccessors(key);
+    const on = `--plan ${member.plan.plan_key} --task ${event.task_id}`;
     return refused('reopen_has_started_successor', 'task_state', {
-      next_action: `lattice todo split --plan ${member.plan.plan_key} --input <file>`,
+      started_successors: started,
+      next_action: `${started.map((task) => `${task.plan_key}/${task.task_id} (${task.status})`).join(', ')}`
+        + ` already left pending after ${member.plan.plan_key}/${event.task_id}; to reopen it anyway run`
+        + ` \`lattice todo reopen ${on} --reason <text> --override-reason <text>\`.`,
     });
   }
   if (event.kind === 'phase_reopen' && event.payload.override_reason === null

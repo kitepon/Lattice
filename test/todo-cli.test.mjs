@@ -758,7 +758,7 @@ test('start/reopen overrideとdescriptor schema拒否をexact argvで処理す�
   ]);
   assert.equal(withoutOverride.status, 1);
   assert.equal(JSON.parse(withoutOverride.stderr).detail.reason, 'reopen_has_started_successor');
-  assert.match(JSON.parse(withoutOverride.stderr).detail.next_action, /todo split/u);
+  assert.match(JSON.parse(withoutOverride.stderr).detail.next_action, /todo reopen --plan main --task T1 --reason <text> --override-reason <text>/u);
   const reopened = successJson(runCli(root, [
     'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
     '--override-reason', 'successor audited',
