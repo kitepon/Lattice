@@ -182,6 +182,14 @@ test('subtreeと改名写像で、階層の違う2つのtreeを揃えて突き�
   assert.ok(aligned.excluded.b.nodes_outside_subtree >= 1);
 });
 
+test('索引のどのfileにも当たらないsubtreeは、okでなく打ち間違いとして名指す(a29)', () => {
+  const result = invokeSensorCli(['diff', fixtures.a, fixtures.nested, '--subtree-b', 'nosuch', '--json']);
+  assert.equal(result.status, 1);
+  const error = JSON.parse(result.stderr);
+  assert.equal(error.code, 'LATTICE_SENSOR_DIFF_SUBTREE_EMPTY');
+  assert.deepEqual([error.detail.side, error.detail.subtree], ['b', 'nosuch']);
+});
+
 test('subtreeも写像も指定しなければ、同じ2つのtreeは全面的に食い違う', () => {
   const naive = diff([fixtures.a, fixtures.nested]);
   assert.ok(naive.summary.nodes.added > 0);

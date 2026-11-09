@@ -43,7 +43,7 @@ import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
 import { completeCreateInput, explainFlagCommand, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
-import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
+import { publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
 const STORE_REF = '.lattice/todo';
 const MANIFEST_REF = `${STORE_REF}/manifest.json`;
@@ -227,7 +227,8 @@ function invalidStatus({ cliVersion, repoRoot, reason, nextAction = null }) {
     store: { ref: STORE_REF, absolute_path: repoRoot === null ? null : path.join(repoRoot, STORE_REF) },
     active_plans: [], active_runs: [], can_create_plan: false,
     next_action: nextAction ?? {
-      command: repoRoot === null ? 'git status' : 'lattice todo verify', reason,
+      // a27: repoの外では、もう一度失敗するgit statusでなく、repoを作るgit initを示す。
+      command: repoRoot === null ? 'git init' : 'lattice todo verify', reason,
     },
   });
 }
@@ -470,6 +471,9 @@ const isPlainRecord = (value) => value !== null && typeof value === 'object' && 
 const typeOf = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
 
 /** keyの過不足を`missing_keys`/`unexpected_keys`で名指す。recordでなければ全keyが足りない。 */
+// a27: 機械が整列するので、隣と等しいidは重複である。順序の違反と言わない。
+const orderViolation = (previous, current) => (previous === current ? 'duplicate' : 'unsorted');
+
 function keyShapeViolation(pointer, value, keys) {
   const actual = isPlainRecord(value) ? Object.keys(value).sort() : null;
   return {
@@ -513,7 +517,7 @@ function describePlanShapeViolation(value, { phaseInput }) {
     }
     const previous = value.tasks[index - 1]?.task_id;
     if (index > 0 && isTodoIdentifier(previous) && isTodoIdentifier(task.task_id) && !(previous < task.task_id)) {
-      problems.push({ violation_kind: 'unsorted', pointer: `/tasks/${index}/task_id`,
+      problems.push({ violation_kind: orderViolation(previous, task.task_id), pointer: `/tasks/${index}/task_id`,
         expected: { greater_than: previous, order: 'ascending_unique' }, actual: task.task_id });
     }
   }
@@ -551,7 +555,8 @@ function describePlanShapeViolation(value, { phaseInput }) {
       }
       const unsorted = list.findIndex((entry, i) => i > 0 && !(list[i - 1] < entry));
       if (unsorted > 0) {
-        problems.push({ violation_kind: 'unsorted', pointer: `/phases/${index}/${field}/${unsorted}`,
+        problems.push({ violation_kind: orderViolation(list[unsorted - 1], list[unsorted]),
+          pointer: `/phases/${index}/${field}/${unsorted}`,
           expected: { greater_than: list[unsorted - 1], order: 'ascending_unique' },
           actual: list[unsorted] });
       }
@@ -559,7 +564,7 @@ function describePlanShapeViolation(value, { phaseInput }) {
     const previous = value.phases[index - 1]?.phase_id;
     if (index > 0 && isTodoIdentifier(previous) && isTodoIdentifier(phase.phase_id)
       && !(previous < phase.phase_id)) {
-      problems.push({ violation_kind: 'unsorted', pointer: `/phases/${index}/phase_id`,
+      problems.push({ violation_kind: orderViolation(previous, phase.phase_id), pointer: `/phases/${index}/phase_id`,
         expected: { greater_than: previous, order: 'ascending_unique' }, actual: phase.phase_id });
     }
   }
@@ -695,6 +700,75 @@ function describeCreateInputViolations(value) {
   return found;
 }
 
+/** 辺の端が同じplanのtaskか。plan_key/project_idは補完済み（completeCreateInput）。 */
+function ownRef(value, ref) {
+  return isPlainRecord(ref) && ref.plan_key === value.plan_key && ref.project_id === value.project_id;
+}
+
+/**
+ * a27: 同じplanのtaskだけで、無いtaskを指す辺と循環を、名指しで返す。plan跨ぎの辺はStoreが判定する。
+ * 循環は依存辺(from→to)とjoin(after→before)の有向graphで、最初に見つけた1つを`cycle`に載せる。
+ */
+function describeCreateGraphViolations(value) {
+  const ids = new Set(value.tasks.map(({ task_id: id }) => id));
+  const known = [...ids].sort();
+  const problems = [];
+  const edges = [];
+  const endpoint = (ref, pointer) => {
+    if (!ownRef(value, ref)) return null;
+    if (ids.has(ref.task_id)) return ref.task_id;
+    problems.push({ violation_kind: 'unknown_reference', pointer: `${pointer}/task_id`,
+      expected: { one_of: known }, actual: ref.task_id });
+    return null;
+  };
+  for (const [index, edge] of (Array.isArray(value.hard_dependencies) ? value.hard_dependencies : []).entries()) {
+    const from = endpoint(edge?.from, `/hard_dependencies/${index}/from`);
+    const to = endpoint(edge?.to, `/hard_dependencies/${index}/to`);
+    if (from !== null && to !== null) edges.push([from, to]);
+  }
+  for (const [index, join] of (Array.isArray(value.joins) ? value.joins : []).entries()) {
+    const before = endpoint(join?.before, `/joins/${index}/before`);
+    for (const [at, ref] of (Array.isArray(join?.after) ? join.after : []).entries()) {
+      const after = endpoint(ref, `/joins/${index}/after/${at}`);
+      if (after !== null && before !== null) edges.push([after, before]);
+    }
+  }
+  const cycle = findCycle(known, edges);
+  if (cycle !== null) {
+    problems.push({ violation_kind: 'dependency_cycle_in_input', pointer: '/hard_dependencies',
+      expected: { acyclic: true }, actual: { cycle }, cycle });
+  }
+  return problems;
+}
+
+/** 有向graphの循環を1つ、閉じた路（先頭と末尾が同じ）で返す。無ければnull。 */
+function findCycle(nodes, edges) {
+  const next = new Map(nodes.map((node) => [node, []]));
+  for (const [from, to] of edges) next.get(from).push(to);
+  const state = new Map();
+  const stack = [];
+  const visit = (node) => {
+    state.set(node, 'open');
+    stack.push(node);
+    for (const target of next.get(node)) {
+      if (state.get(target) === 'open') return [...stack.slice(stack.indexOf(target)), target];
+      if (!state.has(target)) {
+        const found = visit(target);
+        if (found !== null) return found;
+      }
+    }
+    stack.pop();
+    state.set(node, 'closed');
+    return null;
+  };
+  for (const node of nodes) {
+    if (state.has(node)) continue;
+    const found = visit(node);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
 export function validatePlanCreateInput(input) {
   const found = describeCreateInputViolations(input);
   const problems = found.map(({ violation }) => violation);
@@ -751,6 +825,15 @@ export async function runPlanCreate({
   }
   const input = completeCreateInput(given, { env, now: new Date(), projectId, planVersion: 'v1' });
   validatePlanCreateInput(input);
+  // a27: 同じplanの中の無いtaskを指す辺と循環は、入力の誤りとして作業を名指して返す。
+  // createだけで見る（revise・dependency connectは自分の辺を名指す拒否を持つ）。Storeの検査は最後の砦のまま。
+  const graphProblems = describeCreateGraphViolations(input);
+  if (graphProblems.length > 0) {
+    throw new TodoStoreError('INPUT_INVALID', 'plan_create_schema_invalid', undefined, {
+      ...graphProblems[0], problems: graphProblems,
+      next_action: 'correct_the_reported_pointer_then_rerun_plan_create',
+    });
+  }
   // dispatch_shapeは結果へ載せる観測であり、直列度では初期化を拒まない（ADR 0180）。
   const dispatchShape = computeTodoDispatchShapeForPlan({
     projectId: input.project_id,
@@ -779,7 +862,13 @@ export async function runPlanCreate({
   const store = manifest === null
     ? await initializeAuthoredTodoStore({ ...options,
       projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }] })
-    : await appendAuthoredTodoPlan(options);
+    : await appendAuthoredTodoPlan(options).catch((error) => {
+      // a27: Storeの拒否はkeyを持たないので、断りの文が名指せるようにここで添える。
+      if (error?.detail?.reason !== 'plan_key_already_exists') throw error;
+      throw new TodoStoreError(error.code, 'plan_key_already_exists', undefined, {
+        ...error.detail, plan_key: input.plan_key,
+      });
+    });
   const member = store.members.find(({ plan }) => plan.plan_key === input.plan_key);
   const result = {
     schema: CREATE_RESULT_SCHEMA, project_id: store.project_id,
@@ -877,7 +966,8 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
     // 未知のplan_keyを「store不整合」と同じ扱いにするのはこのCLI全体の既定であり、
     // ここだけ別codeへ逸れると呼び出し側の分岐が増える。
     throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, {
-      plan_key: planKey, next_action: 'check_active_plans_via_status',
+      plan_key: planKey, pointer: '<plan_key>',
+      next_action: `'${planKey}' is not an active plan: run \`lattice todo status --json\` to list the active plan keys, then rerun \`lattice plan show <plan_key> --json\` with one of them.`,
     });
   }
   const { plan, tasks, phases } = member;
@@ -982,7 +1072,7 @@ export function projectStatusFailure({ cwd, stdout, cliVersion, error }) {
 }
 
 export function projectCliFailure(stderr, error, context = {}) {
-  const code = error?.code ?? 'INTERNAL_FAILURE';
+  const code = publicRefusalCode(error?.code ?? 'INTERNAL_FAILURE', error?.detail?.reason);
   const message = error?.message ?? 'project command failed';
   const payload = {
     schema: 'lattice.cli_error.v2', code, message,

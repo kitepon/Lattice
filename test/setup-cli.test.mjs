@@ -161,7 +161,9 @@ test('設定競合と接続失敗は成功へ丸めない', async (t) => {
 
 test('明示hostで新規作成、host省略で既存だけを検出する', async (t) => {
   const { env } = await fixture(t);
-  assert.equal((await invoke(env, ['--json'])).value.code, 'HOST_NOT_PRESENT');
+  const absent = (await invoke(env, ['--json'])).value;
+  assert.equal(absent.code, 'HOST_NOT_PRESENT');
+  assert.match(absent.next_action, /^lattice setup --host /u);
   await invoke(env, ['--host', 'claude']);
   assert.deepEqual((await invoke(env, ['--json'])).value.hosts.map((host) => host.host), ['claude']);
   assert.equal((await invoke(env, ['--host', 'unknown'])).exit, 2);

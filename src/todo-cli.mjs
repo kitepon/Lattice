@@ -1,7 +1,7 @@
 import { retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
-import { withRefusalGuidance } from './cli-refusal-guidance.mjs';
+import { FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
@@ -228,7 +228,7 @@ async function runTodoSchemaCommand(command, stdout) {
 function typedFailure(stderr, error, context = {}) {
   const payload = {
     schema: CLI_ERROR_SCHEMA,
-    code: error.code,
+    code: publicRefusalCode(error.code, error.detail?.reason),
     message: error.message,
     detail: withRefusalGuidance(error, context),
   };
@@ -319,10 +319,27 @@ const TODO_FLAG_SPECS = Object.freeze({
   'phase close-unaudited': PHASE_REASON_FLAG_SPEC,
   split: Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   note: NOTE_FLAG_SPEC,
+  // a28: the rest of the writes, and the reads whose --json is optional (their output is JSON either way).
+  'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'input'], required: ['plan', 'phase'] }),
+  'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'reason', 'input'], required: ['plan', 'phase'] }),
+  'phase reopen': Object.freeze({ known: ['plan', 'phase', 'reason', 'override-reason'], required: ['plan', 'phase', 'reason'] }),
+  'evidence promote': Object.freeze({ known: ['plan', 'task', 'evidence'], required: ['plan', 'task', 'evidence'] }),
+  'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
+  show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
+  'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
+  structure: Object.freeze({ known: ['plan', 'json'], required: [], booleans: ['json'] }),
+  status: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
 });
+// a28: command groups, their subcommands and the one a refusal shows as the example.
+const TODO_SUBCOMMANDS = Object.freeze({
+  dependency: { names: ['connect', 'disconnect'], example: 'connect' },
+  phase: { names: ['status', 'review', 'accept', 'reject', 'reopen', 'close-unaudited', 'baseline'], example: 'review' },
+  evidence: { names: ['promote'], example: 'promote' },
+});
+const GROUP_COMMANDS = ['dependency', 'phase', 'evidence', 'independence', 'note', 'structure'];
 const IDENTIFIER_FLAGS = ['plan', 'task', 'phase', 'from-plan', 'from-task', 'to-plan', 'to-task'];
-const FLAG_PLACEHOLDER = { reason: '<text>', 'override-reason': '<text>', message: '<text>',
-  evidence: '<file>', 'test-result': '<file>', input: '<file>' };
+// The shared table is FLAG_PLACEHOLDER (cli-refusal-guidance, a27).
+const placeholder = (name) => FLAG_PLACEHOLDER[name] ?? `<${name}>`;
 const shellWord = (value) => (/^[\w./:@-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`);
 
 /** The command again, with the flags given and a placeholder for each missing required flag. */
@@ -331,7 +348,7 @@ function repairedCommand(head, spec, flags) {
   for (const name of spec.known) {
     if (typeof flags[name] === 'string' && flags[name].length > 0) words.push(`--${name}`, shellWord(flags[name]));
     else if (flags[name] === true && spec.booleans?.includes(name)) words.push(`--${name}`);
-    else if (spec.required.includes(name)) words.push(`--${name}`, FLAG_PLACEHOLDER[name] ?? `<${name}>`);
+    else if (spec.required.includes(name)) words.push(`--${name}`, placeholder(name));
   }
   return words.join(' ');
 }
@@ -342,22 +359,68 @@ function dependencyFlags(argv) {
   return flags !== null && IDENTIFIER_FLAGS.slice(3).every((name) => isTodoIdentifier(flags[name])) ? flags : null;
 }
 
+/** a28: a read command's flags by name (order-free, --json optional) with valid identifiers, or null. */
+function readFlags(argv, head) {
+  const flags = matchFlagCommand(argv, head, TODO_FLAG_SPECS[head.join(' ')]);
+  return flags !== null && ['plan', 'task'].every((name) => flags[name] === undefined || isTodoIdentifier(flags[name]))
+    ? flags : null;
+}
+
+/** `phase reopen` flags by name; --override-reason, when given, is non-empty. */
+function phaseReopenFlags(argv) {
+  const flags = matchFlagCommand(argv, ['phase', 'reopen'], TODO_FLAG_SPECS['phase reopen']);
+  return flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase)
+    && (flags['override-reason'] === undefined
+      || (typeof flags['override-reason'] === 'string' && flags['override-reason'].length > 0)) ? flags : null;
+}
+
 /** `phase review|close-unaudited` flags by name (order-free), or null. */
 function phaseReasonFlags(argv) {
   const flags = matchFlagCommand(argv, argv.slice(0, 2), PHASE_REASON_FLAG_SPEC);
   return flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase) ? flags : null;
 }
 
-/** A todo write's argument refusal names the flag, the rule and the command to run instead. */
+/** `todo` without a command, or a group without a subcommand it has; null otherwise (a28). */
+function explainMissingSubcommand(argv) {
+  if (argv.length === 0) {
+    return { pointer: '<command>', rule: 'subcommand_missing', available_commands: TODO_COMMAND_NAMES,
+      next_action: 'Name a todo command; for the overview of every plan run `lattice todo status --json`'
+        + ' (every command: `lattice todo --help`).' };
+  }
+  const group = TODO_SUBCOMMANDS[argv[0]];
+  if (group === undefined || group.names.includes(argv[1])) return null;
+  const missing = typeof argv[1] !== 'string' || argv[1].startsWith('--');
+  const head = [argv[0], group.example];
+  const { flags } = parseFlagMap(argv.slice(missing ? 1 : 2));
+  return { pointer: missing ? '<subcommand>' : argv[1], rule: missing ? 'subcommand_missing' : 'subcommand_unknown',
+    available_subcommands: group.names,
+    next_action: `Name one of ${group.names.join(', ')} after \`lattice todo ${argv[0]}\`, e.g.`
+      + ` \`${repairedCommand(head, TODO_FLAG_SPECS[head.join(' ')], flags)}\`.` };
+}
+
+/** A todo argument refusal names the flag, the rule and the command to run instead. */
 function explainArgumentRefusal(argv) {
-  if (argv[0] === 'note' && argv[1] === 'list') return {};
-  const head = ['dependency', 'phase'].includes(argv[0]) ? argv.slice(0, 2) : argv.slice(0, 1);
+  const missingSubcommand = explainMissingSubcommand(argv);
+  if (missingSubcommand !== null) return missingSubcommand;
+  const head = GROUP_COMMANDS.includes(argv[0]) && typeof argv[1] === 'string' && !argv[1].startsWith('--')
+    ? argv.slice(0, 2) : argv.slice(0, 1);
   const spec = TODO_FLAG_SPECS[head.join(' ')];
   if (spec === undefined) return {};
   const { flags } = parseFlagMap(argv.slice(head.length));
   const flagFailure = explainFlagCommand(argv, head, spec);
   if (flagFailure?.rule === 'flag_missing') {
-    return { ...flagFailure, next_action: `Add ${flagFailure.pointer} ${FLAG_PLACEHOLDER[flagFailure.pointer.slice(2)] ?? '<value>'}: \`${repairedCommand(head, spec, flags)}\`.` };
+    const missing = flagFailure.pointer.slice(2);
+    const lists = { task: ` (task ids: \`lattice plan show ${flags.plan ?? '<plan>'} --json\`)` }[missing] ?? '';
+    return { ...flagFailure, next_action: `Add ${flagFailure.pointer} ${placeholder(missing)}${lists}: \`${repairedCommand(head, spec, flags)}\`.` };
+  }
+  if (flagFailure?.rule === 'flag_unknown') {
+    // a28: a flag the command does not take is named, with the flags it does take and a command that works.
+    const takes = spec.known.map((name) => `--${name}`).join(', ') || 'no flags';
+    const { [flagFailure.pointer.slice(2)]: _dropped, ...kept } = flags;
+    const onePlan = flagFailure.pointer === '--plan' && typeof flags.plan === 'string'
+      ? `; for one plan run \`lattice plan show ${flags.plan} --json\`` : '';
+    return { ...flagFailure, next_action: `${flagFailure.pointer} does not apply to \`lattice todo ${head.join(' ')}\``
+      + ` (it takes ${takes}): \`${repairedCommand(head, spec, kept)}\`${onePlan}.` };
   }
   if (flagFailure !== null) return flagFailure;
   for (const name of IDENTIFIER_FLAGS.filter((key) => spec.known.includes(key))) {
@@ -379,8 +442,29 @@ function explainArgumentRefusal(argv) {
         next_action: `Pass either --message or --input, not both: \`${repairedCommand(head, spec, { ...flags, input: undefined })}\`.` };
     }
   }
-  if (spec.known.includes('input') && flags.input !== undefined && !isAuthoringPathToken(flags.input)) {
-    return { pointer: '--input', rule: 'path_token_invalid' };
+  if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
+    const given = ['evidence', 'input'].filter((name) => typeof flags[name] === 'string' && flags[name].length > 0);
+    if (given.length === 0) {
+      return { pointer: '--evidence', rule: 'flag_missing',
+        next_action: `Add --evidence <file> (or --input <decision file>): \`${repairedCommand(head, { ...spec, required: [...spec.required, 'evidence', ...(argv[1] === 'reject' ? ['reason'] : [])] }, flags)}\`.` };
+    }
+    if (given.length === 2) {
+      return { pointer: '--input', rule: 'flags_exclusive',
+        next_action: `Pass either --evidence or --input, not both: \`${repairedCommand(head, spec, { ...flags, input: undefined })}\`.` };
+    }
+    if (argv[1] === 'reject' && given[0] === 'evidence' && !(typeof flags.reason === 'string' && flags.reason.length > 0)) {
+      return { pointer: '--reason', rule: 'flag_missing',
+        next_action: `A reject with --evidence needs --reason <text>: \`${repairedCommand(head, { ...spec, required: [...spec.required, 'reason'] }, flags)}\`.` };
+    }
+    if (given[0] === 'input' && flags.reason !== undefined) {
+      return { pointer: '--reason', rule: 'flag_unknown',
+        next_action: `With --input the reason is inside the decision file; drop --reason: \`${repairedCommand(head, spec, { ...flags, reason: undefined })}\`.` };
+    }
+  }
+  for (const name of ['input', 'evidence']) {
+    if (spec.known.includes(name) && flags[name] !== undefined && !isAuthoringPathToken(flags[name])) {
+      return { pointer: `--${name}`, rule: 'path_token_invalid' };
+    }
   }
   for (const name of ['override-reason', 'reason']) {
     if (spec.known.includes(name) && flags[name] !== undefined
@@ -1078,7 +1162,8 @@ async function startStructureContext({ repoRoot, store, planKey, taskId }) {
 
 function designMemoProjection(task) {
   if (typeof task.design_memo === 'string') {
-    return { status: 'available', markdown: task.design_memo, prompt: TODO_DESIGN_MEMO_PROMPT };
+    // 書かれたmemo（NO_PLANを含む）には促しを繰り返さない（a27）。促しは欠けたmemoにだけ要る。
+    return { status: 'available', markdown: task.design_memo, prompt: null };
   }
   return { status: 'missing_legacy', markdown: null, prompt: TODO_DESIGN_MEMO_PROMPT };
 }
@@ -1517,16 +1602,9 @@ async function dependencyConnect(options) {
     || !tasks.some(({ task_id: id }) => id === toTaskId) || fromTaskId === toTaskId) {
     return dependencyConnectLedger(options);
   }
-  const from = dependencyRef(store, fromPlanKey, fromTaskId);
-  const to = dependencyRef(store, toPlanKey, toTaskId);
-  if (samePlanEdge(member, fromTaskId, toTaskId)) {
-    throw new TodoStoreError('DEPENDENCY_EXISTS', 'dependency_already_in_plan', undefined, { from, to });
-  }
-  // 以前の同一plan接続で台帳に生きている辺を、本体へ二重に足さない（台帳経路と同じ拒否）。
-  if (projectTodoCrossPlanDependencies(store.members).some((dependency) => (
-    dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
-    && dependency.to.plan_key === toPlanKey && dependency.to.task_id === toTaskId))) {
-    throw new TodoStoreError('DEPENDENCY_EXISTS', 'cross_plan_dependency_duplicate', undefined, { from, to });
+  // a28: an edge already in the plan body or the ledger is the requested state; nothing is added twice.
+  if (samePlanEdge(member, fromTaskId, toTaskId) || liveLedgerEdge(store, options)) {
+    return dependencyUnchanged(store, options);
   }
   if (member.tasks.find(({ task_id: id }) => id === toTaskId)?.status === 'done') {
     throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_target_terminal');
@@ -1536,6 +1614,28 @@ async function dependencyConnect(options) {
   if (!lightRevisionExpresses(member)) return dependencyConnectLedger(options);
   return dependencyRevision({
     repoRoot, env, store, member, operation: 'connect', fromTaskId, toTaskId, reason });
+}
+
+/** A live ledger edge with these endpoints (cross-plan, or an earlier same-plan connect). */
+function liveLedgerEdge(store, { fromPlanKey, fromTaskId, toPlanKey, toTaskId }) {
+  return projectTodoCrossPlanDependencies(store.members).some((dependency) => (
+    dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
+    && dependency.to.plan_key === toPlanKey && dependency.to.task_id === toTaskId));
+}
+
+/** a28: connect of an existing edge succeeds unchanged, like a repeated done/block/retire (a12). */
+function dependencyUnchanged(store, { fromPlanKey, fromTaskId, toPlanKey, toTaskId }) {
+  const from = { project_id: store.project_id, plan_key: fromPlanKey, task_id: fromTaskId };
+  const to = { project_id: store.project_id, plan_key: toPlanKey, task_id: toTaskId };
+  const result = {
+    schema: 'lattice.todo_dependency_unchanged_result.v1', project_id: store.project_id,
+    operation: 'connect', from, to, unchanged: true,
+    next_action: `${fromPlanKey}/${fromTaskId} -> ${toPlanKey}/${toTaskId} already exists; nothing was recorded`
+      + ` (see \`lattice plan show ${toPlanKey} --json\`).`,
+    result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
 }
 
 /** 台帳(cross_plan_dependency event)への接続。plan跨ぎの本線。 */
@@ -1554,6 +1654,7 @@ async function dependencyConnectLedger({
   };
   const source = dependencyMember(fromPlanKey);
   const target = dependencyMember(toPlanKey);
+  const endpoints = { fromPlanKey, fromTaskId, toPlanKey, toTaskId };
   if (!source.plan.tasks.some(({ task_id: taskId }) => taskId === fromTaskId)) {
     throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_task_not_found', undefined, {
       plan_key: fromPlanKey, task_id: fromTaskId,
@@ -1564,6 +1665,7 @@ async function dependencyConnectLedger({
       plan_key: toPlanKey, task_id: toTaskId,
     });
   }
+  if (liveLedgerEdge(store, endpoints)) return dependencyUnchanged(store, endpoints);
   const from = {
     project_id: store.project_id, plan_key: fromPlanKey, task_id: fromTaskId,
     expected_topology_digest: source.plan.topology_digest,
@@ -4265,9 +4367,9 @@ async function verify({ repoRoot, requestedPlanKey }) {
         meaning: 'source_inventory_verification_state',
         lifecycle_blocked: false,
         dashboard_visibility_blocked: false,
-        // registered_unreconciledは何もしなくてよい状態（a22）。次の軽い改訂がreconciledにする。
+        // どちらの状態も何もしなくてよい（a22）。値はnoneに揃える（a27）。次の軽い改訂がreconciledにする。
         schema_command: null,
-        next_action: reconciled ? null : 'none',
+        next_action: 'none',
       },
     };
   });
@@ -4431,10 +4533,9 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       return { schema: 'lattice.todo_dashboard_ensure_result.v1',
         ensured: ensured !== null, activity: ensured };
     };
-  } else if (argv.length === 6 && argv[0] === 'show'
-    && argv[1] === '--plan' && isTodoIdentifier(argv[2])
-    && argv[3] === '--task' && isTodoIdentifier(argv[4]) && argv[5] === '--json') {
-    action = (repoRoot) => todoDetail({ repoRoot, planKey: argv[2], taskId: argv[4] });
+  } else if (argv[0] === 'show' && readFlags(argv, ['show']) !== null) {
+    const flags = readFlags(argv, ['show']);
+    action = (repoRoot) => todoDetail({ repoRoot, planKey: flags.plan, taskId: flags.task });
   } else if ((argv.length === 1 && argv[0] === 'bindings')
     || (argv.length === 2 && argv[0] === 'bindings' && argv[1] === '--json')) {
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: null });
@@ -4458,13 +4559,9 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
         supersedes: flags.supersedes ?? null,
       });
     }
-  } else if (argv.length === 5 && argv[0] === 'note' && argv[1] === 'list'
-    && argv[2] === '--plan' && isTodoIdentifier(argv[3]) && argv[4] === '--json') {
-    action = (repoRoot) => listNotes({ repoRoot, planKey: argv[3], taskId: null });
-  } else if (argv.length === 7 && argv[0] === 'note' && argv[1] === 'list'
-    && argv[2] === '--plan' && isTodoIdentifier(argv[3])
-    && argv[4] === '--task' && isTodoIdentifier(argv[5]) && argv[6] === '--json') {
-    action = (repoRoot) => listNotes({ repoRoot, planKey: argv[3], taskId: argv[5] });
+  } else if (argv[0] === 'note' && argv[1] === 'list' && readFlags(argv, ['note', 'list']) !== null) {
+    const flags = readFlags(argv, ['note', 'list']);
+    action = (repoRoot) => listNotes({ repoRoot, planKey: flags.plan, taskId: flags.task ?? null });
   } else if (argv.length === 5 && argv[0] === 'independence' && argv[1] === 'witness'
     && argv[2] === 'migrate' && argv[3] === '--plan' && isTodoIdentifier(argv[4])) {
     action = (repoRoot) => independenceWitnessMigrate({ repoRoot, planKey: argv[4] });
@@ -4489,9 +4586,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       toPlanKey: flags['to-plan'], toTaskId: flags['to-task'], reason: flags.reason,
     });
   } else if (argv[0] === 'independence' && argv[1] === 'compile') {
-    const flags = matchFlagCommand(argv, ['independence', 'compile'], {
-      known: ['plan', 'input'], required: ['plan', 'input'],
-    });
+    const flags = matchFlagCommand(argv, ['independence', 'compile'], TODO_FLAG_SPECS['independence compile']);
     if (flags !== null && isTodoIdentifier(flags.plan) && isAuthoringPathToken(flags.input)) {
       action = (repoRoot) => independenceCompile({
         repoRoot, planKey: flags.plan, inputRef: flags.input,
@@ -4535,11 +4630,9 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } else if (argv.length === 5 && argv[0] === 'structure' && argv[1] === 'finalize'
     && argv[2] === '--plan' && isTodoIdentifier(argv[3]) && argv[4] === '--json') {
     action = (repoRoot) => structureFinalize({ repoRoot, env, planKey: argv[3] });
-  } else if (argv.length === 2 && argv[0] === 'structure' && argv[1] === '--json') {
-    action = (repoRoot) => structure({ repoRoot, requestedPlanKey: null });
-  } else if (argv.length === 4 && argv[0] === 'structure'
-    && argv[1] === '--plan' && isTodoIdentifier(argv[2]) && argv[3] === '--json') {
-    action = (repoRoot) => structure({ repoRoot, requestedPlanKey: argv[2] });
+  } else if (argv[0] === 'structure' && readFlags(argv, ['structure']) !== null) {
+    const flags = readFlags(argv, ['structure']);
+    action = (repoRoot) => structure({ repoRoot, requestedPlanKey: flags.plan ?? null });
   } else if ((argv.length === 1 && argv[0] === 'independence')
     || (argv.length === 2 && argv[0] === 'independence' && argv[1] === '--json')) {
     action = (repoRoot) => independence({ repoRoot, requestedPlanKey: null });
@@ -4672,13 +4765,10 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
         outcome, evidenceRef: flags.evidence, reason: flags.reason ?? null,
       });
     }
-  } else if ((argv.length === 8 || argv.length === 10) && argv[0] === 'phase'
-    && argv[1] === 'reopen' && argv[2] === '--plan' && isTodoIdentifier(argv[3])
-    && argv[4] === '--phase' && isTodoIdentifier(argv[5])
-    && argv[6] === '--reason' && argv[7].length > 0
-    && (argv.length === 8 || (argv[8] === '--override-reason' && argv[9].length > 0))) {
-    action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: argv[3], phaseId: argv[5],
-      kind: 'phase_reopen', payload: { reason: argv[7], override_reason: argv[9] ?? null } });
+  } else if (argv[0] === 'phase' && argv[1] === 'reopen' && phaseReopenFlags(argv) !== null) {
+    const flags = phaseReopenFlags(argv);
+    action = (repoRoot) => phaseMutation({ repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
+      kind: 'phase_reopen', payload: { reason: flags.reason, override_reason: flags['override-reason'] ?? null } });
   } else if (argv[0] === 'phase' && argv[1] === 'close-unaudited'
     && phaseReasonFlags(argv) !== null) {
     const flags = phaseReasonFlags(argv);
@@ -4755,9 +4845,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
         }) });
     }
   } else if (argv[0] === 'evidence' && argv[1] === 'promote') {
-    const flags = matchFlagCommand(argv, ['evidence', 'promote'], {
-      known: ['plan', 'task', 'evidence'], required: ['plan', 'task', 'evidence'],
-    });
+    const flags = matchFlagCommand(argv, ['evidence', 'promote'], TODO_FLAG_SPECS['evidence promote']);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
       && isAuthoringPathToken(flags.evidence)) {
       action = (repoRoot) => mutate({

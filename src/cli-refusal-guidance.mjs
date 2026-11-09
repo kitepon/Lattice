@@ -3,6 +3,12 @@
 // Refusal sites keep their own keys; this fills the three keys the seat contract requires.
 
 const PLACEHOLDER = /^[a-z_]+$/u;
+// a27: one placeholder per flag for every missing-flag text (plan and todo alike).
+export const FLAG_PLACEHOLDER = Object.freeze({
+  input: '<file>', 'plan-input': '<file>', review: '<file>', evidence: '<file>', 'test-result': '<file>',
+  request: '<file>', reason: '<text>', 'override-reason': '<text>', message: '<text>', plan: '<key>', task: '<id>',
+});
+const placeholderFor = (pointer) => FLAG_PLACEHOLDER[String(pointer).replace(/^--/u, '')] ?? '<value>';
 const EXAMPLE_TIMESTAMP = '2026-11-08T12:00:00.000Z';
 
 const q = (value) => (typeof value === 'string' ? `'${value}'` : JSON.stringify(value));
@@ -109,6 +115,18 @@ const revisionDigest = (what) => ({
 // rule -> { pointer?: string | (detail, ctx) => string, repair: (detail, ctx, pointer) => string }
 const REGISTRY = {
   unsorted: { repair: movedAfter },
+  duplicate: {
+    repair: (detail, ctx, pointer) => `${q(detail.actual)} appears more than once (${pointer}); give each entry its own id or remove the extra one.`,
+  },
+  dependency_cycle_in_input: {
+    repair: (detail) => `Tasks ${strings(detail.cycle).join(' -> ')} form a cycle: remove one of those edges from /hard_dependencies (or /joins), then rerun.`,
+  },
+  authoring_ref_invalid: {
+    repair: (detail, ctx, pointer) => `Set ${pointer} to the repo path of the plan create input this chain describes (for example \`plan.json\`); it is ${q(detail.actual)}. See \`${schemaCommand(ctx)}\`.`,
+  },
+  git_toplevel_unresolved: {
+    repair: () => 'cd into the project repository, or run `git init` there first',
+  },
   unsorted_or_duplicate_collection: {
     repair: (detail, ctx, pointer) => `${movedAfter(detail, ctx, pointer)} Remove the entry if ${q(detail.actual)} appears twice.`,
   },
@@ -167,7 +185,7 @@ const REGISTRY = {
     repair: (detail, ctx) => `Only a blocked task can be unblocked; check its status with \`${showTask(detail, ctx)}\`.`,
   },
   reopen_has_started_successor: {
-    repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: split the work with \`lattice todo split --plan ${planOf(detail, ctx)} --input <file>\`, or pass --override-reason <text> to reopen anyway.`,
+    repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,
   },
   requested_plan_mismatch: {
     pointer: '--plan',
@@ -298,7 +316,7 @@ const REGISTRY = {
   },
 
   flag_missing: {
-    repair: (detail, ctx, pointer) => `Add ${pointer}${detail.expected?.type === 'boolean' ? '' : ' <value>'} to \`${run(ctx)}\`.`,
+    repair: (detail, ctx, pointer) => `Add ${pointer}${detail.expected?.type === 'boolean' ? '' : ` ${placeholderFor(pointer)}`} to \`${run(ctx)}\`.`,
   },
   flag_takes_no_value: {
     repair: (detail, ctx, pointer) => `${pointer} is a switch: pass it without a value to \`${run(ctx)}\`.`,
@@ -390,6 +408,14 @@ function registeredPointer(entry, detail, ctx) {
  * A concrete existing next_action wins; a placeholder token (^[a-z_]+$) is replaced by the registered repair.
  * context = { family: 'todo' | 'plan', command, plan, task, flags } (all optional).
  */
+// a27: a reason that only means "the value you typed names nothing" gets an input code, not
+// STORE_INCONSISTENT (which says the store itself is broken). The one mapping for every error writer.
+const INPUT_REFUSAL_CODES = Object.freeze({ plan_not_active: 'PLAN_NOT_FOUND' });
+export function publicRefusalCode(code, reason) {
+  return code === 'STORE_INCONSISTENT' && Object.hasOwn(INPUT_REFUSAL_CODES, reason)
+    ? INPUT_REFUSAL_CODES[reason] : code;
+}
+
 export function withRefusalGuidance({ code, message, detail }, context = {}) {
   const base = record(detail) ? detail : {};
   const rule = base.rule ?? base.violation_kind ?? base.violation_reason ?? base.reason ?? message;

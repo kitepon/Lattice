@@ -11,10 +11,10 @@ function writeJson(stream, value) {
   stream.write(`${JSON.stringify(value)}\n`);
 }
 
-const USAGE = 'usage: lattice sensor <init|sync> [path] --json'
+const USAGE = 'usage: lattice sensor <init|sync> [path] [--json]'
   + ' | lattice sensor diff <rootA> <rootB>'
   + ' [--subtree-a <rel>] [--subtree-b <rel>] [--map-a <from>=<to>] [--map-b <from>=<to>]'
-  + ' [--limit <n>] --json';
+  + ' [--limit <n>] [--json]';
 
 function usage(stderr) {
   writeJson(stderr, { schema: 'lattice.cli_error.v2', code: 'USAGE', message: USAGE });
@@ -100,6 +100,12 @@ export async function runSensorCli({ argv, stdout, stderr }) {
   const request = parse(argv);
   if (!request) return usage(stderr);
   if (request.command === 'diff') return runDiff(request.diff, stdout, stderr);
+  if (!existsSync(request.path)) {
+    writeJson(stderr, { schema: 'lattice.cli_error.v2', code: 'LATTICE_SENSOR_PATH_MISSING',
+      message: `no such project path: ${request.path}`,
+      detail: { path: request.path, next_action: `lattice sensor ${request.command}` } });
+    return 1;
+  }
   try {
     const result = await execute(request.command, request.path);
     if (result.code !== 0 || result.signal || result.overflow) {

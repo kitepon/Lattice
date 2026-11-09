@@ -758,7 +758,7 @@ test('start/reopen overrideとdescriptor schema拒否をexact argvで処理す�
   ]);
   assert.equal(withoutOverride.status, 1);
   assert.equal(JSON.parse(withoutOverride.stderr).detail.reason, 'reopen_has_started_successor');
-  assert.match(JSON.parse(withoutOverride.stderr).detail.next_action, /todo split/u);
+  assert.match(JSON.parse(withoutOverride.stderr).detail.next_action, /todo reopen --plan main --task T1 --reason <text> --override-reason <text>/u);
   const reopened = successJson(runCli(root, [
     'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
     '--override-reason', 'successor audited',
@@ -1214,7 +1214,7 @@ test('存在しないplanはtyped exit 1でstore bytes不変', async (context) =
     const result = runCli(root, args);
     assert.equal(result.status, 1);
     assert.equal(result.stdout, '');
-    assert.equal(JSON.parse(result.stderr).code, 'STORE_INCONSISTENT');
+    assert.equal(JSON.parse(result.stderr).code, 'PLAN_NOT_FOUND');
     assert.equal(await storeDigest(root), before);
   }
 });

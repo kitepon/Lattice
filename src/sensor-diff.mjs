@@ -546,6 +546,14 @@ export function compareSensorIndexes(request) {
     const sideB = withReadSnapshot(handleB, () => loadSide(
       handleB, makePathNormalizer(request.b.subtree ?? '', request.b.mappings ?? []), 'b',
     ));
+    // A subtree that matches no indexed file is a typo, not an empty side: say so instead of "ok".
+    for (const [side, loaded, subtree] of [['a', sideA, request.a.subtree], ['b', sideB, request.b.subtree]]) {
+      if (subtree && loaded.counts.files === 0 && loaded.excluded.files_outside_subtree > 0) {
+        throw new SensorDiffError('LATTICE_SENSOR_DIFF_SUBTREE_EMPTY',
+          `--subtree-${side} ${subtree} matches no indexed file`,
+          { side, subtree, next_action: `check the path; omit --subtree-${side} to compare the whole index` });
+      }
+    }
     const comparability = assessComparability(sideA, sideB);
 
     const nodes = diffNodes(sideA, sideB);

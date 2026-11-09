@@ -142,7 +142,7 @@ function assertUsageRejected(args) {
     assert.ok(['INVALID_ARGUMENTS', 'UNKNOWN_SUBCOMMAND', 'INPUT_OUTSIDE_REPOSITORY']
       .includes(error.code), received);
   } else {
-    assert.equal(result.stderr, `lattice: unsupported command or arguments: ${received}\n`);
+    assert.equal(JSON.parse(result.stderr).message, `unsupported command or arguments: ${received}`);
   }
 }
 

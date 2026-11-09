@@ -170,6 +170,12 @@ Both are machine facts (seat contract), so they leave the author's input:
 | schema text | `plan_create_input.v5` no longer requires `project_id`/`plan_version`; the scope-review pointer is the full argv `lattice plan scope-review --plan-input <file> --review <scope-review.json> --json` |
 | design memo text (a22) | v4/v5 schema description says every task carries a design memo and that an omitted, null or blank one is recorded as `NO_PLAN`, matching `fillAuthoringDefaults` (no new refusal) |
 | `plan scope-review` arguments (a22) | listed in `plan --help`; `--schema --json` returns the review schema; any other argv goes through `matchFlagCommand` (`--plan-input`, `--review` required, `--json` required) and a mismatch returns typed `INVALID_ARGUMENTS`/`plan_arguments_invalid` (`planArgumentFailure`, exit 2) instead of the plain usage line |
+| duplicate ids (a27) | an id equal to its neighbour in `/tasks`, `/phases` or a phase id list is `violation_kind: duplicate` (the machine already sorts, so only duplicates remain); a real order problem stays `unsorted` |
+| graph input (a27) | before `buildTodoPlan`, `describeCreateInputViolations` checks same-plan edge endpoints of `hard_dependencies` and `joins` (`unknown_reference` at `/hard_dependencies/<i>/<from\|to>/task_id` naming the missing task and the valid ids) and cycles among the plan's own tasks (`dependency_cycle_in_input` with `cycle: [task ids]`); both are `INPUT_INVALID`, so Store's `STORE_INCONSISTENT/dangling_dependency` and `DISPATCH_SHAPE_INVALID` stay backstops only |
+| existing plan_key (a27) | `runPlanCreate` adds `plan_key` to Store's `STORE_WRITE_CONFLICT/plan_key_already_exists` detail, so the refusal names the key |
+| `plan scope-review` unreadable review (a27) | a missing `--plan-input`/`--review` file is `INPUT_UNREADABLE/input_missing` with `input_ref` and `repo_root`; the CLI passes its flags, so next_action names the flag (`--review`) |
+| `plan backchain` shape (a27) | `backchainShapeProblems` runs before `authoring_ref` is read: a missing or invalid `authoring_ref` is `PLAN_BACKCHAIN_INVALID/schema_invalid` at `/authoring_ref`, not `input_ref_invalid` on `--input`; `schema_invalid` carries `problems` (key shape with `missing_keys`/`unexpected_keys`, const, identifiers, ref) and the first problem's pointer |
+| schema text (a27) | the v4/v5 top-level description no longer carries the Japanese `NO_PLAN` prompt (it stays on `tasks[].design_memo`) |
 
 Edge direction (schema text and `--template`): `from` is the prerequisite,
 `to` starts after `from` is done.

@@ -191,7 +191,10 @@ test('reopen rejects any started successor through every task edge and keeps nex
       const prospective = { ...event('reopen'), task_id: 'A' };
       assert.deepEqual(validateProspectiveEvent({ store: input.store, member: input.source, event: prospective }),
         refusal('reopen_has_started_successor', 'task_state', {
-          next_action: 'lattice todo split --plan source --input <file>',
+          // a28: name the started successor and the route that works (--override-reason), not split.
+          started_successors: [{ plan_key: 'target', task_id: input.target.tasks[0].task_id, status: successorStatus }],
+          next_action: `target/${input.target.tasks[0].task_id} (${successorStatus}) already left pending after source/A;`
+            + ' to reopen it anyway run `lattice todo reopen --plan source --task A --reason <text> --override-reason <text>`.',
         }));
       prospective.payload.override_reason = 'invalidate deliberately';
       assert.deepEqual(validateProspectiveEvent({ store: input.store, member: input.source, event: prospective }), { ok: true });

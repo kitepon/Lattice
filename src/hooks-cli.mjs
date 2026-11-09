@@ -1122,7 +1122,10 @@ export async function runHooksCli({
 }) {
   if (argv.length !== 3 || !['install', 'status', 'uninstall', 'emit'].includes(argv[0])
     || argv[1] !== '--host' || !HOSTS.has(argv[2])) {
-    return failure(stdout, 'USAGE', HOST_USAGE, 2);
+    const known = ['install', 'status', 'uninstall', 'emit'].includes(argv[0]);
+    return failure(stdout, 'USAGE', HOST_USAGE, 2, known
+      ? { pointer: '--host', next_action: `lattice hooks ${argv[0]} --host <claude|codex|cursor>` }
+      : { pointer: null, next_action: 'lattice hooks --help' });
   }
   const [command, , host] = argv;
   if (platform === 'win32') {

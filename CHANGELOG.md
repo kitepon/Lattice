@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 知らないコマンドや引数は、素の文でなく`cli_error.v2`の`USAGE`（`next_action: lattice --help`、exit 2は同じ）で返す（a29）。
+- `sensor init|sync`に無いpathを渡すと、`ok`でなく`LATTICE_SENSOR_PATH_MISSING`で名指す。`sensor diff`の`--subtree-a|b`が索引のどのfileにも当たらない時は、`LATTICE_SENSOR_DIFF_SUBTREE_EMPTY`で名指す。
+- AIの設定フォルダが一つも無いHOMEの`setup`は、`HOST_NOT_PRESENT`に文と`lattice setup --host <...>`を添える。`hooks`の引数の付け忘れは、付け忘れた`--host`と完全なコマンドを示す。
+- helpとusageで、付け忘れても補う`--json`を`[--json]`と書く（`status`・`session-context`・`sensor`）。
+- 後続の工程がもう始まっている工程の`todo reopen`は、始まった後続（`started_successors`）を名指し、通る道`lattice todo reopen … --reason <text> --override-reason <text>`を示す（a28）。これまでは進行中の工程のための`todo split`を示していた。
+- `todo phase accept|reject|reopen`・`evidence promote`・`independence compile`の引数の誤りは、足りないflag（`--evidence`・`--reason`・`--input`）とそれを足したコマンド全体を示す。`phase reopen`はflagの順を問わない。
+- `todo show`・`todo note list`・`todo structure`は`--json`を付け忘れても同じJSONを返し、flagの順を問わない。そのコマンドに無いflag（`todo status --plan`など）は`pointer`で名指し、受けるflagと打てるコマンド（`lattice plan show <key> --json`など）を示す。`todo`だけ、または`todo dependency`・`phase`・`evidence`だけでは、`subcommand_missing`で使えるコマンドと例を示す。
+- 既にある辺への`todo dependency connect`は、`DEPENDENCY_EXISTS`（exit 1）ではなく、done・block・retireの繰り返しと同じく何も書かずに`unchanged: true`で返し、その辺を名指す（`lattice.todo_dependency_unchanged_result.v1`）。無い辺の`disconnect`は従来どおり`DEPENDENCY_NOT_FOUND`で断る。
+- planの断りが、原因の値や作業を名指し、通る次の一手を示すようにした（a27）。`plan create`は、既にあるplan_keyを名指す。同じplanの中で無いtaskを指す辺は`/hard_dependencies/<i>/to/task_id`と正しいid一覧を示す`INPUT_INVALID`で、循環は`dependency_cycle_in_input`と`cycle`（例 `t1 -> t3 -> t1`）で返す（Storeの`STORE_INCONSISTENT`・`DISPATCH_SHAPE_INVALID`は最後の砦として残る）。重複したidは`unsorted`ではなく`duplicate`になる。`plan_not_active`は、storeが壊れた意味の`STORE_INCONSISTENT`ではなく`PLAN_NOT_FOUND`で返る（todo・plan共通）。`plan backchain`は`authoring_ref`を読む前に形を見て、欠けた・壊れた`authoring_ref`を`/authoring_ref`で示し、`schema_invalid`に`problems`を載せる。`plan scope-review`の無いreviewは`input_missing`・`repo_root`・`--review`を示す。repoの外では`plan show`等が`git init`を案内し、`lattice status`の`next_action`は`git init`になる。`todo verify`の`reconciliation_guidance.next_action`はどのplanも`none`。`plan create`のschema（v4・v5）の説明文からNO_PLANの日本語の促しを外し（`design_memo`の欄には残る）、`todo start`・`todo show`はmemoが書かれていれば`design_memo.prompt`を`null`にする。`plan revise`・`plan backchain`のhelpは`[--json]`と書き、欠けたflagの文はplanとtodoで同じ仮置き（`<file>`・`<text>`・`<key>`・`<id>`）を使う。
+
 ## 0.85.1 — 2026-11-10
 
 0.85.0の使い通しの点検で残った細かい所を直す修正版。案内と断りが実在するコマンド・足りない引数・捨てた値を名指しし、`--json`の付け忘れで断る所を減らす。

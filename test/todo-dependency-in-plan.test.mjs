@@ -87,7 +87,10 @@ test('same-plan connect keeps the typed refusals for duplicate, self, cycle and 
   success(root, ['todo', 'dependency', 'connect', ...edgeArgs('a', 'b'), '--reason', 'r']);
   const refusal = (args) => run(root, ['todo', 'dependency', 'connect', ...args, '--reason', 'r']);
   const stderrOf = (r) => { assert.notEqual(r.status, 0); return r.stderr + r.stdout; };
-  assert.match(stderrOf(refusal(edgeArgs('a', 'b'))), /dependency_already_in_plan/u);
+  // a28: an existing edge is the requested state, so connect succeeds unchanged instead of refusing.
+  const existing = refusal(edgeArgs('a', 'b'));
+  assert.equal(existing.status, 0, existing.stderr);
+  assert.equal(JSON.parse(existing.stdout).unchanged, true);
   assert.match(stderrOf(refusal(edgeArgs('a', 'a'))), /dependency_self_reference/u);
   assert.match(stderrOf(refusal(edgeArgs('x', 'b'))), /dependency_task_not_found/u);
   const before = (await readWork(root)).plan.plan_version;
@@ -126,10 +129,9 @@ test('same-plan disconnect still tombstones a ledger edge and refuses a missing 
   await appendTodoEvent({ repoRoot: root, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
     planKey: 'work', event: { kind: 'cross_plan_dependency', actor: ACTOR,
       recorded_at: new Date().toISOString(), payload: { from: ref('a'), to: ref('b'), reason: '旧台帳' } } });
-  // 台帳に生きている同じ辺を、connectは本体へ二重に足さない。
-  const duplicate = run(root, ['todo', 'dependency', 'connect', ...edgeArgs('a', 'b'), '--reason', '二重']);
-  assert.notEqual(duplicate.status, 0);
-  assert.match(duplicate.stderr + duplicate.stdout, /cross_plan_dependency_duplicate/u);
+  // 台帳に生きている同じ辺を、connectは本体へ二重に足さない（a28: 断らずunchangedで返す）。
+  const duplicate = success(root, ['todo', 'dependency', 'connect', ...edgeArgs('a', 'b'), '--reason', '二重']);
+  assert.equal(duplicate.unchanged, true);
   assert.deepEqual(bodyEdges(await readWork(root)), []);
   const removed = success(root, ['todo', 'dependency', 'disconnect', ...edgeArgs('a', 'b'), '--reason', '除去']);
   assert.equal(removed.schema, 'lattice.todo_dependency_disconnect_result.v1');

@@ -3,8 +3,8 @@ import { TODO_INDEPENDENCE_WORKFLOW } from './todo-independence-guidance.mjs';
 const ROOT_HELP = `Usage: lattice <command> [options]
 
 Commands:
-  status --json                 Discover the current project and next action
-  session-context --json        Session開始時の現在地を1プロセスで返す（工程状態＋並列可否）
+  status [--json]               Discover the current project and next action
+  session-context [--json]      Session開始時の現在地を1プロセスで返す（工程状態＋並列可否）
   plan <command>                Create, compile, or verify plans
   run <command>                 Start or observe compiled runs
   event verify                  Verify a runtime event log
@@ -31,9 +31,9 @@ Commands:
   create --schema-version <1|2|3|4|5> --json
   create --template --json           # 作者が書くkeyだけの最小のv5入力（そのままplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
-  revise --input <file> [--dry-run] --json  # 工程の全体と明示した状態移行から改訂する
+  revise --input <file> [--dry-run] [--json]  # 工程の全体と明示した状態移行から改訂する
   revise --schema --json
-  backchain --input <file> [--dry-run] --json
+  backchain --input <file> [--dry-run] [--json]
       # 各工程の必要・提供機能を照合し、初回又は既存storeへのplan登録まで行う
   show <plan_key> --json             # task・依存辺・phase・状態をplan本体から1コマンドで投影する
   scope-review --plan-input <file> --review <scope-review.json> --json
@@ -180,8 +180,8 @@ ${TODO_INDEPENDENCE_WORKFLOW.join('\n')}
 todo startのadvisoryとtodo independenceの投影が、その状況と次の一歩を返す。
 競合の同時起動は助言のまま。並列既定はstatusのdispatch_frontierとnext_actionが案内する。
 `,
-  sensor: `Usage: lattice sensor <init|sync> [path] --json
-       lattice sensor diff <rootA> <rootB> [options] --json
+  sensor: `Usage: lattice sensor <init|sync> [path] [--json]
+       lattice sensor diff <rootA> <rootB> [options] [--json]
 
 diff options:
   --subtree-a <rel>     # A側をこの部分木だけに絞り、prefixを剥がしてから突き合わせる
@@ -237,13 +237,13 @@ Windows製品hookとGrok製品hookは未対応として返し、MCPは独立し�
 
 const SUBCOMMAND_USAGE = Object.freeze({
   'setup status': 'setup status [--host <claude|codex|grok|cursor|all>] [--json]',
-  status: 'status --json',
-  'session-context': 'session-context --json',
+  status: 'status [--json]',
+  'session-context': 'session-context [--json]',
   'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5> --json | --template --json',
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
-  'plan backchain': 'plan backchain --input <file> [--dry-run] --json | --schema --json',
-  'plan revise': 'plan revise --input <file> [--dry-run] --json | --schema --json',
+  'plan backchain': 'plan backchain --input <file> [--dry-run] [--json] | --schema --json',
+  'plan revise': 'plan revise --input <file> [--dry-run] [--json] | --schema --json',
   'plan compile': 'plan compile --request <request.json> | --schema --json',
   'plan verify': 'plan verify --request <request.json> --plan <plan.json>',
   'run start': 'run start --request <request.json> --executor <adapter>'
@@ -323,10 +323,10 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo revise-phase': 'todo revise-phase --plan <key> --input <file> | --schema --json',
   'todo revise-set': 'todo revise-set --input <file> | --schema --json',
   'todo migrate': 'todo migrate --input <extraction.json> [--serialization-reviewed] [--json] | --input <extraction.json> --dry-run --json [--serialization-reviewed] | --schema --json',
-  'sensor init': 'sensor init [path] --json',
-  'sensor sync': 'sensor sync [path] --json',
+  'sensor init': 'sensor init [path] [--json]',
+  'sensor sync': 'sensor sync [path] [--json]',
   'sensor diff': 'sensor diff <rootA> <rootB> [--subtree-a <rel>] [--subtree-b <rel>]'
-    + ' [--map-a <from>=<to>] [--map-b <from>=<to>] [--limit <n>] --json',
+    + ' [--map-a <from>=<to>] [--map-b <from>=<to>] [--limit <n>] [--json]',
   'runtime-errors snapshot': 'runtime-errors snapshot [--after-cursor <n>] [--limit <n>] --json',
   'runtime-errors ack': 'runtime-errors ack <cursor> --json',
   'runtime-errors diagnostics': 'runtime-errors diagnostics --json',

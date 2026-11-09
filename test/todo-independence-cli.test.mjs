@@ -615,7 +615,7 @@ test('存在しないplanはfail closedにする', async (context) => {
   assert.equal(result.status, 1);
   const error = parse(result.stderr);
   assert.equal(error.schema, 'lattice.cli_error.v2');
-  assert.equal(error.code, 'STORE_INCONSISTENT');
+  assert.equal(error.code, 'PLAN_NOT_FOUND');
   assert.equal(error.detail.reason, 'plan_not_active');
 });
 
