@@ -220,7 +220,7 @@ const windows = () => hostPlatform() === 'win32';
  * フォルダは、その中身を信用できないので、絞らずに止める。
  */
 function ensureWindowsDirOwnerOnly(dir) {
-  const sid = windowsSelfSid();
+  const sid = windowsSelfSid(dir);
   const settled = (sddl) => daclIsOwnerOnly(sddl, sid) && daclIsProtected(sddl);
   const current = readWindowsDacl(dir, dir);
   if (settled(current)) return;
@@ -249,7 +249,7 @@ export function ensureSafeFile(path, scratchDir = dirname(path)) {
     assertPosix(statSync(path), 0o600);
     return;
   }
-  const sid = windowsSelfSid();
+  const sid = windowsSelfSid(scratchDir);
   // 出力fileを置くフォルダを他のaccountが書けるなら、読んだDACLを信用できない。先にそれを確かめる。
   if (!daclIsOwnerOnly(readWindowsDacl(scratchDir, scratchDir), sid)
     || !daclIsOwnerOnly(readWindowsDacl(path, scratchDir), sid)) throw Error('store_unsafe');

@@ -34,6 +34,10 @@ Windowsで権限を表すのはDACL（誰に何を許すかの一覧）である
 3. DACLは`icacls /save`で、自分のSIDは`whoami /user`で読む。どちらも`%SystemRoot%\System32`の実物を
    絶対pathで呼ぶ。`icacls`はfileへしか書き出せないので、出力はstoreのフォルダへ置いてすぐ消す。
    他のaccountが書ける場所（利用者の一時フォルダ等）へは置かない。
+   - どちらの出力もpipeで受けない（2026-11-09）。別のthreadが同じ瞬間に長生きのprocess（sensorのdaemon等）を
+     起こすと、そのprocessがpipeの書き口を継ぎ、道具が終わってもpipeが閉じない。待ち時間（10秒）切れで
+     `store_unsafe`になる。`whoami`の出力は、`icacls`と同じフォルダに同じ名前の形（`.acl-<pid>-<乱数>`）で
+     置き、自分で開いたfdから読んですぐ消す。
 4. storeは`%LOCALAPPDATA%\Lattice\runtime-errors\`という専用のフォルダへ置く。`%LOCALAPPDATA%\Lattice`には
    他の機能のfileがあり、フォルダごと絞れない。
    - フォルダは、継承を切り、本人・SYSTEM・Administratorsだけに絞る。空のフォルダ（作った直後）を絞る時は、

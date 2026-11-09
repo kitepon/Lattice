@@ -99,7 +99,7 @@ const deliveryDetails = (answer, intake) =>
 /** BugHubの持ち主が合鍵を置く形で置く: POSIXは0600、Windowsは本人・SYSTEM・Administratorsだけのフォルダの中。 */
 async function placeCredential(credentialPath, content) {
   await mkdir(path.dirname(credentialPath), { recursive: true });
-  if (windows) restrictWindowsDirToOwner(path.dirname(credentialPath), windowsSelfSid());
+  if (windows) restrictWindowsDirToOwner(path.dirname(credentialPath), windowsSelfSid(path.dirname(credentialPath)));
   await writeFile(credentialPath, JSON.stringify(content), { mode: 0o600 });
 }
 
