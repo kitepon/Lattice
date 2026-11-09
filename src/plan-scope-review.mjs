@@ -58,8 +58,9 @@ async function readJsonWithinRepo(repoRoot, inputRef) {
   }
   let stats;
   try { stats = await lstat(absolute); } catch {
-    throw new TodoStoreError('INPUT_UNREADABLE', 'input_unreadable', undefined,
-      { input_ref: inputRef });
+    // a27: 無いfileは原因(input_missing)と解いた場所(repo_root)を言う。どのflagかはCLIの文脈が名指す。
+    throw new TodoStoreError('INPUT_UNREADABLE', 'input_missing', undefined,
+      { input_ref: inputRef, repo_root: canonicalRoot });
   }
   if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_INPUT_BYTES
     || await realpath(absolute) !== absolute) {

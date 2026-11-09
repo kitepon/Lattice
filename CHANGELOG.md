@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- planの断りが、原因の値や作業を名指し、通る次の一手を示すようにした（a27）。`plan create`は、既にあるplan_keyを名指す。同じplanの中で無いtaskを指す辺は`/hard_dependencies/<i>/to/task_id`と正しいid一覧を示す`INPUT_INVALID`で、循環は`dependency_cycle_in_input`と`cycle`（例 `t1 -> t3 -> t1`）で返す（Storeの`STORE_INCONSISTENT`・`DISPATCH_SHAPE_INVALID`は最後の砦として残る）。重複したidは`unsorted`ではなく`duplicate`になる。`plan_not_active`は、storeが壊れた意味の`STORE_INCONSISTENT`ではなく`PLAN_NOT_FOUND`で返る（todo・plan共通）。`plan backchain`は`authoring_ref`を読む前に形を見て、欠けた・壊れた`authoring_ref`を`/authoring_ref`で示し、`schema_invalid`に`problems`を載せる。`plan scope-review`の無いreviewは`input_missing`・`repo_root`・`--review`を示す。repoの外では`plan show`等が`git init`を案内し、`lattice status`の`next_action`は`git init`になる。`todo verify`の`reconciliation_guidance.next_action`はどのplanも`none`。`plan create`のschema（v4・v5）の説明文からNO_PLANの日本語の促しを外し（`design_memo`の欄には残る）、`todo start`・`todo show`はmemoが書かれていれば`design_memo.prompt`を`null`にする。`plan revise`・`plan backchain`のhelpは`[--json]`と書き、欠けたflagの文はplanとtodoで同じ仮置き（`<file>`・`<text>`・`<key>`・`<id>`）を使う。
+
 ## 0.85.1 — 2026-11-10
 
 0.85.0の使い通しの点検で残った細かい所を直す修正版。案内と断りが実在するコマンド・足りない引数・捨てた値を名指しし、`--json`の付け忘れで断る所を減らす。

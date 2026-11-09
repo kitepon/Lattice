@@ -206,8 +206,8 @@ test('plan create with a duplicate task_id names the pointer, the rule and the i
   }))}\n`);
   const detail = lattice(root, ['plan', 'create', '--input', 'draft.json']);
   assert.equal(detail.pointer, '/tasks/1/task_id');
-  assert.equal(detail.rule, 'unsorted');
-  assert.match(detail.next_action, /'t1' appears twice with different content/u);
+  assert.equal(detail.rule, 'duplicate');
+  assert.match(detail.next_action, /'t1' appears more than once/u);
 });
 
 test('todo done names a missing or unknown flag', async (context) => {
@@ -251,7 +251,7 @@ test('plan create/revise/backchain argument refusals name the flag, rule and rep
   const missingInput = run(['plan', 'create']);
   assert.equal(missingInput.pointer, '--input');
   assert.equal(missingInput.rule, 'flag_missing');
-  assert.match(missingInput.next_action, /Add --input <value> to `lattice plan create`/u);
+  assert.match(missingInput.next_action, /Add --input <file> to `lattice plan create`/u);
   const unknown = run(['plan', 'revise', '--input', 'x.json', '--bogus', '--json']);
   assert.equal(unknown.pointer, '--bogus');
   assert.equal(unknown.rule, 'flag_unknown');
