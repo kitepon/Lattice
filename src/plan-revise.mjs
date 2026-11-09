@@ -6,7 +6,7 @@ import { gitSync } from './git-process.mjs';
 import { completeCreateInput, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { validatePlanCreateInput } from './project-cli.mjs';
 import {
-  compileBackchainRevision, planSeed, readPlanBackchainBinding, rebindCarriedWork,
+  carriedStartActors, compileBackchainRevision, planSeed, readPlanBackchainBinding, rebindCarriedWork,
 } from './plan-backchain.mjs';
 import {
   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter, readTodoStore, TodoStoreError,
@@ -338,7 +338,7 @@ export async function applyPlanRevision({
     try {
       reboundTaskIds = await rebindCarriedWork({ repoRoot, planKey: revision.plan_key, env,
         reason: '工程改訂後のplan versionへ作業中ToDoを結び直す',
-        failureCode: 'PLAN_REBIND_PENDING' });
+        failureCode: 'PLAN_REBIND_PENDING', carriedActors: carriedStartActors(member) });
     } catch (error) {
       // 公開後に起きたStoreの失敗は、改訂が確定済みであることを必ず報告する（2026-11-07
       // 初回使用: rebind読込の素のbinding_staleが公開済み事実を隠した）

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 別の席が`plan revise`・`todo dependency connect|disconnect`・`plan backchain`で計画を改訂しても、作業中の工程は始めた席の`turn.own`に残る（a16）。改訂後の版へ結び直すstartは、改訂した席でなく、運ぶ前のstartを記録した席の`actor`で記録する。
+
 ## 0.84.2 — 2026-11-09
 
 計画がまだ無いrepoで初めての`todo status`が断らないようにし、WindowsでMCPの起動記録が止まる不具合を直す修正版。

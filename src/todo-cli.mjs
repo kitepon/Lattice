@@ -699,9 +699,9 @@ function reopenAdvisory(plan, phases, taskId) {
 async function mutate({
   repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
-  testResultRef = null,
+  testResultRef = null, actor: carriedActor = null,
 }) {
-  const actor = resolveTodoActor(env);
+  const actor = carriedActor ?? resolveTodoActor(env);
   const evidence = evidenceRef === null && evidenceMessage === null
     ? null
     : await resolveDoneEvidence({
@@ -1069,7 +1069,8 @@ async function startTask({
 // literal startだけを束縛に使いcarryを推定しないため、改訂を跨いだ進行中工程の
 // 再開はこの入口だけが正規経路になる。advisory・independence gateは初回startで
 // 済んでいるため再適用しない。
-export async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
+// actor: 改訂が運ぶstartの記録者。渡せば現在の席でなくその記録者でrebind startを積む（a16）。
+export async function rebindStart({ repoRoot, env, planKey, taskId, reason, actor = null }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active');
@@ -1101,7 +1102,7 @@ export async function rebindStart({ repoRoot, env, planKey, taskId, reason }) {
   }
   return mutate({
     repoRoot, env, planKey, taskId, kind: 'start',
-    payload: { start_mode: 'rebind', reason }, evidenceRef: null, noteContext,
+    payload: { start_mode: 'rebind', reason }, evidenceRef: null, noteContext, actor,
   });
 }
 

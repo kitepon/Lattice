@@ -234,6 +234,22 @@ test('seats sharing one USER are told apart by LATTICE_SEAT_ID: seat_id on top, 
   assert.equal(anonymous.turn.actor.agent, 'bell');
 });
 
+test('a16: a revision by another seat keeps the carried start with the seat that started it', async (context) => {
+  const root = await initialized(context, ['T1', 'T2', 'T3']);
+  const started = run(root, ['todo', 'start', '--plan', 'main', '--task', 'T3'], actorEnv('seat-b'));
+  assert.equal(started.status, 0, started.stderr);
+  const connected = run(root, ['todo', 'dependency', 'connect', '--from-plan', 'main', '--from-task', 'T1',
+    '--to-plan', 'main', '--to-task', 'T2', '--reason', 'T2 needs T1'], actorEnv('seat-a'));
+  assert.equal(connected.status, 0, connected.stderr);
+  const result = parse(connected.stdout);
+  assert.deepEqual(result.rebound_task_ids, ['T3']);
+  assert.equal(result.actor.agent, 'seat-a');
+  const b = parse(run(root, ['session-context', '--json'], actorEnv('seat-b')).stdout);
+  assert.deepEqual(b.turn.own.map(({ task_id: id }) => id), ['T3']);
+  const a = parse(run(root, ['session-context', '--json'], actorEnv('seat-a')).stdout);
+  assert.deepEqual(a.turn.own, []);
+});
+
 test('doneの工程はownに載らない', async (context) => {
   const root = await initialized(context, ['T1']);
   const env = actorEnv('agent-1');
