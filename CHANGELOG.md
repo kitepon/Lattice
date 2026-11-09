@@ -4,6 +4,7 @@
 
 - `sensor diff` と、`--input` に値のある `plan revise`・`plan backchain` も、`--json` を付け忘れても同じ結果を返す（a24）。`--input` の付け忘れは従来どおり `--input` を名指しして断る。
 - `setup` の結果で、hooksが `wired` でない時は `state: failed` のまま、`hooks status` の状態名を `code`（例 `HOOKS_NOT_WIRED`）で示す。
+- 計画の案内の残りを直した（a22）。`plan create`のschema（v4・v5）は「全taskに設計メモが要る」ではなく、書かない・null・空なら`NO_PLAN`として記録すると書く（検査は変えない）。`plan --help`に`scope-review`を載せ、素の`plan scope-review`や欠けた引数は、使い方の1行ではなく欄と直し方を持つ`INVALID_ARGUMENTS`で返す。`todo --help`・`todo independence --help`に`independence mode`を載せ、`todo independence mode --help`が使い方を返す。全taskが終わり監査が未着手（`gate_ready`）の時、`lattice status`の`next_action`は`lattice todo phase close-unaudited --plan <key> --phase <id> --reason <text>`を示し、`todo done`の助言と`todo phase status`の案内は経緯の説明を外した1行になる。`todo verify`の`registered_unreconciled`は何もしなくてよい状態として、`--json`の`next_action`が`none`、1行表示が`nothing to do`になる。
 
 ## 0.85.0 — 2026-11-10
 

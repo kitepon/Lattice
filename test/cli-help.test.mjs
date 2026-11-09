@@ -134,3 +134,26 @@ test('todo dependency helpはconnectとdisconnectの両方を示し、todo help�
   assert.doesNotMatch(help, /不正なら拒否する/u);
   assert.match(help, /LATTICE_SEAT_ID/u);
 });
+
+test('案内が名指すコマンドはhelpに載る（a22）', () => {
+  const runHelp = (args) => runCli(args).stdout;
+  const plan = runHelp(['plan', '--help']);
+  assert.match(plan, /scope-review --plan-input <file> --review <scope-review\.json> --json/u);
+  assert.match(plan, /scope-review --schema --json/u);
+  assert.match(runHelp(['todo', '--help']),
+    /independence mode --plan <key> --set <witness\|conversation> --reason <text>/u);
+  assert.match(runHelp(['todo', 'independence', '--help']), /\| mode --plan <key> --set/u);
+  assert.equal(runHelp(['todo', 'independence', 'mode', '--help']),
+    'Usage: lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>\n');
+});
+
+test('素のplan scope-reviewは欄と直し方をtypedに返す（a22）', () => {
+  const bare = runCli(['plan', 'scope-review']);
+  assert.equal(bare.status, 2);
+  const error = JSON.parse(bare.stderr);
+  assert.equal(error.code, 'INVALID_ARGUMENTS');
+  assert.equal(error.detail.pointer, '--plan-input');
+  assert.equal(error.detail.rule, 'flag_missing');
+  assert.equal(JSON.parse(runCli(['plan', 'scope-review', '--schema', '--json']).stdout).title,
+    'lattice.plan_scope_review.v1');
+});

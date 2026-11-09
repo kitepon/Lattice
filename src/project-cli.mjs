@@ -317,14 +317,15 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
         // ready frontierが在る間はADR 0063の並列開始コマンドが勝つ
         // ——ここを監査で上書きするとdispatchが再直列化する。監査待ちはtodo statusの
         // audit_pending欄に常在するので、順位を下げても消えない。
-        // commandはverbatim実行可能で読み取り専用のものにする。`phase review`は
-        // `--reason <text>`のplaceholderを含みjournalを書き換えるので置かない
-        // （`todo phase status`の結果には既に両分岐のguidanceが載っている）。
+        // gate_ready（全taskが終わり監査も未着手）は軽い出口close-unauditedを1行で示す（a22）。
+        // 監査を始めた後（reviewing／rejected）は読み取り専用の`todo phase status`が両分岐を示す。
         : todo.structure_finalization_pending.length > 0
           ? { command: todo.structure_finalization_pending[0].next_commands[0],
             reason: 'structure_finalization_pending' }
           : todo.audit_pending.length > 0
-          ? { command: `lattice todo phase status --plan ${todo.audit_pending[0].plan_key}`,
+          ? { command: todo.audit_pending[0].phase_status === 'gate_ready'
+            ? `lattice todo phase close-unaudited --plan ${todo.audit_pending[0].plan_key} --phase ${todo.audit_pending[0].phase_id} --reason <text>`
+            : `lattice todo phase status --plan ${todo.audit_pending[0].plan_key}`,
             reason: 'audit_pending' }
           : { command: 'lattice todo status', reason: 'no_ready_task' };
     const result = statusResult({

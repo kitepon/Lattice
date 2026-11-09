@@ -336,7 +336,7 @@ test('終端監査gateと同じく、closed_unauditedもToDoのdispatch(next_rea
   assert.deepEqual(after, before);
 });
 
-test('todo doneのterminal_audit_required advisoryとtodo phase statusのguidanceは、0.36.0の原因と2択の次の一手を言う', async (t) => {
+test('todo doneのterminal_audit_required advisoryとtodo phase statusのguidanceは、軽い出口を先に1行で言う（a22）', async (t) => {
   const root = await workspace(t);
   for (const taskId of ['A', 'B']) {
     assert.equal(run(root, ['todo', 'start', '--plan', 'audited', '--task', taskId,
@@ -352,17 +352,17 @@ test('todo doneのterminal_audit_required advisoryとtodo phase statusのguidanc
     '--evidence', await evidenceFile(root, 'evidence-c')], ACTOR_ENV);
   assert.equal(finalDone.status, 0, finalDone.stderr);
   const advisory = JSON.parse(finalDone.stdout).advisory;
-  assert.match(advisory.guidance, /0\.36\.0/u);
-  assert.match(advisory.guidance, /phase review/u);
-  assert.match(advisory.guidance, /phase close-unaudited/u);
-  assert.match(advisory.guidance, /phase baseline/u);
+  assert.equal(advisory.guidance,
+    '全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited --plan audited --phase terminal-audit --reason <text>'
+    + '（監査するなら lattice todo phase review --plan audited --phase terminal-audit --reason <text>'
+    + ' → accept --plan audited --phase terminal-audit --input <file>）');
 
   const phaseStatusResult = JSON.parse(run(root, ['todo', 'phase', 'status', '--plan', 'audited']).stdout);
   const guidance = phaseStatusResult.phases[0].guidance;
-  assert.match(guidance, /0\.36\.0/u);
-  assert.match(guidance, /phase review/u);
-  assert.match(guidance, /phase close-unaudited/u);
-  assert.match(guidance, /phase baseline/u);
+  assert.equal(guidance,
+    '全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited --plan audited --phase terminal-audit --reason <text>'
+    + '（監査するなら lattice todo phase review --plan audited --phase terminal-audit --reason <text>'
+    + ' → accept --plan audited --phase terminal-audit --input <file>）');
 });
 
 test('CLI経由のtodo phase close-unauditedはclosed_unauditedを記録する', async (t) => {
