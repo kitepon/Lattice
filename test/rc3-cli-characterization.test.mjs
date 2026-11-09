@@ -33,7 +33,7 @@ const MALFORMED_INPUTS = Object.freeze([
   [],
   ['frobnicate'],
   ['--version', 'extra'],
-  ['status'],
+  // bare `status` implies --json since a20 (seat walkthrough 2026-11-10); a flagged extra word still refuses.
   ['status', '--json', 'extra'],
   ['doctor'],
   ['doctor', '--json'],
