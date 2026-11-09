@@ -34,6 +34,19 @@ test('PR scope runs only the suites that reach the change and skips untouched Se
   }
 });
 
+test('a CLI reached by path segments is in scope (PR #100 missed cli-stdout-epipe)', async () => {
+  const { referencesIn, referenceGraph, selectScope } = await import('../scripts/ci-scope.mjs');
+  const text = "const CLI = path.join(REPO_ROOT, 'bin', 'lattice.mjs');";
+  const refs = referencesIn(text, 'test/x.test.mjs', ['bin/lattice.mjs', 'src/lattice.mjs', 'src/other.mjs']);
+  assert.deepEqual(refs.sort(), ['bin/lattice.mjs', 'src/lattice.mjs']);
+  const changed = ['CHANGELOG.md', 'docs/architecture/function-map.md', 'src/todo-cli.mjs',
+    'test/todo-cli.test.mjs', 'test/todo-status.test.mjs'];
+  const tests = ['cli-stdout-epipe.test.mjs', 'todo-cli.test.mjs', 'todo-status.test.mjs'];
+  const scope = selectScope({ changed, tests, ...await referenceGraph() });
+  assert.equal(scope.full, false);
+  assert.ok(scope.tests.includes('cli-stdout-epipe.test.mjs'), scope.reason);
+});
+
 test('a version-only package bump is told apart from a dependency change', async () => {
   const { withoutVersion } = await import('../scripts/ci-scope.mjs');
   const lock = (version, dep) => JSON.stringify({ name: 'x', version, packages: { '': { version }, 'node_modules/a': { version: dep } } });
