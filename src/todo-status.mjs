@@ -413,7 +413,8 @@ function collectAuditPending(member, sink) {
       phase_status: phase.status,
       implicit,
       required_evidence_slots: [...definition.required_evidence_slots],
-      next_commands: auditPendingNextCommands(member.plan.plan_key, phase.phase_id, phase.status),
+      next_commands: auditPendingNextCommands(member.plan.plan_key, phase.phase_id, phase.status,
+        definition.required_evidence_slots.length),
     });
   }
 }

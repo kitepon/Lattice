@@ -124,7 +124,7 @@ test('gate_readyでないPhaseへのclose-unauditedはtypedに拒否される', 
   await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
     event: { kind: 'phase_close_unaudited', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
       payload: { reason: 'まだ早い' } } }),
-  'STORE_INCONSISTENT', 'phase_gate_not_ready');
+  'TODO_TRANSITION_REFUSED', 'phase_gate_not_ready');
 });
 
 test('理由なしのclose-unauditedは拒否される', async (t) => {
@@ -355,14 +355,14 @@ test('todo doneのterminal_audit_required advisoryとtodo phase statusのguidanc
   assert.equal(advisory.guidance,
     '全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited --plan audited --phase terminal-audit --reason <text>'
     + '（監査するなら lattice todo phase review --plan audited --phase terminal-audit --reason <text>'
-    + ' → accept --plan audited --phase terminal-audit --input <file>）');
+    + ' → accept --plan audited --phase terminal-audit --evidence <file>）');
 
   const phaseStatusResult = JSON.parse(run(root, ['todo', 'phase', 'status', '--plan', 'audited']).stdout);
   const guidance = phaseStatusResult.phases[0].guidance;
   assert.equal(guidance,
     '全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited --plan audited --phase terminal-audit --reason <text>'
     + '（監査するなら lattice todo phase review --plan audited --phase terminal-audit --reason <text>'
-    + ' → accept --plan audited --phase terminal-audit --input <file>）');
+    + ' → accept --plan audited --phase terminal-audit --evidence <file>）');
 });
 
 test('CLI経由のtodo phase close-unauditedはclosed_unauditedを記録する', async (t) => {

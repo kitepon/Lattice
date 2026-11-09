@@ -38,9 +38,11 @@ export function isAuditPendingPhaseStatus(status) {
  * 監査待ちでない状態を渡すのは呼び出し側の誤りなので、空配列へ丸めずに投げる。
  * 呼ぶ前に`isAuditPendingPhaseStatus`で絞ること。
  *
+ * `slotCount`は必須evidence slotの数。1つなら`--evidence`で足り、複数なら`--input`が要る。
+ *
  * @returns {string[]} 実行可能なコマンド行（1つ以上）
  */
-export function auditPendingNextCommands(planKey, phaseId, status) {
+export function auditPendingNextCommands(planKey, phaseId, status, slotCount = 1) {
   const target = `--plan ${planKey} --phase ${phaseId}`;
   if (status === 'gate_ready') {
     return [
@@ -50,8 +52,9 @@ export function auditPendingNextCommands(planKey, phaseId, status) {
   }
   if (status === 'reviewing') {
     return [
-      `lattice todo phase accept ${target} --input <file>`,
-      `lattice todo phase reject ${target} --input <file>`,
+      // a36: --evidence fills the decision from one committed file; several slots need --input.
+      `lattice todo phase accept ${target} ${slotCount === 1 ? '--evidence <file>' : '--input <file>'}`,
+      `lattice todo phase reject ${target} --reason <text> --evidence <file>`,
     ];
   }
   if (status === 'rejected') {

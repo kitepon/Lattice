@@ -3,6 +3,7 @@ import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
 import { FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
+import { auditPendingNextCommands } from './todo-audit-pending.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
 import {
@@ -20,6 +21,7 @@ import {
   repairAuthoringArtifact,
   resolveAuthoringInputPath,
   resolveTodoActor,
+  todoActorAgents,
 } from './todo-authoring-input.mjs';
 
 import {
@@ -248,7 +250,7 @@ function typedFailure(stderr, error, context = {}) {
 }
 
 /** What the printers need to name a concrete repair: the command and the --plan/--task the caller typed. */
-function guidanceContext(argv) {
+function guidanceContext(argv, env = {}) {
   const { flags } = parseFlagMap(argv.slice(1));
   return {
     family: 'todo',
@@ -256,6 +258,8 @@ function guidanceContext(argv) {
     plan: typeof flags.plan === 'string' ? flags.plan : undefined,
     task: typeof flags.task === 'string' ? flags.task : undefined,
     flags,
+    // a36: who this seat is now and was before LATTICE_SEAT_ID, so a start refusal can name its own old start.
+    actors: todoActorAgents(env),
   };
 }
 
@@ -848,7 +852,17 @@ async function readStructureSetDraft(repoRoot, inputRef) {
 function auditGateGuidance(planKey, phaseId) {
   const target = `--plan ${planKey} --phase ${phaseId}`;
   return `全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited ${target} --reason <text>`
-    + `（監査するなら lattice todo phase review ${target} --reason <text> → accept ${target} --input <file>）`;
+    + `（監査するなら lattice todo phase review ${target} --reason <text> → accept ${target} --evidence <file>）`;
+}
+
+/** a36: reviewing and rejected phases say their next command too (the same lines as audit_pending). */
+function auditDecisionGuidance(plan, phase) {
+  const slots = todoPhaseDefinitions(plan).find(({ phase_id: id }) => id === phase.phase_id)
+    ?.required_evidence_slots.length ?? 1;
+  const [first, second] = auditPendingNextCommands(plan.plan_key, phase.phase_id, phase.status, slots);
+  return phase.status === 'reviewing'
+    ? `監査中（review済み）。受け入れるなら: ${first}（通らないなら: ${second}）`
+    : `監査が通らなかった。やり直すなら: ${first}`;
 }
 
 /**
@@ -981,6 +995,28 @@ async function mutate({
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+/**
+ * a36: a reopened task stays in its last starter's `turn.own` (seat contract). When that is not
+ * this seat, the result names the holder and the one command that moves the task here.
+ */
+async function reopenTask({ repoRoot, env, planKey, taskId, payload }) {
+  const result = await mutate({ repoRoot, env, planKey, taskId, kind: 'reopen', payload, evidenceRef: null });
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ descriptor }) => descriptor.plan_key === result.plan_key);
+  const holder = member?.journal.events
+    .findLast((event) => event.kind === 'start' && event.task_id === result.task_id)?.actor?.agent ?? null;
+  if (holder === resolveTodoActor(env).agent) return result;
+  const hinted = {
+    ...result, started_by: holder,
+    next_action: `${result.plan_key}/${result.task_id} is in-progress again under`
+      + ` ${holder === null ? 'no seat (no start in this plan version)' : `seat '${holder}', which started it last`};`
+      + ` to work on it from this seat run \`lattice todo start --plan ${result.plan_key} --task ${result.task_id} --rebind --reason <text>\`.`,
+    result_digest: '',
+  };
+  hinted.result_digest = todoSelfDigest(hinted, 'result_digest');
+  return hinted;
 }
 
 /**
@@ -1811,7 +1847,8 @@ async function phaseStatus({ repoRoot, planKey }) {
         ...(structureFinalization.required && structureFinalization.status !== 'fresh'
           ? [`構造finalizationが${structureFinalization.status}です。先に lattice todo structure finalize --plan ${member.plan.plan_key} --json を実行してください。`]
           : []),
-      ].join('\n') : null,
+      ].join('\n')
+      : ['reviewing', 'rejected'].includes(phase.status) ? auditDecisionGuidance(member.plan, phase) : null,
   }));
   const result = {
     schema: 'lattice.phase_status_result.v2', project_id: store.project_id,
@@ -4917,14 +4954,12 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
       && (flags['override-reason'] === undefined
         || (typeof flags['override-reason'] === 'string' && flags['override-reason'].length > 0))) {
-      action = (repoRoot) => mutate({
+      action = (repoRoot) => reopenTask({
         repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'reopen',
         payload: {
           reason: flags.reason,
           override_reason: typeof flags['override-reason'] === 'string' ? flags['override-reason'] : null,
         },
-        evidenceRef: null,
       });
     }
   }
@@ -4973,7 +5008,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'
       && error.detail !== null && typeof error.detail === 'object')) {
-      return typedFailure(stderr, error, guidanceContext(argv));
+      return typedFailure(stderr, error, guidanceContext(argv, env));
     }
     // 漏れた`fetch failed`もTypeErrorで届く。呼び出し側の契約違反と答えず、内部故障として観測口へ渡す。
     if (error instanceof TypeError && cliFailureClass(error) !== 'transport') {

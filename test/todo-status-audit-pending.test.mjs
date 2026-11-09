@@ -93,8 +93,8 @@ test('reviewingは次コマンドを持ったまま残り、acceptedとclosed_un
   assert.equal(reviewing.audit_pending.length, 1, '監査中はまだ判断が着いていない');
   assert.equal(reviewing.audit_pending[0].phase_status, 'reviewing');
   assert.deepEqual(reviewing.audit_pending[0].next_commands, [
-    'lattice todo phase accept --plan main --phase terminal-audit --input <file>',
-    'lattice todo phase reject --plan main --phase terminal-audit --input <file>',
+    'lattice todo phase accept --plan main --phase terminal-audit --evidence <file>',
+    'lattice todo phase reject --plan main --phase terminal-audit --reason <text> --evidence <file>',
   ]);
 
   await append({ kind: 'phase_accept', phase_id: 'terminal-audit',

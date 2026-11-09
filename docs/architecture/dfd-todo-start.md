@@ -457,3 +457,19 @@ the input shape from the CLI alone.
 | store: reopen of a task that is not done | member task status before binding | `resolveTargetedEvent` refuses `TODO_TRANSITION_REFUSED/invalid_reopen_transition` (cause `task_state`, `status`) for in-progress, pending, blocked or retired; the guidance says only a done task can be reopened and gives the step for that state (done/retract, start, unblock, nothing for retired). `invalid_reopen_binding` stays only for a done task without a done binding (real inconsistency). | Nothing is written. |
 
 Patent: lifecycle transitions are outside claims 1–12.
+
+## Phase gate, reopen holder and an own anonymous start name the next step (a36; Alice 2026-11-10)
+
+Plan bellteam-adoption-20261108 r9, task a36-lifecycle-hints (0.85.3 seat
+walkthrough items 3, 5, 8). No order of checks changes. Only the code of a phase gate
+refusal, guidance text and additive result/detail keys change.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: `validateProspectiveEvent` phase gate | locked store `member.phases` (derived status), phase definitions | `phase_review` / `phase_close_unaudited` on a phase whose status is not `gate_ready` refuses `TODO_TRANSITION_REFUSED/phase_gate_not_ready` (was replay's `STORE_INCONSISTENT`), cause `phase_state`, detail `plan_key`, `phase_id`, `phase_status`, `required_evidence_slots`. Replay keeps `STORE_INCONSISTENT` for history. | guidance by `phase_status`: active → finish its tasks (`todo status --json`); locked → predecessor phases (`phase status`); reviewing → `phase accept ... --evidence <file>` or `phase reject ... --reason <text> --evidence <file>`; rejected → `phase reopen`; accepted / closed_unaudited → `phase reopen` first. |
+| todo-audit-pending: `auditPendingNextCommands(plan, phase, status, slotCount = 1)` | status, required slot count | reviewing: accept `--evidence <file>` (one slot; several slots: `--input <file>`), reject `--reason <text> --evidence <file>`. Used by `todo status` `audit_pending`, the phase gate guidance and `phase status`. | — |
+| cli: `phase status` guidance | `member.phases`, definitions | gate_ready text's audited route ends `accept ... --evidence <file>`; reviewing and rejected phases get a guidance line from the same commands (was null). | — |
+| cli: `todo reopen` holder (`reopenTask`) | after the reopen: current journal's latest `start` actor of the task | `turn.own` keeps the task under its latest starter (seat contract, unchanged). When that agent is not this seat (or there is no start in this version), the result adds `started_by` (agent or null) and `next_action` = `lattice todo start --plan P --task T --rebind --reason <text>`. Same seat: result unchanged. | — |
+| Plan: start of an in-progress task held by another agent | latest `start` actor in the current journal | `invalid_start_transition` (`task_state`, in-progress) adds `started_by`. The CLI guidance context carries `todoActorAgents(env)` = `{agent, anonymous}` (anonymous = the agent with `LATTICE_SEAT_ID` unset; no I/O). | `started_by === anonymous !== agent` → this seat's own start from before `LATTICE_SEAT_ID`: one-time fix with `LATTICE_SEAT_ID` unset, `todo retract ... --reason <text>` then start here, or finish it there (`todo done ... --message <text>`). Otherwise names `seat '<agent>'` and the `--rebind` start that moves it. |
+
+Patent: lifecycle transitions are outside claims 1–12.
