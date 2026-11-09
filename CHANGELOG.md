@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 残っていた断りも、足りない引数・捨てた値・正しい工程と次のコマンドを名指しする（a23）。`todo phase review`・`phase close-unaudited`・`split`・`note`の引数の誤りは、`pointer`に足りないflagを、`next_action`にそれを足したコマンド全体を載せる（`phase review|close-unaudited`はflagの順を問わない。`note`は`--message`か`--input`のどちらか一つ）。
+- blockedの工程への`todo block --reason`、retiredの工程への`todo retire --reason`は、記録と違う理由なら`not_recorded: ['--reason']`と、残し方（`todo note`、blockなら`unblock`してから`block`し直す）を返す。`todo done`の`not_recorded`は、記録と同じ中身（同じ証拠・同じ文・同じtest result）を挙げない。
+- `todo dependency`の`DEPENDENCY_EXISTS`・`dependency_self_reference`・`dependency_task_not_found`は、`--help`だけでなく、その辺や工程を名指して`lattice plan show <key> --json`を示す（`pointer`は`--to-task`/`--from-task`）。
+- `todo note --input`と`todo done --test-result`は、plan入力と同じくrepo外の絶対pathも読む。証拠（`--evidence`）はrepo内のpathとgit blobで記録し他の席が検証するので、repo外は従来どおり断り、その理由と`--message`を示す。repo外を受けるpathが無い時の文は「repo内」と言わない。
+
 ## 0.85.0 — 2026-11-10
 
 席の側から使い通した点検（0.84.2）で見つかった止まりを直す版。別の席の改訂で作業の持ち主が移らなくなり、最初の計画が一度で作れ、断りと案内が実在するコマンドを名指しする。

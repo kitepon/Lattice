@@ -416,4 +416,16 @@ additive result keys.
 | Plan: disconnect of a missing edge | plan body edges, live ledger edges | `DEPENDENCY_NOT_FOUND` (was DEPENDENCY_INVALID): same plan → reason `dependency_not_found` with `from`, `to`, `predecessors` (the to-task's current in-plan predecessors) and next_action `lattice plan show P --json`; cross-plan keeps reason `cross_plan_dependency_not_found`. | — |
 | Plan: `plan show` `depends_on_count` | plan edges, task states | An edge whose from or to task is retired is not counted (a13: retire removes its edges from readiness). | — |
 
+## Remaining refusals name the flag, the dropped value and the valid tasks (a23; Ludmila 2026-11-10)
+
+Plan bellteam-adoption-20261108 r5, task a23-store-refusals-rest (0.85.0 seat
+walkthrough N1/N2/N7/N8). Extends the a18 rows above; no check order changes.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: argument refusal (N2) | argv of `phase review`, `phase close-unaudited`, `split`, `note` (write) | `TODO_FLAG_SPECS` gains these commands (two-word head for `phase`), so `pointer` = the missing flag and `next_action` = the full command with it, as a18. `phase review|close-unaudited` parse by flag name (order-free). `note` needs exactly one of `--message`/`--input`: neither → `pointer --message`, rule `flag_missing`, both → `pointer --input`, rule `flags_exclusive`. | — |
+| Plan: repeated `block`/`retire` and `done` (N7, a12 unchanged) | flags of the repeated call, the last recorded event of that kind | Still no event. `not_recorded` lists only the given content that differs from what is recorded: block/retire `--reason` vs the recorded `payload.reason`; done `--message`/`--evidence` vs the recorded evidence (`path` and `git_blob_oid`, computed with `git hash-object` without `-w`), `--test-result` vs the recorded `test_result`. Identical content is not listed. `next_action` per kind: done → `todo note` or `todo reopen`; block → `todo note`, or `todo unblock` then block again; retire → `todo note` (retire is permanent). | An unreadable file in the repeated call counts as differing (listed), never an error. |
+| Plan: dependency refusal guidance (N8) | detail `from`/`to`/`ref`/`plan_key`/`task_id`, ctx flags | `dependency_already_in_plan`/`cross_plan_dependency_duplicate` → the edge exists, nothing to add, see `lattice plan show <to-plan> --json`; `dependency_self_reference` → `pointer --to-task`, a task cannot depend on itself; `dependency_task_not_found` → `pointer` the flag naming the missing task, next `lattice plan show <plan> --json` (as `start --task nope`); `dependency_plan_not_found` → `lattice todo status --json`. Never only `--help`. | — |
+| Plan: input path reader (N1, `resolveAuthoringInputPath`) | `--input`, `--evidence`, `--test-result` path | Content-only readers (`plan`/`todo` JSON input, `note --input`, `--test-result`) accept a path outside the repo (a17). Evidence (`done --evidence`, `phase accept|reject --evidence`, `evidence promote`) is recorded as a repo path plus git blob that other seats verify, so it keeps `input_path_outside_repo`, whose text says why and offers `--message <text>`. `input_missing` text says "repo file" only for readers that require one. | Copy the file into the repo, or pass its text with `--message`. |
+
 Patent: lifecycle transitions are outside claims 1–12.
