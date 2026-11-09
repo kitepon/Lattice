@@ -11,6 +11,7 @@
 - done済みの工程に`--message`などを付けてもう一度`todo done`すると、従来どおり何も書かず`unchanged: true`で返し、`not_recorded`で記録しなかったflagを、`next_action`で`todo note`か`todo reopen`を示す。
 - 依存の循環を閉じる`dependency connect`は`STORE_INCONSISTENT/merged_cycle`ではなく`DEPENDENCY_CYCLE`で断り、`cycle`に閉じる道の工程を並べる。無い辺の`disconnect`は`DEPENDENCY_NOT_FOUND`になり、同じplanなら`dependency_not_found`と、その工程の今の前の工程（`predecessors`）を示す。
 - 他の工程が依存している工程を`todo retire`すると、結果の`dependents`にその工程を載せ、もう待たないことを`next_action`で伝える。`plan show`の`depends_on_count`は、retiredの工程との辺を数えない。
+- 別の席が`plan revise`・`todo dependency connect|disconnect`・`plan backchain`で計画を改訂しても、作業中の工程は始めた席の`turn.own`に残る（a16）。改訂後の版へ結び直すstartは、改訂した席でなく、運ぶ前のstartを記録した席の`actor`で記録する。
 
 ## 0.84.2 — 2026-11-09
 
