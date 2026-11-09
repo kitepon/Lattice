@@ -14,7 +14,9 @@ import { TodoStoreError } from './todo-store.mjs';
 
 const REVIEW_SCHEMA = 'lattice.plan_scope_review.v1';
 const RESULT_SCHEMA = 'lattice.plan_scope_review_result.v1';
-const PLAN_CREATE_SCHEMA = 'lattice.plan_create_input.v4';
+// a31: 席が書く既定（v5、template）も審査できる。schemaを省いた入力はv5として読む（plan createと同じ）。
+const PLAN_CREATE_SCHEMAS = new Set(['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5']);
+const DEFAULT_PLAN_CREATE_SCHEMA = 'lattice.plan_create_input.v5';
 const TODO_EXTRACTION_SCHEMAS = new Set([
   'lattice.todo_extraction.v3',
   'lattice.todo_extraction.v4',
@@ -76,18 +78,22 @@ async function readJsonWithinRepo(repoRoot, inputRef) {
 }
 
 function authoredPlan(value) {
-  const digestField = value?.schema === PLAN_CREATE_SCHEMA ? 'input_digest'
+  const createInput = value !== null && typeof value === 'object' && !Array.isArray(value)
+    && (PLAN_CREATE_SCHEMAS.has(value.schema) || value.schema === undefined);
+  const digestField = createInput ? 'input_digest'
     : TODO_EXTRACTION_SCHEMAS.has(value?.schema) ? 'extraction_digest' : null;
   if (digestField === null) {
     throw new TodoStoreError('PLAN_SCOPE_REVIEW_INVALID', 'authoring_schema_unsupported', undefined, {
-      pointer: '/schema', expected: [PLAN_CREATE_SCHEMA, ...TODO_EXTRACTION_SCHEMAS],
+      pointer: '/schema', expected: [...PLAN_CREATE_SCHEMAS, ...TODO_EXTRACTION_SCHEMAS],
       actual: typeof value?.schema === 'string' ? value.schema : null,
     });
   }
-  if (!isTodoDigest(value[digestField])
-    || value[digestField] !== todoSelfDigest(value, digestField)) {
+  // a31: digestは機械が計算する。書かれていなければ本文から求め、書かれていて違えば期待値を返す。
+  const digest = todoSelfDigest(value, digestField);
+  if (value[digestField] !== undefined && value[digestField] !== '' && value[digestField] !== digest) {
     throw new TodoStoreError('PLAN_SCOPE_REVIEW_INVALID', 'authoring_digest_mismatch', undefined, {
-      pointer: `/${digestField}`,
+      pointer: `/${digestField}`, expected: digest, actual: value[digestField],
+      next_action: `Omit ${digestField} (the machine computes it) or set it to "${digest}".`,
     });
   }
   const selected = TODO_EXTRACTION_SCHEMAS.has(value.schema)
@@ -106,17 +112,33 @@ function authoredPlan(value) {
       pointer: '/tasks',
     });
   }
-  return { schema: value.schema, digest: value[digestField], taskIds };
+  return { schema: value.schema ?? DEFAULT_PLAN_CREATE_SCHEMA, digest, taskIds };
 }
 
 function invalid(reason, pointer, detail = {}) {
   throw new TodoStoreError('PLAN_SCOPE_REVIEW_INVALID', reason, undefined, { pointer, ...detail });
 }
 
+const REVIEW_KEYS = ['schema', 'authoring_digest', 'work_specs', 'task_assessments', 'verdict', 'review_digest'];
+
+/** a31: 席は判断だけを書く。authoring_digestとreview_digestは省けば機械が埋める（書けば照合する）。 */
+function completeReview(review, authored) {
+  if (review === null || typeof review !== 'object' || Array.isArray(review)) return review;
+  const filled = { ...review };
+  if (filled.authoring_digest === undefined || filled.authoring_digest === '') filled.authoring_digest = authored.digest;
+  if (filled.review_digest === undefined || filled.review_digest === '') {
+    filled.review_digest = todoSelfDigest(filled, 'review_digest');
+  }
+  return filled;
+}
+
 function validateReview(review, authored) {
-  if (!exactRecord(review, [
-    'schema', 'authoring_digest', 'work_specs', 'task_assessments', 'verdict', 'review_digest',
-  ]) || review.schema !== REVIEW_SCHEMA) invalid('review_schema_invalid', '/schema');
+  if (!exactRecord(review, REVIEW_KEYS) || review.schema !== REVIEW_SCHEMA) {
+    invalid('review_schema_invalid', exactRecord(review, REVIEW_KEYS) ? '/schema' : '/', {
+      expected: { schema: REVIEW_SCHEMA, keys: [...REVIEW_KEYS].sort() },
+      actual: review !== null && typeof review === 'object' ? { keys: Object.keys(review).sort() } : null,
+    });
+  }
   if (!isTodoDigest(review.authoring_digest) || review.authoring_digest !== authored.digest) {
     invalid('review_authoring_digest_mismatch', '/authoring_digest', {
       expected: authored.digest, actual: review.authoring_digest ?? null,
@@ -124,7 +146,9 @@ function validateReview(review, authored) {
   }
   if (!isTodoDigest(review.review_digest)
     || review.review_digest !== todoSelfDigest(review, 'review_digest')) {
-    invalid('review_digest_mismatch', '/review_digest');
+    invalid('review_digest_mismatch', '/review_digest', {
+      expected: todoSelfDigest(review, 'review_digest'), actual: review.review_digest ?? null,
+    });
   }
   if (!Array.isArray(review.work_specs) || review.work_specs.length === 0
     || !review.work_specs.every((spec) => exactRecord(spec, [
@@ -170,8 +194,9 @@ function validateReview(review, authored) {
   return { outOfScopeTaskIds, uncoveredWorkSpecIds };
 }
 
-export function evaluatePlanScopeReview(planInput, review) {
+export function evaluatePlanScopeReview(planInput, authoredReview) {
   const authored = authoredPlan(planInput);
+  const review = completeReview(authoredReview, authored);
   const findings = validateReview(review, authored);
   const result = {
     schema: RESULT_SCHEMA,

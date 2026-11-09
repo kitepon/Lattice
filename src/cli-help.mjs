@@ -31,7 +31,9 @@ Commands:
   create --schema-version <1|2|3|4|5> --json
   create --template --json           # 作者が書くkeyだけの最小のv5入力（そのままplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
-  revise --input <file> [--dry-run] [--json]  # 工程の全体と明示した状態移行から改訂する
+  revise --input <file> [--dry-run] [--json]
+      # 改訂後の計画の全体を、plan createと同じ形で渡す（plan create --template --jsonから始められる）。
+      # 継続方針を自分で書くなら {"schema":"lattice.plan_revise_input.v1","desired":<計画>,"continuity":[...]}
   revise --schema --json
   backchain --input <file> [--dry-run] [--json]
       # 各工程の必要・提供機能を照合し、初回又は既存storeへのplan登録まで行う
@@ -243,7 +245,10 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
   'plan backchain': 'plan backchain --input <file> [--dry-run] [--json] | --schema --json',
-  'plan revise': 'plan revise --input <file> [--dry-run] [--json] | --schema --json',
+  'plan revise': 'plan revise --input <file> [--dry-run] [--json] | --schema --json\n\n'
+    + '--input: the whole desired plan in the same shape as `plan create` (start from `plan create --template --json`),\n'
+    + 'or {"schema":"lattice.plan_revise_input.v1","desired":<that plan>,"continuity":[{task_id, policy: carry|reset|retire, reason}]}.\n'
+    + 'Without continuity the machine computes carry/reset/retire. A plan_key with no active plan is made with `plan create`.',
   'plan compile': 'plan compile --request <request.json> | --schema --json',
   'plan verify': 'plan verify --request <request.json> --plan <plan.json>',
   'run start': 'run start --request <request.json> --executor <adapter>'

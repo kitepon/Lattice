@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_revise_input.v1.schema.json",
   "title": "lattice.plan_revise_input.v1",
-  "description": "工程全体のdesired stateと、必要なら状態移行の指定。継続方針は機械が全ての旧taskについて算出する（desiredに在れば既定carry、無ければretire）。predecessor/CAS/digest/後継versionも機械が算出する。旧版は保持する。",
+  "description": "工程全体のdesired stateと、必要なら状態移行の指定。継続方針は機械が全ての旧taskについて算出する（desiredに在れば既定carry、無ければretire）。predecessor/CAS/digest/後継versionも機械が算出する。旧版は保持する。この包みを使わず、desiredの中身（plan createと同じ形の計画の全体）だけを--inputへ渡してもよい（a31）。そのとき継続方針はすべて機械が算出する。現行planが無いplan_keyはplan createで作る。",
   "type": "object",
   "additionalProperties": false,
   "required": [

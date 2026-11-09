@@ -176,6 +176,8 @@ Both are machine facts (seat contract), so they leave the author's input:
 | `plan scope-review` unreadable review (a27) | a missing `--plan-input`/`--review` file is `INPUT_UNREADABLE/input_missing` with `input_ref` and `repo_root`; the CLI passes its flags, so next_action names the flag (`--review`) |
 | `plan backchain` shape (a27) | `backchainShapeProblems` runs before `authoring_ref` is read: a missing or invalid `authoring_ref` is `PLAN_BACKCHAIN_INVALID/schema_invalid` at `/authoring_ref`, not `input_ref_invalid` on `--input`; `schema_invalid` carries `problems` (key shape with `missing_keys`/`unexpected_keys`, const, identifiers, ref) and the first problem's pointer |
 | schema text (a27) | the v4/v5 top-level description no longer carries the Japanese `NO_PLAN` prompt (it stays on `tasks[].design_memo`) |
+| `plan scope-review` input (a31) | the plan input may be create v4 or v5 (a missing schema reads as v5) or extraction v3/v4; `authoring_digest` is computed from the plan input's content (`todoSelfDigest`), and a written `input_digest`/`extraction_digest` must match it (`authoring_digest_mismatch` with `expected`); the review's `authoring_digest` and `review_digest` may be omitted and are filled by the machine (`completeReview`), a written one must match (`expected` on mismatch) |
+| `goal`/`title` at create (a31) | still refused as unexpected keys at `/`; the repair adds that a plan is named by plan_key and that purpose, final outcome and acceptance go in `goal` of `plan backchain` (seat contract row) |
 
 Edge direction (schema text and `--template`): `from` is the prerequisite,
 `to` starts after `from` is done.

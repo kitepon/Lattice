@@ -93,7 +93,12 @@ function keyDifference(detail, ctx, pointer) {
   const parts = [];
   if (missing.length > 0) parts.push(`add keys ${names(missing)}`);
   if (extra.length > 0) parts.push(`remove keys ${names(extra)}`);
-  return `At ${pointer} ${parts.join(' and ') || `use exactly the keys ${names(expected)}`}.`;
+  // a31: 計画の目的・最終成果・受入はplan createでなくbackchainのgoalが持つ（seat contract）。
+  const goalHint = ctx.family === 'plan' && ctx.command === 'create' && pointer === '/'
+    && extra.some((key) => key === 'goal' || key === 'title')
+    ? ' A plan is named by plan_key; its purpose, final outcome and acceptance go in `goal` of `lattice plan backchain` (see `lattice plan backchain --schema --json`).'
+    : '';
+  return `At ${pointer} ${parts.join(' and ') || `use exactly the keys ${names(expected)}`}.${goalHint}`;
 }
 
 function acceptedValues(detail) {
@@ -330,7 +335,8 @@ const REGISTRY = {
 
   plan_revise_schema_invalid: {
     pointer: '--input',
-    repair: (detail, ctx) => `Use schema ${q(detail.expected)}; see \`${schemaCommand(ctx)}\`.`,
+    // a31: 包みの形を名指す。素のplan create入力も受けるので、まずそれを勧める。
+    repair: (detail, ctx) => `Pass the whole desired plan in the same shape as \`lattice plan create\` (start from \`lattice plan create --template --json\`), or wrap it as {"schema":${JSON.stringify(detail.expected)},"desired":<that plan>,"continuity":[...]} to state carry/reset/retire yourself; see \`${schemaCommand(ctx)}\`.`,
   },
   plan_revise_requires_source_revision: {
     repair: (detail) => `This plan carries source revisions: use ${detail.next_action ?? '`lattice todo revise-phase --plan <plan> --input <file>`'}.`,

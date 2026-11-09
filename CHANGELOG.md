@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 席が書く計画の入力を、席の契約に合わせた（a31）。`plan scope-review`は`plan create --template`の既定のv5（schemaを省いた入力もv5として読む）を受け、`authoring_digest`と`review_digest`は省けば機械が計算する（書けば照合し、違えば期待値を返す）。`plan revise --input`は`plan create`と同じ形の計画をそのまま受け、継続方針は機械が算出する。`{"schema":"lattice.plan_revise_input.v1","desired":…,"continuity":[…]}`の包みも従来どおり受け、包みが違う時の断りと`plan revise --help`は両方の形を示す。現行planの無いplan_keyのreviseは、欄を足せと言わずに、keyを名指して`plan create`を案内する。席の契約の「席が書くもの」は、計画をplan_keyで名指し、目的・最終成果・受入は`plan backchain`の`goal`に書くと直した。`plan create`へ`goal`・`title`を書いた時の断りは、その書き場所を示す。
+
 ## 0.85.2 — 2026-11-10
 
 0.85.1の使い通しの点検で、これまで通らなかった道に見つかった所を直す修正版。断りが原因の値・作業と通れる次のコマンドを名指しし、打ち間違いを`ok`で返さない。ホストへの変更：`plan_not_active`の型は`STORE_INCONSISTENT`から`PLAN_NOT_FOUND`、調整済みの計画のverifyの`next_action`は`null`から`"none"`、知らないコマンドは型のあるJSONをstderrへ返す（exit 2は同じ）。

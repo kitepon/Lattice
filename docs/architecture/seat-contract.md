@@ -14,7 +14,7 @@ the rule.
 
 | The AI states (allowed in inputs) | The machine derives (never requested) |
 |---|---|
-| Plan title, purpose, final outcome, acceptance | project_id match, plan_key uniqueness, plan_version assignment |
+| Plan key (it names the plan; a plan has no separate title); with `plan backchain`, the plan's purpose, final outcome and acceptance (`goal`) | project_id match, plan_key uniqueness, plan_version assignment |
 | Task title, design memo (why, what, done-criterion), owner lane | task_id normalisation, ordering of tasks/phases/edges, identifier canonical form |
 | Dependencies (A before B), joins | All digests (input, chain, plan, topology, revision), provenance, recorded_at, actor identity (from seat configuration) |
 | Phase names and order, required evidence kinds | Gate evaluation, audit-pending derivation |
@@ -24,7 +24,7 @@ the rule.
 
 ## Seat surface (minimal)
 
-Write a plan (create, add and revise share one input shape), read state
+Write a plan (create, add and revise share one input shape: `plan revise --input` takes the same plan as `plan create`, and the `{schema, desired, continuity}` wrapper is optional, a31; a plan_key with no active plan is made with `plan create`), read state
 (`status --json`, `session-context --json`), start, note, done, block/unblock,
 dependency connect. Every other command remains but is not part of seat guidance.
 Flags such as `--json` never change the outcome of a write command; a flag that
