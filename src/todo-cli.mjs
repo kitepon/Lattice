@@ -3,7 +3,7 @@ import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
 import { FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
-import { auditPendingNextCommands } from './todo-audit-pending.mjs';
+import { auditPendingNextCommands, phaseAuditRequired } from './todo-audit-pending.mjs';
 import { gitSync } from './git-process.mjs';
 import { createHash } from 'node:crypto';
 import {
@@ -858,10 +858,13 @@ async function readStructureSetDraft(repoRoot, inputRef) {
  * gate_readyの次の一歩を1行で言う(ADR 0148裁定8・a22)。全taskが終わった席には、軽い出口
  * (監査せず閉じるclose-unaudited)を先に、監査する道(review→accept)を後に示す。経緯の説明は載せない。
  */
-function auditGateGuidance(planKey, phaseId) {
+function auditGateGuidance(planKey, phaseId, auditRequired = false) {
   const target = `--plan ${planKey} --phase ${phaseId}`;
+  const audit = `lattice todo phase review ${target} --reason <text> → accept ${target} --evidence <file>`;
+  // ADR 0200 gate 5: an enforced plan's heavy phase refuses close-unaudited, so only the audit is offered.
+  if (auditRequired) return `全ToDoがdone。このplanはenforcedでheavyの段階なので監査する: ${audit}`;
   return `全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited ${target} --reason <text>`
-    + `（監査するなら lattice todo phase review ${target} --reason <text> → accept ${target} --evidence <file>）`;
+    + `（監査するなら ${audit}）`;
 }
 
 /** a36: reviewing and rejected phases say their next command too (the same lines as audit_pending). */
@@ -1614,8 +1617,9 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
   if (kind === 'phase_close_unaudited') {
     // ADR 0200 gate 5: an enforced plan keeps the audit its author required for a heavy phase.
     const member = (await readTodoStore({ repoRoot })).members.find(({ descriptor }) => descriptor.plan_key === planKey);
-    const phase = member?.plan.phases?.find(({ phase_id: id }) => id === phaseId);
-    if (member?.coordination?.mode === 'enforced' && phase?.gate_policy === 'heavy') {
+    const phase = member === undefined ? undefined
+      : todoPhaseDefinitions(member.plan).find(({ phase_id: id }) => id === phaseId);
+    if (phaseAuditRequired(member, phase?.gate_policy)) {
       throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_heavy_phase_unaudited', undefined, {
         plan_key: planKey, phase_id: phaseId,
         next_action: `Audit it: \`lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>\` then \`lattice todo phase accept --plan ${planKey} --phase ${phaseId} --evidence <file>\`;`
@@ -1963,7 +1967,8 @@ async function phaseStatus({ repoRoot, planKey }) {
       ? staleAcceptanceGuidance(member.plan.plan_key, phase.phase_id)
       : phase.status === 'gate_ready'
       ? [
-        auditGateGuidance(member.plan.plan_key, phase.phase_id),
+        auditGateGuidance(member.plan.plan_key, phase.phase_id, phaseAuditRequired(member,
+          todoPhaseDefinitions(member.plan).find(({ phase_id: id }) => id === phase.phase_id)?.gate_policy)),
         ...(structureFinalization.required && structureFinalization.status !== 'fresh'
           ? [`構造finalizationが${structureFinalization.status}です。先に lattice todo structure finalize --plan ${member.plan.plan_key} --json を実行してください。`]
           : []),
@@ -5089,11 +5094,14 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'done', dropped: (recorded) => doneDropped({ repoRoot, flags, recorded }),
-        action: async () => (await enforcedDoneGate({ repoRoot, planKey: flags.plan, flags })) ?? mutate({
-          repoRoot, env, planKey: flags.plan, taskId: flags.task, kind: 'done', payload: 'authored',
-          ...await doneEvidenceInput({ repoRoot, flags }),
-          testResultRef: flags['test-result'] ?? null,
-        }) });
+        action: async () => {
+          await enforcedDoneGate({ repoRoot, planKey: flags.plan, flags });
+          return mutate({
+            repoRoot, env, planKey: flags.plan, taskId: flags.task, kind: 'done', payload: 'authored',
+            ...await doneEvidenceInput({ repoRoot, flags }),
+            testResultRef: flags['test-result'] ?? null,
+          });
+        } });
     }
   }
   if (action === null && argv[0] === 'retract') {

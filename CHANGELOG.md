@@ -12,6 +12,7 @@
   3. `todo start`：宣言の後にmainが宣言範囲の下で動いた → `enforced_witness_stale`。抜け道は宣言し直し（その場でcompileし直す）。
   4. `todo done`：`--evidence`も、`--message`中のhttp(s) URLもHEADに入ったcommitも無い → `enforced_done_reference_missing`。同じdoneの繰り返しは`unchanged`のまま。
   5. `todo phase close-unaudited`と`phase baseline`：gate_policyが`heavy`の段階 → `enforced_heavy_phase_unaudited`。抜け道は`phase review`→`phase accept`、または段階を`light`へ改訂。
+     そのplanのheavyな段階では、`todo status`の`audit_pending`・`phase status`の案内・`lattice status`の`next_action`も`close-unaudited`を出さず、`phase review`→`accept`を示す。
 - 1〜3はsensorがstoreのあるrepoを見るので、storeがそのコードの取り出しに置かれてから宣言する。
 - `enforced`を記録したstoreは、0.88.0より古いLatticeでは読めない。
 

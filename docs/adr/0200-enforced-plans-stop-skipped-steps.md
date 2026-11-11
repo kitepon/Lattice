@@ -39,4 +39,6 @@ reason); Lattice does not forbid it. Which plans must be `enforced` is the host'
 - Refusals are `TODO_TRANSITION_REFUSED` with reasons `enforced_witness_undeclared`, `enforced_witness_stale`,
   `enforced_conflict_with_active`, `enforced_done_reference_missing`, `enforced_heavy_phase_unaudited`, each with
   `next_action`. Nothing is written on a refusal.
-- Advisories, guidance and parallel candidates treat `enforced` as `witness`.
+- Advisories, guidance and parallel candidates treat `enforced` as `witness`, except that the audit guidance
+  (`todo status` audit_pending, `phase status`, `lattice status`) does not offer `close-unaudited` for a phase gate 5
+  would refuse; it offers `phase review` → `accept`.

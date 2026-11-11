@@ -110,6 +110,14 @@ test('gate 5: a heavy phase is not closed unaudited; a light one is', async (con
     success(root, start(id));
     success(root, ['todo', 'done', '--plan', 'dev', '--task', id, '--message', 'https://example.invalid/pr/1']);
   }
+  // The guidance does not offer the close the gate refuses: only the heavy phase drops it.
+  const pending = Object.fromEntries(success(root, ['todo', 'status', '--json']).audit_pending
+    .map(({ phase_id: id, next_commands: commands }) => [id, commands.some((line) => line.includes('close-unaudited'))]));
+  assert.deepEqual(pending, { p: false, q: true });
+  const guidance = Object.fromEntries(success(root, ['todo', 'phase', 'status', '--plan', 'dev', '--json']).phases
+    .map(({ phase_id: id, guidance: text }) => [id, text.includes('close-unaudited')]));
+  assert.deepEqual(guidance, { p: false, q: true });
+  assert.match(success(root, ['status', '--json']).next_action.command, /^lattice todo phase review --plan dev --phase p /u);
   const close = (phase) => ['todo', 'phase', 'close-unaudited', '--plan', 'dev', '--phase', phase, '--reason', 'skip'];
   assert.equal(refusal(root, close('p')).message, 'enforced_heavy_phase_unaudited');
   success(root, close('q'));
