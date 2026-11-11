@@ -173,7 +173,7 @@ import { applySeamProposal } from './seam-apply.mjs';
 import { todoPlanPrecedences } from './seam-verification.mjs';
 import {
   WITNESS_DRAFT_SCHEMA, buildWitnessObservationQuerySet, buildWitnessSet, explainWitnessDraft, serializeWitnessSet,
-  witnessDraftTemplate,
+  validateWitnessDraft, witnessDraftTemplate,
 } from './witness-scaffold.mjs';
 import {
   completePhaseTodoRevision, explainPhaseTodoRevision, explainTodoRevision, explainTodoRevisionSet,
@@ -348,6 +348,8 @@ const TODO_FLAG_SPECS = Object.freeze({
   'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   'independence mode': Object.freeze({ known: ['plan', 'set', 'reason'], required: ['plan', 'set', 'reason'] }),
   'independence witness scaffold': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
+  'independence witness declare': Object.freeze({
+    known: ['plan', 'task', 'owns', 'reads', 'writes'], required: ['plan', 'task'] }),
   show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
   'phase status': Object.freeze({ known: ['plan', 'json'], required: ['plan'], booleans: ['json'] }),
@@ -522,12 +524,12 @@ function supportsAtomicStoreCommit(argv) {
   if (command === 'note') return argv[1] !== 'list';
   if (command === 'independence') {
     return argv[1] === 'mode'
-      || (argv[1] === 'witness' && ['migrate', 'scaffold'].includes(argv[2]) && !argv.includes('--template'));
+      || (argv[1] === 'witness' && ['migrate', 'scaffold', 'declare'].includes(argv[2]) && !argv.includes('--template'));
   }
   if (command === 'snapshot') return argv[1] === '--rebuild';
   if (command === 'migrate') return !argv.includes('--dry-run') && !argv.includes('--schema');
   if (['revise', 'split', 'revise-set', 'revise-phase', 'start', 'retract', 'block',
-    'unblock', 'retire', 'done', 'reopen'].includes(command)) return true;
+    'unblock', 'retire', 'done', 'reopen', 'add'].includes(command)) return true;
   if (command === 'evidence') return argv[1] === 'promote';
   if (command === 'phase') return argv[1] !== 'status';
   return false;
@@ -3659,6 +3661,11 @@ async function witnessScaffold({ repoRoot, planKey, inputRef }) {
       draft_plan_key: draft.plan_key, plan_key: planKey,
     });
   }
+  return scaffoldWitnessDraft({ repoRoot, planKey, draft });
+}
+
+/** The scaffold itself: fresh observation, wiring and digest for a checked draft, then the write. */
+async function scaffoldWitnessDraft({ repoRoot, planKey, draft }) {
   const { queries, paths } = buildWitnessObservationQuerySet(draft);
   const collected = await collectSensorEvidence({ cwd: repoRoot, querySet: { queries } });
   const observationByPath = {};
@@ -3696,6 +3703,53 @@ async function witnessScaffold({ repoRoot, planKey, inputRef }) {
     witness_set_digest: witnessSet.witness_set_digest,
     next_action: independenceCompileCommand(planKey, ref),
   };
+}
+
+/**
+ * a40: one task's witness row, declared by its member. Rows nobody declared stay out (an empty row
+ * would claim "touches nothing"); compile runs once every ready task is declared.
+ */
+async function witnessDeclare({ repoRoot, planKey, flags }) {
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
+  if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
+  const taskId = flags.task;
+  const state = member.tasks.find(({ task_id: id }) => id === taskId);
+  if (state === undefined) {
+    throw new TodoStoreError('TASK_NOT_FOUND', 'task_not_found', undefined, { requested_task_id: taskId });
+  }
+  if (['done', 'retired'].includes(state.status)) {
+    throw new TodoStoreError('INPUT_INVALID', 'witness_declare_task_finished', undefined, {
+      plan_key: planKey, task_id: taskId, status: state.status,
+      next_action: `${planKey}/${taskId} is ${state.status}; only unfinished tasks are declared (see \`lattice todo status --json\`).`,
+    });
+  }
+  const recorded = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
+  const template = await witnessDraftTemplateFor({ repoRoot, planKey });
+  const keep = new Set([...Object.keys(recorded?.plan_key === planKey ? recorded.manual_witness : {}), taskId]);
+  const list = (value) => (typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : []);
+  const row = { owns: list(flags.owns), reads: list(flags.reads), writes: list(flags.writes) };
+  const draft = { ...template, tasks: Object.fromEntries(Object.entries(template.tasks)
+    .filter(([id]) => keep.has(id)).map(([id, task]) => [id, id === taskId ? row : task])) };
+  if (!validateWitnessDraft(draft)) {
+    const { valid: _valid, reason, path: at, ...keys } = explainWitnessDraft(draft);
+    throw new TodoStoreError('WITNESS_DRAFT_INVALID', reason, undefined, {
+      pointer: at, ...keys, next_action: witnessRoute(planKey) });
+  }
+  const scaffolded = await scaffoldWitnessDraft({ repoRoot, planKey, draft });
+  const waitingFor = projectTodoStatus(await readTodoStore({ repoRoot }), TODO_STATUS_DISPATCH_ONLY).next_ready
+    .filter((task) => task.plan_key === planKey && !keep.has(task.task_id))
+    .map(({ task_id: id }) => id).sort();
+  const compile = waitingFor.length === 0
+    ? await independenceCompile({ repoRoot, planKey, inputRef: scaffolded.witness_ref }) : null;
+  const result = {
+    schema: 'lattice.todo_witness_declare_result.v1', project_id: member.plan.project_id, plan_key: planKey,
+    task_id: taskId, ...row, witness_ref: scaffolded.witness_ref,
+    witness_set_digest: scaffolded.witness_set_digest, compiled: compile !== null, waiting_for: waitingFor,
+    compile, result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
 }
 
 /**
@@ -4396,7 +4450,7 @@ function writesTodoStore(argv) {
     case 'migrate': return !argv.includes('--dry-run');
     case 'snapshot': return argv.includes('--rebuild');
     case 'independence': return second === 'compile' || second === 'mode'
-      || (second === 'witness' && ['migrate', 'scaffold'].includes(third) && !argv.includes('--template'));
+      || (second === 'witness' && ['migrate', 'scaffold', 'declare'].includes(third) && !argv.includes('--template'));
     case 'structure': return ['compile', 'realize', 'finalize'].includes(second)
       || (second === 'input' && !argv.includes('--dry-run'));
     case 'seam-proposal': return ['compile', 'apply', 'land'].includes(second);
@@ -4404,7 +4458,7 @@ function writesTodoStore(argv) {
     case 'dependency': return ['connect', 'disconnect'].includes(second);
     case 'phase': return second !== 'status';
     case 'start': case 'retract': case 'block': case 'unblock': case 'retire': case 'done':
-    case 'reopen': case 'split': case 'revise': case 'revise-phase': case 'revise-set':
+    case 'reopen': case 'split': case 'revise': case 'revise-phase': case 'revise-set': case 'add':
       return true;
     default: return false;
   }
@@ -4808,6 +4862,12 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const flags = matchFlagCommand(argv, ['independence', 'witness', 'scaffold'], WITNESS_TEMPLATE_FLAG_SPEC);
     if (flags !== null && isTodoIdentifier(flags.plan)) {
       action = (repoRoot) => witnessDraftTemplateFor({ repoRoot, planKey: flags.plan });
+    }
+  } else if (argv[0] === 'independence' && argv[1] === 'witness' && argv[2] === 'declare') {
+    const flags = matchFlagCommand(argv, ['independence', 'witness', 'declare'],
+      TODO_FLAG_SPECS['independence witness declare']);
+    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
+      action = (repoRoot) => witnessDeclare({ repoRoot, planKey: flags.plan, flags });
     }
   } else if (argv[0] === 'independence' && argv[1] === 'witness' && argv[2] === 'scaffold') {
     const flags = matchFlagCommand(argv, ['independence', 'witness', 'scaffold'],

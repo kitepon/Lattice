@@ -1,0 +1,17 @@
+# Data flow: one task's witness row (a40, 2026-11-12)
+
+Status: requested by Trony (BellTeam coordinator) for ~15 members on one repo, each
+declaring their own task's files; adopted by Snow White. Canonical ownership is in
+[function-map](function-map.md). The draft → witness set → compile contracts are
+unchanged (ADR 0127, ADR 0136, a32/a35); this command composes them for one row.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Independence: `todo independence witness declare --plan <key> --task <id> [--owns <path>[,<path>…]] [--reads …] [--writes …]` | Fresh Store member; the plan's recorded witness set (`readTodoWitnessSet`, unreadable = none, as the a35 template) | Draft = `witnessDraftTemplateFor` restricted to rows the witness set already records plus this task, with this task's row replaced by the flags (comma-separated repo-relative paths; omitted = `[]`). A row nobody declared is never written as empty: an empty row would claim "touches nothing". Concern anchors and unknowns of other rows are kept by the template; this task's row has none (use the draft route for them). | Plan not active → `plan_not_active`; task not in the plan → `TASK_NOT_FOUND/task_not_found`; task done or retired → `INPUT_INVALID/witness_declare_task_finished` (its row would be dropped by the template). All before any write. |
+| Independence: scaffold | That draft | Same path as `witness scaffold --input`: fresh affected-test observation, query wiring, digest; writes `.lattice/todo/witness/<key>.json`. | Draft and scaffold refusals unchanged (`WITNESS_DRAFT_INVALID`, `WITNESS_SCAFFOLD_INCOMPLETE`) with their next_action. Nothing written on refusal. |
+| Independence: compile when complete | Written witness set, current ready tasks of the plan | Every ready task declared → the existing `independence compile` on the written ref. Otherwise no compile: the row stays recorded and the result names `waiting_for` (ready tasks not yet declared); undeclared tasks stay "not judged", never "safe". The member who declares the last ready task triggers the compile. | Compile refusals unchanged. |
+| Independence: result | — | `lattice.todo_witness_declare_result.v1` `{project_id, plan_key, task_id, owns, reads, writes, witness_ref, witness_set_digest, compiled, waiting_for, compile, result_digest}`; `compile` is the compile result or null. | — |
+
+Protected state: other tasks' recorded rows (kept as recorded), the independence
+artifact (written only by compile). No new judgement: what a task owns is the
+member's statement; the machine adds observation and digests only.

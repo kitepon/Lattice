@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.87.0 — 2026-11-12
+
+複数の席が1つのrepoを開発する時、各席が自分の工程の境界を自分で宣言するための版（BellTeam、トロニーの依頼）。ホストへの変更：コマンドを1つ足す。
+
+- `lattice todo independence witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]`は、1件のtaskのowns／reads／writesだけを宣言する。他のtaskの宣言はそのまま残す。宣言のないtaskを空の行として書くことはない（空の行は「何も触らない」という主張になるため）。readyのtaskが全部宣言済みならそのまま`independence compile`まで行い、まだなら`waiting_for`に未宣言のreadyを返す（未宣言は「未判定」のままで、「安全」にはしない）。結果は`lattice.todo_witness_declare_result.v1`。planに無いtaskは`task_not_found`、完了済み・retire済みのtaskは`witness_declare_task_finished`で、書く前に断る。
+- `todo add`が他の書き込みと同じく`--json`を受け流す（0.86.0では`--json`を付けると断っていた）。
+
 ## 0.86.1 — 2026-11-12
 
 BellTeamの本番（0.85.5）で見つかった、誤らせる所を直す修正版。ホストへの変更はない。

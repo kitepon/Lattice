@@ -145,6 +145,8 @@ Write commands:
   independence witness scaffold --template --plan <key> [--json]  # 未完の工程を並べた下書きのひな形を出す
   independence witness scaffold --schema --json  # 下書き（lattice.todo_witness_draft.v2）のJSON Schema
   independence witness scaffold --plan <key> --input <draft>  # 下書きとfresh観測から宣言を書き出す
+  independence witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]
+      # 1件のtaskの行だけを宣言する（a40）。readyが全部宣言済みならcompileまで行い、未宣言はwaiting_forに返す
   structure input --plan <key> --input <file> --dry-run --json
       # plan identity・topology・unfinished task coverage・baseline祖先を無変更で検査する
   structure input --plan <key> --input <file>
@@ -302,7 +304,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo display source': 'todo display source [--json]  # lattice.todo_store_display_source.v1（安い変更検知。変わった時だけreadする）',
   'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation> --reason <text>'
     + ' | compile --plan <key> --input <file> | compile --schema --json | witness migrate --plan <key>'
-    + ' | witness scaffold --template --plan <key> [--json] | witness scaffold --schema --json | witness scaffold --plan <key> --input <draft>',
+    + ' | witness scaffold --template --plan <key> [--json] | witness scaffold --schema --json | witness scaffold --plan <key> --input <draft>'
+    + ' | witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]',
   'todo independence mode': 'todo independence mode --plan <key> --set <witness|conversation> --reason <text>',
   'todo structure': 'todo structure --schema --json | [--plan <key>] --json | input --plan <key> --input <file> [--dry-run --json] | compile --plan <key> --input <file> | realize --plan <key> --task <id> (--planned|--realized <actual-structure.json>) [--commit <HEAD|sha>]... | realize --plan <key> --task <id> --input <full-realization.json> | finalize --plan <key> --json',
   'todo seam-profile': 'todo seam-profile --plan <key> --file <path> [--json]',
