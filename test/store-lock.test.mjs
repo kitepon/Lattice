@@ -231,3 +231,27 @@ test('unidentified lock is recovered only after its mtime exceeds LOCK_STALE_MS'
   assert.ok(ran);
   assert.deepEqual(await readdir(root), []);
 });
+
+// BellTeam seats share one store: a writer waits out another live process instead of refusing.
+test('waitMs waits out a live owner in another process; re-entry and waitMs 0 still refuse at once', async (t) => {
+  const { lockPath } = await fixture(t);
+  const holder = execFileAsync(process.execPath, ['--input-type=module', '-e', `
+    import {withStoreLock} from ${JSON.stringify(moduleUrl)};
+    await withStoreLock({lockPath:${JSON.stringify(lockPath)}}, async () => {
+      process.stdout.write('held\\n'); await new Promise((r) => setTimeout(r, 400));
+    });
+  `]);
+  for (let i = 0; i < 200; i += 1) {
+    if (await readFile(lockPath).then(() => true, () => false)) break;
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+  await assert.rejects(withStoreLock({ lockPath }, () => assert.fail('entered a live lock')), busy('store_locked'));
+  assert.equal(await withStoreLock({ lockPath, waitMs: 10_000 }, async () => {
+    const started = Date.now();
+    await assert.rejects(withStoreLock({ lockPath, waitMs: 10_000 }, () => assert.fail('re-entered')),
+      busy('store_locked'));
+    assert.ok(Date.now() - started < 1_000, 're-entry must not wait on itself');
+    return 'acquired';
+  }), 'acquired');
+  assert.match((await holder).stdout, /held/u);
+});

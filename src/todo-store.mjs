@@ -17,7 +17,7 @@ export {
 import { randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
-import { StoreLockError, withStoreLock } from './store-lock.mjs';
+import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
 import {
   lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir,
 } from 'node:fs/promises';
@@ -2122,6 +2122,7 @@ async function withLock(repoRoot, callback, {
     return await withStoreLock({
       lockPath: path.join(repoRoot, STORE_ROOT_REF, '.write.lock'),
       createParent: initialize,
+      waitMs: LOCK_WAIT_MS,
       recoveryClaimsPath: path.join(repoRoot, CROSS_PLAN_RECOVERY_CLAIMS_REF),
       onRecoveryClaim: typeof onProtocolStage === 'function'
         ? () => onProtocolStage('cross_plan_lock_recovery_mutex_acquired') : null,

@@ -328,3 +328,25 @@ test('the display source probe throws typed STORE_INCONSISTENT on a corrupt mani
   await w.clobber('.lattice/todo/manifest.json', 'not json');
   await assert.rejects(w.source(), (error) => error.name === 'TodoStoreError' && error.code === 'STORE_INCONSISTENT');
 });
+
+// Host surface (BellTeam module reads only CLI JSON): `todo display read|source`.
+test('todo display read/source expose the envelope over the CLI; inconsistency is a state with exit 0', async (context) => {
+  const w = await workspace(context);
+  const bin = path.join(import.meta.dirname, '..', 'bin', 'lattice.mjs');
+  const env = { ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0' };
+  const cli = (...args) => JSON.parse(execFileSync(process.execPath, [bin, 'todo', 'display', ...args],
+    { cwd: w.root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  const verified = cli('read', '--json');
+  assert.equal(verified.schema, 'lattice.todo_display_read_result.v1');
+  assert.equal(verified.state, 'verified');
+  assert.deepEqual(Object.keys(verified).sort(),
+    ['dropped_members', 'inconsistency', 'schema', 'source', 'state', 'store', 'verified_at']);
+  assert.deepEqual(cli('source'), verified.source);
+  await corruptManifestDigest(w);
+  const degraded = cli('read');
+  assert.equal(degraded.state, 'unverified');
+  assert.equal(typeof degraded.inconsistency.code, 'string');
+  await w.clobber('.lattice/todo/manifest.json', 'not json');
+  assert.throws(() => cli('source', '--json'), (error) => error.status === 1
+    && JSON.parse(error.stderr).code === 'STORE_INCONSISTENT');
+});

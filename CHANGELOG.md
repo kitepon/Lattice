@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.85.5 — 2026-11-11
+
+複数の席が1つのstoreへ書く時と、CLIのJSONだけを読むホストのための版（BellTeamのLatticeモジュール）。ホストへの変更：同時に書いた席が断られず待つ。新しい読取コマンドを2つ足す。
+
+- 書き込みのlockを別のprocessが持っている時、すぐ`STORE_WRITE_CONFLICT`／`NOTE_WRITE_CONFLICT`（`store_locked`）で断らず、最長30秒待って取り直す。抜けたばかりの持ち主の回収を複数の書き手が同時に名乗った時も、全員が断らず少し待って取り直す。これまでは2つの席が同時に10件ずつnoteを書くと12件中5件、並列のstartで10件中2件が断られていた（修正後は計152件で0件）。同じprocessの入れ子と、持ち主を識別できないlockは従来どおりすぐ断る。
+- `lattice todo display read [--json]`は、dashboardと同じ表示用の読取を`lattice.todo_display_read_result.v1`で返す（`state`: verified／unverified／last_verified／unavailable）。storeが不整合でも断らず、状態として返す（exit 0）。
+- `lattice todo display source [--json]`は、安い変更検知`lattice.todo_store_display_source.v1`を返す。ホストはこれを見比べ、変わった時だけ`display read`する。
+
 ## 0.85.4 — 2026-11-10
 
 0.85.3の使い通しの点検で見つかった、誤らせる所を直す修正版。同じfileを持って書く2つの作業を、並列の判定が衝突として見る（これまでは見落として並列にしていた）。改訂後もwitness方式が引き継がれ、phaseの前提・reopen・retract・retire済みへのdoneが通れる次の一手を示す。ホストへの変更：`phase_gate_not_ready`の型は`STORE_INCONSISTENT`から`TODO_TRANSITION_REFUSED`。

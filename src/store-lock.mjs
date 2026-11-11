@@ -11,6 +11,8 @@ const CLAIM = /^([0-9a-f]{64})-([1-9][0-9]*)-([0-9a-f]{64})-([0-9a-f]{16})$/u;
 // its heartbeat mtime is older than LOCK_STALE_MS; every holder touches its lock and claim.
 export const LOCK_STALE_MS = 10 * 60_000;
 export const LOCK_HEARTBEAT_MS = 30_000;
+// Several seats share one store: a writer waits out another live process this long, then refuses.
+export const LOCK_WAIT_MS = 30_000;
 // Weak identity when own observation is unavailable: never PID-recovered, only heartbeat-stale.
 const WEAK = 'unobserved';
 const NO_HARD_LINK = ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS'];
@@ -167,10 +169,12 @@ async function recoveryClaim(claimsPath, owner, lockPath) {
     // Timestamp ordering could let a delayed earlier publisher enter twice.
     const candidates = await readdir(claimsPath);
     if (candidates.length === 1 && candidates[0] === name) return claimPath;
-    throw new StoreLockError('store_locked', lockPath, {
+    const contended = new StoreLockError('store_locked', lockPath, {
       recovery_claims_path: claimsPath,
       next_action: `Retry after recovery claimants exit; for foreign or unidentified claims, confirm no writer on their recorded host before clearing only abandoned entries in ${claimsPath}`,
     });
+    contended.contended = true;
+    throw contended;
   } catch (error) {
     await rmdir(claimPath);
     throw error;
@@ -206,7 +210,7 @@ async function removeClaim(claimPath, claimsPath) {
 
 /** Complete ownership is linked atomically; recovery never removes a live owner. */
 export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath}.recovery`,
-  onRecoveryClaim = null, createParent = true, releasePath = () => lockPath }, callback) {
+  onRecoveryClaim = null, createParent = true, releasePath = () => lockPath, waitMs = 0 }, callback) {
   if (createParent) await mkdir(path.dirname(lockPath), { recursive: true });
   ownStart ??= observeStartIdentityRaw(process.pid).catch((error) => { ownStart = undefined; throw error; });
   ownHost ??= observeProcessHostIdentityRaw().then((value) => {
@@ -259,6 +263,8 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
       fileIdentity = await handle.stat();
     }
     finally { await handle.close(); }
+    const deadline = Date.now() + waitMs;
+    let pause = 10;
     for (;;) {
       try { await link(temporary, lockPath); acquired = true; break; }
       catch (error) {
@@ -279,14 +285,33 @@ export async function withStoreLock({ lockPath, recoveryClaimsPath = `${lockPath
       }
       const existing = await readOwner(lockPath);
       if (existing === null) continue;
-      if (!await abandoned(existing, host)) throw busy(existing, lockPath);
+      const backOff = async (refusal) => {
+        if (Date.now() >= deadline) throw refusal;
+        await new Promise((resolve) => { setTimeout(resolve, pause + Math.random() * pause); });
+        pause = Math.min(pause * 2, 250);
+      };
+      // A live owner is waited out until the deadline. Our own PID (re-entry) would wait on
+      // ourselves, and an unidentified owner keeps its refusal, so both refuse at once.
+      const waitFor = async (live) => {
+        const self = live.owner?.pid === process.pid && live.owner?.host === host;
+        if (live.owner === null || self) throw busy(live, lockPath);
+        await backOff(busy(live, lockPath));
+      };
+      if (!await abandoned(existing, host)) { await waitFor(existing); continue; }
       if (claimPath === null) {
-        claimPath = await recoveryClaim(recoveryClaimsPath, owner, lockPath);
+        try { claimPath = await recoveryClaim(recoveryClaimsPath, owner, lockPath); }
+        catch (error) {
+          // Several writers judged the same just-exited owner at once; none is sole, so all back off.
+          if (error?.contended !== true) throw error;
+          await backOff(error);
+          continue;
+        }
         if (onRecoveryClaim) await onRecoveryClaim();
       }
       const fresh = await readOwner(lockPath);
       if (fresh !== null) {
-        if (!await abandoned(fresh, host)) throw busy(fresh, lockPath);
+        // The judged owner released and a new live writer linked in meanwhile.
+        if (!await abandoned(fresh, host)) { await waitFor(fresh); continue; }
         await removeJudged(lockPath, fresh.info);
       }
     }

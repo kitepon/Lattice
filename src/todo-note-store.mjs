@@ -4,7 +4,7 @@ import {
   lstat, mkdir, open, readFile, readdir, rename, rm, stat,
 } from 'node:fs/promises';
 import path from 'node:path';
-import { StoreLockError, withStoreLock } from './store-lock.mjs';
+import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
 import { normalizeCheckoutEol } from './todo-store-view.mjs';
 
@@ -236,7 +236,7 @@ async function withNoteLock(repoRoot, callback) {
       }
     }
     await ensureNoteDirectory(root);
-    return await withStoreLock({ lockPath: path.join(root, '.write.lock'), createParent: false }, callback);
+    return await withStoreLock({ lockPath: path.join(root, '.write.lock'), createParent: false, waitMs: LOCK_WAIT_MS }, callback);
   }
   catch (error) {
     if (error instanceof StoreLockError) {
