@@ -1,6 +1,6 @@
 # Lattice integration package（現行公開面）
 
-- Updated: 2026-08-08
+- Updated: 2026-11-11
 - 位置づけ: hostや工場へ組み込む公開面の索引。**各契約の正典は参照先ADR**であり、
   本書は所在と編入条件だけを固定する（複製しない）。
 - 根拠裁定: [ADR 0051](adr/0051-rc4-phase-gate-support.md)（RC4条件付きsupport・Decision 6のcarry-over）
@@ -34,13 +34,12 @@
 - TODO工程とruntime実行の相関: `todo bindings [--plan <key>] --json`が
   `lattice.todo_binding_projection.v1`を返す（[ADR 0124](adr/0124-todo-binding-projection.md)）。
   `todo_status_result`とは独立した加算の別面なので、statusの版に関わらず既存hostはそのまま動く。
-- TODO工程: 現行authoringは`lattice.plan_create_input.v4`、planは`lattice.todo_plan.v7`、
-  eventは`lattice.todo_event.v4`、snapshotは通常`lattice.todo_snapshot.v1`／`v2`、`test_result`を
-  一度でも持つplanでは`v3`／`v4`（後者がPhase付き）、Phase revisionは
-  `lattice.phase_todo_revision.v3`、cross-plan revisionは`lattice.todo_revision_set.v3`、
-  statusは`lattice.todo_status_result.v6`を使う（`audit_pending`に加えて工程に属する義務を出す
-  `plan_notes`、調整方式の宣言を出す`coordination`、並列候補を出す`parallel_candidates`を持つ。
-  ADR 0159・ADR 0160）。
+- TODO工程（0.85.4時点、コードの定数から確認）: 現行authoringは`lattice.plan_create_input.v5`
+  （`plan create`／`plan revise --input`共通）、新規planは`lattice.todo_plan.v8`、`plan revise`の
+  Phase revisionは`lattice.phase_todo_revision.v5`、statusは`lattice.todo_status_result.v9`を使う。
+  event・snapshotの版はstore内部の記録形式で、hostは直接読まない（表示はCLIのJSONかdashboardを使う）。
+  版の正本はこの索引ではなく、CLIの`--schema --json`出力と各出力の`schema`欄である。
+  seatが使う面は[seat contract](architecture/seat-contract.md)が正本。
   旧schemaは既存storeの読取・移行互換としてだけ維持する。
 
 ### 2.1 ToDo設計メモと動的工程表
