@@ -98,7 +98,7 @@ Read commands:
   verify [--plan <key>] [--json]
   snapshot --rebuild --plan <key>
   gantt serve --port <port> [--scope live|all]  # 動的表示。opt-in済みplanは工程図と別の構造検査面を持つ
-  phase status --plan <key>
+  phase status --plan <key> [--json]
 
 Write commands:
   repair-eol --json  # Git checkoutでCRLF化された既存storeをcanonical LFへ戻し、EOL保護を追加する
@@ -318,7 +318,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo dashboard remove': 'todo dashboard remove <project_id> --json  # 登録簿から1件外す（対象repo不在でも可）',
   'todo phase': 'todo phase <status|review|accept|reject|reopen|close-unaudited> --plan <key> [options]'
     + ' | baseline --reason <text> [--except <plan_key>]...',
-  'todo phase status': 'todo phase status --plan <key>',
+  'todo phase status': 'todo phase status --plan <key> [--json]',
   'todo phase review': 'todo phase review --plan <key> --phase <id> --reason <text>',
   'todo phase accept': 'todo phase accept --plan <key> --phase <id> --evidence <file> | --input <file>',
   'todo phase reject': 'todo phase reject --plan <key> --phase <id> --reason <text> --evidence <file> | --input <file>',

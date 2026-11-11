@@ -31,6 +31,8 @@ export async function readTodoParallelCandidatesForStatus(options = {}) {
   const candidates = [];
   for (const member of store.members) {
     const planKey = member.plan.plan_key;
+    // ADR 0160 §2: a plan that chose conversation gets no witness prompt (BellTeam 0.85.5 report).
+    if (member.coordination?.mode === 'conversation') continue;
     const readyTaskIds = frontier.filter((task) => task.plan_key === planKey)
       .map(({ task_id: taskId }) => taskId);
     let artifact = null;

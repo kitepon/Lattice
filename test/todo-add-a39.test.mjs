@@ -113,3 +113,9 @@ test('plan revise --plan fills a missing plan_key and refuses another one', asyn
   assert.match(JSON.stringify(refusal(root, ['plan', 'revise', '--plan', 'work', '--input', 'revise.json'])),
     /plan_revise_plan_key_mismatch/u);
 });
+
+test('todo phase status accepts --json like the other reads', async (context) => {
+  const root = await fixture(context);
+  assert.deepEqual(success(root, ['todo', 'phase', 'status', '--plan', 'work', '--json']),
+    success(root, ['todo', 'phase', 'status', '--plan', 'work']));
+});

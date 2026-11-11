@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.86.1 — 2026-11-12
+
+BellTeamの本番（0.85.5）で見つかった、誤らせる所を直す修正版。ホストへの変更はない。
+
+- `todo independence mode --set conversation`を宣言したplanには、`todo status`／`lattice status`の`parallel_candidates`がentryを出さない（ADR 0160 §2「witness系の督促を出さない」）。これまでは未判定のreadyと`independence compile`の次の一手を出し、会話で調整すると決めた統括が「対応すべき警告」と読んだ。witnessへ宣言し直せば、また出る。
+- `todo phase status --plan <key> --json`が通る。他の読取と同じく`--json`は任意で、出力はどちらもJSON。これまでは`--json`を付けると`INVALID_ARGUMENTS`で断っていた。
+
 ## 0.86.0 — 2026-11-11
 
 BellTeamの本番試用（フローラ／トロニー）で出た、工程表の書き換えの重さを直す版。ホストへの変更：コマンドを1つ足す。`plan show`の出力に欄を1つ足す。
