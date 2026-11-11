@@ -1389,6 +1389,9 @@ async function startTask({
   const advisory = await startAdvisory({
     repoRoot, store, projection, planKey, taskId: resolvedTaskId,
   });
+  if (member.coordination?.mode === 'enforced') {
+    enforcedStartGate({ advisory, planKey, taskId: resolvedTaskId, overrideReason });
+  }
   const structureContext = await startStructureContext({
     repoRoot, store, planKey, taskId: resolvedTaskId,
   });
@@ -1406,6 +1409,47 @@ async function startTask({
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, evidenceRef: null, advisory, noteContext,
     structureContext, featureContext });
+}
+
+const declareCommand = (planKey, taskId) => `lattice todo independence witness declare --plan ${planKey} --task ${taskId}`
+  + ' --owns <path>[,<path>...] [--reads <path>,...] [--writes <path>,...]';
+
+/** ADR 0200 gates 1–3: an enforced plan does not start undeclared, stale or conflicting work. Reads the advisory only. */
+function enforcedStartGate({ advisory, planKey, taskId, overrideReason }) {
+  const unknown = (kind) => advisory.self_unknowns.some((entry) => entry.kind === kind);
+  const refuse = (reason, detail) => {
+    throw new TodoStoreError('TODO_TRANSITION_REFUSED', reason, undefined, { plan_key: planKey, task_id: taskId, ...detail });
+  };
+  if (advisory.coverage === 'missing' || unknown('witness_missing')) {
+    refuse('enforced_witness_undeclared', { next_action: `Declare the files ${taskId} touches, then start again: \`${declareCommand(planKey, taskId)}\`.` });
+  }
+  if (advisory.drift_intersecting === true || unknown('record_stale')) {
+    refuse('enforced_witness_stale', { next_action: `Main changed under ${taskId}'s declared files since the check: declare them again (it recompiles), then start: \`${declareCommand(planKey, taskId)}\`.` });
+  }
+  if (advisory.conflicts_with_active.length > 0 && overrideReason === null) {
+    const active = advisory.conflicts_with_active.map(({ active_task_id: id }) => id);
+    refuse('enforced_conflict_with_active', { conflicts_with_active: advisory.conflicts_with_active,
+      next_action: `${taskId} overlaps in-progress ${active.join(', ')}: wait for it with \`lattice todo dependency connect --from-plan ${planKey} --from-task ${active[0]} --to-plan ${planKey} --to-task ${taskId} --reason <text>\`,`
+        + ` or start anyway with \`lattice todo start --plan ${planKey} --task ${taskId} --override-reason <text>\` (the reason is recorded).` });
+  }
+}
+
+/** ADR 0200 gate 4: done on an enforced plan names the change: evidence, an http(s) URL, or a commit in HEAD. */
+async function enforcedDoneGate({ repoRoot, planKey, flags }) {
+  const member = (await readTodoStore({ repoRoot })).members.find(({ descriptor }) => descriptor.plan_key === planKey);
+  if (member?.coordination?.mode !== 'enforced' || flags.evidence !== undefined) return;
+  const message = typeof flags.message === 'string' ? flags.message : '';
+  if (/https?:\/\/\S+/u.test(message)) return;
+  for (const token of message.match(/\b[0-9a-f]{7,40}\b/gu) ?? []) {
+    try {
+      gitSync(['merge-base', '--is-ancestor', token, 'HEAD'], { cwd: repoRoot, stdio: 'ignore' });
+      return;
+    } catch { /* not a commit in HEAD; try the next token */ }
+  }
+  throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_done_reference_missing', undefined, {
+    plan_key: planKey, task_id: flags.task,
+    next_action: `Name the adopted change: \`lattice todo done --plan ${planKey} --task ${flags.task} --message "<PR URL or merged commit sha>"\` (a sha must be in HEAD).`,
+  });
 }
 
 // plan改訂でcarryされたin-progress ToDoの再束縛入口（ADR 0191）。task状態・開始時刻は
@@ -1567,6 +1611,18 @@ async function phaseDecisionFromEvidence({ repoRoot, env, planKey, phaseId, outc
 }
 
 async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload }) {
+  if (kind === 'phase_close_unaudited') {
+    // ADR 0200 gate 5: an enforced plan keeps the audit its author required for a heavy phase.
+    const member = (await readTodoStore({ repoRoot })).members.find(({ descriptor }) => descriptor.plan_key === planKey);
+    const phase = member?.plan.phases?.find(({ phase_id: id }) => id === phaseId);
+    if (member?.coordination?.mode === 'enforced' && phase?.gate_policy === 'heavy') {
+      throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_heavy_phase_unaudited', undefined, {
+        plan_key: planKey, phase_id: phaseId,
+        next_action: `Audit it: \`lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>\` then \`lattice todo phase accept --plan ${planKey} --phase ${phaseId} --evidence <file>\`;`
+          + ' or revise the phase to a non-heavy gate_policy with `lattice plan revise` (recorded).',
+      });
+    }
+  }
   const { event, snapshot, phases } = await appendTodoEvent({
     validateProspectiveEvent,
     repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey,
@@ -2096,7 +2152,7 @@ async function migrate({ repoRoot, inputRef }) {
     coordination_guidance: imported.connectionOnly === true ? null : {
       mode: null,
       modes: [...TODO_COORDINATION_MODES],
-      next_action: `lattice todo independence mode --plan ${imported.plan.plan_key} --set <witness|conversation> --reason <text>`,
+      next_action: `lattice todo independence mode --plan ${imported.plan.plan_key} --set <witness|conversation|enforced> --reason <text>`,
     },
     companion,
     result_digest: '',
@@ -5033,7 +5089,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'done', dropped: (recorded) => doneDropped({ repoRoot, flags, recorded }),
-        action: async () => mutate({
+        action: async () => (await enforcedDoneGate({ repoRoot, planKey: flags.plan, flags })) ?? mutate({
           repoRoot, env, planKey: flags.plan, taskId: flags.task, kind: 'done', payload: 'authored',
           ...await doneEvidenceInput({ repoRoot, flags }),
           testResultRef: flags['test-result'] ?? null,

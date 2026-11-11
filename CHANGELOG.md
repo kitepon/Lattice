@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.88.0 — 2026-11-12
+
+飛ばされると困る手順を、宣言したplanでだけ「使わないと止まる」にする版（オーナー裁定、ADR 0200）。ホストへの変更：調整方式に`enforced`を足す。宣言しないplanの動きは変わらない（警告だけ）。
+
+- `lattice todo independence mode --plan <key> --set enforced --reason <text>`で宣言する。witness調整に、次の5つの門が加わる。断る時は`TODO_TRANSITION_REFUSED`と抜け道の`next_action`を返し、何も書かない。
+  1. `todo start`：その工程のwitness行が無い → `enforced_witness_undeclared`。抜け道は`todo independence witness declare`。
+  2. `todo start`：進行中の工程と衝突し、`--override-reason`が無い → `enforced_conflict_with_active`。抜け道は`todo dependency connect`で順番にするか、理由を書いて着手（理由は記録に残る）。
+  3. `todo start`：宣言の後にmainが宣言範囲の下で動いた → `enforced_witness_stale`。抜け道は宣言し直し（その場でcompileし直す）。
+  4. `todo done`：`--evidence`も、`--message`中のhttp(s) URLもHEADに入ったcommitも無い → `enforced_done_reference_missing`。同じdoneの繰り返しは`unchanged`のまま。
+  5. `todo phase close-unaudited`と`phase baseline`：gate_policyが`heavy`の段階 → `enforced_heavy_phase_unaudited`。抜け道は`phase review`→`phase accept`、または段階を`light`へ改訂。
+- 1〜3はsensorがstoreのあるrepoを見るので、storeがそのコードの取り出しに置かれてから宣言する。
+- `enforced`を記録したstoreは、0.88.0より古いLatticeでは読めない。
+
 ## 0.87.0 — 2026-11-12
 
 複数の席が1つのrepoを開発する時、各席が自分の工程の境界を自分で宣言するための版（BellTeam、トロニーの依頼）。ホストへの変更：コマンドを1つ足す。
