@@ -87,6 +87,8 @@ import {
   readTodoWitnessSet,
   todoWitnessRef,
   writeTodoWitnessSet,
+  readTodoStoreDisplaySource,
+  readTodoStoreForDisplay,
   readTodoStoreStable,
   rebuildTodoSnapshot,
   writeTodoIndependenceArtifact,
@@ -287,7 +289,7 @@ function internalFailure(stderr, error) {
 }
 
 const TODO_COMMAND_NAMES = Object.freeze([
-  'status', 'show', 'note', 'bindings', 'independence', 'structure', 'seam-profile', 'seam-proposal',
+  'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
   'retract', 'dependency',
@@ -4633,6 +4635,12 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && argv[1] === '--plan' && isTodoIdentifier(argv[2])
     && (argv.length === 3 || argv[3] === '--json')) {
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: argv[2] });
+  } else if (argv[0] === 'display' && (argv[1] === 'read' || argv[1] === 'source')
+    && (argv.length === 2 || (argv.length === 3 && argv[2] === '--json'))) {
+    // Host display read (BellTeam module): a typed inconsistency is a state, never a refusal.
+    action = argv[1] === 'read'
+      ? async (repoRoot) => ({ schema: 'lattice.todo_display_read_result.v1', ...await readTodoStoreForDisplay({ repoRoot }) })
+      : (repoRoot) => readTodoStoreDisplaySource({ repoRoot });
   } else if (argv[0] === 'note' && argv[1] !== 'list') {
     const flags = matchFlagCommand(argv, ['note'], NOTE_FLAG_SPEC);
     const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;

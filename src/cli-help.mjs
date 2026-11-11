@@ -87,6 +87,8 @@ Read commands:
   show --plan <key> --task <id> --json  # 個別ToDoと最新bounded note contextを追加操作なしで返す
   note list --plan <key> [--task <id>] --json  # note全履歴の診断面（通常read/startでは不要）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
+  display read [--json]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す
+  display source [--json]  # 安い変更検知（lattice.todo_store_display_source.v1）。変わった時だけreadする
   independence [--plan <key>] [--json]  # readyを検証済み並列・要直列・未検査へ分けて投影する
   structure --schema --json  # plan定義後に入力する論理dataflow契約をstore非依存で返す
   structure [--plan <key>] --json  # 保存済み構造をsensor再実行なしでfreshness・finding付き投影する
@@ -290,6 +292,9 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo note': 'todo note --plan <key> [--task <id>] (--message <text>|--input <file>) | list --plan <key> [--task <id>] --json',
   'todo note list': 'todo note list --plan <key> [--task <id>] [--json]',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
+  'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
+  'todo display read': 'todo display read [--json]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）',
+  'todo display source': 'todo display source [--json]  # lattice.todo_store_display_source.v1（安い変更検知。変わった時だけreadする）',
   'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation> --reason <text>'
     + ' | compile --plan <key> --input <file> | compile --schema --json | witness migrate --plan <key>'
     + ' | witness scaffold --template --plan <key> [--json] | witness scaffold --schema --json | witness scaffold --plan <key> --input <draft>',
