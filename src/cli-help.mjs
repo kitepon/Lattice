@@ -31,7 +31,8 @@ Commands:
   create --schema-version <1|2|3|4|5> --json
   create --template --json           # 作者が書くkeyだけの最小のv5入力（そのままplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
-  revise --input <file> [--dry-run] [--json]
+  revise [--plan <key>] --input <file> [--dry-run] [--json]
+      # --planは任意。入力にplan_keyが無ければ補い、違えばplan_revise_plan_key_mismatchで断る
       # 改訂後の計画の全体を、plan createと同じ形で渡す（plan create --template --jsonから始められる）。
       # 継続方針を自分で書くなら {"schema":"lattice.plan_revise_input.v1","desired":<計画>,"continuity":[...]}
   revise --schema --json
@@ -121,6 +122,10 @@ Write commands:
   block --plan <key> --task <id> --reason <text>
   unblock --plan <key> --task <id>
   retire --plan <key> --task <id> --reason <text>
+        # 1件を閉じる。planは書き直さず、他のtaskの状態とjournalはそのまま
+  add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>]
+      [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]
+        # 1件を足す（a39）。planの全体を書かずに軽量改訂で新plan_versionを作り、他のtaskはcarry
   done --plan <key> --task <id> [--evidence <file>] [--message <text>]
         # taskを閉じる。どちらも省略でき、両方なら本文がfileを名指す（A58）。--evidenceはdescriptor JSONでも証拠本文でもよい。repo内なら絶対path可。
         # 既にdoneなら何も足さずunchanged:trueで成功する（a12）
@@ -253,7 +258,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
   'plan backchain': 'plan backchain --input <file> [--dry-run] [--json] | --schema --json',
-  'plan revise': 'plan revise --input <file> [--dry-run] [--json] | --schema --json\n\n'
+  'plan revise': 'plan revise [--plan <key>] --input <file> [--dry-run] [--json] | --schema --json\n\n'
     + '--input: the whole desired plan in the same shape as `plan create` (start from `plan create --template --json`),\n'
     + 'or {"schema":"lattice.plan_revise_input.v1","desired":<that plan>,"continuity":[{task_id, policy: carry|reset|retire, reason}]}.\n'
     + 'Without continuity the machine computes carry/reset/retire. A plan_key with no active plan is made with `plan create`.',
@@ -325,6 +330,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo block': 'todo block --plan <key> --task <id> --reason <text>',
   'todo unblock': 'todo unblock --plan <key> --task <id>',
   'todo retire': 'todo retire --plan <key> --task <id> --reason <text>',
+  'todo add': 'todo add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>]'
+    + ' [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]',
   'todo done': 'todo done --plan <key> --task <id> [--evidence <file>] [--message <text>] [--test-result <markdown-file>]',
   'todo reopen': 'todo reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]',
   'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file>',

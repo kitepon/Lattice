@@ -292,7 +292,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency',
+  'retract', 'dependency', 'add',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -330,6 +330,10 @@ const TODO_FLAG_SPECS = Object.freeze({
   unblock: Object.freeze({ known: ['plan', 'task'], required: ['plan', 'task'] }),
   reopen: Object.freeze({ known: ['plan', 'task', 'reason', 'override-reason'], required: ['plan', 'task', 'reason'] }),
   'dependency connect': DEPENDENCY_FLAG_SPEC,
+  add: Object.freeze({
+    known: ['plan', 'task', 'title', 'phase', 'lane', 'done-condition', 'design-memo', 'after', 'before', 'reason'],
+    required: ['plan', 'task', 'title'],
+  }),
   'dependency disconnect': DEPENDENCY_FLAG_SPEC,
   // a23: the remaining writes whose refusal pointed only at --help.
   'phase review': PHASE_REASON_FLAG_SPEC,
@@ -1647,6 +1651,61 @@ async function dependencyRevision({
     schema: 'lattice.todo_dependency_revision_result.v1', project_id: store.project_id,
     plan_key: planKey, operation, from, to, reason, actor: desired.actor,
     plan_version: applied.plan_version, revision_digest: applied.revision.revision_digest,
+    rebound_task_ids: applied.rebound_task_ids, result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/**
+ * a39: 1件のtaskを、planを書き直さずに足す。dependency connectと同じ軽量改訂の道で、
+ * 現行planから作ったdesiredへtaskと辺(after→新task、新task→before)を足して適用する。
+ */
+async function addTask({ repoRoot, env, planKey, flags }) {
+  const { applyPlanRevision, desiredFromPlan } = await import('./plan-revise.mjs');
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ plan }) => plan.plan_key === planKey);
+  if (member === undefined) {
+    throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
+  }
+  const taskId = flags.task;
+  const known = new Set(member.plan.tasks.map(({ task_id: id }) => id));
+  if (known.has(taskId)) {
+    throw new TodoStoreError('INPUT_INVALID', 'todo_add_task_exists', undefined, {
+      plan_key: planKey, task_id: taskId, pointer: '--task',
+      next_action: `${planKey}/${taskId} already exists: pick an unused --task id (see \`lattice plan show ${planKey} --json\`), or change the task with \`lattice plan revise --input <file>\`.`,
+    });
+  }
+  const ids = (value) => (typeof value === 'string' ? value.split(',').map((id) => id.trim()).filter(Boolean) : []);
+  const after = ids(flags.after);
+  const before = ids(flags.before);
+  for (const id of [...after, ...before]) {
+    if (!known.has(id)) {
+      throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_task_not_found', undefined, {
+        ref: dependencyRef(store, planKey, id),
+      });
+    }
+  }
+  const task = { task_id: taskId, title: flags.title };
+  for (const [flag, field] of [['phase', 'phase_id'], ['lane', 'lane'],
+    ['done-condition', 'done_condition'], ['design-memo', 'design_memo']]) {
+    if (typeof flags[flag] === 'string') task[field] = flags[flag];
+  }
+  const desired = desiredFromPlan(member.plan, { env });
+  const ref = (id) => dependencyRef(store, planKey, id);
+  desired.tasks = [...desired.tasks, task];
+  desired.hard_dependencies = [...desired.hard_dependencies,
+    ...after.map((id) => ({ from: ref(id), to: ref(taskId) })),
+    ...before.map((id) => ({ from: ref(taskId), to: ref(id) }))];
+  const reason = typeof flags.reason === 'string' ? flags.reason : null;
+  const applied = await applyPlanRevision({
+    repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
+    notes: [{ task_id: taskId, body: `todo add ${taskId}${reason === null ? '' : `: ${reason}`}` }],
+  });
+  const result = {
+    schema: 'lattice.todo_task_add_result.v1', project_id: store.project_id, plan_key: planKey,
+    task_id: taskId, after, before, reason, actor: desired.actor,
+    plan_version: applied.plan_version, revision_digest: applied.revision?.revision_digest ?? null,
     rebound_task_ids: applied.rebound_task_ids, result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
@@ -4934,6 +4993,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
           repoRoot, env, planKey: flags.plan, taskId: flags.task,
           kind: 'block', payload: { reason: flags.reason }, evidenceRef: null,
         }) });
+    }
+  } else if (argv[0] === 'add') {
+    const flags = matchFlagCommand(argv, ['add'], TODO_FLAG_SPECS.add);
+    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
+      action = (repoRoot) => addTask({ repoRoot, env, planKey: flags.plan, flags });
     }
   } else if (argv[0] === 'retire') {
     // 恒久除去（2026-08-29オーナー裁定）。planの形は変えず、状態遷移として工程を閉じる。

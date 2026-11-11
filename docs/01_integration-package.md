@@ -34,7 +34,7 @@
 - TODO工程とruntime実行の相関: `todo bindings [--plan <key>] --json`が
   `lattice.todo_binding_projection.v1`を返す（[ADR 0124](adr/0124-todo-binding-projection.md)）。
   `todo_status_result`とは独立した加算の別面なので、statusの版に関わらず既存hostはそのまま動く。
-- TODO工程（0.85.5時点、コードの定数から確認）: 現行authoringは`lattice.plan_create_input.v5`
+- TODO工程（0.86.0時点、コードの定数から確認）: 現行authoringは`lattice.plan_create_input.v5`
   （`plan create`／`plan revise --input`共通）、新規planは`lattice.todo_plan.v8`、`plan revise`の
   Phase revisionは`lattice.phase_todo_revision.v5`、statusは`lattice.todo_status_result.v9`を使う。
   event・snapshotの版はstore内部の記録形式で、hostは直接読まない（表示はCLIのJSONかdashboardを使う）。
@@ -43,6 +43,8 @@
 - 工程表の表示用読取（CLIのJSONだけを読むホスト向け、0.85.5）: `todo display read --json`が
   `lattice.todo_display_read_result.v1`、`todo display source --json`が`lattice.todo_store_display_source.v1`を返す。
   正本は[store display read](architecture/dfd-store-display-read.md)。
+- 1件の工程の追加（0.86.0）: `todo add --plan <key> --task <id> --title <text> …`が`lattice.todo_task_add_result.v1`を返す。
+  閉じるのは`todo retire`。`plan show`の各taskに`design_memo`。正本は[plan revise](architecture/dfd-plan-revise.md)のa39。
   旧schemaは既存storeの読取・移行互換としてだけ維持する。
 
 ### 2.1 ToDo設計メモと動的工程表

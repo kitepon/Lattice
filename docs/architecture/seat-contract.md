@@ -26,7 +26,7 @@ the rule.
 
 Write a plan (create, add and revise share one input shape: `plan revise --input` takes the same plan as `plan create`, and the `{schema, desired, continuity}` wrapper is optional, a31; a plan_key with no active plan is made with `plan create`), read state
 (`status --json`, `session-context --json`), start, note, done, block/unblock,
-dependency connect. Every other command remains but is not part of seat guidance.
+dependency connect, add one task (`todo add`) and retire one (`todo retire`) without restating the plan (a39). Every other command remains but is not part of seat guidance.
 Flags such as `--json` never change the outcome of a write command; a flag that
 does not apply is ignored or reported by name, never a refusal of the command.
 Reads and sensor commands that only ever print JSON (`status`, `session-context`,

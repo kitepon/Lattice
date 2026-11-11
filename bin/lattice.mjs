@@ -140,7 +140,7 @@ if (help !== null) {
 } else if (args[0] === 'plan' && args[1] === 'revise') {
   const { matchFlagCommand } = await import('../src/todo-authoring-input.mjs');
   const spec = {
-    known: ['input', 'dry-run', 'json'], required: ['input'], booleans: ['dry-run', 'json'],
+    known: ['plan', 'input', 'dry-run', 'json'], required: ['input'], booleans: ['dry-run', 'json'],
   };
   const flags = matchFlagCommand(args, ['plan', 'revise'], spec);
   if (flags === null || flags.json !== true) {
@@ -150,7 +150,7 @@ if (help !== null) {
     const { runPlanRevise } = await import('../src/plan-revise.mjs');
     const { projectCliFailure } = await import('../src/project-cli.mjs');
     try {
-      process.exitCode = await runPlanRevise({ cwd: process.cwd(), inputRef: flags.input,
+      process.exitCode = await runPlanRevise({ cwd: process.cwd(), inputRef: flags.input, planKey: flags.plan,
         dryRun: flags['dry-run'] === true, stdout: process.stdout, env: process.env });
     } catch (error) {
       process.exitCode = projectCliFailure(process.stderr, error, { command: 'revise', flags });
