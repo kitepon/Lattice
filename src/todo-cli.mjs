@@ -350,6 +350,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   'independence witness scaffold': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
+  'phase status': Object.freeze({ known: ['plan', 'json'], required: ['plan'], booleans: ['json'] }),
   structure: Object.freeze({ known: ['plan', 'json'], required: [], booleans: ['json'] }),
   status: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
 });
@@ -4905,9 +4906,10 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (flags !== null && isTodoIdentifier(flags.plan) && isAuthoringPathToken(flags.input)) {
       action = (repoRoot) => revisePhase({ repoRoot, env, planKey: flags.plan, inputRef: flags.input });
     }
-  } else if (argv.length === 4 && argv[0] === 'phase' && argv[1] === 'status'
-    && argv[2] === '--plan' && isTodoIdentifier(argv[3])) {
-    action = (repoRoot) => phaseStatus({ repoRoot, planKey: argv[3] });
+  } else if (argv[0] === 'phase' && argv[1] === 'status' && readFlags(argv, ['phase', 'status']) !== null) {
+    // a28: a read's --json is optional; its output is JSON either way.
+    const flags = readFlags(argv, ['phase', 'status']);
+    action = (repoRoot) => phaseStatus({ repoRoot, planKey: flags.plan });
   } else if (argv[0] === 'phase' && argv[1] === 'review'
     && phaseReasonFlags(argv) !== null) {
     const flags = phaseReasonFlags(argv);

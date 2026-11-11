@@ -237,3 +237,15 @@ test('宣言はlifecycle journalへ混ざらず、別chainへ積まれる', asyn
   assert.equal(projectTodoCoordination(after.plan_scoped.events).mode, 'witness');
   assert.equal(projectTodoCoordination(after.journal.events), null, 'journal側には宣言が無い');
 });
+
+test('conversationを宣言したplanにはparallel_candidatesの督促が出ない（ADR 0160 §2）', async (context) => {
+  const { root, declare, read } = await workspace(context);
+  const { readTodoParallelCandidatesForStatus } = await import('../src/todo-parallel-candidates.mjs');
+  const candidates = async () => readTodoParallelCandidatesForStatus({
+    repoRoot: root, store: await read(), gitHead: () => '0'.repeat(40) });
+  assert.deepEqual((await candidates()).map(({ plan_key: key, coverage }) => [key, coverage]), [['main', 'missing']]);
+  await declare('conversation', '会話で調整する');
+  assert.deepEqual(await candidates(), []);
+  await declare('witness', 'witnessへ戻す');
+  assert.deepEqual((await candidates()).map(({ plan_key: key }) => key), ['main']);
+});

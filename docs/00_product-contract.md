@@ -240,7 +240,8 @@ removed taskのnoteはarchived束へ分離する。
 
 `parallel_candidates`欄は、readyかつ独立性が未判定・判定済みの組を候補視点で並べ直し、次に打つ
 compile commandまで案内する（ADR 0160）。**新しい判定はここで行わない**——既存のindependence投影の
-並べ替えである。判定する対象が無いplanはentryごと出さない。
+並べ替えである。判定する対象が無いplanと、`conversation`を宣言したplan（witness系の督促を出さない、
+ADR 0160 §2）はentryごと出さない。
 
 個別ToDo右ペインの「作業記録」は同じbounded contextを表示する。**note本文はHTMLを描くすべての面へ
 含める**——`gantt serve`も常設dashboardも、repo外へ出るHTMLも区別しない。除外の入口は持たない。
