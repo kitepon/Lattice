@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.86.0 — 2026-11-11
+
+BellTeamの本番試用（フローラ／トロニー）で出た、工程表の書き換えの重さを直す版。ホストへの変更：コマンドを1つ足す。`plan show`の出力に欄を1つ足す。
+
+- `lattice todo add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>] [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]`は、planの全体を書かずにtaskを1件足す。`--after`の各taskの後、`--before`の各taskの前に置く。新しいplan_versionができ、他のtaskは状態もjournalもそのまま引き継ぐ（作業中のtaskは結び直される）。結果は`lattice.todo_task_add_result.v1`。既にあるtask idと、planに無い`--after`/`--before`は書く前に断る。
+- 1件を閉じるのは既存の`lattice todo retire --plan <key> --task <id> --reason <text>`。planは変わらず、他のtaskはそのまま。
+- `plan show <key> --json`の各taskに`design_memo`が載る。`plan show`だけで`plan revise`の入力を組み立てられる。
+- `plan revise`が`--plan <key>`を受ける。入力にplan_keyが無ければ補い、違うplan_keyなら`plan_revise_plan_key_mismatch`で断る。
+
 ## 0.85.5 — 2026-11-11
 
 複数の席が1つのstoreへ書く時と、CLIのJSONだけを読むホストのための版（BellTeamのLatticeモジュール）。ホストへの変更：同時に書いた席が断られず待つ。新しい読取コマンドを2つ足す。

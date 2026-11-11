@@ -412,14 +412,31 @@ export async function applyPlanRevision({
   return result;
 }
 
-export async function runPlanRevise({ cwd, inputRef, stdout, dryRun = false, env = process.env }) {
+/** a39: `--plan` names the plan as every todo write does; it fills a missing plan_key and must match a written one. */
+export function applyPlanFlag(input, planKey) {
+  if (planKey === undefined || !isRecord(input)) return input;
+  const wrapped = !isBareCreateInput(input) && isRecord(input.desired);
+  const target = wrapped ? input.desired : input;
+  if (target.plan_key === undefined) return wrapped ? { ...input, desired: { ...target, plan_key: planKey } }
+    : { ...input, plan_key: planKey };
+  if (target.plan_key !== planKey) {
+    fail('plan_revise_plan_key_mismatch', wrapped ? '/desired/plan_key' : '/plan_key', {
+      expected: planKey, actual: target.plan_key,
+      next_action: `--plan is "${planKey}" but the input revises "${target.plan_key}": make them the same, or drop --plan (the input's plan_key names the plan).`,
+    });
+  }
+  return input;
+}
+
+export async function runPlanRevise({ cwd, inputRef, planKey, stdout, dryRun = false, env = process.env }) {
   let repoRoot;
   try {
     repoRoot = path.resolve(gitSync(['rev-parse', '--show-toplevel'], {
       cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     }).replace(/\r?\n$/u, ''));
   } catch { throw new TodoStoreError('REPO_UNRESOLVED', 'git_toplevel_unresolved'); }
-  const input = await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'INPUT_INVALID' });
+  const input = applyPlanFlag(
+    await readAuthoringJsonFile(repoRoot, inputRef, { invalidCode: 'INPUT_INVALID' }), planKey);
   const result = await applyPlanRevision({ repoRoot, input, env, dryRun });
   stdout.write(`${JSON.stringify(result)}\n`);
   return 0;

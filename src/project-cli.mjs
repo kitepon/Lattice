@@ -1002,6 +1002,8 @@ export async function runPlanShow({ cwd, planKey, stdout }) {
     phase_id: phaseInput ? task.phase_id : null,
     state: stateByTaskId.get(task.task_id).status,
     done_condition: task.done_condition ?? null,
+    // a39: with design_memo, plan show holds every authored field a plan revise input needs.
+    design_memo: task.design_memo ?? null,
     depends_on_count: dependsOnCount.get(task.task_id) ?? 0,
   }));
 

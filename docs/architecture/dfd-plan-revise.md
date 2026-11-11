@@ -152,3 +152,18 @@ Help text: `dependency connect|disconnect` says same-plan edges change the plan
 (a light revision, new plan_version) and cross-plan edges use the ledger.
 Patent: authoring only; readiness, hold/commit/resume and claimed mechanisms
 are untouched.
+
+## One task add, plan show memo, revise --plan (a39, 2026-11-11)
+
+BellTeam production trial (Flora/Trony, 0.85.5): adding t21/t22 needed all 22 tasks
+resent to `plan revise --input`, `plan show --json` omitted design_memo so the plan
+could not be rebuilt from Lattice's own read, and `plan revise --plan <key>` was an
+unknown flag while every todo write requires `--plan`. Removing one task already has
+its command: `todo retire --plan --task --reason` (state transition, plan unchanged,
+every other task keeps state and journal).
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: `todo add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>] [--design-memo <text>] [--after <id>[,<id>…]] [--before <id>[,<id>…]] [--reason <text>]` | Fresh Store member | Same route as same-plan dependency connect: `desiredFromPlan(plan)` + the new task (absent fields filled by `completeCreateInput`) + edges `after → new` and `new → before`, applied by `applyPlanRevision` with no continuity (every existing task carries, computed N5). A plan note `todo add <id>: <reason>` is appended with the revision notes. Result `lattice.todo_task_add_result.v1` `{project_id, plan_key, task_id, after, before, reason, actor, plan_version, revision_digest, rebound_task_ids, result_digest}`. | Plan not active → `plan_not_active`; task id already in the plan → `INPUT_INVALID/todo_add_task_exists` with next_action `plan show`; an `--after`/`--before` id not in the plan → `DEPENDENCY_INVALID/dependency_task_not_found`; all before any write. Field rules (missing phase, memo limit, cycle) are the create validator's and Store's, unchanged. Plans the light route cannot express refuse as `plan revise` does. |
+| Plan: `plan show <key> --json` | Store member | Each task also carries `design_memo` (null when the plan schema has none), so `plan show` holds every authored field a `plan revise` input needs. Schema name unchanged (additive). | None added. |
+| Plan: `plan revise --plan <key> --input <file>` | Flag and input | `--plan` is optional. Input without a plan_key gets it from `--plan`; an input naming another plan_key refuses `INPUT_INVALID/plan_revise_plan_key_mismatch` (pointer `/plan_key`, or `/desired/plan_key` when wrapped) naming both keys, before any read of the store. | Fix either the flag or the input. |
