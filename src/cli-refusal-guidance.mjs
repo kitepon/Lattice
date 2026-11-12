@@ -24,6 +24,11 @@ const run = (ctx, ...tail) => ['lattice', ctx.family ?? 'todo', ctx.command, ...
 const schemaCommand = (ctx) => run(ctx, '--schema', '--json');
 const showTask = (detail, ctx) => `lattice todo show --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --json`;
 const startTask = (detail, ctx) => `lattice todo start --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+// The --message an enforced plan's done gate (ADR 0200 gate 4) accepts; the gate's own next_action uses it too.
+export const ENFORCED_DONE_MESSAGE = '"<PR URL or merged commit sha>"';
+// A done hint that the done gate accepts: on an enforced plan (ctx.enforcedPlans) it names the change, else `rest`.
+const doneCommand = (planKey, taskId, ctx, rest = '') => `lattice todo done --plan ${planKey} --task ${taskId}${
+  strings(ctx.enforcedPlans).includes(planKey) ? ` --message ${ENFORCED_DONE_MESSAGE}` : rest}`;
 // a12: name the blocking task (seat contract), falling back to the refused task's own detail.
 const blocker = (detail) => (Array.isArray(detail.blocking_tasks) ? detail.blocking_tasks.find(record) : undefined);
 // a18: the step that moves the blocker on depends on its status (a pending one is started first).
@@ -35,7 +40,7 @@ const unfinishedFirst = (detail, ctx) => {
   return ({
     pending: `Start ${name} first with \`lattice todo start ${on}\`, then record done on it`,
     blocked: `Unblock ${name} with \`lattice todo unblock ${on}\`, then record done on it`,
-  })[first.status] ?? `Record done on ${name} first with \`lattice todo done ${on} --message <text>\` (see \`lattice todo show ${on} --json\`)`;
+  })[first.status] ?? `Record done on ${name} first with \`${doneCommand(first.plan_key, first.task_id, ctx, ' --message <text>')}\` (see \`lattice todo show ${on} --json\`)`;
 };
 // a36: a start without LATTICE_SEAT_ID is recorded under the OS user; after the seat sets its id that
 // start looks like another seat's. Say so and give the seat contract's one-time fix.
@@ -46,7 +51,7 @@ const inProgressHolder = (detail, ctx, on) => {
     return `It is in-progress under '${holder}', the name a start gets without LATTICE_SEAT_ID: most likely this seat's own`
       + ` start from before it set LATTICE_SEAT_ID. One-time fix (seat contract): with LATTICE_SEAT_ID unset, undo that start`
       + ` with \`lattice todo retract ${on} --reason <text>\` and start it again here, or finish it there first with`
-      + ` \`lattice todo done ${on} --message <text>\`.`;
+      + ` \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx, ' --message <text>')}\`.`;
   }
   return `It is already in-progress under ${holder === null ? 'another seat' : `seat '${holder}'`}; see \`${showTask(detail, ctx)}\`.`
     + ` To move it to this seat run \`lattice todo start ${on} --rebind --reason <text>\`.`;
@@ -228,11 +233,12 @@ const REGISTRY = {
     // a32: only a done task can be reopened; say the state and the step that fits it.
     repair: (detail, ctx) => {
       const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+      const done = doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx);
       return `Only a done task can be reopened; ${planOf(detail, ctx)}/${taskOf(detail, ctx)} is ${detail.status ?? 'not done'}. ` + ({
         // a35: retract undoes only an authored start; a reopened task has none.
         'in-progress': detail.opened_by === 'start'
-          ? `It is still open: finish it with \`lattice todo done ${on}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`
-          : `It is still open${openedByText(detail)}: finish it with \`lattice todo done ${on}\`.`,
+          ? `It is still open: finish it with \`${done}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`
+          : `It is still open${openedByText(detail)}: finish it with \`${done}\`.`,
         pending: `It has not started: run \`lattice todo start ${on}\`.`,
         blocked: `It is blocked: resume it with \`lattice todo unblock ${on}\`.`,
         retired: `Retire is permanent, so it stays closed; see \`${showTask(detail, ctx)}\`.`,
@@ -265,7 +271,7 @@ const REGISTRY = {
     // a35: say why there is nothing to retract and the step that closes the task instead.
     repair: (detail, ctx) => `retract undoes only a start recorded by \`lattice todo start\`; `
       + `${planOf(detail, ctx)}/${taskOf(detail, ctx)} is in progress${openedByText(detail)}, so there is no start to undo. `
-      + `Finish it with \`lattice todo done --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}\`.`,
+      + `Finish it with \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx)}\`.`,
   },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,

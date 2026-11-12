@@ -104,6 +104,44 @@ test('gate 4: done names the change (URL or a commit in HEAD)', async (context) 
   success(root, ['todo', 'done', '--plan', 'dev', '--task', 'Q', '--message', 'https://github.com/example/repo/pull/1']);
 });
 
+test('a refusal that offers done offers the form gate 4 accepts; typed as given, it passes', async (context) => {
+  const { root } = await fixture(context);
+  for (const [id, file] of [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js']]) success(root, declare(id, '--owns', file));
+  success(root, start('P'));
+  const hint = refusal(root, ['todo', 'reopen', '--plan', 'dev', '--task', 'P', '--reason', 'r']).detail.next_action;
+  const offered = hint.match(/`(lattice todo done [^`]*)`/u)?.[1];
+  assert.equal(offered, 'lattice todo done --plan dev --task P --message "<PR URL or merged commit sha>"');
+  const typed = offered.replace('"<PR URL or merged commit sha>"', 'https://github.com/example/repo/pull/2');
+  assert.equal(success(root, typed.split(' ').slice(1)).status, 'done');
+  // Every other done hint of the shared guidance takes the same form on an enforced plan, and stays as it was elsewhere.
+  const { withRefusalGuidance } = await import('../src/cli-refusal-guidance.mjs');
+  const hints = (enforcedPlans) => [
+    { rule: 'authored_start_binding_missing', plan_key: 'dev', task_id: 'P', opened_by: 'reopen' },
+    { rule: 'invalid_done_transition', cause: 'predecessor_unfinished',
+      blocking_tasks: [{ plan_key: 'dev', task_id: 'Q', status: 'in-progress' }] },
+    { rule: 'invalid_start_transition', cause: 'task_state', status: 'in-progress', started_by: 'os-user' },
+  ].map((detail) => withRefusalGuidance({ code: 'TODO_TRANSITION_REFUSED', message: detail.rule, detail },
+    { plan: 'dev', task: 'P', actors: { anonymous: 'os-user', agent: 'seat' }, enforcedPlans }).next_action
+    .match(/`(lattice todo done [^`]*)`/u)?.[1]);
+  assert.deepEqual(hints(['dev']), [
+    'lattice todo done --plan dev --task P --message "<PR URL or merged commit sha>"',
+    'lattice todo done --plan dev --task Q --message "<PR URL or merged commit sha>"',
+    'lattice todo done --plan dev --task P --message "<PR URL or merged commit sha>"',
+  ]);
+  assert.deepEqual(hints([]), [
+    'lattice todo done --plan dev --task P',
+    'lattice todo done --plan dev --task Q --message <text>',
+    'lattice todo done --plan dev --task P --message <text>',
+  ]);
+});
+
+test('a witness plan keeps the done hint it had', async (context) => {
+  const { root } = await fixture(context, 'witness');
+  success(root, start('P'));
+  const hint = refusal(root, ['todo', 'reopen', '--plan', 'dev', '--task', 'P', '--reason', 'r']).detail.next_action;
+  assert.match(hint, /finish it with `lattice todo done --plan dev --task P`, or undo/u);
+});
+
 test('gate 5: a heavy phase is not closed unaudited; a light one is', async (context) => {
   const { root } = await fixture(context);
   for (const [id, file] of [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js']]) success(root, declare(id, '--owns', file));
