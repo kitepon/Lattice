@@ -21,6 +21,15 @@ function triggerOf(member, event, ref) {
   };
 }
 
+/** The start path a lane can run for a ready task, in order: witness declare first on an enforced plan without its row. */
+export function startPath(planKey, taskId, mode, declared) {
+  return [
+    ...(mode === 'enforced' && !declared
+      ? [`lattice todo independence witness declare --plan ${planKey} --task ${taskId} --owns <path>[,<path>...]`] : []),
+    `lattice todo start --plan ${planKey} --task ${taskId}`,
+  ];
+}
+
 /**
  * wait-design: a wait is in effect while its task is pending or blocked and has no own start or retire after `since`.
  * shortcut: a start-then-retract in an earlier plan version followed by a revise can bring a wait back (that version's
@@ -95,9 +104,7 @@ export function projectTodoNotices(store, { lane = null, declared = () => true, 
       waiting_digest: todoNoticeWaitingDigest(waiting.map(({ agent, since }) => ({ agent, since }))),
       summary: noticeSummary(planKey, task, waiting),
       // The command if the lane starts; information, never an assignment. Same rule as the enforced done hints (#141): offer what the start path accepts.
-      next_action: mode === 'enforced' && !declared(planKey, task.task_id)
-        ? `lattice todo independence witness declare --plan ${planKey} --task ${task.task_id} --owns <path>[,<path>...]`
-        : `lattice todo start --plan ${planKey} --task ${task.task_id}`,
+      next_action: startPath(planKey, task.task_id, mode, declared(planKey, task.task_id))[0],
     });
   }
   return notices.sort((left, right) => byText(`${left.plan_key}\0${left.task_id}`, `${right.plan_key}\0${right.task_id}`));
