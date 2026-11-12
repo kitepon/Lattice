@@ -18,6 +18,7 @@ the existing refusal stays (`STORE_CORRUPT`, `STORE_INCONSISTENT`).
 | same | Intact (`event_digest` = its own self digest) and `kind` is a word not in `TODO_EVENT_KINDS` | The bytes are exactly what a writer produced; only the vocabulary is unknown. |
 | same | Intact and `kind = coordination_mode` with `payload.mode` a word not in `TODO_COORDINATION_MODES` | Same (e.g. `enforced` read by a reader before 0.88.0). |
 | `plan.json` (validator `validateTodoPlan`), `manifest.json` (`validateTodoManifest`) via `parseCanonicalJsonLine` | `schema` is `lattice.todo_plan.vN` / `lattice.todo_manifest.vN` with N above the registered newest | Same as the event schema id. A schema of another family stays `schema_invalid`. |
+| Notice ack set `notices/<lane hash>.json` (`todo-notice-store.mjs`, via the exported `rejectNewerTodoSchema`) | `schema` is `lattice.todo_notice_acks.vN` with N above `NEWEST_KNOWN_TODO_SCHEMA.todo_notice_acks` | Same; `ack` also refuses it rather than downgrade it ([startable notices](dfd-done-notice.md)). |
 
 Canonical-form, UTF-8, size, hash-chain, link and binding checks run as before; a
 mismatched digest with an unknown value is damage and stays `STORE_CORRUPT

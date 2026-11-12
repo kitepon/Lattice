@@ -130,7 +130,7 @@ function rejectUnsupportedRevisionSchema(value, { family, supportedSchemas }) {
 
 // Reader registration (newer-value-says-upgrade): the newest schema of each Store record family this
 // reader knows. Bump it in the same diff that teaches the validator a new version.
-export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2 });
+export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 1 });
 const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest']]);
 const vocabularyWord = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
 
@@ -160,6 +160,12 @@ function failNewer({ pointer, value }, ref) {
     required_version: `>${packageJson.version}`,
     next_action: upgradeAction(`The value '${value}' at ${pointer}${ref === null ? '' : ` in ${ref}`}`),
   });
+}
+
+/** Side records outside the lifecycle (the notice ack set) use the same upgrade refusal. */
+export function rejectNewerTodoSchema(value, family, ref) {
+  const newer = newerSchema(value, family);
+  if (newer !== null) failNewer(newer, ref);
 }
 
 function requireWriter(writer, caller) {
@@ -2098,7 +2104,7 @@ export async function readTodoStoreForDisplay({ repoRoot = process.cwd(), now } 
   return { state: 'unavailable', store: null, verified_at: null, source: null, inconsistency, dropped_members: dropped };
 }
 
-async function atomicWrite(absolute, bytes) {
+export async function atomicWrite(absolute, bytes) {
   await mkdir(path.dirname(absolute), { recursive: true });
   const temporary = path.join(path.dirname(absolute), `.${path.basename(absolute)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   let handle;
@@ -3425,13 +3431,17 @@ export async function initializeTodoStore(options = {}) {
 const sameDirectoryIdentity = (left, right) => left !== null && right !== null
   && left.dev === right.dev && left.ino === right.ino;
 
-async function transientStoreDirectory(root, allowNotes = true) {
+// Host-local notice ack sets (and their temp files) of a store that is gone; see todo-notice-store.mjs.
+const NOTICE_ACK_RESIDUE = /^(?:\.gitignore|\.?[0-9a-f]{16}\.json(?:\.\d+\.[0-9a-f]{12}\.tmp)?)$/u;
+
+async function transientStoreDirectory(root, allowNotes = true, allowAcks = false) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.(?:tmp|stale)$/u.test(entry.name))) continue;
+    if (entry.isFile() && (entry.name === '.write.lock' || /^\.write\.lock\..+\.(?:tmp|stale)$/u.test(entry.name)
+      || (allowAcks && NOTICE_ACK_RESIDUE.test(entry.name)))) continue;
     if (!entry.isDirectory()) return false;
     const child = path.join(root, entry.name);
-    if (allowNotes && entry.name === 'notes') {
-      if (!await transientStoreDirectory(child, false)) return false;
+    if (allowNotes && ['notes', 'notices'].includes(entry.name)) {
+      if (!await transientStoreDirectory(child, false, entry.name === 'notices')) return false;
     } else if (['.cross-plan-recovery', '.write.lock.recovery'].includes(entry.name)) {
       for (const claim of await readdir(child, { withFileTypes: true })) {
         if (!claim.isDirectory() || (await readdir(path.join(child, claim.name))).length !== 0) return false;
@@ -3504,6 +3514,30 @@ async function prepareAuthoredStoreRoot(repoRoot, options) {
         if (!['ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error;
         throw new StoreLockError('store_locked', path.join(notes, '.write.lock'), {
           next_action: `Confirm no writer before clearing abandoned host-local note lock residue in ${notes}`,
+        });
+      }
+    }
+    // Acks of the store that is gone name notices that cannot open again; losing them is redelivery at most.
+    const notices = path.join(root, 'notices');
+    const noticesIdentity = await lstat(notices).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+      return null;
+    });
+    if (noticesIdentity !== null) {
+      await withStoreLock({ lockPath: path.join(notices, '.write.lock'), createParent: false }, async () => {
+        if (!sameDirectoryIdentity(noticesIdentity, await lstat(notices))
+          || !await transientStoreDirectory(notices, false, true)) {
+          fail('STORE_WRITE_CONFLICT', 'authoring_activation_path_changed');
+        }
+        for (const name of await readdir(notices)) {
+          if (NOTICE_ACK_RESIDUE.test(name)) await rm(path.join(notices, name), { force: true });
+        }
+      });
+      try { await rmdir(notices); }
+      catch (error) {
+        if (!['ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error;
+        throw new StoreLockError('store_locked', path.join(notices, '.write.lock'), {
+          next_action: `Confirm no writer before clearing abandoned host-local notice lock residue in ${notices}`,
         });
       }
     }

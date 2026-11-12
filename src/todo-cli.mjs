@@ -169,6 +169,8 @@ import {
 } from './seam-proposal-contracts.mjs';
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
+import { newTodoNotices, projectTodoNotices } from './todo-notices.mjs';
+import { ackTodoNotices, readAllTodoNoticeAcks, readTodoNoticeAcks } from './todo-notice-store.mjs';
 import { collectTodoIndependenceAuthoritativeObservation } from './todo-independence-authoritative-observation.mjs';
 import { applySeamProposal } from './seam-apply.mjs';
 import { todoPlanPrecedences } from './seam-verification.mjs';
@@ -303,7 +305,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'add',
+  'retract', 'dependency', 'add', 'notice',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -362,6 +364,8 @@ const TODO_FLAG_SPECS = Object.freeze({
   'independence witness declare': Object.freeze({
     known: ['plan', 'task', 'owns', 'reads', 'writes'], required: ['plan', 'task'] }),
   show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
+  'notice list': Object.freeze({ known: ['lane', 'include-acked', 'json'], required: [], booleans: ['include-acked', 'json'] }),
+  'notice ack': Object.freeze({ known: ['lane', 'notice', 'json'], required: ['lane', 'notice'], booleans: ['json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
   'phase status': Object.freeze({ known: ['plan', 'json'], required: ['plan'], booleans: ['json'] }),
   structure: Object.freeze({ known: ['plan', 'json'], required: [], booleans: ['json'] }),
@@ -4585,6 +4589,94 @@ function writesTodoStore(argv) {
   }
 }
 
+/** notice-impl: the writes that can make a task startable carry `notices` ([startable notices](dfd-done-notice.md)). */
+function releasesTasks(argv) {
+  const [command, second] = argv;
+  return ['done', 'retire', 'unblock'].includes(command)
+    || (command === 'phase' && ['accept', 'close-unaudited'].includes(second))
+    || (command === 'dependency' && second === 'disconnect');
+}
+
+async function openNotices(repoRoot) {
+  const store = await readTodoStore({ repoRoot });
+  const rows = new Map();
+  for (const member of store.members) {
+    if (member.coordination?.mode !== 'enforced') continue;
+    const recorded = await readTodoWitnessSet({ repoRoot, planKey: member.plan.plan_key }).catch(() => null);
+    rows.set(member.plan.plan_key, new Set(Object.keys(recorded?.manual_witness ?? {})));
+  }
+  return projectTodoNotices(store, { declared: (planKey, taskId) => rows.get(planKey)?.has(taskId) === true });
+}
+
+/** A committed write is never undone for its notices: an unreadable projection says so and `notice list` recovers. */
+async function withNotices(repoRoot, result, before) {
+  if (result === null || typeof result !== 'object' || typeof result.result_digest !== 'string') return result;
+  let extra;
+  try {
+    if (before === null) throw new Error('notices_before_unreadable');
+    extra = { notices: newTodoNotices(before, await openNotices(repoRoot)) };
+  } catch (error) {
+    extra = { notices: null, notices_unavailable: error?.detail?.reason ?? error?.message ?? 'notices_unreadable' };
+  }
+  const carried = { ...result, ...extra, result_digest: '' };
+  carried.result_digest = todoSelfDigest(carried, 'result_digest');
+  return carried;
+}
+
+// Same bound as the Store's lane check (1..256 chars, no control characters).
+const isNoticeLane = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256
+  && !/[\u0000-\u001f\u007f]/u.test(value);
+
+function noticeAckRefusal(error, lane) {
+  if (!['STORE_CORRUPT', 'UNSUPPORTED_SCHEMA'].includes(error?.code)) throw error;
+  return { lane_file: error.detail?.ref ?? null, code: error.code, reason: error.detail?.reason ?? error.message };
+}
+
+/** `todo notice list`: open notices, unacked unless asked; one unreadable ack file never hides the rest. */
+async function noticeList({ repoRoot, lane, includeAcked }) {
+  const store = await readTodoStore({ repoRoot });
+  const open = (await openNotices(repoRoot)).filter((notice) => lane === null || notice.lane === lane);
+  const acked = new Map();
+  const ackUnreadable = [];
+  if (lane === null) {
+    const all = await readAllTodoNoticeAcks({ repoRoot });
+    for (const record of all.acks) acked.set(record.lane, new Set(record.acks.map(({ notice_id: id }) => id)));
+    ackUnreadable.push(...all.unreadable);
+  } else {
+    try {
+      const record = await readTodoNoticeAcks({ repoRoot, lane });
+      acked.set(lane, new Set((record?.acks ?? []).map(({ notice_id: id }) => id)));
+    } catch (error) {
+      ackUnreadable.push(noticeAckRefusal(error, lane));
+    }
+  }
+  const notices = open.map((notice) => ({ ...notice, acked: acked.get(notice.lane)?.has(notice.notice_id) === true }))
+    .filter((notice) => includeAcked || !notice.acked);
+  const result = {
+    schema: 'lattice.todo_notice_list_result.v1', project_id: store.project_id, lane, notices,
+    ack_unreadable: ackUnreadable, result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/** `todo notice ack`: an id that is no longer open is reported as closed, never refused (nothing is left to ack). */
+async function noticeAck({ repoRoot, env, lane, ids }) {
+  const store = await readTodoStore({ repoRoot });
+  const openIds = (await openNotices(repoRoot)).filter((notice) => notice.lane === lane).map(({ notice_id: id }) => id);
+  const open = new Set(openIds);
+  const live = ids.filter((id) => open.has(id));
+  const written = live.length === 0 ? { acked: [], already: [] } : await ackTodoNotices({
+    repoRoot, lane, noticeIds: live, openIds, actor: resolveTodoActor(env), now: new Date().toISOString(),
+  });
+  const result = {
+    schema: 'lattice.todo_notice_ack_result.v1', project_id: store.project_id, lane,
+    acked: written.acked, already: written.already, closed: ids.filter((id) => !open.has(id)).sort(), result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
 async function ensureActiveProjectDashboard({ repoRoot, env, stderr, strict = false }) {
   if (env.LATTICE_DASHBOARD_AUTOSTART === '0') return null;
   let actor;
@@ -4891,6 +4983,19 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
         inputRef: hasInput ? flags.input : null,
         supersedes: flags.supersedes ?? null,
       });
+    }
+  } else if (argv[0] === 'notice' && argv[1] === 'list'
+    && matchFlagCommand(argv, ['notice', 'list'], TODO_FLAG_SPECS['notice list']) !== null) {
+    const flags = matchFlagCommand(argv, ['notice', 'list'], TODO_FLAG_SPECS['notice list']);
+    if (flags.lane === undefined || isNoticeLane(flags.lane)) {
+      action = (repoRoot) => noticeList({ repoRoot, lane: flags.lane ?? null, includeAcked: flags['include-acked'] === true });
+    }
+  } else if (argv[0] === 'notice' && argv[1] === 'ack'
+    && matchFlagCommand(argv, ['notice', 'ack'], TODO_FLAG_SPECS['notice ack']) !== null) {
+    const flags = matchFlagCommand(argv, ['notice', 'ack'], TODO_FLAG_SPECS['notice ack']);
+    const ids = typeof flags.notice === 'string' ? [...new Set(flags.notice.split(',').map((id) => id.trim()))] : [];
+    if (isNoticeLane(flags.lane) && ids.length > 0 && ids.every((id) => /^[0-9a-f]{64}$/u.test(id))) {
+      action = (repoRoot) => noticeAck({ repoRoot, env, lane: flags.lane, ids });
     }
   } else if (argv[0] === 'note' && argv[1] === 'list' && readFlags(argv, ['note', 'list']) !== null) {
     const flags = readFlags(argv, ['note', 'list']);
@@ -5262,9 +5367,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (writesTodoStore(argv)) {
       await ensureActiveProjectDashboard({ repoRoot, env, stderr });
     }
-    const result = atomicCommit
+    const before = releasesTasks(argv) ? await openNotices(repoRoot).catch(() => null) : null;
+    const written = atomicCommit
       ? await commitTodoStoreMutation({ repoRoot, argv, action, env })
       : await action(repoRoot);
+    const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before) : written;
     if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     return 0;
   } catch (error) {

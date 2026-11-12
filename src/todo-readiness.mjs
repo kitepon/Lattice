@@ -126,10 +126,28 @@ export function createTodoReadiness(store) {
   }
   const startedSuccessor = (key) => startedSuccessors(key).length > 0;
 
+  /** notice-impl: what a task waits on — predecessor tasks, phases whose accept it needs, and its own phase. */
+  function prerequisiteRefs(key) {
+    const node = nodes.get(key);
+    const tasks = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source))
+      .filter((pred) => pred !== undefined).map(({ plan_key, task_id }) => ({ plan_key, task_id }));
+    const phaseRefs = [...(acceptanceIncoming.get(key) ?? [])].map((source) => phases.get(source))
+      .filter((phase) => phase !== undefined).map(({ plan_key, phase_id }) => ({ plan_key, phase_id }));
+    for (const source of incoming.get(key) ?? []) {
+      const pred = nodes.get(source);
+      if (pred !== undefined && isPhaseTodoPlanSchema(pred.schema) && !isDecoupledPhaseTodoPlanSchema(pred.schema)
+        && !(pred.plan_key === node?.plan_key && pred.phase_id === node?.phase_id)) {
+        phaseRefs.push({ plan_key: pred.plan_key, phase_id: pred.phase_id });
+      }
+    }
+    return { tasks: uniqueRefs(tasks).sort(byRef), phases: uniqueRefs(phaseRefs).sort(byRef) };
+  }
+
   return {
     key: taskKey,
     status: (key) => nodes.get(key)?.status,
     prerequisites,
+    prerequisiteRefs,
     ownPhaseReady,
     ownPhaseStatus,
     isReady: (key) => nodes.get(key)?.status === 'pending'

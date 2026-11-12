@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Storeのrepoにcommitが無い時（BellTeamのMCPのstoreなど）も、`todo independence witness declare`が通る。これまでは`git rev-parse HEAD`で`INDEPENDENCE_OBSERVATION_GIT_FAILED`になり、`enforced`のplanの工程が1つも着手できなかった。今は行を記録し、観測とcompileはしない。結果に`observation: "unavailable"`と、着手のコマンドを書いた`next_action`が付く。宣言した工程の`todo start`のadvisoryは`coverage: "declared_unobserved"`（案内`independence_declared_unobserved`、`self_unknowns`に`observation_unavailable`）で、門1を通る。「干渉しない」とは言わない。宣言していない工程は、今までどおり門1で断られる。commitのあるrepoの動きは変わらない。ホストへの変更：`coverage`と案内codeに値が1つずつ増える。
+- 工程が着手できるようになったことを、待っている担当（lane）へ知らせる（見張りに頼らない。クオ裁定 2026-11-12）。`done`・`retire`・`unblock`・`phase accept`・`phase close-unaudited`・`dependency disconnect`の結果に`notices`が付く。その書き込みで着手できるようになった工程（別のplanからの依存も含む）と、担当・きっかけの記録・`next_action`が入る。知らせは工程表の記録から組み立てるので、会話やプロセスが消えても残る。未読の知らせは`lattice todo notice list [--lane <lane>] [--include-acked]`で読め（担当を省くと全担当）、届けたら`lattice todo notice ack --lane <lane> --notice <id>[,<id>...]`で印を付ける（閉じた知らせは`closed`で返し、断らない）。印はそのホストだけに置き、gitに入らない。Latticeは知らせるだけで、着手は決めない。ホストへの変更：これらの結果に欄が1つ増え、`todo notice`が増える。
 
 ## 0.89.0 — 2026-11-12
 

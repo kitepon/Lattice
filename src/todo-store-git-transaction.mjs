@@ -19,6 +19,7 @@ const STORE_PATHS = [STORE_REF,
   ':(exclude,glob).lattice/todo/**/.write.lock*',
   ':(exclude,glob).lattice/todo/**/.write.lock*/**',
   ':(exclude,glob).lattice/todo/.cross-plan-recovery/**',
+  ':(exclude,glob).lattice/todo/notices/**',
 ];
 const LOCK_NAME = 'lattice-todo-store-commit.lock';
 
