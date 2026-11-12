@@ -774,7 +774,7 @@ test('案内はadvisoryと投影の両方へ同じ文言で載る', async (conte
   const projection = parse(runCli(root, ['independence', '--json']).stdout);
   assert.equal(projection.guidance.code, 'coordination_mode_undeclared');
   assert.equal(projection.guidance.next_action,
-    `lattice todo independence mode --plan ${projection.plan_key} --set <witness|conversation> --reason <text>`);
+    `lattice todo independence mode --plan ${projection.plan_key} --set <witness|conversation|enforced> --reason <text>`);
   assert.match(projection.guidance.message, /調整方式をまだ選んでいない/u);
 
   const actorEnv = {

@@ -1,3 +1,5 @@
+import { TODO_COORDINATION_MODES } from './todo-contracts.mjs';
+
 /**
  * 並列可否の案内（ADR 0130）。
  *
@@ -72,7 +74,7 @@ const CATALOG = Object.freeze({
   }),
   coordination_mode_undeclared: Object.freeze({
     message: 'このplanは調整方式をまだ選んでいない。witness検証で並列するか、会話で調整するかが決まっていない。',
-    next_action: 'lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>',
+    next_action: 'lattice todo independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>',
   }),
   coordination_conversation: Object.freeze({
     message: 'このplanは会話調整を選んでいる。並列可否は宣言と判定ではなく、卓の合意が持つ。',
@@ -192,7 +194,7 @@ export function todoIndependenceGuidance(code, { severability = null, planKey = 
 }
 
 export function pullIntakeReadinessGuidance({ coordinationMode = null, ready, planKey = null }) {
-  if (![null, 'witness', 'conversation'].includes(coordinationMode)
+  if (!(coordinationMode === null || TODO_COORDINATION_MODES.includes(coordinationMode))
     || typeof ready !== 'boolean') {
     throw new TypeError('pull intake readiness input is invalid');
   }

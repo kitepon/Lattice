@@ -39,15 +39,17 @@ export function isAuditPendingPhaseStatus(status) {
  * 呼ぶ前に`isAuditPendingPhaseStatus`で絞ること。
  *
  * `slotCount`は必須evidence slotの数。1つなら`--evidence`で足り、複数なら`--input`が要る。
+ * `auditRequired`（`phaseAuditRequired`）ならclose-unauditedを案内しない（ADR 0200 gate 5が断る）。
  *
  * @returns {string[]} 実行可能なコマンド行（1つ以上）
  */
-export function auditPendingNextCommands(planKey, phaseId, status, slotCount = 1) {
+export function auditPendingNextCommands(planKey, phaseId, status, slotCount = 1, { auditRequired = false } = {}) {
   const target = `--plan ${planKey} --phase ${phaseId}`;
   if (status === 'gate_ready') {
     return [
       `lattice todo phase review ${target} --reason <text>`,
-      `lattice todo phase close-unaudited ${target} --reason <text>`,
+      // ADR 0200 gate 5 refuses close-unaudited here, so it is not offered.
+      ...(auditRequired ? [] : [`lattice todo phase close-unaudited ${target} --reason <text>`]),
     ];
   }
   if (status === 'reviewing') {
@@ -63,6 +65,11 @@ export function auditPendingNextCommands(planKey, phaseId, status, slotCount = 1
   const error = new Error(`phase status is not audit pending: ${status}`);
   error.code = 'AUDIT_PENDING_STATUS_INVALID';
   throw error;
+}
+
+/** ADR 0200 gate 5: an `enforced` plan keeps the audit its author required for a `heavy` phase. */
+export function phaseAuditRequired(member, gatePolicy) {
+  return member?.coordination?.mode === 'enforced' && gatePolicy === 'heavy';
 }
 
 /**

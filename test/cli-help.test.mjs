@@ -141,10 +141,10 @@ test('案内が名指すコマンドはhelpに載る（a22）', () => {
   assert.match(plan, /scope-review --plan-input <file> --review <scope-review\.json> --json/u);
   assert.match(plan, /scope-review --schema --json/u);
   assert.match(runHelp(['todo', '--help']),
-    /independence mode --plan <key> --set <witness\|conversation> --reason <text>/u);
+    /independence mode --plan <key> --set <witness\|conversation\|enforced> --reason <text>/u);
   assert.match(runHelp(['todo', 'independence', '--help']), /\| mode --plan <key> --set/u);
   assert.equal(runHelp(['todo', 'independence', 'mode', '--help']),
-    'Usage: lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>\n');
+    'Usage: lattice todo independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>\n');
 });
 
 test('素のplan scope-reviewは欄と直し方をtypedに返す（a22）', () => {
