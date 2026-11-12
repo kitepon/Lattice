@@ -137,7 +137,8 @@ Write commands:
   dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
   dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
       # 開発中に発見した依存を明示接続する。同一plan内の辺はplan本体を軽い改訂で書き換え（plan_versionが変わる）、plan跨ぎは台帳に積む。依存の自動推定は行わない
-  independence mode --plan <key> --set <witness|conversation> --reason <text>
+  independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>
+      # enforced = witness＋未宣言・古い宣言・衝突・参照なしdone・heavy段階の監査なし閉じを止める（ADR 0200）
       # このplanの調整方式（witness検証で並列するか、会話で調整するか）を記録する
   independence compile --plan <key> --input <file>  # witness setとsensorから並列可否を記録する
   independence compile --schema --json  # compileが読むwitness set（lattice.todo_witness_set.v5）のJSON Schema
@@ -302,11 +303,11 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
   'todo display read': 'todo display read [--json]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）',
   'todo display source': 'todo display source [--json]  # lattice.todo_store_display_source.v1（安い変更検知。変わった時だけreadする）',
-  'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation> --reason <text>'
+  'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation|enforced> --reason <text>'
     + ' | compile --plan <key> --input <file> | compile --schema --json | witness migrate --plan <key>'
     + ' | witness scaffold --template --plan <key> [--json] | witness scaffold --schema --json | witness scaffold --plan <key> --input <draft>'
     + ' | witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]',
-  'todo independence mode': 'todo independence mode --plan <key> --set <witness|conversation> --reason <text>',
+  'todo independence mode': 'todo independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>',
   'todo structure': 'todo structure --schema --json | [--plan <key>] --json | input --plan <key> --input <file> [--dry-run --json] | compile --plan <key> --input <file> | realize --plan <key> --task <id> (--planned|--realized <actual-structure.json>) [--commit <HEAD|sha>]... | realize --plan <key> --task <id> --input <full-realization.json> | finalize --plan <key> --json',
   'todo seam-profile': 'todo seam-profile --plan <key> --file <path> [--json]',
   'todo seam-proposal': 'todo seam-proposal [--plan <key>] [--json] | compile --plan <key>',

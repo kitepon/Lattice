@@ -26,6 +26,7 @@ Latticeの文書は、現行契約、現在の計画・構想、履歴、証拠�
 
 ## 現在の計画・構想
 
+- [`architecture/dfd-enforced-plan.md`](architecture/dfd-enforced-plan.md): five gates of a plan declared `enforced` and their self-exits (ADR 0200)
 - [`architecture/dfd-witness-declare.md`](architecture/dfd-witness-declare.md): one task's witness row declared by its member, compiled once every ready task is declared (a40)
 - [`architecture/dfd-store-display-read.md`](architecture/dfd-store-display-read.md): Store display read contract with current unverified member data; design only, after current recovery and connected diagram review
 

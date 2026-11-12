@@ -325,7 +325,8 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
             reason: 'structure_finalization_pending' }
           : todo.audit_pending.length > 0
           ? { command: todo.audit_pending[0].phase_status === 'gate_ready'
-            ? `lattice todo phase close-unaudited --plan ${todo.audit_pending[0].plan_key} --phase ${todo.audit_pending[0].phase_id} --reason <text>`
+            // close-unaudited when offered; an enforced heavy phase offers only review (ADR 0200).
+            ? todo.audit_pending[0].next_commands.at(-1)
             : `lattice todo phase status --plan ${todo.audit_pending[0].plan_key}`,
             reason: 'audit_pending' }
           : { command: 'lattice todo status', reason: 'no_ready_task' };

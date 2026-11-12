@@ -442,8 +442,8 @@ test('既存store経路のtodo migrateは検証済みJSONを一度だけ追加�
   // ob03: 起票直後は調整方式が未宣言。選ぶ機会をここで案内する。
   assert.deepEqual(result.coordination_guidance, {
     mode: null,
-    modes: ['witness', 'conversation'],
-    next_action: `lattice todo independence mode --plan ${result.plan_key} --set <witness|conversation> --reason <text>`,
+    modes: ['witness', 'conversation', 'enforced'],
+    next_action: `lattice todo independence mode --plan ${result.plan_key} --set <witness|conversation|enforced> --reason <text>`,
   });
   assert.equal(result.imported_task_count, 2);
   assert.equal(result.completed_task_count, 1);

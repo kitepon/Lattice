@@ -27,7 +27,8 @@ export const TODO_PLAN_SCOPED_EVENT_KINDS = Object.freeze([
 ]);
 
 /** 調整方式。witness=独立性を宣言し検証して並列する／conversation=会話で調整する。 */
-export const TODO_COORDINATION_MODES = Object.freeze(['witness', 'conversation']);
+// ADR 0200: `enforced` is witness coordination plus the gates that stop skipped steps.
+export const TODO_COORDINATION_MODES = Object.freeze(['witness', 'conversation', 'enforced']);
 export const TODO_NOTE_EVENT_SCHEMA = 'lattice.todo_note_event.v1';
 /**
  * plan単位のnote event。工程レベルの義務(順序制約・一度きりの観測が在ること)は特定のtaskに

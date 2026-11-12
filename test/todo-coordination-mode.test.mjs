@@ -129,7 +129,7 @@ test('案内は方式で変わる——未宣言は督促でなく選択を指�
   const undeclared = selectIndependenceGuidance({ ...base, coordinationMode: null });
   assert.equal(undeclared.code, 'coordination_mode_undeclared');
   assert.equal(undeclared.next_action,
-    'lattice todo independence mode --plan <key> --set <witness|conversation> --reason <text>');
+    'lattice todo independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>');
 
   // conversation: 選択を尊重して督促しない。
   const conversation = selectIndependenceGuidance({ ...base, coordinationMode: 'conversation' });
@@ -172,9 +172,9 @@ test('conversationの一般案内は督促せず、pull設備だけがindependen
   );
 });
 
-test('方式は2値で、壊れた宣言はstoreへ入らない', async (context) => {
+test('方式は3値で（ADR 0200で enforced を追加）、壊れた宣言はstoreへ入らない', async (context) => {
   const { declare } = await workspace(context);
-  assert.deepEqual([...TODO_COORDINATION_MODES], ['witness', 'conversation']);
+  assert.deepEqual([...TODO_COORDINATION_MODES], ['witness', 'conversation', 'enforced']);
 
   for (const invalid of ['auto', '', 'WITNESS', null]) {
     await assert.rejects(() => declare(invalid, '理由'), /declared schema/u);
