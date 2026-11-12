@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 手を止めて工程を待っている担当に、必ず知らせが届くようにする（クオ裁定 2026-11-12）。`lattice todo wait --plan <key> --task <id> [--reason <text>]`で「この工程が着手できるのを、手を止めて待っている」と記録し、`--cancel`で外す。その工程を着手・取り下げると、印は自然に消える。止められて、別の人が解いた時は残る。すでに着手できる工程や、終わった工程には何も書かず、`state`（`startable_now`／`not_pending`）で返す。印はその工程を始めさせず、何も止めない。知らせには`waiting`（誰が・いつから・理由）、`waiting_digest`、`summary`、`acked_recipients`が付く。`waiting`の付いた知らせは、待っている人の席を必ず起こして届ける。付いていない知らせは「着手できる」という情報で、着手するかは担当が決める。`next_action`は「着手するならこれ」の意味になる。既読の印は（notice_id, waiting_digest）ごとに付く。だから、既読のあとに誰かが待ち始めると、その知らせはまた未読になる。`acked_recipients`は、前の既読でもう伝えた相手を示す。印は既読の印と同じく、そのホストだけに置き、gitに入らない（`.lattice/todo/notices/wait-<hash>.json`）。既知の限界：ほかのホストの取り出しからは印が見えない。ファイルが消えると起こす印も消える（`todo wait`を打ち直せば戻る）。ホストへの変更：知らせと`notice list`の結果に欄が増える（`notice list`には`wait_unreadable`も増える）。既読の記録は`lattice.todo_notice_acks.v2`になり、一度v2で書かれたファイルは、古いLatticeでは読めない。
+
 ## 0.91.0 — 2026-11-12
 
 commit の無い Store（BellTeam の MCP の store）で、`enforced`のplanの重い段階を監査して閉じられるようにする版。0.90.0 と合わせて、この置き場所でも`enforced`の工程表を最初から最後まで通せる。ホストへの変更：`phase accept|reject`に`--message`が増え、段階の状態と決定の結果に`decision_evidence_state`が増える。

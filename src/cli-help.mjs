@@ -103,6 +103,7 @@ Read commands:
 
 Write commands:
   notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # 届けた知らせに印を付ける（閉じた知らせはclosedで返す）
+  wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 手を止めてこの工程を待つ印。着手できたら知らせにwaitingが載る（記録だけで、何も止めない）
   repair-eol --json  # Git checkoutでCRLF化された既存storeをcanonical LFへ戻し、EOL保護を追加する
   dashboard adopt --json  # 衝突したproject_idの配信元rootを現在repoへ明示的に移す
   dashboard ensure --json  # daemon生存保証の冪等入口（launchd等の周期実行向け）
@@ -304,6 +305,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo notice': 'todo notice list [--lane <lane>] [--include-acked] [--json] | ack --lane <lane> --notice <id>[,<id>...] [--json]',
   'todo notice list': 'todo notice list [--lane <lane>] [--include-acked] [--json]  # lattice.todo_notice_list_result.v1',
   'todo notice ack': 'todo notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # lattice.todo_notice_ack_result.v1 {acked, already, closed}',
+  'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # lattice.todo_wait_result.v1 {state: waiting|startable_now|not_pending|cancelled}',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
   'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
   'todo display read': 'todo display read [--json]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）',

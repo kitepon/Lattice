@@ -169,8 +169,10 @@ import {
 } from './seam-proposal-contracts.mjs';
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
-import { newTodoNotices, projectTodoNotices } from './todo-notices.mjs';
-import { ackTodoNotices, readAllTodoNoticeAcks, readTodoNoticeAcks } from './todo-notice-store.mjs';
+import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices.mjs';
+import {
+  ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
+} from './todo-notice-store.mjs';
 import { collectTodoIndependenceAuthoritativeObservation } from './todo-independence-authoritative-observation.mjs';
 import { applySeamProposal } from './seam-apply.mjs';
 import { todoPlanPrecedences } from './seam-verification.mjs';
@@ -305,7 +307,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'add', 'notice',
+  'retract', 'dependency', 'add', 'notice', 'wait',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -366,6 +368,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
   'notice list': Object.freeze({ known: ['lane', 'include-acked', 'json'], required: [], booleans: ['include-acked', 'json'] }),
   'notice ack': Object.freeze({ known: ['lane', 'notice', 'json'], required: ['lane', 'notice'], booleans: ['json'] }),
+  wait: Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
   'phase status': Object.freeze({ known: ['plan', 'json'], required: ['plan'], booleans: ['json'] }),
   structure: Object.freeze({ known: ['plan', 'json'], required: [], booleans: ['json'] }),
@@ -4614,7 +4617,8 @@ function releasesTasks(argv) {
     || (command === 'dependency' && second === 'disconnect');
 }
 
-async function openNotices(repoRoot) {
+/** Open notices with their waiters (wait-design); an unreadable wait file is named, its waits read as none. */
+async function openNoticeView(repoRoot) {
   const store = await readTodoStore({ repoRoot });
   const rows = new Map();
   for (const member of store.members) {
@@ -4622,8 +4626,42 @@ async function openNotices(repoRoot) {
     const recorded = await readTodoWitnessSet({ repoRoot, planKey: member.plan.plan_key }).catch(() => null);
     rows.set(member.plan.plan_key, new Set(Object.keys(recorded?.manual_witness ?? {})));
   }
-  return projectTodoNotices(store, { declared: (planKey, taskId) => rows.get(planKey)?.has(taskId) === true });
+  const stored = await readAllTodoNoticeWaits({ repoRoot });
+  // Readers return raw records: waits that ended since the file's last write are dropped here.
+  const waits = stored.waits.flatMap((record) => record.waits.map((wait) => ({ plan_key: record.plan_key, ...wait })))
+    .filter((wait) => waitInEffect(store, wait));
+  const notices = projectTodoNotices(store, {
+    declared: (planKey, taskId) => rows.get(planKey)?.has(taskId) === true, waits,
+  });
+  return { store, notices, waitUnreadable: stored.unreadable };
 }
+
+async function openNotices(repoRoot) {
+  return (await openNoticeView(repoRoot)).notices;
+}
+
+/** lane -> notice_id -> [{waiting_digest, recipients}] from ack set records. */
+function ackIndex(records) {
+  const index = new Map();
+  for (const record of records) {
+    const byId = new Map();
+    for (const ack of record.acks) byId.set(ack.notice_id, [...(byId.get(ack.notice_id) ?? []), ack]);
+    index.set(record.lane, byId);
+  }
+  return index;
+}
+
+/** Flora's amendment: who earlier acks of this notice_id covered, so a re-opened notice goes only to the rest. */
+function withAckState(notice, index) {
+  const acks = index.get(notice.lane)?.get(notice.notice_id) ?? [];
+  return {
+    ...notice,
+    acked_recipients: [...new Set(acks.flatMap(({ recipients }) => recipients))].sort(),
+    acked: acks.some(({ waiting_digest: digest }) => digest === notice.waiting_digest),
+  };
+}
+
+const noticeRecipients = (notice) => [...new Set([notice.lane, ...notice.waiting.map(({ agent }) => agent)])].sort();
 
 /** A committed write is never undone for its notices: an unreadable projection says so and `notice list` recovers. */
 async function withNotices(repoRoot, result, before) {
@@ -4631,7 +4669,14 @@ async function withNotices(repoRoot, result, before) {
   let extra;
   try {
     if (before === null) throw new Error('notices_before_unreadable');
-    extra = { notices: newTodoNotices(before, await openNotices(repoRoot)) };
+    const released = newTodoNotices(before, await openNotices(repoRoot));
+    // An unreadable ack set only means nobody counts as covered yet: delivery repeats, nothing is lost.
+    const index = ackIndex(released.length === 0 ? []
+      : await readAllTodoNoticeAcks({ repoRoot }).then(({ acks }) => acks, () => []));
+    extra = { notices: released.map((notice) => {
+      const { acked: _acked, ...rest } = withAckState(notice, index);
+      return rest;
+    }) };
   } catch (error) {
     extra = { notices: null, notices_unavailable: error?.detail?.reason ?? error?.message ?? 'notices_unreadable' };
   }
@@ -4651,27 +4696,28 @@ function noticeAckRefusal(error, lane) {
 
 /** `todo notice list`: open notices, unacked unless asked; one unreadable ack file never hides the rest. */
 async function noticeList({ repoRoot, lane, includeAcked }) {
-  const store = await readTodoStore({ repoRoot });
-  const open = (await openNotices(repoRoot)).filter((notice) => lane === null || notice.lane === lane);
-  const acked = new Map();
+  const view = await openNoticeView(repoRoot);
+  const open = view.notices.filter((notice) => lane === null || notice.lane === lane);
+  const records = [];
   const ackUnreadable = [];
   if (lane === null) {
     const all = await readAllTodoNoticeAcks({ repoRoot });
-    for (const record of all.acks) acked.set(record.lane, new Set(record.acks.map(({ notice_id: id }) => id)));
+    records.push(...all.acks);
     ackUnreadable.push(...all.unreadable);
   } else {
     try {
       const record = await readTodoNoticeAcks({ repoRoot, lane });
-      acked.set(lane, new Set((record?.acks ?? []).map(({ notice_id: id }) => id)));
+      if (record !== null) records.push(record);
     } catch (error) {
       ackUnreadable.push(noticeAckRefusal(error, lane));
     }
   }
-  const notices = open.map((notice) => ({ ...notice, acked: acked.get(notice.lane)?.has(notice.notice_id) === true }))
-    .filter((notice) => includeAcked || !notice.acked);
+  const index = ackIndex(records);
+  // Acked iff (notice_id, waiting_digest) was acked: a wait added after an ack makes the notice unacked again.
+  const notices = open.map((notice) => withAckState(notice, index)).filter((notice) => includeAcked || !notice.acked);
   const result = {
-    schema: 'lattice.todo_notice_list_result.v1', project_id: store.project_id, lane, notices,
-    ack_unreadable: ackUnreadable, result_digest: '',
+    schema: 'lattice.todo_notice_list_result.v1', project_id: view.store.project_id, lane, notices,
+    ack_unreadable: ackUnreadable, wait_unreadable: view.waitUnreadable, result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
@@ -4679,17 +4725,65 @@ async function noticeList({ repoRoot, lane, includeAcked }) {
 
 /** `todo notice ack`: an id that is no longer open is reported as closed, never refused (nothing is left to ack). */
 async function noticeAck({ repoRoot, env, lane, ids }) {
-  const store = await readTodoStore({ repoRoot });
-  const openIds = (await openNotices(repoRoot)).filter((notice) => notice.lane === lane).map(({ notice_id: id }) => id);
+  const view = await openNoticeView(repoRoot);
+  const laneNotices = view.notices.filter((notice) => notice.lane === lane);
+  const openIds = laneNotices.map(({ notice_id: id }) => id);
   const open = new Set(openIds);
-  const live = ids.filter((id) => open.has(id));
+  // The ack covers the notice as it is now: its waiter set (waiting_digest) and everyone it was delivered to.
+  const live = laneNotices.filter(({ notice_id: id }) => ids.includes(id)).map((notice) => ({
+    notice_id: notice.notice_id, waiting_digest: notice.waiting_digest, recipients: noticeRecipients(notice),
+  }));
   const written = live.length === 0 ? { acked: [], already: [] } : await ackTodoNotices({
-    repoRoot, lane, noticeIds: live, openIds, actor: resolveTodoActor(env), now: new Date().toISOString(),
+    repoRoot, lane, notices: live, openIds, actor: resolveTodoActor(env), now: new Date().toISOString(),
   });
+  const idsOf = (pairs) => [...new Set(pairs.map(({ notice_id: id }) => id))].sort();
   const result = {
-    schema: 'lattice.todo_notice_ack_result.v1', project_id: store.project_id, lane,
-    acked: written.acked, already: written.already, closed: ids.filter((id) => !open.has(id)).sort(), result_digest: '',
+    schema: 'lattice.todo_notice_ack_result.v1', project_id: view.store.project_id, lane,
+    acked: idsOf(written.acked), already: idsOf(written.already), closed: ids.filter((id) => !open.has(id)).sort(),
+    result_digest: '',
   };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/**
+ * `todo wait` (wait-design): record that this agent stopped work and waits for T to become startable. A record, never a
+ * gate: an already startable or finished T is answered with a state and nothing is written.
+ */
+async function noticeWait({ repoRoot, env, planKey, taskId, reason, cancel }) {
+  const view = await openNoticeView(repoRoot);
+  const { store } = view;
+  const member = store.members.find(({ plan }) => plan.plan_key === planKey);
+  if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
+  const task = member.tasks.find(({ task_id: id }) => id === taskId);
+  if (task === undefined) {
+    throw new TodoStoreError('TASK_NOT_FOUND', 'task_not_found', undefined, { requested_task_id: taskId });
+  }
+  const { agent } = resolveTodoActor(env);
+  const base = { schema: 'lattice.todo_wait_result.v1', project_id: store.project_id, plan_key: planKey, task_id: taskId, agent };
+  let rest;
+  if (cancel) {
+    const { cancelled } = await cancelTodoNoticeWait({ repoRoot, planKey, taskId, agent });
+    rest = { state: 'cancelled', cancelled, since: null, reason: null, notice: null, next_action: null };
+  } else if (!['pending', 'blocked'].includes(task.status)) {
+    rest = { state: 'not_pending', status: task.status, since: null, reason: null, notice: null, next_action: null };
+  } else {
+    const notice = view.notices.find((entry) => entry.plan_key === planKey && entry.task_id === taskId) ?? null;
+    const ready = notice !== null || projectTodoStatus(store, TODO_STATUS_DISPATCH_ONLY).next_ready
+      .some((entry) => entry.plan_key === planKey && entry.task_id === taskId);
+    if (ready) {
+      rest = { state: 'startable_now', since: null, reason: null, notice,
+        next_action: notice?.next_action ?? `lattice todo start --plan ${planKey} --task ${taskId}` };
+    } else {
+      const now = new Date().toISOString();
+      const { since } = await writeTodoNoticeWait({
+        repoRoot, planKey, taskId, agent, reason: reason ?? null, now,
+        keep: (wait) => waitInEffect(store, { plan_key: planKey, ...wait }),
+      });
+      rest = { state: 'waiting', since, reason: reason ?? null, notice: null, next_action: null };
+    }
+  }
+  const result = { ...base, ...rest, result_digest: '' };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
 }
@@ -5018,6 +5112,14 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const ids = typeof flags.notice === 'string' ? [...new Set(flags.notice.split(',').map((id) => id.trim()))] : [];
     if (isNoticeLane(flags.lane) && ids.length > 0 && ids.every((id) => /^[0-9a-f]{64}$/u.test(id))) {
       action = (repoRoot) => noticeAck({ repoRoot, env, lane: flags.lane, ids });
+    }
+  } else if (argv[0] === 'wait' && matchFlagCommand(argv, ['wait'], TODO_FLAG_SPECS.wait) !== null) {
+    const flags = matchFlagCommand(argv, ['wait'], TODO_FLAG_SPECS.wait);
+    const reasonOk = flags.reason === undefined
+      || (typeof flags.reason === 'string' && flags.reason.length > 0 && flags.reason.length <= 1024 && !/\p{Cc}/u.test(flags.reason));
+    if (isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task) && reasonOk && !(flags.cancel === true && flags.reason !== undefined)) {
+      action = (repoRoot) => noticeWait({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
+        reason: flags.reason ?? null, cancel: flags.cancel === true });
     }
   } else if (argv[0] === 'note' && argv[1] === 'list' && readFlags(argv, ['note', 'list']) !== null) {
     const flags = readFlags(argv, ['note', 'list']);
