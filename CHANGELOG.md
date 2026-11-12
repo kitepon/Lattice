@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.98.0 — 2026-11-13
+
+`todo nudge`を取り除いた版。促しは BellTeam の Lattice モジュールへ引っ越し済み。ホストへの変更：有り（`lattice todo nudge`は`UNKNOWN_SUBCOMMAND`で断られる。ほかの JSON の形は同じ）。
+
 - `lattice todo nudge`を取り除く（クオ 2026-11-12：「フローラが担当するモジュールに入れるべきものでLatticeから引っ越しするべき。」）。促しは BellTeam の Lattice モジュールへ引っ越し済みで、モジュールはもう`todo nudge`を呼ばない。ホストへの変更：`lattice todo nudge`は`UNKNOWN_SUBCOMMAND`で断られ、`lattice.todo_nudge_result.v1`は出なくなる。工程表の事実は`todo status --json`（`next_ready`）と`todo display read --json`から読む。着手できる知らせ（`todo notice`）と`todo blockers`はそのまま（アリス）。
 
 ## 0.97.1 — 2026-11-13
