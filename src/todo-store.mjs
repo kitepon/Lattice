@@ -120,6 +120,19 @@ function failUninitialized() {
   });
 }
 
+/** Absent manifest: uninitialized when no Store exists yet; a Store without its manifest stays STORE_INCONSISTENT. */
+async function failManifestMissing(repoRoot) {
+  if (await isUninitializedTodoStore({ repoRoot })) failUninitialized();
+  fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
+}
+
+async function readManifest(repoRoot) {
+  const manifest = await readArtifact(repoRoot, MANIFEST_REF, {
+    code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest, missing: true,
+  });
+  return manifest ?? failManifestMissing(repoRoot);
+}
+
 const upgradeAction = (what) => `${what} was written by a newer Lattice than ${packageJson.version}. The record is`
   + ` not corrupt: do not repair or delete it. Upgrade Lattice on this host to a version newer than`
   + ` ${packageJson.version}, then run the command again.`;
@@ -1540,13 +1553,7 @@ async function readTodoStoreView(options = {}) {
   }
   await assertNoCrossPlanImportRecoveryNeeded(repoRoot);
   const pinnedSourceCache = { commits: new Set(), blobs: new Map() };
-  const manifest = await readArtifact(repoRoot, MANIFEST_REF, {
-    code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest, missing: true,
-  });
-  if (manifest === null) {
-    if (await isUninitializedTodoStore({ repoRoot })) failUninitialized();
-    fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
-  }
+  const manifest = await readManifest(repoRoot);
   const loaded = [];
   for (const descriptor of manifest.members) {
     const plan = await readArtifact(repoRoot, descriptor.plan_ref, {
@@ -1828,21 +1835,15 @@ async function readStoreStableWith(options, readStore) {
   // これにより一時窓を早計に破損扱いせず、恒久破損もSTORE_BUSYへ丸めない。
   let lastError = null;
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-    const before = await readArtifact(repoRoot, MANIFEST_REF, {
-      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
-    });
+    const before = await readManifest(repoRoot);
     try {
       const store = await readStore(options);
-      const after = await readArtifact(repoRoot, MANIFEST_REF, {
-        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
-      });
+      const after = await readManifest(repoRoot);
       if (before.manifest_digest === after.manifest_digest
         && store.manifest.manifest_digest === after.manifest_digest) return store;
     } catch (error) {
       if (!(error instanceof TodoStoreError)) throw error;
-      const after = await readArtifact(repoRoot, MANIFEST_REF, {
-        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
-      });
+      const after = await readManifest(repoRoot);
       const transientWriteWindow = error.code === 'STORE_INCONSISTENT'
         && ['manifest_journal_head_mismatch', 'manifest_plan_binding_mismatch']
           .includes(error.detail.reason);
@@ -1913,6 +1914,9 @@ async function rawLastEventDigest(repoRoot, ref, { missing = false } = {}) {
 }
 
 async function readRawManifest(repoRoot) {
+  if (await readRawStoreFile(repoRoot, MANIFEST_REF, TODO_LIMITS.snapshotBytes, { missing: true }) === null) {
+    await failManifestMissing(repoRoot);
+  }
   const manifest = await readRawStoreJson(repoRoot, MANIFEST_REF, TODO_LIMITS.snapshotBytes);
   if (manifest === null || typeof manifest !== 'object' || !Array.isArray(manifest.members)) {
     fail('STORE_INCONSISTENT', 'manifest_members_unenumerable', { ref: MANIFEST_REF });
@@ -2063,7 +2067,15 @@ async function readRawDisplayMembers(repoRoot, manifest) {
 /** Cheap unverified change hint for display polling; never validation or recovery. */
 export async function readTodoStoreDisplaySource({ repoRoot = process.cwd() } = {}) {
   const root = path.resolve(repoRoot);
-  return observeDisplaySource(root, await readRawManifest(root));
+  let manifest;
+  try { manifest = await readRawManifest(root); } catch (error) {
+    // No Store yet is an observation like display read's, not a probe failure.
+    if (error?.code !== 'STORE_UNINITIALIZED') throw error;
+    const source = await observeDisplaySource(root, { members: [] });
+    source.diagnostics.push({ plan_key: null, field: 'manifest', code: error.code, reason: error.detail.reason });
+    return source;
+  }
+  return observeDisplaySource(root, manifest);
 }
 
 /** Display-only envelope: verified > unverified current raw > last_verified > unavailable. */

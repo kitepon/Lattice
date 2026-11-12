@@ -70,6 +70,8 @@ invites repair or deletion of a Store that does not exist yet.
 | same | manifest absent, anything else present (members, note chain, unknown data) | unchanged `STORE_INCONSISTENT/artifact_missing {ref: manifest}` |
 | `withLock` (ordinary writes, `initialize` false) | `.lattice` or `.lattice/todo` absent | `STORE_UNINITIALIZED/store_uninitialized` (same detail); still never mkdirs the root |
 | `prepareAuthoredStoreRoot` cleanup | root vanished while held | `store_uninitialized` joins `store_locked`/`artifact_missing` as "already gone" |
+| `readStoreStableWith` (`readTodoStoreStable` and the strict display read) manifest reads | same two layouts | same two answers, through the shared `readManifest` (display-uninit, 2026-11-12: these reads skipped `readTodoStoreView`'s classification) |
+| Store display read / source (`readRawManifest`) | same two layouts | see [Store display DFD, No Store yet](dfd-store-display-read.md#no-store-yet-display-uninit-2026-11-12): read `unavailable` with that `inconsistency`, source exit 0 with a manifest diagnostic |
 | `todo evidence anchor` (todo-cli) | `isUninitializedTodoStore` true | exit 0, `lattice.todo_evidence_anchor_uninitialized.v1 {anchored: [], already: 0, missing: [], next_actions: [plan create --template --json, plan create --input <file>], result_digest}`; no bytes written |
 
 Why anchor is a success and the others refuse: `status` answers an empty project with a
