@@ -1,7 +1,7 @@
 import { retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
-import { FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
+import { ENFORCED_DONE_MESSAGE, FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
 import { auditPendingNextCommands, phaseAuditRequired } from './todo-audit-pending.mjs';
 import { gitSync } from './git-process.mjs';
@@ -263,6 +263,16 @@ function guidanceContext(argv, env = {}) {
     // a36: who this seat is now and was before LATTICE_SEAT_ID, so a start refusal can name its own old start.
     actors: todoActorAgents(env),
   };
+}
+
+/** Enforced plans, so a refusal's done hint names the change their done gate needs; none when the store is unreadable. */
+async function enforcedPlanKeys(cwd) {
+  try {
+    const { members } = await readTodoStore({ repoRoot: resolveRepoRoot(cwd) });
+    return members.filter((member) => member.coordination?.mode === 'enforced').map(({ descriptor }) => descriptor.plan_key);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1451,7 +1461,7 @@ async function enforcedDoneGate({ repoRoot, planKey, flags }) {
   }
   throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_done_reference_missing', undefined, {
     plan_key: planKey, task_id: flags.task,
-    next_action: `Name the adopted change: \`lattice todo done --plan ${planKey} --task ${flags.task} --message "<PR URL or merged commit sha>"\` (a sha must be in HEAD).`,
+    next_action: `Name the adopted change: \`lattice todo done --plan ${planKey} --task ${flags.task} --message ${ENFORCED_DONE_MESSAGE}\` (a sha must be in HEAD).`,
   });
 }
 
@@ -5219,7 +5229,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'
       && error.detail !== null && typeof error.detail === 'object')) {
-      return typedFailure(stderr, error, guidanceContext(argv, env));
+      return typedFailure(stderr, error, { ...guidanceContext(argv, env), enforcedPlans: await enforcedPlanKeys(cwd) });
     }
     // 漏れた`fetch failed`もTypeErrorで届く。呼び出し側の契約違反と答えず、内部故障として観測口へ渡す。
     if (error instanceof TypeError && cliFailureClass(error) !== 'transport') {
