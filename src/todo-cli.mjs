@@ -1679,6 +1679,15 @@ async function addTask({ repoRoot, env, planKey, flags }) {
       next_action: `${planKey}/${taskId} already exists: pick an unused --task id (see \`lattice plan show ${planKey} --json\`), or change the task with \`lattice plan revise --input <file>\`.`,
     });
   }
+  // The same design-memo rule as plan create, named by the flag: a missing memo is not recorded as NO_PLAN.
+  const memo = explainTodoDesignMemo(flags['design-memo']);
+  if (!memo.valid) {
+    throw new TodoStoreError('DESIGN_MEMO_REQUIRED', 'todo_add_design_memo_required', undefined, {
+      plan_key: planKey, task_id: taskId, pointer: '--design-memo', violation_kind: memo.reason,
+      expected: memo.expected, actual: memo.actual, prompt: TODO_DESIGN_MEMO_PROMPT,
+      next_action: `lattice todo add --plan ${planKey} --task ${taskId} --title <text> --design-memo <Markdown, or NO_PLAN>`,
+    });
+  }
   const ids = (value) => (typeof value === 'string' ? value.split(',').map((id) => id.trim()).filter(Boolean) : []);
   const after = ids(flags.after);
   const before = ids(flags.before);

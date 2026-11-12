@@ -933,8 +933,9 @@ export const PLAN_CREATE_TEMPLATE = Object.freeze({
   ],
   tasks: [
     { task_id: 't1', title: 'First task', phase_id: 'p1', design_memo: 'NO_PLAN' },
-    { task_id: 't2', title: 'Second task', phase_id: 'p1' },
-    { task_id: 't3', title: 'Third task', phase_id: 'p2' },
+    // Every task carries its memo: an omitted one is refused, never filled (memo-no-fabrication).
+    { task_id: 't2', title: 'Second task', phase_id: 'p1', design_memo: 'NO_PLAN' },
+    { task_id: 't3', title: 'Third task', phase_id: 'p2', design_memo: 'NO_PLAN' },
   ],
   // from is the prerequisite; to starts after from is done.
   hard_dependencies: [{ from: { task_id: 't1' }, to: { task_id: 't3' } }],

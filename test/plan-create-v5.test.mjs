@@ -210,9 +210,9 @@ function bareInput(mutate = (v) => v) {
     project_id: 'probe', plan_key: 'main', plan_version: 'v1',
     phases: [{ phase_id: 'p1', title: 'P1' }, { phase_id: 'p2', title: 'P2' }],
     tasks: [
-      { task_id: 't1', title: 'T1', phase_id: 'p1' },
-      { task_id: 't2', title: 'T2', phase_id: 'p1' },
-      { task_id: 't3', title: 'T3', phase_id: 'p2' }],
+      { task_id: 't1', title: 'T1', phase_id: 'p1', design_memo: 'NO_PLAN' },
+      { task_id: 't2', title: 'T2', phase_id: 'p1', design_memo: 'NO_PLAN' },
+      { task_id: 't3', title: 'T3', phase_id: 'p2', design_memo: 'NO_PLAN' }],
     hard_dependencies: [{ from: { task_id: 't1' }, to: { task_id: 't2' } }],
   });
 }

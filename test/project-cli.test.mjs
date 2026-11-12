@@ -121,15 +121,17 @@ test('plan createは設計メモ違反を本文非露出のpointer付きdiagnost
   assert.match(failure.detail.prompt, /`NO_PLAN`/u);
 });
 
-test('空の設計メモは機械がNO_PLANにして作成する(u03p A80)', async (context) => {
+test('空の設計メモはNO_PLANにせず、欄名つきで断る(DESIGN_MEMO_REQUIRED)', async (context) => {
   const root = await workspace(context);
   const input = createInput();
   input.tasks[0].design_memo = '   ';
   await writeFile(path.join(root, 'blank-memo.json'), `${JSON.stringify(input)}\n`);
   const execution = run(root, ['plan', 'create', '--input', 'blank-memo.json']);
-  assert.equal(execution.status, 0, execution.stderr);
-  const plan = JSON.parse(await readFile(path.join(root, JSON.parse(execution.stdout).plan_ref), 'utf8'));
-  assert.equal(plan.tasks[0].design_memo, 'NO_PLAN');
+  assert.equal(execution.status, 1);
+  const failure = JSON.parse(execution.stderr);
+  assert.equal(failure.code, 'DESIGN_MEMO_REQUIRED');
+  assert.equal(failure.message, 'plan_create_design_memo_required');
+  assert.equal(failure.detail.pointer, '/tasks/0/design_memo');
 });
 
 test('PROJECT_ROOT_CONFLICTのstatus失敗はcodeを一般化せずadopt導線を返す', async (context) => {

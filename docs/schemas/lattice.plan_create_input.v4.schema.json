@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.plan_create_input.v4.schema.json",
   "title": "lattice.plan_create_input.v4",
-  "description": "Canonical initial authoring input for a phase-audited plan. Every task carries a design memo; an omitted, null or blank one is recorded as `NO_PLAN`. After the complete plan is written, run `lattice plan scope-review --plan-input <file> --review <scope-review.json> --json` (the review input: `lattice plan scope-review --schema --json`) and confirm that every task preserves an owner-supplied work specification without adding a product purpose. actor, recorded_at, input_digest and tasks[].design_memo may be omitted: the machine fills the seat actor, the current time and NO_PLAN, recomputes input_digest and sorts every list into canonical order.",
-  "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, sorted identifiers and edges, unique ids, combined task/phase acyclicity, byte bounds, non-empty design_memo (omitted, null or blank becomes NO_PLAN), and input_digest (recomputed). tasks, hard_dependencies, joins, phases and phase_accept_dependencies are sorted into canonical order and exact duplicates dropped before validation.",
+  "description": "Canonical initial authoring input for a phase-audited plan. Every task carries a design memo; an omitted, null or blank one is refused at its pointer (write `NO_PLAN` yourself when you have no plan). After the complete plan is written, run `lattice plan scope-review --plan-input <file> --review <scope-review.json> --json` (the review input: `lattice plan scope-review --schema --json`) and confirm that every task preserves an owner-supplied work specification without adding a product purpose. actor, recorded_at and input_digest may be omitted: the machine fills the seat actor and the current time, recomputes input_digest and sorts every list into canonical order.",
+  "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, sorted identifiers and edges, unique ids, combined task/phase acyclicity, byte bounds, non-empty design_memo (omitted, null or blank is refused; NO_PLAN only when written), and input_digest (recomputed). tasks, hard_dependencies, joins, phases and phase_accept_dependencies are sorted into canonical order and exact duplicates dropped before validation.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -151,7 +151,8 @@
         "narrative_anchor",
         "compile_binding",
         "parent_task_id",
-        "phase_id"
+        "phase_id",
+        "design_memo"
       ],
       "properties": {
         "task_id": {
