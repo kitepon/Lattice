@@ -4,7 +4,7 @@
 
 ## 0.88.0 — 2026-11-12
 
-飛ばされると困る手順を、宣言したplanでだけ「使わないと止まる」にする版（オーナー裁定、ADR 0200）。ホストへの変更：調整方式に`enforced`を足す。宣言しないplanの動きは変わらない（警告だけ）。
+飛ばされると困る手順を、宣言したplanでだけ「使わないと止まる」にする版（オーナー裁定、ADR 0200）。ホストへの変更：調整方式に`enforced`を足す。設計メモの欠け・空を断る（下の最後の項）。宣言しないplanの動きは変わらない（警告だけ）。
 
 - `lattice todo independence mode --plan <key> --set enforced --reason <text>`で宣言する。witness調整に、次の5つの門が加わる。断る時は`TODO_TRANSITION_REFUSED`と抜け道の`next_action`を返し、何も書かない。
   1. `todo start`：その工程のwitness行が無い → `enforced_witness_undeclared`。抜け道は`todo independence witness declare`。
@@ -15,6 +15,7 @@
      そのplanのheavyな段階では、`todo status`の`audit_pending`・`phase status`の案内・`lattice status`の`next_action`も`close-unaudited`を出さず、`phase review`→`accept`を示す。
 - 1〜3はsensorがstoreのあるrepoを見るので、storeがそのコードの取り出しに置かれてから宣言する。
 - `enforced`を記録したstoreは、0.88.0より古いLatticeでは全planが読めない（`STORE_CORRUPT`）。`witness`へ宣言し直しても戻らず、`plan revise`でだけ戻る。宣言する前に、そのstoreを読む全席を0.88.0以上にする。
+- 設計メモを書かなかった工程を、`NO_PLAN`（無策の申告）として記録しなくなった。`plan create`・`plan revise`は欠けた／空の`design_memo`を`DESIGN_MEMO_REQUIRED`で断り、欄の位置（`/tasks/<i>/design_memo`）と`NO_PLAN`の促しを返す。`todo add`は`--design-memo`を名指しして断る。自分で書いた`NO_PLAN`はこれまでどおり通る。`plan create --template --json`の設計メモは空（`""`）になり、写しただけでは断られる（Latticeが自分で`NO_PLAN`を書く所は無い）。記録済みの設計メモは書き換えない。ホストへの変更：設計メモを省いた入力は、これまで通っていたが断られる（ADR 0181 8に戻す）。
 
 ## 0.87.0 — 2026-11-12
 

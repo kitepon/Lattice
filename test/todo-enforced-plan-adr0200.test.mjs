@@ -39,8 +39,9 @@ async function fixture(context, mode = 'enforced') {
   await writeFile(path.join(root, 'plan.json'), JSON.stringify({
     schema: 'lattice.plan_create_input.v5', plan_key: 'dev',
     phases: [{ phase_id: 'p', title: 'phase' }, { phase_id: 'q', title: 'light', gate_policy: 'light' }],
-    tasks: [{ task_id: 'P', title: 'P', phase_id: 'p' }, { task_id: 'Q', title: 'Q', phase_id: 'p' },
-      { task_id: 'L', title: 'L', phase_id: 'q' }],
+    tasks: [{ task_id: 'P', title: 'P', phase_id: 'p', design_memo: 'NO_PLAN' },
+      { task_id: 'Q', title: 'Q', phase_id: 'p', design_memo: 'NO_PLAN' },
+      { task_id: 'L', title: 'L', phase_id: 'q', design_memo: 'NO_PLAN' }],
   }));
   success(root, ['plan', 'create', '--input', 'plan.json']);
   success(root, ['todo', 'independence', 'mode', '--plan', 'dev', '--set', mode, '--reason', 'adr0200']);

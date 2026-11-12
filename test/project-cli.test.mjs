@@ -121,15 +121,17 @@ test('plan createは設計メモ違反を本文非露出のpointer付きdiagnost
   assert.match(failure.detail.prompt, /`NO_PLAN`/u);
 });
 
-test('空の設計メモは機械がNO_PLANにして作成する(u03p A80)', async (context) => {
+test('空の設計メモはNO_PLANにせず、欄名つきで断る(DESIGN_MEMO_REQUIRED)', async (context) => {
   const root = await workspace(context);
   const input = createInput();
   input.tasks[0].design_memo = '   ';
   await writeFile(path.join(root, 'blank-memo.json'), `${JSON.stringify(input)}\n`);
   const execution = run(root, ['plan', 'create', '--input', 'blank-memo.json']);
-  assert.equal(execution.status, 0, execution.stderr);
-  const plan = JSON.parse(await readFile(path.join(root, JSON.parse(execution.stdout).plan_ref), 'utf8'));
-  assert.equal(plan.tasks[0].design_memo, 'NO_PLAN');
+  assert.equal(execution.status, 1);
+  const failure = JSON.parse(execution.stderr);
+  assert.equal(failure.code, 'DESIGN_MEMO_REQUIRED');
+  assert.equal(failure.message, 'plan_create_design_memo_required');
+  assert.equal(failure.detail.pointer, '/tasks/0/design_memo');
 });
 
 test('PROJECT_ROOT_CONFLICTのstatus失敗はcodeを一般化せずadopt導線を返す', async (context) => {
@@ -841,17 +843,23 @@ test('statusは公開未設定をstderrへ返し、既存の工程状態契約�
   assert.equal(stderr, '');
 });
 
-// a17: project_id・plan_versionは機械が決める。templateの出力をそのまま渡せば1回で通る。
-test('plan createはtemplateの出力をそのまま受け、project_idはrepo root名から導く', async (context) => {
+// The template's memos are blank (memo-no-fabrication); the author writes them before create.
+const withMemos = (stdout) => {
+  const body = JSON.parse(stdout);
+  return { ...body, tasks: body.tasks.map((task) => ({ ...task, design_memo: 'NO_PLAN' })) };
+};
+
+// a17: project_id・plan_versionは機械が決める。templateに設計メモを書いて渡せば1回で通る（memoは空で出る）。
+test('plan createはtemplateの出力に設計メモを書けば受け、project_idはrepo root名から導く', async (context) => {
   const root = await workspace(context);
   const template = run(root, ['plan', 'create', '--template', '--json']);
   assert.equal(template.status, 0, template.stderr);
-  const body = JSON.parse(template.stdout);
+  const body = withMemos(template.stdout);
   assert.equal('project_id' in body, false);
   assert.equal('plan_version' in body, false);
   const expected = path.basename(root).toLowerCase();
   assert.equal(body.plan_key, expected);
-  await writeFile(path.join(root, 'plan.json'), template.stdout);
+  await writeFile(path.join(root, 'plan.json'), JSON.stringify(body));
   const created = run(root, ['plan', 'create', '--input', 'plan.json']);
   assert.equal(created.status, 0, created.stderr);
   const result = JSON.parse(created.stdout);
@@ -882,7 +890,7 @@ test('plan create --inputはrepo外の絶対pathのJSONも読める', async (con
   const outside = await mkdtemp(path.join(tmpdir(), 'lattice-project-input-'));
   context.after(() => rm(outside, { recursive: true, force: true }));
   const file = path.join(outside, 'plan.json');
-  await writeFile(file, run(root, ['plan', 'create', '--template', '--json']).stdout);
+  await writeFile(file, JSON.stringify(withMemos(run(root, ['plan', 'create', '--template', '--json']).stdout)));
   const created = run(root, ['plan', 'create', '--input', file]);
   assert.equal(created.status, 0, created.stderr);
   assert.equal(JSON.parse(created.stdout).schema, 'lattice.plan_create_result.v1');

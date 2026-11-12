@@ -54,17 +54,18 @@ function bareInput(ids = ['a', 'b', 'c'], schema = 'lattice.plan_create_input.v4
     hard_dependencies: [], joins: [], phase_accept_dependencies: [] };
 }
 
-test('completeCreateInput fills actor, recorded_at, NO_PLAN, order and digest; other values pass through', () => {
+test('completeCreateInput fills actor, recorded_at, order and digest but never fabricates NO_PLAN; other values pass through', () => {
   const now = new Date('2026-11-08T01:02:03.456Z');
   const input = bareInput(['b', 'a', 'a']);
   delete input.tasks[0].design_memo;
   input.tasks[1].design_memo = '  ';
+  input.tasks[2].design_memo = '  ';
   input.input_digest = 'wrong';
   const completed = completeCreateInput(input, { env: ENV, now });
   assert.deepEqual(completed.actor, { host: 'fixture', session: 'fixture', agent: 'fixture' });
   assert.equal(completed.recorded_at, '2026-11-08T01:02:03.456Z');
   assert.deepEqual(completed.tasks.map(({ task_id: id }) => id), ['a', 'b']);
-  assert.deepEqual(completed.tasks.map(({ design_memo: memo }) => memo), ['NO_PLAN', 'NO_PLAN']);
+  assert.deepEqual(completed.tasks.map(({ design_memo: memo }) => memo), ['  ', undefined]);
   assert.equal(completed.input_digest, todoSelfDigest(completed, 'input_digest'));
   const kept = completeCreateInput({ ...input, actor: { host: 'h', session: 's', agent: 'g' } }, { env: ENV, now });
   assert.deepEqual(kept.actor, { host: 'h', session: 's', agent: 'g' });
@@ -83,10 +84,14 @@ test('completeCreateInput fills actor, recorded_at, NO_PLAN, order and digest; o
   assert.equal(sanitized.actor.session, 'session');
 });
 
-test('plan create accepts an input without actor, recorded_at, input_digest, design_memo and with unsorted tasks', async (context) => {
+test('plan create accepts an input without actor, recorded_at, input_digest and with unsorted tasks, but refuses an omitted design_memo', async (context) => {
   const root = await repo(context);
   const input = bareInput(['c', 'a', 'b']);
-  for (const task of input.tasks) delete task.design_memo;
+  const missing = JSON.parse(run(root, ['plan', 'create', '--input', await write(root, 'missing.json',
+    { ...input, tasks: input.tasks.map(({ design_memo: _memo, ...rest }) => rest) })]).stderr);
+  assert.equal(missing.code, 'DESIGN_MEMO_REQUIRED');
+  assert.equal(missing.message, 'plan_create_design_memo_required');
+  assert.equal(missing.detail.pointer, '/tasks/0/design_memo');
   const result = run(root, ['plan', 'create', '--input', await write(root, 'in.json', input)]);
   assert.equal(result.status, 0, result.stderr);
   const plan = JSON.parse(await readFile(path.join(root, JSON.parse(result.stdout).plan_ref), 'utf8'));

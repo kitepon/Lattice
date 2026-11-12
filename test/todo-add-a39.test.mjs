@@ -36,8 +36,8 @@ async function fixture(context) {
     phases: [{ phase_id: 'p1', title: 'one' }],
     tasks: [
       { task_id: 'a', title: 'A', phase_id: 'p1', design_memo: 'memo a', done_condition: 'a ok' },
-      { task_id: 'b', title: 'B', phase_id: 'p1' },
-      { task_id: 'c', title: 'C', phase_id: 'p1' },
+      { task_id: 'b', title: 'B', phase_id: 'p1', design_memo: 'NO_PLAN' },
+      { task_id: 'c', title: 'C', phase_id: 'p1', design_memo: 'NO_PLAN' },
     ],
     hard_dependencies: [{ from: { task_id: 'a' }, to: { task_id: 'b' } }],
   }));
@@ -75,10 +75,11 @@ test('todo add adds one task with edges and carries every other task state', asy
 test('todo add refuses an existing id or an unknown edge end before writing', async (context) => {
   const root = await fixture(context);
   const version = (await readWork(root)).plan.plan_version;
-  const exists = refusal(root, ['todo', 'add', '--plan', 'work', '--task', 'b', '--title', 'B2', '--phase', 'p1']);
+  const exists = refusal(root, ['todo', 'add', '--plan', 'work', '--task', 'b', '--title', 'B2', '--phase', 'p1',
+    '--design-memo', 'NO_PLAN']);
   assert.equal(exists.message, 'todo_add_task_exists');
   const unknown = refusal(root, ['todo', 'add', '--plan', 'work', '--task', 'e', '--title', 'E',
-    '--phase', 'p1', '--after', 'zz']);
+    '--phase', 'p1', '--design-memo', 'NO_PLAN', '--after', 'zz']);
   assert.equal(unknown.message, 'dependency_task_not_found');
   assert.equal((await readWork(root)).plan.plan_version, version);
 });

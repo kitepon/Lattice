@@ -36,7 +36,7 @@ async function fixture(context) {
   git('-c', 'user.name=f', '-c', 'user.email=f@f', 'commit', '--quiet', '-m', 'base');
   await writeFile(path.join(root, 'plan.json'), JSON.stringify({
     schema: 'lattice.plan_create_input.v5', plan_key: 'dev', phases: [{ phase_id: 'p', title: 'phase' }],
-    tasks: ['P', 'Q', 'R'].map((task_id) => ({ task_id, title: task_id, phase_id: 'p' })),
+    tasks: ['P', 'Q', 'R'].map((task_id) => ({ task_id, title: task_id, phase_id: 'p', design_memo: 'NO_PLAN' })),
     hard_dependencies: [{ from: { task_id: 'P' }, to: { task_id: 'R' } }],
   }));
   success(root, ['plan', 'create', '--input', 'plan.json']);
@@ -76,6 +76,7 @@ test('declare refuses an unknown or finished task before writing', async (contex
 
 test('todo add accepts --json as a no-op like every write', async (context) => {
   const root = await fixture(context);
-  assert.equal(success(root, ['todo', 'add', '--plan', 'dev', '--task', 'S', '--title', 'S', '--phase', 'p', '--json'])
+  assert.equal(success(root, ['todo', 'add', '--plan', 'dev', '--task', 'S', '--title', 'S', '--phase', 'p',
+    '--design-memo', 'NO_PLAN', '--json'])
     .task_id, 'S');
 });

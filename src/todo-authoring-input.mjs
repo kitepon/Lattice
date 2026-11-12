@@ -197,8 +197,9 @@ export function repairAuthoringArtifact(value) {
 
 /**
  * 機械が出せる事実を作成入力へ補う(u03p A81/A80)。AIは意図(tasks・依存)だけを書く:
- * actorは席の解決値、recorded_atは現在時刻、v4/v5の空の設計メモはNO_PLAN、配列は正準順、
- * input_digestは再計算。作成入力でない値と、レコードでない値はそのまま返す。
+ * actorは席の解決値、recorded_atは現在時刻、配列は正準順、
+ * input_digestは再計算。欠けた設計メモは補わず、validatorが欄名で断る（ADR 0181 8）。
+ * 作成入力でない値と、レコードでない値はそのまま返す。
  */
 export const DEFAULT_EVIDENCE_SLOT = 'acceptance';
 export const DEFAULT_CREATE_INPUT_SCHEMA = 'lattice.plan_create_input.v5';
@@ -278,10 +279,6 @@ export function completeCreateInput(value, { env, now, projectId, planVersion })
     if (absent(filled.lane)) filled.lane = DEFAULT_LANE;
     if (next.schema === DEFAULT_CREATE_INPUT_SCHEMA && filled.done_condition === undefined) {
       filled.done_condition = null;
-    }
-    if (memoInput && (absent(filled.design_memo)
-      || (typeof filled.design_memo === 'string' && filled.design_memo.trim() === ''))) {
-      filled.design_memo = 'NO_PLAN';
     }
     return filled;
   });
