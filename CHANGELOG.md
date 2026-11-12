@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.94.0 — 2026-11-12
+
+工程表がまだ無い場所を「壊れている」と言わない版（フローラが 0.93.0 の本番確認で見つけた）。ホストへの変更：工程表の無い場所では、`todo`の各コマンドが`STORE_INCONSISTENT`でなく`STORE_UNINITIALIZED`を返す。`todo evidence anchor`は成功で`lattice.todo_evidence_anchor_uninitialized.v1`を返す。
+
+- 工程表（`.lattice/todo`）が無い場所で、`todo show`・`verify`・`start`・`notice`・`wait`などが`STORE_INCONSISTENT/artifact_missing`と答えていた。`status`は同じ場所を`uninitialized`と言う。「食い違っている」は、無いだけの工程表を直したり消したりする方へ誘う。これからは`STORE_UNINITIALIZED/store_uninitialized`と、作り方の`next_action`（`lattice plan create --template --json`）を返す。工程表はあるのに目録（manifest）だけが欠けた時は、今までどおり`STORE_INCONSISTENT/artifact_missing`。`todo evidence anchor`は、記録が無ければ守る証拠も無いので、`todo status`と同じく成功で答える（`anchored: []`、`missing: []`）。普通の書き込みは、今までどおり工程表の置き場を勝手に作らない（ルドミラ、#157）。
+
 ## 0.93.0 — 2026-11-12
 
 `--message`で残した証拠を、git の掃除（gc）で消えないようにする版（BellTeam のコードの工程表で、fetch のあとの自動 gc が2週間より古い証拠を消しうると分かった）。ホストへの変更：Lattice が書く証拠ごとに`refs/lattice/evidence/<oid>`ができる。`lattice todo evidence anchor`が加わる（既存の工程表で1回打つ）。`todo verify`の項目に`anchored`が増える。
