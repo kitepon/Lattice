@@ -169,6 +169,7 @@ import {
 } from './seam-proposal-contracts.mjs';
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
+import { newTodoNotices, projectTodoNotices } from './todo-notices.mjs';
 import { collectTodoIndependenceAuthoritativeObservation } from './todo-independence-authoritative-observation.mjs';
 import { applySeamProposal } from './seam-apply.mjs';
 import { todoPlanPrecedences } from './seam-verification.mjs';
@@ -4585,6 +4586,40 @@ function writesTodoStore(argv) {
   }
 }
 
+/** notice-impl: the writes that can make a task startable carry `notices` ([startable notices](dfd-done-notice.md)). */
+function releasesTasks(argv) {
+  const [command, second] = argv;
+  return ['done', 'retire', 'unblock'].includes(command)
+    || (command === 'phase' && ['accept', 'close-unaudited'].includes(second))
+    || (command === 'dependency' && second === 'disconnect');
+}
+
+async function openNotices(repoRoot) {
+  const store = await readTodoStore({ repoRoot });
+  const rows = new Map();
+  for (const member of store.members) {
+    if (member.coordination?.mode !== 'enforced') continue;
+    const recorded = await readTodoWitnessSet({ repoRoot, planKey: member.plan.plan_key }).catch(() => null);
+    rows.set(member.plan.plan_key, new Set(Object.keys(recorded?.manual_witness ?? {})));
+  }
+  return projectTodoNotices(store, { declared: (planKey, taskId) => rows.get(planKey)?.has(taskId) === true });
+}
+
+/** A committed write is never undone for its notices: an unreadable projection says so and `notice list` recovers. */
+async function withNotices(repoRoot, result, before) {
+  if (result === null || typeof result !== 'object' || typeof result.result_digest !== 'string') return result;
+  let extra;
+  try {
+    if (before === null) throw new Error('notices_before_unreadable');
+    extra = { notices: newTodoNotices(before, await openNotices(repoRoot)) };
+  } catch (error) {
+    extra = { notices: null, notices_unavailable: error?.detail?.reason ?? error?.message ?? 'notices_unreadable' };
+  }
+  const carried = { ...result, ...extra, result_digest: '' };
+  carried.result_digest = todoSelfDigest(carried, 'result_digest');
+  return carried;
+}
+
 async function ensureActiveProjectDashboard({ repoRoot, env, stderr, strict = false }) {
   if (env.LATTICE_DASHBOARD_AUTOSTART === '0') return null;
   let actor;
@@ -5262,9 +5297,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (writesTodoStore(argv)) {
       await ensureActiveProjectDashboard({ repoRoot, env, stderr });
     }
-    const result = atomicCommit
+    const before = releasesTasks(argv) ? await openNotices(repoRoot).catch(() => null) : null;
+    const written = atomicCommit
       ? await commitTodoStoreMutation({ repoRoot, argv, action, env })
       : await action(repoRoot);
+    const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before) : written;
     if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     return 0;
   } catch (error) {

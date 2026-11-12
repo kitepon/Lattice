@@ -462,6 +462,8 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
       'result_digest',
     ];
     if (kind === 'start') keys.push('design_memo', 'done_condition', 'note_context', 'structure_context');
+    // notice-impl: writes that can release a task carry the tasks they made startable.
+    if (['done', 'retire', 'unblock'].includes(kind)) keys.push('notices');
     assertExactKeys(output, keys);
     assert.equal(output.schema, kind === 'start'
       ? 'lattice.todo_mutation_result.v5' : 'lattice.todo_mutation_result.v2');
