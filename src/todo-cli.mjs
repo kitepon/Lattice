@@ -172,7 +172,6 @@ import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-prop
 import { collectSensorEvidence } from './sensor-adapter.mjs';
 import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices.mjs';
 import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
-import { projectTodoNudges } from './todo-nudges.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
 } from './todo-notice-store.mjs';
@@ -310,7 +309,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'add', 'notice', 'wait', 'nudge', 'blockers',
+  'retract', 'dependency', 'add', 'notice', 'wait', 'blockers',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -372,7 +371,6 @@ const TODO_FLAG_SPECS = Object.freeze({
   show: Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan', 'task'], booleans: ['json'] }),
   'notice list': Object.freeze({ known: ['lane', 'include-acked', 'json'], required: [], booleans: ['include-acked', 'json'] }),
   'notice ack': Object.freeze({ known: ['lane', 'notice', 'json'], required: ['lane', 'notice'], booleans: ['json'] }),
-  nudge: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
   blockers: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
   wait: Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
@@ -4666,21 +4664,6 @@ async function declaredWitnessRows(repoRoot, store) {
   return (planKey, taskId) => rows.get(planKey)?.has(taskId) === true;
 }
 
-/**
- * `todo nudge` (sweep-list, dfd-nudge.md): the ready set by lane with fire/stop prompts. Read-only. A directory with
- * no Store yet answers an empty list, since the BellTeam run walks every chart directory.
- */
-async function nudgeList({ repoRoot }) {
-  const store = await readTodoStoreOrNull(repoRoot);
-  const result = {
-    schema: 'lattice.todo_nudge_result.v1', project_id: store?.project_id ?? null,
-    lanes: store === null ? [] : projectTodoNudges(store, { declared: await declaredWitnessRows(repoRoot, store) }),
-    result_digest: '',
-  };
-  result.result_digest = todoSelfDigest(result, 'result_digest');
-  return result;
-}
-
 /** The Store, or null where none exists yet (the BellTeam reads walk every chart directory). */
 async function readTodoStoreOrNull(repoRoot) {
   try { return await readTodoStore({ repoRoot }); }
@@ -5273,8 +5256,6 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (isNoticeLane(flags.lane) && ids.length > 0 && ids.every((id) => /^[0-9a-f]{64}$/u.test(id))) {
       action = (repoRoot) => noticeAck({ repoRoot, env, lane: flags.lane, ids });
     }
-  } else if (argv[0] === 'nudge' && matchFlagCommand(argv, ['nudge'], TODO_FLAG_SPECS.nudge) !== null) {
-    action = (repoRoot) => nudgeList({ repoRoot });
   } else if (argv[0] === 'blockers' && matchFlagCommand(argv, ['blockers'], TODO_FLAG_SPECS.blockers) !== null) {
     action = (repoRoot) => blockerList({ repoRoot });
   } else if (argv[0] === 'wait' && matchFlagCommand(argv, ['wait'], TODO_FLAG_SPECS.wait) !== null) {

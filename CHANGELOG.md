@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `lattice todo nudge`を取り除く（クオ 2026-11-12：「フローラが担当するモジュールに入れるべきものでLatticeから引っ越しするべき。」）。促しは BellTeam の Lattice モジュールへ引っ越し済みで、モジュールはもう`todo nudge`を呼ばない。ホストへの変更：`lattice todo nudge`は`UNKNOWN_SUBCOMMAND`で断られ、`lattice.todo_nudge_result.v1`は出なくなる。工程表の事実は`todo status --json`（`next_ready`）と`todo display read --json`から読む。着手できる知らせ（`todo notice`）と`todo blockers`はそのまま（アリス）。
+
 ## 0.97.1 — 2026-11-13
 
 止め一覧が、止めた時刻と止めた者を改訂をまたいで返す版（フローラが 0.96.0 の本番確認で見つけた）。ホストへの変更：無し（JSON の形は同じで、`null`だった欄が埋まる）。
