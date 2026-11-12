@@ -60,7 +60,7 @@ test('reopen with a started successor names it and the --override-reason route',
     /work\/b \(done\) already left pending.*`lattice todo reopen --plan work --task a --reason <text> --override-reason <text>`/u);
   assert.doesNotMatch(error.detail.next_action, /split/u);
   assert.equal(success(root, ['todo', 'reopen', ...task('a'), '--reason', 'redo', '--override-reason', 'b stays']).status,
-    'in-progress');
+    'pending');
 });
 
 test('phase accept/reject/reopen, evidence promote and independence compile name the missing flag', async (context) => {

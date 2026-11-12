@@ -493,3 +493,26 @@ walkthrough, evidence/walkthrough-0.85.3-20261110.log lines 655/687).
 
 Patent: claim 4 (conflict predicate write-vs-read/write) — a35 restores it for owned writes;
 nothing is relaxed. Lifecycle hints are outside claims 1–12.
+
+## Retract from any seat; reopen returns to unstarted (retract-anyone; Ludmila 2026-11-12)
+
+Plan lattice-idle-bot-20261112, task retract-anyone. Owner (Quo 2026-11-12): "着手を解除するコマンド（todo retract）は、
+着手を記録した席にしか打てない。この制限を解除すべき。" and "着手　完了　開き直し（未着手）　着手". Store lines agreed
+with Ludmila (A1-A3, B1-B3, C) and carried by Alice. This section supersedes the a35/a36 rows on retract binding,
+reopen holder and `opened_by` above.
+
+State diagram (task): `pending --start--> in-progress --done--> done --reopen--> pending (reopened) --start--> in-progress`;
+`in-progress --retract (any seat, --reason)--> pending`; block/unblock/retire unchanged.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Store: start binding (one rule; replay `authoredStartBindings` and `resolveTodoStartRetractionBinding({planKey, taskId})`) | the task's journal events in order | Set by `start` (authored, rebind, historical_import), a legacy `reopen` (payload without `to_status`), and the revision `plan_genesis` that carries the task `in-progress` (target = genesis digest, like `resolveDoneBindingDigest`). Cleared by `done`, `retire`, `start_retracted` and a pending `reopen`. The resolver no longer takes an actor | Not in-progress: `start_retraction_requires_in_progress`. No binding (not expected now): `authored_start_binding_missing` |
+| Store replay: `start_retracted` | event, binding | Binding digest must equal `target_start_digest`; the actor check (`start_actor_mismatch`) is removed. State back to pending (taskState); the task's pending verification is dropped (a retracted historical_import no longer verifies its import source). Actor and reason stay in the event | Digest mismatch: `authored_start_binding_missing` (history unchanged) |
+| Plan: `todo retract --plan P --task T --reason <text>` (`retractStart`) | any seat; resolver binding | Runtime `withStartRetractionGuard` releases an intake bound to that digest (records the retracting actor), then appends `start_retracted {reason, target_start_digest}` | as before |
+| Store write: `todo reopen` (`resolveTargetedEvent`) | done task, its done binding | Payload `{reason, override_reason, target_done_digest, to_status: 'pending'}`. Contract: the second exact shape requires `to_status === 'pending'` | Not done: `invalid_reopen_transition` (unchanged) |
+| Store replay: `reopen` | event | No `to_status` (legacy): in-progress exactly as before and it sets the start binding. `to_status: 'pending'`: taskState (pending; started_at, done_at, evidence, test_result, imported, blocked_reason reset), completion and pending verification dropped, binding cleared, and the task joins the reopened set. `doneDigest` stays stale until the next done (unreachable while not done) | `reopen_has_started_successor` unchanged |
+| Store replay + Plan gate: start after a pending reopen | reopened set: `todoReopenedPendingTaskIds(events)` (todo-store-view, one rule for both sides): set by a pending reopen, cleared by start or retire | On a v4 plan the start skips only the own-phase check (a task reopened inside a decided phase can be redone, as the old reopen allowed); dependencies and override_reason stay. Replay (`invalid_start_transition`) and `validateProspectiveEvent`/readiness `ownPhaseReady` use the same set, so a start the gate accepts replays. The set lives in one plan version's journal (shortcut: a revision while reopened inside a decided v4 phase drops it; upgrade when v4 plans need it) | — |
+| Plan: `todo retire` of a reopened (pending) task | the task's latest literal `start` | A reopened task is pending but its earlier start may still hold a Runtime intake (Runtime binds the latest literal start and ignores done/reopen), so retire releases it through `withStartRetractionGuard` (`task_retired`) for pending as for in-progress; no start = append directly | as A14r |
+| cli: `todo reopen` result (`reopenTask`) | after the reopen | status `pending`; `next_action` = `lattice todo start --plan P --task T` (the redo records a start). The rebind hint is gone (nothing is held) | — |
+| guid: reopen / retract refusals | detail `status` | Reopen of an in-progress task offers done or `todo retract … --reason` (any seat). `authored_start_binding_missing` names retract's binding rule and `lattice todo show`. | — |
+| Old readers (C) | journals with an other-seat retract or a pending reopen | Pre-retract-anyone Lattice replays them as `START_RETRACTION_INVALID/start_actor_mismatch` or `STORE_INCONSISTENT` and refuses the journal: upgrade Lattice (nothing to repair) | — |

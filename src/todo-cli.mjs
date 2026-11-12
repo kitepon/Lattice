@@ -1054,22 +1054,13 @@ async function mutate({
   return result;
 }
 
-/**
- * a36: a reopened task stays in its last starter's `turn.own` (seat contract). When that is not
- * this seat, the result names the holder and the one command that moves the task here.
- */
+/** retract-anyone: a reopened task is unstarted again; the redo records a start (from any seat). */
 async function reopenTask({ repoRoot, env, planKey, taskId, payload }) {
   const result = await mutate({ repoRoot, env, planKey, taskId, kind: 'reopen', payload, evidenceRef: null });
-  const store = await readTodoStore({ repoRoot });
-  const member = store.members.find(({ descriptor }) => descriptor.plan_key === result.plan_key);
-  const holder = member?.journal.events
-    .findLast((event) => event.kind === 'start' && event.task_id === result.task_id)?.actor?.agent ?? null;
-  if (holder === resolveTodoActor(env).agent) return result;
   const hinted = {
-    ...result, started_by: holder,
-    next_action: `${result.plan_key}/${result.task_id} is in-progress again under`
-      + ` ${holder === null ? 'no seat (no start in this plan version)' : `seat '${holder}', which started it last`};`
-      + ` to work on it from this seat run \`lattice todo start --plan ${result.plan_key} --task ${result.task_id} --rebind --reason <text>\`.`,
+    ...result,
+    next_action: `${result.plan_key}/${result.task_id} is unstarted again; redo it with`
+      + ` \`lattice todo start --plan ${result.plan_key} --task ${result.task_id}\`.`,
     result_digest: '',
   };
   hinted.result_digest = todoSelfDigest(hinted, 'result_digest');
@@ -1228,7 +1219,8 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     named.result_digest = todoSelfDigest(named, 'result_digest');
     return named;
   };
-  if (state.status !== 'in-progress') return append();
+  // retract-anyone: a reopened task is pending yet may still hold the intake of its earlier start.
+  if (!['in-progress', 'pending'].includes(state.status)) return append();
   // Runtime binds an intake to the latest literal start and ignores later done/reopen, so the
   // release targets that start (a reopened task keeps it; a retracted start left in-progress never).
   const start = member.journal.events.findLast((event) => event.task_id === taskId && event.kind === 'start');
@@ -1574,9 +1566,8 @@ export async function rebindStart({ repoRoot, env, planKey, taskId, reason, acto
 }
 
 async function retractStart({ repoRoot, env, planKey, taskId, reason }) {
-  const actor = resolveTodoActor(env);
   const store = await readTodoStore({ repoRoot });
-  const binding = resolveTodoStartRetractionBinding(store, { planKey, taskId, actor });
+  const binding = resolveTodoStartRetractionBinding(store, { planKey, taskId });
   return withStartRetractionGuard({
     repoRoot,
     planKey,

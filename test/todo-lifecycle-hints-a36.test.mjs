@@ -92,18 +92,16 @@ test('phase review and close-unaudited outside gate_ready name the phase state a
   assert.equal(follow(root, late.detail.next_action, /`(lattice todo phase accept [^`]+)`/u).status, 'accepted');
 });
 
-test('a reopen by another seat names the holder and the rebind that moves the task', async (context) => {
+// retract-anyone (supersedes the a36 holder hint): a reopened task is unstarted; any seat redoes it with a start.
+test('a reopen returns the task to unstarted and names the start that redoes it', async (context) => {
   const root = await fixture(context);
   finish(root, 'a', seat('other-seat'));
   const reopened = success(root, ['todo', 'reopen', ...task('a'), '--reason', 'found bug'], seat('walk-seat'));
-  assert.equal(reopened.started_by, 'other-seat');
-  const moved = follow(root, reopened.next_action, /`(lattice todo start [^`]+--rebind[^`]+)`/u, seat('walk-seat'));
+  assert.equal(reopened.status, 'pending');
+  const moved = follow(root, reopened.next_action, /`(lattice todo start [^`]+)`/u, seat('walk-seat'));
   assert.equal(moved.status, 'in-progress');
   const own = success(root, ['session-context', '--json'], seat('walk-seat')).turn.own;
   assert.deepEqual(own.map(({ task_id: id }) => id), ['a']);
-  // The same seat's own reopen needs no hint.
-  success(root, ['todo', 'done', ...task('a'), '--message', 'again'], seat('walk-seat'));
-  assert.equal(success(root, ['todo', 'reopen', ...task('a'), '--reason', 'r'], seat('walk-seat')).next_action, undefined);
 });
 
 test("a seat's start over its own anonymous start says so and gives the one-time fix", async (context) => {

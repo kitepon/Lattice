@@ -73,6 +73,8 @@ test('re-earned readiness is a new notice; an enforced plan without a row offers
   assert.equal(first.coordination_mode, 'enforced');
   success(root, ['todo', 'reopen', '--plan', 'a', '--task', 'P', '--reason', 'again']);
   assert.deepEqual(projectTodoNotices(await readTodoStore({ repoRoot: root }), { lane: 'bot-c' }), []);
+  // retract-anyone: a reopened task is unstarted; the redo records a start.
+  success(root, ['todo', 'start', '--plan', 'a', '--task', 'P']);
   const second = success(root, ['todo', 'done', '--plan', 'a', '--task', 'P', '--message', 'two']).notices
     .find(({ task_id: id }) => id === 'R');
   assert.notEqual(second.notice_id, first.notice_id);

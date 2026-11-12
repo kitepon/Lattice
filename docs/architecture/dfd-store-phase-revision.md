@@ -38,7 +38,7 @@ and its task/edge/join/acceptance dependency semantics are not rewritten here.
 ## Preserved boundaries and checks
 
 No lifecycle start/done/reopen predicate, phase ordering, evidence verification,
-historical replay, identity or digest check is removed. Generic carry mismatch
+historical replay, identity or digest check is removed. retract-anyone (2026-11-12, Ludmila agreed): a new `reopen` carries `to_status: 'pending'` and returns the task to unstarted (legacy reopen replays as before), and a revision genesis that carries a task in-progress is that task's retract binding; see [dfd-todo-start](dfd-todo-start.md). Generic carry mismatch
 remains a refusal; metadata projection does not bypass it. Revision-set v1/v2/v3
 registration is not extended to v5 by this change. Plan compiler/CLI integration, including verify's explicit schema dispatch,
 is supplied and checked by Alice in her lightweight revision diff; Store does not duplicate her confirmed checks.

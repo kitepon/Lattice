@@ -205,13 +205,17 @@ test('closed_unauditedの後のtask単独reopenは通り、phaseの記録は残�
       payload: { reason: '過去分は監査しない' } } });
 
   // 旧: task_reopen_requires_phase_reopenで拒否していた。task単独reopenは利用者の変更なので通す。
-  // phaseの決定は記録のまま残り(closed_unaudited)、taskだけがin-progressへ戻る。
+  // phaseの決定は記録のまま残り(closed_unaudited)、taskだけが未着手へ戻る(retract-anyone)。やり直しは着手を記録する。
   const reopened = await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
     event: { kind: 'reopen', task_id: 'C', actor: ACTOR, recorded_at: NOW,
       payload: { reason: '直す', override_reason: null } } });
   const taskC = reopened.snapshot.tasks.find(({ task_id }) => task_id === 'C');
-  assert.equal(taskC.status, 'in-progress');
+  assert.equal(taskC.status, 'pending');
+  assert.equal(reopened.event.payload.to_status, 'pending');
   assert.equal(reopened.phases[0].status, 'closed_unaudited');
+  const restarted = await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+    event: { kind: 'start', task_id: 'C', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
+  assert.equal(restarted.snapshot.tasks.find(({ task_id }) => task_id === 'C').status, 'in-progress');
 
   // 対比: phase_reopenを先に打つ従来の経路も通る。
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
@@ -245,7 +249,7 @@ test('acceptedのphaseでtaskをreopenするとadvisoryとphase statusのaccepta
   const reopen = run(root, ['todo', 'reopen', '--plan', 'audited', '--task', 'C', '--reason', '受入後に直す'], ACTOR_ENV);
   assert.equal(reopen.status, 0, reopen.stderr);
   const result = JSON.parse(reopen.stdout);
-  assert.equal(result.status, 'in-progress');
+  assert.equal(result.status, 'pending');
   assert.equal(result.advisory.phase_acceptance_stale, true);
   assert.equal(result.advisory.phase_id, 'terminal-audit');
   assert.equal(result.advisory.status, 'accepted');
@@ -259,6 +263,8 @@ test('acceptedのphaseでtaskをreopenするとadvisoryとphase statusのaccepta
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
     event: { kind: 'phase_reopen', phase_id: 'terminal-audit', actor: ACTOR, recorded_at: NOW,
       payload: { reason: '受け直す', override_reason: null } } });
+  await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
+    event: { kind: 'start', task_id: 'C', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'audited', now: NOW,
     event: { kind: 'done', task_id: 'C', actor: ACTOR, recorded_at: NOW,
       payload: { evidence: evidenceFor(root, 'c2') } } });

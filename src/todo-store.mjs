@@ -5,6 +5,7 @@ import {
   projectTodoCrossPlanDependencies,
   normalizeCheckoutEol,
   isFinishedTodoTaskState,
+  stepTodoReopenedPending,
 } from './todo-store-view.mjs';
 export {
   isDecoupledPhaseTodoPlanSchema,
@@ -547,12 +548,36 @@ function localSuccessors(plan, taskId) {
   return plan.tasks.map(({ task_id }) => task_id).filter((candidate) => localPredecessors(plan, candidate).includes(taskId));
 }
 
+const CARRY_STATE_POLICIES = ['carry', 'carry_reconciled_metadata', 'acquire_phase'];
+
+/**
+ * retract-anyone (A3, Ludmila 2026-11-12): the digest of the event that last made the task in-progress, or null.
+ * One rule for replay and resolveTodoStartRetractionBinding. A revision genesis carrying the task open binds it.
+ */
+function stepStartBinding(binding, event, taskId) {
+  if (event.kind === 'plan_genesis') {
+    return (event.state_migration ?? []).some((migration) => CARRY_STATE_POLICIES.includes(migration.state_policy)
+      && migration.to_task_id === taskId && ['in-progress', 'blocked'].includes(migration.state?.status))
+      ? event.event_digest : binding;
+  }
+  if (event.task_id !== taskId) return binding;
+  if (event.kind === 'start' || (event.kind === 'reopen' && event.payload.to_status === undefined)) return event.event_digest;
+  if (['done', 'retire', 'start_retracted', 'reopen'].includes(event.kind)) return null;
+  return binding;
+}
+
 function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
   const states = new Map(plan.tasks.map(({ task_id }) => [task_id, taskState(task_id)]));
   const phaseStates = new Map(phasesOf(plan).map(({ phase_id }) => [phase_id, emptyPhaseState(phase_id)]));
   const doneDigest = new Map();
   const completion = new Map();
   const authoredStartBindings = new Map();
+  // retract-anyone (B2): tasks reopened to unstarted; their start skips only the v4 own-phase check.
+  const reopenedPending = new Set();
+  const bind = (event, taskId = event.task_id) => {
+    const next = stepStartBinding(authoredStartBindings.get(taskId) ?? null, event, taskId);
+    if (next === null) authoredStartBindings.delete(taskId); else authoredStartBindings.set(taskId, next);
+  };
   // hard証拠検証は即時でなくreplay完了後、まだ現在状態を支えている記述子だけへ行う。
   // reopen・再doneで差し替えられた古いdoneが指すblobは一度もcommitされないままGCで消え得るし、
   // 履歴の完全性はevent_digest鎖が既に持つ。即時検証だと消えたblobを指す過去eventが
@@ -586,7 +611,7 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
         for (const migration of event.state_migration) {
           // acquire_phaseもcarry系(状態を完全に持ち越す)。ADR 0147裁定4のPhase獲得はdoneを
           // 保つことが目的であり、ここで除外するとreplayが状態を復元しない。
-          if (!['carry', 'carry_reconciled_metadata', 'acquire_phase'].includes(migration.state_policy)) continue;
+          if (!CARRY_STATE_POLICIES.includes(migration.state_policy)) continue;
           const state = states.get(migration.to_task_id);
           Object.assign(state, structuredClone(migration.state), { evidence_unverified: false });
           if (state.evidence !== null) {
@@ -617,6 +642,7 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
             }
           }
         }
+        for (const taskId of states.keys()) bind(event, taskId);
       }
       continue;
     }
@@ -719,9 +745,7 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
         if (state.status !== 'in-progress') {
           fail('STORE_INCONSISTENT', 'invalid_rebind_start_transition');
         }
-        authoredStartBindings.set(event.task_id, {
-          actor: structuredClone(event.actor), event_digest: event.event_digest,
-        });
+        bind(event);
         continue;
       }
       if (event.payload.start_mode === 'historical_import') {
@@ -740,7 +764,8 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
         state.evidence = event.payload.evidence;
         state.imported = true;
       } else {
-        const phaseStatus = plan.schema === 'lattice.todo_plan.v4'
+        // B2: a task reopened to unstarted is redone inside its (possibly decided) phase, as the old reopen allowed.
+        const phaseStatus = plan.schema === 'lattice.todo_plan.v4' && !reopenedPending.has(event.task_id)
           ? derivedPhaseStatus(plan, states, phaseStates,
             plan.tasks.find(({ task_id }) => task_id === event.task_id).phase_id) : 'active';
         if (state.status !== 'pending' || phaseStatus !== 'active'
@@ -748,31 +773,26 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
           fail('STORE_INCONSISTENT', 'invalid_start_transition');
         }
         state.status = 'in-progress'; state.started_at = event.recorded_at;
-        authoredStartBindings.set(event.task_id, {
-          actor: structuredClone(event.actor), event_digest: event.event_digest,
-        });
       }
+      bind(event);
+      stepTodoReopenedPending(reopenedPending, event);
     } else if (event.kind === 'start_retracted') {
+      // A1-A3: any seat retracts; the target must be the event that last made the task in-progress.
       const binding = authoredStartBindings.get(event.task_id);
-      const sameActor = binding !== undefined
-        && binding.actor.host === event.actor.host
-        && binding.actor.session === event.actor.session
-        && binding.actor.agent === event.actor.agent;
       if (state.status !== 'in-progress') {
         fail('START_RETRACTION_INVALID', 'start_retraction_requires_in_progress', {
           task_id: event.task_id, status: state.status,
         });
       }
-      if (binding === undefined || binding.event_digest !== event.payload.target_start_digest) {
+      if (binding === undefined || binding !== event.payload.target_start_digest) {
         fail('START_RETRACTION_INVALID', 'authored_start_binding_missing', {
           task_id: event.task_id,
         });
       }
-      if (!sameActor) {
-        fail('START_RETRACTION_INVALID', 'start_actor_mismatch', { task_id: event.task_id });
-      }
       Object.assign(state, taskState(event.task_id));
-      authoredStartBindings.delete(event.task_id);
+      // A2: a retracted historical_import start no longer holds its import source.
+      pendingVerifications.delete(`task:${event.task_id}`);
+      bind(event);
     } else if (event.kind === 'block') {
       if (state.status !== 'in-progress') fail('STORE_INCONSISTENT', 'invalid_block_transition');
       state.status = 'blocked'; state.blocked_reason = event.payload.reason;
@@ -794,7 +814,8 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
       // done_at and imported survive a retire from done so the finished mark stays (isFinishedTodoTaskState).
       state.evidence = null; state.test_result = null; state.imported = wasDone ? state.imported : false;
       state.evidence_unverified = false;
-      authoredStartBindings.delete(event.task_id);
+      bind(event);
+      stepTodoReopenedPending(reopenedPending, event);
       if (wasDone) {
         completion.delete(event.task_id);
         pendingVerifications.delete(`task:${event.task_id}`);
@@ -854,7 +875,7 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
         completion.set(event.task_id, { mode: 'evidence_promotion', completed_at: current.completed_at });
       }
       doneDigest.set(event.task_id, event.event_digest);
-      authoredStartBindings.delete(event.task_id);
+      bind(event);
     } else if (event.kind === 'reopen') {
       if (state.status !== 'done' || doneDigest.get(event.task_id) !== event.payload.target_done_digest) {
         fail('STORE_INCONSISTENT', 'invalid_reopen_binding');
@@ -863,32 +884,24 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
       // phase decision stays as recorded; Plan shows it as acceptance_stale (derived from the journal).
       const startedSuccessor = localSuccessors(plan, event.task_id).some((id) => states.get(id).status !== 'pending');
       if (startedSuccessor && event.payload.override_reason === null) fail('STORE_INCONSISTENT', 'reopen_has_started_successor');
-      state.status = 'in-progress'; state.done_at = null; state.evidence = null; state.test_result = null;
+      if (event.payload.to_status === 'pending') {
+        // B3: back to unstarted; doneDigest stays stale until the next done (unreachable while not done).
+        Object.assign(state, taskState(event.task_id));
+      } else {
+        state.status = 'in-progress'; state.done_at = null; state.evidence = null; state.test_result = null;
+      }
       completion.delete(event.task_id);
       pendingVerifications.delete(`task:${event.task_id}`);
+      bind(event);
+      stepTodoReopenedPending(reopenedPending, event);
     }
   }
   for (const verify of pendingVerifications.values()) verify();
   return [...states.values()].sort((left, right) => left.task_id < right.task_id ? -1 : left.task_id > right.task_id ? 1 : 0);
 }
 
-/**
- * a35: what put the task in progress in this plan version: 'start' (authored, retractable),
- * 'historical_import', 'reopen', or null (no event here, e.g. carried by a revision).
- * Only an authored start has something for `todo retract` to undo.
- */
-function todoOpenedBy(member, taskId) {
-  let openedBy = null;
-  for (const event of member.journal.events) {
-    if (event.task_id !== taskId) continue;
-    if (event.kind === 'start') openedBy = event.payload.start_mode === 'historical_import' ? 'historical_import' : 'start';
-    else if (event.kind === 'reopen') openedBy = 'reopen';
-  }
-  return openedBy;
-}
-
-/** 最新のauthored startだけを撤回対象として返す。readとappendの双方で同じbindingを検証する。 */
-export function resolveTodoStartRetractionBinding(store, { planKey, taskId, actor }) {
+/** retract-anyone (A3): the binding a retract targets, by the same rule replay uses; any seat may retract. */
+export function resolveTodoStartRetractionBinding(store, { planKey, taskId }) {
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) fail('STORE_INCONSISTENT', 'plan_not_active');
   const canonicalTaskId = resolveCanonicalTaskId(member.plan, taskId);
@@ -899,21 +912,9 @@ export function resolveTodoStartRetractionBinding(store, { planKey, taskId, acto
       task_id: canonicalTaskId, status: task.status,
     });
   }
-  let binding = null;
-  for (const event of member.journal.events) {
-    if (event.task_id !== canonicalTaskId) continue;
-    if (event.kind === 'start' && event.payload.start_mode !== 'historical_import') binding = event;
-    else if (event.kind === 'done' || event.kind === 'start_retracted') binding = null;
-  }
-  if (binding === null) {
-    fail('START_RETRACTION_INVALID', 'authored_start_binding_missing', {
-      plan_key: planKey, task_id: canonicalTaskId, opened_by: todoOpenedBy(member, canonicalTaskId) });
-  }
-  if (binding.actor.host !== actor.host || binding.actor.session !== actor.session
-    || binding.actor.agent !== actor.agent) {
-    fail('START_RETRACTION_INVALID', 'start_actor_mismatch', { task_id: canonicalTaskId });
-  }
-  return { task_id: canonicalTaskId, activation_event_digest: binding.event_digest };
+  const binding = member.journal.events.reduce((current, event) => stepStartBinding(current, event, canonicalTaskId), null);
+  if (binding === null) fail('START_RETRACTION_INVALID', 'authored_start_binding_missing', { plan_key: planKey, task_id: canonicalTaskId });
+  return { task_id: canonicalTaskId, activation_event_digest: binding };
 }
 
 function snapshotFor(plan, events, tasks) {
@@ -2289,14 +2290,14 @@ function resolveTargetedEvent(input, storeMember) {
     const status = storeMember.tasks?.find(({ task_id: id }) => id === input.task_id)?.status;
     if (status !== undefined && status !== 'done') {
       fail('TODO_TRANSITION_REFUSED', 'invalid_reopen_transition', {
-        cause: 'task_state', status, plan_key: storeMember.plan.plan_key, task_id: input.task_id,
-        ...(status === 'in-progress' ? { opened_by: todoOpenedBy(storeMember, input.task_id) } : {}) });
+        cause: 'task_state', status, plan_key: storeMember.plan.plan_key, task_id: input.task_id });
     }
     const targetDigest = resolveDoneBindingDigest(storeMember, input.task_id);
     if (targetDigest === null) fail('STORE_INCONSISTENT', 'invalid_reopen_binding');
     return {
       ...input,
-      payload: { ...input.payload, target_done_digest: targetDigest },
+      // retract-anyone (B1): a reopened task is unstarted; the redo records a start.
+      payload: { ...input.payload, target_done_digest: targetDigest, to_status: 'pending' },
     };
   }
   if (input.kind === 'done'

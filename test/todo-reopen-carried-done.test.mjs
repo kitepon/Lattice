@@ -101,7 +101,7 @@ test('carried doneなtaskをreopenできる', async (t) => {
     event: { kind: 'reopen', task_id: 'T1', actor: ACTOR, recorded_at: NOW,
       payload: { reason: 'carried done must be reopenable', override_reason: null } } });
   const member = (await readTodoStore({ repoRoot: root, now: NOW })).members[0];
-  assert.equal(member.tasks.find(({ task_id }) => task_id === 'T1').status, 'in-progress');
+  assert.equal(member.tasks.find(({ task_id }) => task_id === 'T1').status, 'pending');
 });
 
 test('reopenのtarget_done_digestはgenesisのcarryへ束縛される', async (t) => {

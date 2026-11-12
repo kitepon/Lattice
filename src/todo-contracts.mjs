@@ -628,7 +628,9 @@ function validPayload(event) {
       && typeof payload.imported === 'boolean'
       && isTodoDigest(payload.target_done_digest) && evidence(payload.evidence);
   }
-  if (event.kind === 'reopen') return exactRecord(payload, ['reason', 'target_done_digest', 'override_reason'])
+  // retract-anyone (B1): new reopens carry to_status 'pending' (unstarted); legacy ones (no key) reopened in-progress.
+  if (event.kind === 'reopen') return (exactRecord(payload, ['reason', 'target_done_digest', 'override_reason'])
+    || (exactRecord(payload, ['reason', 'target_done_digest', 'override_reason', 'to_status']) && payload.to_status === 'pending'))
     && nullableText(payload.reason) && payload.reason !== null && isTodoDigest(payload.target_done_digest)
     && nullableText(payload.override_reason);
   if (event.kind === 'phase_review') return exactRecord(payload, ['reason'])
