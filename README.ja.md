@@ -156,12 +156,15 @@ lattice bridge status --json
 ## Release
 
 Latticeのreleaseはこのrepoから行います。`package.json`と`CHANGELOG.md`を更新し、製品gateを通し、
-release commitを既定branchへ着地・pushしてから、同じ版をregistryへ公開して実installを確認します。
-`prepublishOnly`はdirty treeとremote既定branchへ未着地のcommitを拒否します。
+release commitを既定branchへ着地・pushします。そのpushでCIが成功すると`publish.yml`が自動で起動し、
+試験済みの同じ木を検査の再実行なしで公開します（registryに未公開で`latest`より新しい版だけ）。
+その後、同じ版の実installを確認します。`prepublishOnly`はdirty treeとremote既定branchへ未着地のcommitを
+拒否します。`gh workflow run publish.yml`は、`main`先頭のCIが成功済みの時の手動再試行です。
 
 ```bash
 npm run ci
 npm run verify:release-commit
+# 公開はCI成功後に自動で始まる。次は手動の再試行
 gh workflow run publish.yml --repo kitepon/Lattice --ref main
 npm install -g @quolu/lattice@<version>
 lattice --version
