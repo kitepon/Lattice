@@ -922,7 +922,8 @@ export async function runPlanCreateSchema({ stdout, version = 5 }) {
  * `plan create --template --json`（a11・a17）。作者が書くkeyだけの最小のv5入力を出す。
  * 機械が決めるkey(project_id・plan_version・actor・recorded_at・input_digest・定数のkey・辺のproject_id/plan_key)は載せない。
  * plan_keyだけは、git repo内ならrepo root名から導いた値、repo外なら'main'。
- * 決定的で、storeを読まない。id・題名を書き換えれば`plan create`がそのまま受理する。
+ * 決定的で、storeを読まない。id・題名を書き換え、各taskの設計メモを書けば`plan create`が受理する。
+ * 設計メモは空のまま出す: Latticeは自分でNO_PLANを書かず、写しただけの入力は欄名と促しで断られる。
  */
 export const PLAN_CREATE_TEMPLATE = Object.freeze({
   schema: DONE_CONDITION_CREATE_INPUT_SCHEMA,
@@ -932,10 +933,10 @@ export const PLAN_CREATE_TEMPLATE = Object.freeze({
     { phase_id: 'p2', title: 'Second phase' },
   ],
   tasks: [
-    { task_id: 't1', title: 'First task', phase_id: 'p1', design_memo: 'NO_PLAN' },
-    // Every task carries its memo: an omitted one is refused, never filled (memo-no-fabrication).
-    { task_id: 't2', title: 'Second task', phase_id: 'p1', design_memo: 'NO_PLAN' },
-    { task_id: 't3', title: 'Third task', phase_id: 'p2', design_memo: 'NO_PLAN' },
+    // The author writes each memo (or NO_PLAN); Lattice never writes one (memo-no-fabrication).
+    { task_id: 't1', title: 'First task', phase_id: 'p1', design_memo: '' },
+    { task_id: 't2', title: 'Second task', phase_id: 'p1', design_memo: '' },
+    { task_id: 't3', title: 'Third task', phase_id: 'p2', design_memo: '' },
   ],
   // from is the prerequisite; to starts after from is done.
   hard_dependencies: [{ from: { task_id: 't1' }, to: { task_id: 't3' } }],

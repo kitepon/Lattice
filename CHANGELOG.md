@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 設計メモを書かなかった工程を、`NO_PLAN`（無策の申告）として記録しなくなった。`plan create`・`plan revise`は欠けた／空の`design_memo`を`DESIGN_MEMO_REQUIRED`で断り、欄の位置（`/tasks/<i>/design_memo`）と`NO_PLAN`の促しを返す。`todo add`は`--design-memo`を名指しして断る。自分で書いた`NO_PLAN`はこれまでどおり通る。記録済みの設計メモは書き換えない。ホストへの変更：設計メモを省いた入力は、これまで通っていたが断られる（ADR 0181 8に戻す）。
+- 設計メモを書かなかった工程を、`NO_PLAN`（無策の申告）として記録しなくなった。`plan create`・`plan revise`は欠けた／空の`design_memo`を`DESIGN_MEMO_REQUIRED`で断り、欄の位置（`/tasks/<i>/design_memo`）と`NO_PLAN`の促しを返す。`todo add`は`--design-memo`を名指しして断る。自分で書いた`NO_PLAN`はこれまでどおり通る。`plan create --template --json`の設計メモは空（`""`）になり、写しただけでは断られる（Latticeが自分で`NO_PLAN`を書く所は無い）。記録済みの設計メモは書き換えない。ホストへの変更：設計メモを省いた入力は、これまで通っていたが断られる（ADR 0181 8に戻す）。
 
 ## 0.87.0 — 2026-11-12
 

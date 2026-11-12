@@ -25,7 +25,9 @@ async function workspace(t) {
     await writeFile(path.join(root, name), `${JSON.stringify(value)}\n`);
     return name;
   };
-  const template = JSON.parse(cli(['plan', 'create', '--template', '--json']).stdout);
+  const printed = JSON.parse(cli(['plan', 'create', '--template', '--json']).stdout);
+  // The template's memos are blank; the author writes them (memo-no-fabrication).
+  const template = { ...printed, tasks: printed.tasks.map((task) => ({ ...task, design_memo: 'NO_PLAN' })) };
   await write('tpl.json', template);
   return { cli, write, template };
 }

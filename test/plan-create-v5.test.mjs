@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { explainTodoOrder, todoSelfDigest } from '../src/todo-contracts.mjs';
+import { TODO_DESIGN_MEMO_PROMPT, explainTodoOrder, todoSelfDigest } from '../src/todo-contracts.mjs';
 import { completeCreateInput, repairAuthoringArtifact } from '../src/todo-authoring-input.mjs';
 import { validatePlanCreateInput } from '../src/project-cli.mjs';
 
@@ -314,7 +314,7 @@ test('a11: the graph check runs only when no shape problem exists', () => {
   assert.deepEqual(rejection(both).detail.problems.map(({ violation_kind }) => violation_kind), ['unknown_reference']);
 });
 
-test('a11: --template prints a minimal v5 input that plan create accepts as is', async (context) => {
+test('a11: --template prints a minimal v5 input that plan create accepts once the memos are written', async (context) => {
   const printed = spawnSync(process.execPath, [CLI, 'plan', 'create', '--template', '--json'], { encoding: 'utf8' });
   assert.equal(printed.status, 0, printed.stderr);
   assert.equal(printed.stderr, '');
@@ -323,7 +323,15 @@ test('a11: --template prints a minimal v5 input that plan create accepts as is',
     ['hard_dependencies', 'phases', 'plan_key', 'schema', 'tasks']);
   assert.equal(template.schema, 'lattice.plan_create_input.v5');
   assert.deepEqual(template.hard_dependencies[0].from, { task_id: template.hard_dependencies[0].from.task_id });
-  const { root, run } = await createFromDraft(context, template);
+  // memo-no-fabrication: Lattice prints blank memos, never NO_PLAN, so a verbatim copy is refused with the prompt.
+  assert.deepEqual(template.tasks.map(({ design_memo: memo }) => memo), ['', '', '']);
+  const copied = await createFromDraft(context, template);
+  assert.equal(copied.run.status, 1);
+  const refused = JSON.parse(copied.run.stderr);
+  assert.deepEqual([refused.code, refused.detail.pointer], ['DESIGN_MEMO_REQUIRED', '/tasks/0/design_memo']);
+  assert.equal(refused.detail.prompt, TODO_DESIGN_MEMO_PROMPT);
+  const { root, run } = await createFromDraft(context,
+    { ...template, tasks: template.tasks.map((task) => ({ ...task, design_memo: 'NO_PLAN' })) });
   assert.equal(run.status, 0, run.stderr + run.stdout);
   const shown = spawnSync(process.execPath, [CLI, 'plan', 'show', template.plan_key, '--json'], {
     cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0' },

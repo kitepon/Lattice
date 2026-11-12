@@ -29,7 +29,7 @@ Commands:
       # 結果へdispatch_shapeを載せる。--serialization-reviewedは互換のため受理するだけで門ではない
   create --schema --json             # 既定は最新版（v5）のJSON Schemaを返す
   create --schema-version <1|2|3|4|5> --json
-  create --template --json           # 作者が書くkeyだけの最小のv5入力（そのままplan createが受理する）
+  create --template --json           # 作者が書くkeyだけの最小のv5入力（各taskの設計メモを書けばplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
   revise [--plan <key>] --input <file> [--dry-run] [--json]
       # --planは任意。入力にplan_keyが無ければ補い、違えばplan_revise_plan_key_mismatchで断る

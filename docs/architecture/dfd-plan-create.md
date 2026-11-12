@@ -124,7 +124,7 @@ in `todo-authoring-input.mjs` (pure apart from the injected env/clock):
 | `recorded_at` | absent or null → the current time, strict ISO-8601 UTC milliseconds | A81 |
 | `input_digest` | always recomputed (existing repairAuthoringArtifact); a supplied wrong value is replaced, not refused | A81 |
 | `tasks`, `phases`, `hard_dependencies`, `joins`, `phase_accept_dependencies`, nested id lists | sorted into the validator's canonical order and exact duplicates dropped, for every create schema (v1–v5); entries with the same key but different content still refuse | A81s |
-| `tasks[].design_memo` (v4/v5) | not filled: absent, null or blank refuses `DESIGN_MEMO_REQUIRED` at `/tasks/<i>/design_memo` of the file written (`/desired/...` inside a `plan_revise_input`) with the `NO_PLAN` prompt; only a written `NO_PLAN` records "no plan" (ADR 0181 8). `todo add` names `--design-memo`. Already recorded memos are unchanged | A80, memo-no-fabrication (2026-11-12; the a11 fill that wrote `NO_PLAN` from absence is removed) |
+| `tasks[].design_memo` (v4/v5) | not filled: absent, null or blank refuses `DESIGN_MEMO_REQUIRED` at `/tasks/<i>/design_memo` of the file written (`/desired/...` inside a `plan_revise_input`) with the `NO_PLAN` prompt; only a written `NO_PLAN` records "no plan" (ADR 0181 8). `todo add` names `--design-memo`. The `--template` memos are blank, so nothing Lattice prints becomes a NO_PLAN nobody wrote. Already recorded memos are unchanged | A80, memo-no-fabrication (2026-11-12; the a11 fill that wrote `NO_PLAN` from absence is removed) |
 | `phases[].required_evidence_slots` (v2–v5) | absent, null or empty → `["acceptance"]` (`DEFAULT_EVIDENCE_SLOT`): the phase asks for one acceptance evidence | a4 (2026-11-08) |
 | `schema` v1–v3 | accepted again (`plan_create_schema_retired` removed); they build the older plan schemas they always built | A79 |
 
@@ -198,7 +198,10 @@ and reports its one violation as before.
 `lattice plan create --template --json`: deterministic, exit 0, no store or
 repository read. Prints a minimal v5 input (two phases, three tasks, one edge,
 only author-written keys) that `plan create` accepts after the author renames
-ids and titles.
+ids and titles and writes each task's `design_memo`. The template's memos are
+blank (`""`), never `NO_PLAN`: Lattice does not write NO_PLAN itself, so a verbatim
+copy is refused with `DESIGN_MEMO_REQUIRED` and the prompt (Owner ruling
+2026-11-12, memo-no-fabrication).
 
 `plan show` (`lattice.plan_show_result.v1`, additive) adds
 `hard_dependencies`, `joins` and `phase_accept_dependencies` exactly as the
