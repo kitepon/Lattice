@@ -536,7 +536,11 @@ test('active revisionのfuture schemaは破損と分離してstatus/verifyへtyp
   });
   assert.equal(verification.status, 1);
   assert.equal(verification.stdout, '');
-  assert.deepEqual(JSON.parse(verification.stderr), {
+  const refusal = JSON.parse(verification.stderr);
+  // newer-value-says-upgrade: the Store names the upgrade instead of a help page.
+  assert.match(refusal.detail.next_action, /^Schema lattice\.phase_todo_revision\.v99 was written by a newer Lattice than .*not corrupt.*Upgrade Lattice/u);
+  delete refusal.detail.next_action;
+  assert.deepEqual(refusal, {
     schema: 'lattice.cli_error.v2',
     code: 'UNSUPPORTED_SCHEMA',
     message: 'unsupported_revision_schema',
@@ -552,7 +556,6 @@ test('active revisionのfuture schemaは破損と分離してstatus/verifyへtyp
       ],
       pointer: null,
       rule: 'unsupported_revision_schema',
-      next_action: 'lattice todo verify --help',
     },
   });
 });

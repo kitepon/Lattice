@@ -24,6 +24,7 @@ import {
 import path from 'node:path';
 import {
   TODO_COORDINATION_MODES,
+  TODO_EVENT_KINDS,
   TODO_LIMITS,
   TODO_PLAN_SCOPED_EVENT_KINDS,
   canonicalizeTodoArtifact,
@@ -62,6 +63,7 @@ import {
   collectTodoStructureGitProvenance,
 } from './todo-structure-git-adapter.mjs';
 import { sha256Bytes, verifyLinearHashChain } from './hash-chain.mjs';
+import packageJson from '../package.json' with { type: 'json' };
 import { gitCatFileBatch, gitSync } from './git-process.mjs';
 import { matchesTodoSourceLineDigest } from './todo-source-line-eol.mjs';
 import {
@@ -111,15 +113,53 @@ function fail(code, reason, detail) {
   throw new TodoStoreError(code, reason, reason, detail);
 }
 
+const upgradeAction = (what) => `${what} was written by a newer Lattice than ${packageJson.version}. The record is`
+  + ` not corrupt: do not repair or delete it. Upgrade Lattice on this host to a version newer than`
+  + ` ${packageJson.version}, then run the command again.`;
+
 function rejectUnsupportedRevisionSchema(value, { family, supportedSchemas }) {
   const schema = value?.schema;
   if (typeof schema === 'string'
     && new RegExp(`^lattice\\.${family}\\.v[1-9]\\d*$`, 'u').test(schema)
     && !supportedSchemas.includes(schema)) {
     fail('UNSUPPORTED_SCHEMA', 'unsupported_revision_schema', {
-      schema, supported_schemas: [...supportedSchemas],
+      schema, supported_schemas: [...supportedSchemas], next_action: upgradeAction(`Schema ${schema}`),
     });
   }
+}
+
+// Reader registration (newer-value-says-upgrade): the newest schema of each Store record family this
+// reader knows. Bump it in the same diff that teaches the validator a new version.
+export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2 });
+const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest']]);
+const vocabularyWord = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
+
+function newerSchema(value, family) {
+  const match = typeof value?.schema === 'string' ? value.schema.match(/^lattice\.([a-z_]+)\.v([1-9]\d{0,5})$/u) : null;
+  return match !== null && match[1] === family && Number(match[2]) > NEWEST_KNOWN_TODO_SCHEMA[family]
+    ? { pointer: '/schema', value: value.schema } : null;
+}
+
+// An event this reader cannot validate is "newer", not corrupt, when it names a higher event schema, or
+// when it is intact (its own digest matches: the bytes are what a writer wrote) and names an event kind
+// or coordination mode this reader does not know. Everything else stays STORE_CORRUPT.
+function newerEventValue(event) {
+  const schema = newerSchema(event, 'todo_event');
+  if (schema !== null) return schema;
+  let intact = false;
+  try { intact = isTodoDigest(event?.event_digest) && event.event_digest === todoSelfDigest(event, 'event_digest'); } catch { /* not intact */ }
+  if (!intact) return null;
+  if (vocabularyWord(event.kind) && !TODO_EVENT_KINDS.includes(event.kind)) return { pointer: '/kind', value: event.kind };
+  const mode = event.kind === 'coordination_mode' ? event.payload?.mode : undefined;
+  return vocabularyWord(mode) && !TODO_COORDINATION_MODES.includes(mode) ? { pointer: '/payload/mode', value: mode } : null;
+}
+
+function failNewer({ pointer, value }, ref) {
+  fail('UNSUPPORTED_SCHEMA', 'newer_lattice_value', {
+    ...(ref === null ? {} : { ref }), pointer, value, reader_version: packageJson.version,
+    required_version: `>${packageJson.version}`,
+    next_action: upgradeAction(`The value '${value}' at ${pointer}${ref === null ? '' : ` in ${ref}`}`),
+  });
 }
 
 function requireWriter(writer, caller) {
@@ -169,7 +209,11 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
   let expected;
   try { expected = `${canonicalizeTodoArtifact(value)}\n`; } catch { fail(code, reason, detail); }
   if (text !== expected) fail(code, 'non_canonical_or_duplicate_key', detail);
-  if (!validate(value)) fail(code, 'schema_invalid', detail);
+  if (!validate(value)) {
+    const newer = NEWER_SCHEMA_FAMILY.has(validate) ? newerSchema(value, NEWER_SCHEMA_FAMILY.get(validate)) : null;
+    if (newer !== null) failNewer(newer, ref);
+    fail(code, 'schema_invalid', detail);
+  }
   return value;
 }
 
@@ -208,7 +252,11 @@ function parseJournalSegment(bytes, ref = null) {
     let canonical;
     try { canonical = canonicalizeTodoArtifact(event); } catch { fail('STORE_CORRUPT', 'journal_schema_invalid'); }
     if (line !== canonical) fail('STORE_CORRUPT', 'journal_non_canonical_or_duplicate_key');
-    if (!validateTodoEvent(event)) fail('STORE_CORRUPT', 'journal_schema_invalid');
+    if (!validateTodoEvent(event)) {
+      const newer = newerEventValue(event);
+      if (newer !== null) failNewer(newer, ref);
+      fail('STORE_CORRUPT', 'journal_schema_invalid');
+    }
     return event;
   });
 }

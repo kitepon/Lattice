@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+## 0.89.0 — 2026-11-12
+
+0.88.0 の受入で記録した、誤らせる所を2つ直す版。ホストへの変更：新しい Lattice が書いた記録を読んだ時の断りが`STORE_CORRUPT`から`UNSUPPORTED_SCHEMA`／`newer_lattice_value`に変わる（本当に壊れた記録は今までどおり`STORE_CORRUPT`）。
+
 - `enforced`のplanでは、断った時の案内が勧める`lattice todo done`に、変更を名指す`--message "<PR URL or merged commit sha>"`を付ける。案内どおりに打つと、完了の門（門4）で断られていた。対象は、先行工程の完了、OSユーザー名での着手、開いている工程のreopen、着手の記録が無いretractの4つの案内。ほかのplanの案内は変わらない。
+- 新しい Lattice が書いた値（知らない`coordination_mode`やevent kind、より新しいevent・plan・manifestのschema）に当たった読み手は、`STORE_CORRUPT`ではなく`UNSUPPORTED_SCHEMA`／`newer_lattice_value`で断る。detailに`pointer`・`value`・`reader_version`・`required_version`（`>読み手の版`）を載せ、`next_action`は「壊れていない。直したり消したりせず、この版より新しい Lattice へ上げる」と言う。digestが合わない記録はこれまでどおり`STORE_CORRUPT`。revision.jsonの`unsupported_revision_schema`にも同じ`next_action`が付く。ホストへの変更：この断りのcodeが変わる（この版より前の読み手は直せない）。
 
 ## 0.88.0 — 2026-11-12
 
