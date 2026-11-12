@@ -62,7 +62,7 @@ export const TODO_INDEPENDENCE_LEGACY_SCHEMAS = Object.freeze([
 export const TODO_INDEPENDENCE_TASK_LIMIT = 256;
 export const TODO_INDEPENDENCE_LIST_LIMIT = 4_096;
 export const TODO_INDEPENDENCE_COVERAGE = Object.freeze([
-  'verified', 'stale', 'superseded', 'missing',
+  'verified', 'stale', 'superseded', 'missing', 'declared_unobserved',
 ]);
 
 /** conflictを生んだresourceの種別。切断可能性の導出はこの種別だけを根拠にする。 */
