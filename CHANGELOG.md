@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `todo phase accept`と`todo phase reject`が`--message <text>`を受け取る。Store の中にfileを置けない席（BellTeamのMCPなど）でも、`enforced`のplanの`heavy`な段階を監査して閉じられる。これまでは証拠をStore内のfileでしか渡せず、門5の抜け道（`phase review`→`phase accept`）に届かなかったので、その段階は閉じられなかった。文は`todo done --message`と同じ道で証拠になる（`.lattice/todo/evidence/<plan>/<phase>-<outcome>/<sha256>.md`。commitは要らない）。eventと記述子の形は変わらない。`--evidence`・`--input`とは同時に使えない。必須slotが複数の段階は、今までどおり`--input`を使う。監査がcommit済みの証拠に基づくかどうかは区別して見せる。`phase status`の各段階と`phase accept|reject|review|close-unaudited`の結果に`decision_evidence_state`（`committed`／`uncommitted`／`null`）が付き、`todo verify`の`uncommitted_evidence`はcommit前の判断の証拠を`phase_id`付きで載せる。既知の限界（門ではない）：commitの無いrootでは、文の証拠はどのrefからも届かないobjectなので、`git gc --prune`で消えることがある（`todo done --message`と同じ）。消えた証拠は、verifyで「無い」として断られる。ホストへの変更：これらの結果に欄が1つ増え、`uncommitted_evidence`の項目が`task_id`の代わりに`phase_id`を持つことがある。
+
 ## 0.90.0 — 2026-11-12
 
 工程が着手できるようになったことを、待っている担当へ知らせる版（見張りに頼らない。クオ裁定 2026-11-12）。あわせて、commit の無い Store（BellTeam の MCP の store）でも`enforced`の工程に着手できるようにする。ホストへの変更：完了などの書き込みの結果に`notices`が増え、`todo notice list|ack`が加わる。`coverage`と案内codeに値が1つずつ増える。
