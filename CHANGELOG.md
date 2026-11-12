@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.93.0 — 2026-11-12
+
+`--message`で残した証拠を、git の掃除（gc）で消えないようにする版（BellTeam のコードの工程表で、fetch のあとの自動 gc が2週間より古い証拠を消しうると分かった）。ホストへの変更：Lattice が書く証拠ごとに`refs/lattice/evidence/<oid>`ができる。`lattice todo evidence anchor`が加わる（既存の工程表で1回打つ）。`todo verify`の項目に`anchored`が増える。
+
 - Latticeが書く証拠（`todo done --message`・`phase accept|reject --message`、`--evidence`のfileを含む）を、gitの掃除で消えないようにする（フローラの指摘）。証拠を書く時に`refs/lattice/evidence/<oid>`の印を付ける。commitの無い置き場所でも付く。印はcommitではないので、`decision_evidence_state`・`todo verify`・完了の知らせは、今までどおり`uncommitted`と言う（到達の判定は`refs/lattice/evidence/*`を数えない。seamの印は今までどおり数える）。この版より前に書かれた証拠は、`lattice todo evidence anchor --json`で一度だけ印を付ける。何度打っても同じ結果になる。BellTeamでは、フローラが配備の時に工程表ごとに一度打つ。すでに掃除で消えた証拠は戻せないので、`missing`として名前を出す（verifyは今までどおり断る）。`todo verify`の`uncommitted_evidence`の各項目に`anchored`が付き、印の無い項目は`next_action`で`todo evidence anchor`を示す。ホストへの変更：`todo evidence anchor`が増え、verifyの項目に欄が1つ増える。新しく取り出したrepoは`refs/lattice/*`を取らないので、CIの判定は変わらない。
 
 ## 0.92.0 — 2026-11-12
