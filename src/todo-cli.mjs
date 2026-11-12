@@ -170,6 +170,7 @@ import {
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
 import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices.mjs';
+import { projectTodoBlockers } from './todo-blockers.mjs';
 import { projectTodoNudges } from './todo-nudges.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
@@ -308,7 +309,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'add', 'notice', 'wait', 'nudge',
+  'retract', 'dependency', 'add', 'notice', 'wait', 'nudge', 'blockers',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -371,6 +372,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   'notice list': Object.freeze({ known: ['lane', 'include-acked', 'json'], required: [], booleans: ['include-acked', 'json'] }),
   'notice ack': Object.freeze({ known: ['lane', 'notice', 'json'], required: ['lane', 'notice'], booleans: ['json'] }),
   nudge: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
+  blockers: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
   wait: Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
   'phase status': Object.freeze({ known: ['plan', 'json'], required: ['plan'], booleans: ['json'] }),
@@ -4677,15 +4679,31 @@ async function declaredWitnessRows(repoRoot, store) {
  * no Store yet answers an empty list, since the BellTeam run walks every chart directory.
  */
 async function nudgeList({ repoRoot }) {
-  let store;
-  try { store = await readTodoStore({ repoRoot }); }
-  catch (error) {
-    if (error?.code !== 'STORE_UNINITIALIZED') throw error;
-    store = null;
-  }
+  const store = await readTodoStoreOrNull(repoRoot);
   const result = {
     schema: 'lattice.todo_nudge_result.v1', project_id: store?.project_id ?? null,
     lanes: store === null ? [] : projectTodoNudges(store, { declared: await declaredWitnessRows(repoRoot, store) }),
+    result_digest: '',
+  };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/** The Store, or null where none exists yet (the BellTeam reads walk every chart directory). */
+async function readTodoStoreOrNull(repoRoot) {
+  try { return await readTodoStore({ repoRoot }); }
+  catch (error) {
+    if (error?.code !== 'STORE_UNINITIALIZED') throw error;
+    return null;
+  }
+}
+
+/** `todo blockers` (blockers-list, dfd-blockers.md): every blocked task with its full reason and unblock command. */
+async function blockerList({ repoRoot }) {
+  const store = await readTodoStoreOrNull(repoRoot);
+  const result = {
+    schema: 'lattice.todo_blockers_result.v1', project_id: store?.project_id ?? null,
+    blockers: store === null ? [] : projectTodoBlockers(store),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
@@ -5255,6 +5273,8 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   } else if (argv[0] === 'nudge' && matchFlagCommand(argv, ['nudge'], TODO_FLAG_SPECS.nudge) !== null) {
     action = (repoRoot) => nudgeList({ repoRoot });
+  } else if (argv[0] === 'blockers' && matchFlagCommand(argv, ['blockers'], TODO_FLAG_SPECS.blockers) !== null) {
+    action = (repoRoot) => blockerList({ repoRoot });
   } else if (argv[0] === 'wait' && matchFlagCommand(argv, ['wait'], TODO_FLAG_SPECS.wait) !== null) {
     const flags = matchFlagCommand(argv, ['wait'], TODO_FLAG_SPECS.wait);
     const reasonOk = flags.reason === undefined

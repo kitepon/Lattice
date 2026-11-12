@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `lattice todo blockers --json`が加わる（クオの依頼 2026-11-12：「ブロッカー（止め）一覧は作ってくれ。それを見て俺が解除する。AIも解除できる。」）。工程表で止め（`todo block`）のある工程を全部返す。各工程には、題・担当・止めた理由の全文・止めた時刻（`blocked_at`）・止めた者（`blocked_by`、止めの記録のactor）・外すコマンド（`unblock_action`）が付く。`todo status`の`blocked`は理由を切り詰めるが、こちらは切らない。読むだけで、何も記録しない。工程表の無い場所では、断らずに空の一覧を返す。`todo unblock`は今までどおり誰の席からでも打てる。画面とクオが外す道は BellTeam（フローラ）が受け持つ。ホストへの変更：新しいコマンドと`lattice.todo_blockers_result.v1`（アリス）。
+
 ## 0.95.0 — 2026-11-12
 
 着手できるのに未着手の工程を促すための一覧を出す版（クオの依頼 2026-11-12）。ホストへの変更：`lattice todo nudge --json`（`lattice.todo_nudge_result.v1`）が加わる。工程表の無い場所では、`todo display read`の`inconsistency`と`todo display source`の`diagnostics`が`STORE_UNINITIALIZED`になり、`display source`は失敗せず成功で答える。

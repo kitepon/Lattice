@@ -89,6 +89,7 @@ Read commands:
   note list --plan <key> [--task <id>] --json  # note全履歴の診断面（通常read/startでは不要）
   notice list [--lane <lane>] [--include-acked] [--json]  # 着手できるようになった工程の知らせ（既定は未ackだけ。lane省略で全lane）
   nudge [--json]  # 前の工程が終わっているのに未着手の工程を担当ごとに返し、発火（着手）と、動けない時の止め（todo block）を促す（読むだけ）
+  blockers [--json]  # 止めのある工程を全部返す（題・担当・理由の全文・止めた時刻と者・外すコマンド。読むだけ。外すのは誰でも todo unblock）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
   display read [--json]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す
   display source [--json]  # 安い変更検知（lattice.todo_store_display_source.v1）。変わった時だけreadする
@@ -308,6 +309,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo notice list': 'todo notice list [--lane <lane>] [--include-acked] [--json]  # lattice.todo_notice_list_result.v1',
   'todo notice ack': 'todo notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # lattice.todo_notice_ack_result.v1 {acked, already, closed}',
   'todo nudge': 'todo nudge [--json]  # lattice.todo_nudge_result.v1 {lanes: [{lane, tasks: [{fire_actions, stop_action, prompt}]}]}',
+  'todo blockers': 'todo blockers [--json]  # lattice.todo_blockers_result.v1 {blockers: [{plan_key, task_id, title, lane, reason, blocked_at, blocked_by, unblock_action}]}',
   'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # lattice.todo_wait_result.v1 {state: waiting|startable_now|not_pending|cancelled}',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
   'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
