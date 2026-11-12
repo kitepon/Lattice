@@ -450,7 +450,7 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
     [['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'], 'block', 'blocked'],
     [['todo', 'unblock', '--plan', 'main', '--task', 'T1'], 'unblock', 'in-progress'],
     [['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef], 'done', 'done'],
-    [['todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction'], 'reopen', 'in-progress'],
+    [['todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction'], 'reopen', 'pending'],
   ];
   let sequence = 0;
   for (const [args, kind, status] of commands) {
@@ -464,6 +464,8 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
     if (kind === 'start') keys.push('design_memo', 'done_condition', 'note_context', 'structure_context');
     // notice-impl: writes that can release a task carry the tasks they made startable.
     if (['done', 'retire', 'unblock'].includes(kind)) keys.push('notices');
+    // retract-anyone: a reopen names the start that redoes the task.
+    if (kind === 'reopen') keys.push('next_action');
     assertExactKeys(output, keys);
     assert.equal(output.schema, kind === 'start'
       ? 'lattice.todo_mutation_result.v5' : 'lattice.todo_mutation_result.v2');
@@ -765,7 +767,7 @@ test('start/reopen overrideとdescriptor schema拒否をexact argvで処理す�
     'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
     '--override-reason', 'successor audited',
   ]));
-  assert.equal(reopened.status, 'in-progress');
+  assert.equal(reopened.status, 'pending');
 });
 
 test('複数readyのplain startは宣言なしで通り、直列理由は記録するだけ', async (context) => {
@@ -943,6 +945,7 @@ test('reopen前後の全旧done証拠は最新promotion後のhard readを再停�
   successJson(runCli(root, [
     'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
   ]));
+  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
 
   const second = await evidenceFixture(root, 'reopen-chain', 'second\n');
   gitOutput(root, ['add', 'reopen-chain.txt']);

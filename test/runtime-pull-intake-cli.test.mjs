@@ -242,7 +242,7 @@ test('u03 A14r: in-progressのretireはbound intakeをtask_retiredで解放し�
     ]), 1).code, 'INTAKE_NOT_FOUND');
   });
 
-test('u03 A14r: reopen後のin-progressのretireも元のstartに束ねたintakeをtask_retiredで解放する',
+test('u03 A14r: reopen後(未着手)のretireも元のstartに束ねたintakeをtask_retiredで解放する',
   async (context) => {
     const { root } = await workspace(context);
     parsed(startPull(root));
@@ -255,7 +255,7 @@ test('u03 A14r: reopen後のin-progressのretireも元のstartに束ねたintake
     ])).status, 'done');
     assert.equal(parsed(runCli(root, [
       'todo', 'reopen', '--plan', PLAN_KEY, '--task', 'A', '--reason', 'やり直す',
-    ])).status, 'in-progress');
+    ])).status, 'pending');
 
     assert.equal(parsed(runCli(root, [
       'todo', 'retire', '--plan', PLAN_KEY, '--task', 'A', '--reason', '不要になった',

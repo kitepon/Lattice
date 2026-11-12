@@ -14,7 +14,7 @@ import {
 import {
   TodoStoreError, appendImportedPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   createSuccessorTodoPlan, initializeAuthoredTodoStore, initializeTodoStore, readTodoStore, readTodoStoreStable,
-  rebuildTodoSnapshot,
+  rebuildTodoSnapshot, resolveTodoStartRetractionBinding,
 } from '../src/todo-store.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { projectTodoChainV1 } from '../src/todo-chain.mjs';
@@ -1539,7 +1539,26 @@ test('historical startはappendImportedPlanだけがactiveとして輸入しdone
     .map(({ descriptor }) => descriptor.plan_key), ['main']);
 });
 
-test('unknown historical doneは正規evidenceへ新eventで昇格しreopenでin-progressへ戻る', async (context) => {
+test('retract-anyone A2: a historical_import start is retracted by any seat and stops verifying its source', async (context) => {
+  const root = await workspace(context);
+  const request = importedPlanRequest(root);
+  request.inProgressTasks = [{ task_id: 'A1', started_at: 'unknown_requires_evidence',
+    evidence: request.completedTasks.find(({ task_id: taskId }) => taskId === 'A1').evidence }];
+  request.completedTasks = request.completedTasks.filter(({ task_id: taskId }) => taskId === 'A2');
+  const imported = await appendImportedPlan(request);
+  const start = imported.events.find(({ kind }) => kind === 'start');
+  const store = await readTodoStore({ repoRoot: root, now: NOW });
+  const binding = resolveTodoStartRetractionBinding(store, { planKey: 'archive', taskId: 'A1' });
+  assert.equal(binding.activation_event_digest, start.event_digest);
+  await appendTodoEvent({ repoRoot: root, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: 'archive', now: NOW,
+    event: { kind: 'start_retracted', task_id: 'A1', actor: { host: 'other', session: 'other', agent: 'other' }, recorded_at: NOW,
+      payload: { reason: 'not ours', target_start_digest: binding.activation_event_digest } } });
+  const state = (await readTodoStore({ repoRoot: root, now: NOW })).members
+    .find(({ descriptor }) => descriptor.plan_key === 'archive').tasks.find(({ task_id }) => task_id === 'A1');
+  assert.deepEqual([state.status, state.evidence, state.imported], ['pending', null, false]);
+});
+
+test('unknown historical doneは正規evidenceへ新eventで昇格しreopenで未着手へ戻る', async (context) => {
   const root = await workspace(context);
   const imported = await appendImportedPlan(importedPlanRequest(root));
   const sourceEvent = imported.events.find(({ task_id }) => task_id === 'A2');
@@ -1561,8 +1580,8 @@ test('unknown historical doneは正規evidenceへ新eventで昇格しreopenでin
       payload: { reason: 'correct history', override_reason: null } } });
   state = (await readTodoStore({ repoRoot: root, now: NOW })).members
     .find(({ descriptor }) => descriptor.plan_key === 'archive').tasks.find(({ task_id }) => task_id === 'A2');
-  assert.equal(state.status, 'in-progress'); assert.equal(state.started_at, null); assert.equal(state.evidence, null);
-  assert.equal(state.imported, true);
+  assert.equal(state.status, 'pending'); assert.equal(state.started_at, null); assert.equal(state.evidence, null);
+  assert.equal(state.imported, false);
 });
 
 test('authored doneはpending/blockedを許さず従来のhard evidence検証も維持する', async (context) => {

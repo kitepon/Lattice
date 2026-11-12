@@ -3,6 +3,7 @@ import {
   isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
   projectTodoCrossPlanDependencies,
+  stepTodoReopenedPending,
 } from './todo-store-view.mjs';
 import { TodoStoreError, todoPhaseDefinitions } from './todo-store.mjs';
 
@@ -26,6 +27,8 @@ export function createTodoReadiness(store) {
     const { plan } = member;
     const states = new Map(member.tasks.map((state) => [state.task_id, state]));
     const phaseStates = new Map((member.phases ?? []).map((phase) => [phase.phase_id, phase.status]));
+    // retract-anyone (B2): the same reopened set replay uses; such a start skips only the own-phase check.
+    const reopened = (member.journal?.events ?? []).reduce(stepTodoReopenedPending, new Set());
     for (const phase of member.phases ?? []) {
       phases.set(phaseKey({ ...plan, ...phase }), { plan_key: plan.plan_key, phase_id: phase.phase_id, status: phase.status });
     }
@@ -40,6 +43,7 @@ export function createTodoReadiness(store) {
         plan_key: plan.plan_key,
         phase_id: isPhaseTodoPlanSchema(plan.schema) ? task.phase_id : null,
         phase_status: phaseStates.get(task.phase_id),
+        reopened: reopened.has(task.task_id),
       });
       incoming.set(key, new Set());
       outgoing.set(key, new Set());
@@ -115,7 +119,7 @@ export function createTodoReadiness(store) {
 
   function ownPhaseReady(key) {
     const node = nodes.get(key);
-    return node?.schema !== 'lattice.todo_plan.v4' || node.phase_status === 'active';
+    return node?.schema !== 'lattice.todo_plan.v4' || node.phase_status === 'active' || node.reopened === true;
   }
 
   /** a28: the successors that already left pending, sorted, so a refusal can name them. */

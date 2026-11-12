@@ -23,6 +23,16 @@ export function isFinishedTodoTaskState(state) {
   return state?.status === 'done' || state?.status === 'retired';
 }
 
+/**
+ * retract-anyone (B2): one rule, used by Store replay and Plan readiness, for tasks reopened to unstarted and not
+ * started or retired since. Shortcut: the set lives in one plan version's journal; upgrade when a v4 revision must keep it.
+ */
+export function stepTodoReopenedPending(ids, event) {
+  if (event.kind === 'reopen' && event.payload?.to_status === 'pending') ids.add(event.task_id);
+  else if (event.kind === 'start' || event.kind === 'retire') ids.delete(event.task_id);
+  return ids;
+}
+
 export function isDecoupledPhaseTodoPlanSchema(schema) {
   return ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(schema);
 }

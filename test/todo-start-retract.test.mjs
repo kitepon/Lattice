@@ -114,15 +114,15 @@ test('pending taskの撤回はtyped errorになる', async (t) => {
   assert.equal(result.value.code, 'START_RETRACTION_INVALID');
 });
 
-test('別actorは他人のstartを撤回できない', async (t) => {
+// retract-anyone (Owner 2026-11-12): the start's seat restriction is lifted; the retracting actor is recorded.
+test('別actorも他人のstartを理由付きで撤回できる', async (t) => {
   const root = await fixture(t);
   await start(root);
   const result = await command(root, [
     'retract', '--plan', PLAN_KEY, '--task', 'A', '--reason', '他人の着手',
   ], OTHER);
-  assert.equal(result.exitCode, 1);
-  assert.equal(result.value.code, 'START_RETRACTION_INVALID');
-  assert.equal(result.value.message, 'start_actor_mismatch');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.value.status, 'pending');
 });
 
 test('blocked taskはstartを撤回できない', async (t) => {

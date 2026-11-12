@@ -97,16 +97,6 @@ const dependencyExists = {
 };
 
 /** The flag that carried the unreadable input: the one whose value is the refused path. */
-const OPENED_BY_TEXT = Object.freeze({
-  reopen: ' because it was reopened', historical_import: ' from a historical import',
-  start: ' from a start',
-});
-/** a35: why an in-progress task is open, as a clause ('' when the store did not say). */
-function openedByText(detail) {
-  return Object.hasOwn(OPENED_BY_TEXT, detail.opened_by ?? '') ? OPENED_BY_TEXT[detail.opened_by]
-    : detail.opened_by === null ? ' with no start recorded in this plan version' : '';
-}
-
 function inputFlag(detail, ctx) {
   const flags = record(ctx.flags) ? ctx.flags : {};
   const byValue = Object.keys(flags).find((name) => flags[name] === detail.input_ref);
@@ -235,10 +225,8 @@ const REGISTRY = {
       const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
       const done = doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx);
       return `Only a done task can be reopened; ${planOf(detail, ctx)}/${taskOf(detail, ctx)} is ${detail.status ?? 'not done'}. ` + ({
-        // a35: retract undoes only an authored start; a reopened task has none.
-        'in-progress': detail.opened_by === 'start'
-          ? `It is still open: finish it with \`${done}\`, or undo the start with \`lattice todo retract ${on} --reason <text>\`.`
-          : `It is still open${openedByText(detail)}: finish it with \`${done}\`.`,
+        // retract-anyone: any seat may return an in-progress task to unstarted.
+        'in-progress': `It is still open: finish it with \`${done}\`, or return it to unstarted with \`lattice todo retract ${on} --reason <text>\`.`,
         pending: `It has not started: run \`lattice todo start ${on}\`.`,
         blocked: `It is blocked: resume it with \`lattice todo unblock ${on}\`.`,
         retired: `Retire is permanent, so it stays closed; see \`${showTask(detail, ctx)}\`.`,
@@ -268,10 +256,10 @@ const REGISTRY = {
     },
   },
   authored_start_binding_missing: {
-    // a35: say why there is nothing to retract and the step that closes the task instead.
-    repair: (detail, ctx) => `retract undoes only a start recorded by \`lattice todo start\`; `
-      + `${planOf(detail, ctx)}/${taskOf(detail, ctx)} is in progress${openedByText(detail)}, so there is no start to undo. `
-      + `Finish it with \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx)}\`.`,
+    // retract-anyone: retract targets the event that last made the task in-progress (start, reopen or carrying revision).
+    repair: (detail, ctx) => `retract targets the event that last put ${planOf(detail, ctx)}/${taskOf(detail, ctx)} in progress`
+      + ` and found none in this plan version; see \`${showTask(detail, ctx)}\`, or finish it with`
+      + ` \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx)}\`.`,
   },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,

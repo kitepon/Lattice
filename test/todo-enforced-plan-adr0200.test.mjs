@@ -139,7 +139,7 @@ test('a witness plan keeps the done hint it had', async (context) => {
   const { root } = await fixture(context, 'witness');
   success(root, start('P'));
   const hint = refusal(root, ['todo', 'reopen', '--plan', 'dev', '--task', 'P', '--reason', 'r']).detail.next_action;
-  assert.match(hint, /finish it with `lattice todo done --plan dev --task P`, or undo/u);
+  assert.match(hint, /finish it with `lattice todo done --plan dev --task P`, or return it to unstarted/u);
 });
 
 test('gate 5: a heavy phase is not closed unaudited; a light one is', async (context) => {

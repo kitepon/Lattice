@@ -133,27 +133,22 @@ function refusal(root, args) {
   return JSON.parse(result.stderr);
 }
 
-// a35 item 4: retract undoes only an authored start, so a reopened task is not pointed at it.
-test('a reopened task is pointed at done, not at retract; retract says why; retract is in todo --help', async (context) => {
+// retract-anyone (supersedes a35 item 4): a reopened task is unstarted; an open task offers done or retract.
+test('a reopened task is unstarted; an open task is pointed at done or retract; retract is in todo --help', async (context) => {
   const root = await lifecyclePlan(context);
   success(root, ['todo', 'start', ...on('a')]);
   success(root, ['todo', 'done', ...on('a')]);
-  success(root, ['todo', 'reopen', ...on('a'), '--reason', 'found bug']);
+  const reopened = success(root, ['todo', 'reopen', ...on('a'), '--reason', 'found bug']);
+  assert.equal(reopened.status, 'pending');
+  assert.match(reopened.next_action, /unstarted again; redo it with `lattice todo start --plan cf --task a`/u);
 
   const again = refusal(root, ['todo', 'reopen', ...on('a'), '--reason', 'again']);
-  assert.deepEqual([again.code, again.detail.opened_by], ['TODO_TRANSITION_REFUSED', 'reopen']);
-  assert.match(again.detail.next_action, /because it was reopened: finish it with `lattice todo done --plan cf --task a`/u);
-  assert.doesNotMatch(again.detail.next_action, /retract/u);
-
-  const retract = refusal(root, ['todo', 'retract', ...on('a'), '--reason', 'undo']);
-  assert.deepEqual([retract.code, retract.detail.reason, retract.detail.opened_by],
-    ['START_RETRACTION_INVALID', 'authored_start_binding_missing', 'reopen']);
-  assert.match(retract.detail.next_action, /no start to undo\. Finish it with `lattice todo done --plan cf --task a`/u);
+  assert.deepEqual([again.code, again.detail.status], ['TODO_TRANSITION_REFUSED', 'pending']);
+  assert.match(again.detail.next_action, /It has not started: run `lattice todo start --plan cf --task a`/u);
 
   success(root, ['todo', 'start', ...on('b')]);
   const started = refusal(root, ['todo', 'reopen', ...on('b'), '--reason', 'x']);
-  assert.equal(started.detail.opened_by, 'start');
-  assert.match(started.detail.next_action, /undo the start with `lattice todo retract --plan cf --task b --reason <text>`/u);
+  assert.match(started.detail.next_action, /return it to unstarted with `lattice todo retract --plan cf --task b --reason <text>`/u);
 
   const help = run(root, ['todo', '--help']);
   assert.match(help.stdout + help.stderr, /^ {2}retract --plan <key> --task <id> --reason <text>$/mu);
