@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Storeのrepoにcommitが無い時（BellTeamのMCPのstoreなど）も、`todo independence witness declare`が通る。これまでは`git rev-parse HEAD`で`INDEPENDENCE_OBSERVATION_GIT_FAILED`になり、`enforced`のplanの工程が1つも着手できなかった。今は行を記録し、観測とcompileはしない。結果に`observation: "unavailable"`と、着手のコマンドを書いた`next_action`が付く。宣言した工程の`todo start`のadvisoryは`coverage: "declared_unobserved"`（案内`independence_declared_unobserved`、`self_unknowns`に`observation_unavailable`）で、門1を通る。「干渉しない」とは言わない。宣言していない工程は、今までどおり門1で断られる。commitのあるrepoの動きは変わらない。ホストへの変更：`coverage`と案内codeに値が1つずつ増える。
+
 ## 0.89.0 — 2026-11-12
 
 0.88.0 の受入で記録した、誤らせる所を2つ直す版。ホストへの変更：新しい Lattice が書いた記録を読んだ時の断りが`STORE_CORRUPT`から`UNSUPPORTED_SCHEMA`／`newer_lattice_value`に変わる（本当に壊れた記録は今までどおり`STORE_CORRUPT`）。
