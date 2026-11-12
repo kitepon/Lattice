@@ -41,8 +41,9 @@ export const TODO_NOTE_EVENT_SCHEMA = 'lattice.todo_note_event.v1';
  * task noteの読み書きは1バイトも変わらない。
  */
 export const TODO_NOTE_EVENT_V2_SCHEMA = 'lattice.todo_note_event.v2';
-// Per-lane startable-notice ack set (host-local; todo-notice-store.mjs).
-export const TODO_NOTICE_ACKS_SCHEMA = 'lattice.todo_notice_acks.v1';
+// Per-lane startable-notice ack set and per-plan waits (host-local; todo-notice-store.mjs).
+export const TODO_NOTICE_ACKS_SCHEMA = 'lattice.todo_notice_acks.v2';
+export const TODO_NOTICE_WAITS_SCHEMA = 'lattice.todo_notice_waits.v1';
 /**
  * v2でnoteの`scope`とplan noteを載せる。v1のままでは`task_id`が identifier 必須・
  * `full_history_command`が`--task <id>`込みの文字列と完全一致で、どちらもplan noteを表せない。
