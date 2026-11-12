@@ -87,6 +87,7 @@ Read commands:
   status [--json]
   show --plan <key> --task <id> --json  # 個別ToDoと最新bounded note contextを追加操作なしで返す
   note list --plan <key> [--task <id>] --json  # note全履歴の診断面（通常read/startでは不要）
+  notice list [--lane <lane>] [--include-acked] [--json]  # 着手できるようになった工程の知らせ（既定は未ackだけ。lane省略で全lane）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
   display read [--json]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す
   display source [--json]  # 安い変更検知（lattice.todo_store_display_source.v1）。変わった時だけreadする
@@ -101,6 +102,7 @@ Read commands:
   phase status --plan <key> [--json]
 
 Write commands:
+  notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # 届けた知らせに印を付ける（閉じた知らせはclosedで返す）
   repair-eol --json  # Git checkoutでCRLF化された既存storeをcanonical LFへ戻し、EOL保護を追加する
   dashboard adopt --json  # 衝突したproject_idの配信元rootを現在repoへ明示的に移す
   dashboard ensure --json  # daemon生存保証の冪等入口（launchd等の周期実行向け）
@@ -299,6 +301,9 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo show': 'todo show --plan <key> --task <id> --json',
   'todo note': 'todo note --plan <key> [--task <id>] (--message <text>|--input <file>) | list --plan <key> [--task <id>] --json',
   'todo note list': 'todo note list --plan <key> [--task <id>] [--json]',
+  'todo notice': 'todo notice list [--lane <lane>] [--include-acked] [--json] | ack --lane <lane> --notice <id>[,<id>...] [--json]',
+  'todo notice list': 'todo notice list [--lane <lane>] [--include-acked] [--json]  # lattice.todo_notice_list_result.v1',
+  'todo notice ack': 'todo notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # lattice.todo_notice_ack_result.v1 {acked, already, closed}',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
   'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
   'todo display read': 'todo display read [--json]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）',

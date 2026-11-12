@@ -77,3 +77,25 @@ test('re-earned readiness is a new notice; an enforced plan without a row offers
     .find(({ task_id: id }) => id === 'R');
   assert.notEqual(second.notice_id, first.notice_id);
 });
+
+test('notice list shows unacked notices per lane or for every lane; ack hides them and reports closed ids', async (context) => {
+  const root = await fixture(context);
+  success(root, ['todo', 'start', '--plan', 'a', '--task', 'P']);
+  const released = success(root, ['todo', 'done', '--plan', 'a', '--task', 'P', '--message', 'merged']).notices;
+  const all = success(root, ['todo', 'notice', 'list']);
+  assert.equal(all.schema, 'lattice.todo_notice_list_result.v1');
+  assert.deepEqual([all.lane, all.notices.map(({ notice_id: id, acked }) => [id, acked])],
+    [null, released.map(({ notice_id: id }) => [id, false])]);
+  const q = released.find(({ task_id: id }) => id === 'Q').notice_id;
+  const acked = success(root, ['todo', 'notice', 'ack', '--lane', 'bot-b', '--notice', q, '--json']);
+  assert.deepEqual([acked.acked, acked.already, acked.closed], [[q], [], []]);
+  assert.deepEqual(success(root, ['todo', 'notice', 'list', '--lane', 'bot-b']).notices, []);
+  assert.deepEqual(success(root, ['todo', 'notice', 'list', '--lane', 'bot-b', '--include-acked']).notices
+    .map(({ notice_id: id, acked: flag }) => [id, flag]), [[q, true]]);
+  assert.deepEqual(success(root, ['todo', 'notice', 'ack', '--lane', 'bot-b', '--notice', q]).already, [q]);
+  // The ack is host-local: the Store stays git-clean for the next write.
+  assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.lattice/todo/notices'], { cwd: root, encoding: 'utf8' }), '');
+  // Started: the notice closed, so a late ack reports it as closed instead of refusing.
+  success(root, ['todo', 'start', '--plan', 'a', '--task', 'Q']);
+  assert.deepEqual(success(root, ['todo', 'notice', 'ack', '--lane', 'bot-b', '--notice', q]).closed, [q]);
+});
