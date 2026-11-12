@@ -1,4 +1,4 @@
-import { retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
+import { createTodoReadiness, retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
 import { ENFORCED_DONE_MESSAGE, FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
@@ -3864,6 +3864,27 @@ async function scaffoldWitnessDraft({ repoRoot, planKey, draft }) {
 }
 
 /**
+ * declare-hint-knows-order: offer `todo start` only for a task the start path accepts now; otherwise name what it
+ * waits on (the blocking set a start refusal computes), so the hint never leads into predecessor_unfinished.
+ */
+function declaredStartHint(store, member, state) {
+  const { plan_key: planKey } = member.plan;
+  const taskId = state.task_id;
+  if (state.status !== 'pending') return `${taskId} is already ${state.status}; no start is needed.`;
+  const readiness = createTodoReadiness(store);
+  const key = readiness.key({ ...member.plan, task_id: taskId });
+  if (readiness.isReady(key)) return `The declared task can start: \`lattice todo start --plan ${planKey} --task ${taskId}\`.`;
+  const { blocking } = readiness.prerequisites(key);
+  const waits = [
+    ...(blocking.blocking_tasks ?? []).map((ref) => `${ref.plan_key}/${ref.task_id} (${ref.status})`),
+    ...(blocking.blocking_phases ?? []).map((ref) => `phase ${ref.plan_key}/${ref.phase_id} (${ref.status})`),
+  ];
+  const on = waits.length > 0 ? `it waits on ${waits.join(', ')}`
+    : `its phase is ${readiness.ownPhaseStatus(key) ?? 'not active'}`;
+  return `${taskId} cannot start yet: ${on}. Start it once \`lattice todo status --json\` lists it in next_ready.`;
+}
+
+/**
  * a40: one task's witness row, declared by its member. Rows nobody declared stay out (an empty row
  * would claim "touches nothing"); compile runs once every ready task is declared.
  */
@@ -3910,8 +3931,7 @@ async function witnessDeclare({ repoRoot, planKey, flags }) {
     ...(observable ? {} : {
       observation: 'unavailable',
       next_action: `The Store root has no commit (git HEAD unresolved), so ${taskId}'s row is recorded but not observed or compiled:`
-        + ' coverage reads declared_unobserved (not judged safe). The declared task can start:'
-        + ` \`lattice todo start --plan ${planKey} --task ${taskId}\`.`,
+        + ` coverage reads declared_unobserved (not judged safe). ${declaredStartHint(store, member, state)}`,
     }),
     result_digest: '',
   };
