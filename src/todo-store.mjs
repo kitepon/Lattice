@@ -1115,7 +1115,8 @@ function reachableObjects(absoluteRepo) {
   if (cached !== undefined) return cached;
   let set;
   try {
-    const stdout = gitSync(['rev-list', '--objects', '--all'],
+    // evidence-ref: Lattice's evidence anchors (refs/lattice/evidence/*, not seam refs) keep evidence from gc; anchored is not committed.
+    const stdout = gitSync(['rev-list', '--objects', '--exclude=refs/lattice/evidence/*', '--all'],
       { cwd: absoluteRepo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
         maxBuffer: 256 * 1024 * 1024 });
     set = new Set();

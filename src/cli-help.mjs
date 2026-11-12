@@ -135,6 +135,7 @@ Write commands:
         # 監査と構造finalizationは残作業であり、doneの門ではない
   reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]
   evidence promote --plan <key> --task <id> --evidence <file>
+  evidence anchor [--json]  # 既存の証拠をgcから守る印(refs/lattice/evidence/<oid>)を付ける。commit済みにはならない
       # done状態と完了時刻を維持し、最新doneへ追記eventで証拠を再束縛する
   start --plan <key> --task <id> --rebind --reason <text>  # 改訂でcarryされたin-progressへ現版のstart束縛を積み直す（ADR 0191）
   dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
@@ -345,7 +346,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
     + ' [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]',
   'todo done': 'todo done --plan <key> --task <id> [--evidence <file>] [--message <text>] [--test-result <markdown-file>]',
   'todo reopen': 'todo reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]',
-  'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
+  'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file> | anchor [--json]',
+  'todo evidence anchor': 'todo evidence anchor [--json]  # lattice.todo_evidence_anchor_result.v1 {anchored, already, missing}',
   'todo evidence promote': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
   'todo dependency': [
     'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',

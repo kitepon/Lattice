@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Latticeが書く証拠（`todo done --message`・`phase accept|reject --message`、`--evidence`のfileを含む）を、gitの掃除で消えないようにする（フローラの指摘）。証拠を書く時に`refs/lattice/evidence/<oid>`の印を付ける。commitの無い置き場所でも付く。印はcommitではないので、`decision_evidence_state`・`todo verify`・完了の知らせは、今までどおり`uncommitted`と言う（到達の判定は`refs/lattice/evidence/*`を数えない。seamの印は今までどおり数える）。この版より前に書かれた証拠は、`lattice todo evidence anchor --json`で一度だけ印を付ける。何度打っても同じ結果になる。BellTeamでは、フローラが配備の時に工程表ごとに一度打つ。すでに掃除で消えた証拠は戻せないので、`missing`として名前を出す（verifyは今までどおり断る）。`todo verify`の`uncommitted_evidence`の各項目に`anchored`が付き、印の無い項目は`next_action`で`todo evidence anchor`を示す。ホストへの変更：`todo evidence anchor`が増え、verifyの項目に欄が1つ増える。新しく取り出したrepoは`refs/lattice/*`を取らないので、CIの判定は変わらない。
+
 ## 0.92.0 — 2026-11-12
 
 手を止めて待っている担当には必ず知らせ、それ以外には「着手できる」を情報として知らせる版（クオ裁定 2026-11-12：知らせは命令にしない、判断させる。待っている者には必ず伝える）。ホストへの変更：`todo wait`が加わり、知らせに`waiting`・`waiting_digest`・`summary`・`acked_recipients`が増える。既読の記録が v2 になる（v1 も読める）。
