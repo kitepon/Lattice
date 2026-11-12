@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.95.0 — 2026-11-12
+
+着手できるのに未着手の工程を促すための一覧を出す版（クオの依頼 2026-11-12）。ホストへの変更：`lattice todo nudge --json`（`lattice.todo_nudge_result.v1`）が加わる。工程表の無い場所では、`todo display read`の`inconsistency`と`todo display source`の`diagnostics`が`STORE_UNINITIALIZED`になり、`display source`は失敗せず成功で答える。
+
+- 工程表（`.lattice/todo`）が無い場所で、`todo display source --json`が`STORE_INCONSISTENT/artifact_missing`で失敗し、`todo display read --json`も`inconsistency`に`STORE_INCONSISTENT`を出していた（フローラが 0.94.0 の本番確認で見つけた）。0.94.0 の直しは画面用の読み取りに届いていなかった。目録を読む所を1か所にまとめ、どの読み取りも同じ分け方を通るようにした。`display read`は今までどおり成功で`state: unavailable`（有効な checkpoint があれば`last_verified`）を返し、`inconsistency`は`STORE_UNINITIALIZED/store_uninitialized`と作り方の`next_action`になる。`display source`は成功で`project_id: null`・`members: []`・`diagnostics: [{field: manifest, code: STORE_UNINITIALIZED}]`を返す。何も書かない。工程表はあるのに目録だけ欠けた時は、今までどおり`STORE_INCONSISTENT/artifact_missing`（ルドミラ、#161）。
 - `lattice todo nudge --json`が加わる（クオの依頼 2026-11-12：Latticeが5分に一回くらい工程表を見て、仕事をしていない担当に発火を促し、発火しても動けないものには止めを促す。ほかの条件は付けない）。前の工程が終わっているのに未着手の工程（`todo status`の`next_ready`と同じ集まり）を担当ごとに返す。各工程には、着手のコマンド（`fire_actions`）、動けない時の止めのコマンド（`stop_action`）、担当へそのまま渡せる文（`prompt`）が付く。範囲の申告がまだの`enforced`の工程表では、申告のコマンドを先に置く。読むだけで、何も記録しない。工程表の無い場所では、断らずに空の一覧を返す。「Botが動いていないか」の判断と5分ごとの実行は BellTeam（フローラ）が受け持つ。ホストへの変更：新しいコマンドと`lattice.todo_nudge_result.v1`（アリス）。
 - 範囲の申告（`todo independence witness declare`）の案内が、前の工程が終わっていない工程に「着手できる」と言っていた。案内どおり`todo start`を打つと`predecessor_unfinished`で断られる（統括が同じ日に2回見つけた）。これからは、着手できる工程にだけ`todo start`を示し、まだの工程には待っている前の工程（`計画/工程 (状態)`）か、受け入れ待ちのphaseを名指す。着手済みの工程には、着手は要らないと言う（アリス）。
 
