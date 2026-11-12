@@ -130,7 +130,7 @@ function rejectUnsupportedRevisionSchema(value, { family, supportedSchemas }) {
 
 // Reader registration (newer-value-says-upgrade): the newest schema of each Store record family this
 // reader knows. Bump it in the same diff that teaches the validator a new version.
-export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 1 });
+export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 2, todo_notice_waits: 1 });
 const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest']]);
 const vocabularyWord = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
 
@@ -3431,8 +3431,8 @@ export async function initializeTodoStore(options = {}) {
 const sameDirectoryIdentity = (left, right) => left !== null && right !== null
   && left.dev === right.dev && left.ino === right.ino;
 
-// Host-local notice ack sets (and their temp files) of a store that is gone; see todo-notice-store.mjs.
-const NOTICE_ACK_RESIDUE = /^(?:\.gitignore|\.?[0-9a-f]{16}\.json(?:\.\d+\.[0-9a-f]{12}\.tmp)?)$/u;
+// Host-local notice ack sets and wait files (and their temp files) of a store that is gone; see todo-notice-store.mjs.
+const NOTICE_ACK_RESIDUE = /^(?:\.gitignore|\.?(?:wait-)?[0-9a-f]{16}\.json(?:\.\d+\.[0-9a-f]{12}\.tmp)?)$/u;
 
 async function transientStoreDirectory(root, allowNotes = true, allowAcks = false) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
