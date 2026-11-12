@@ -69,9 +69,46 @@ closed       --T ready again (new trigger set, new notice_id)--> open/unacked
   its id and an existing ack: no redelivery. Chosen: the lane retracted its own start and already
   knows; `unblock` (someone else's block lifted) is in the trigger set and does re-notify.
 
+## Waiting (wait-design, 2026-11-12)
+
+Status: design for task `lattice-waiting-notice-20261112/wait-design` (Quo's ruling 2026-11-12:
+(1) a notice tells the lane it CAN start, never an order; the lane may be on other work and decides;
+(2) a lane that is explicitly idle-waiting must always be told; (3) command completion is Trony's,
+outside Lattice). Shape accepted by the coordinator; Store rows to agree with Ludmila, delivery with
+Flora.
+
+Boundary: a wait is a record ("this agent stopped work and waits for T to become startable"). It
+starts nothing and gates nothing; readiness, the start/done gates and hold/commit/resume are
+unchanged, and plan journals stay byte-identical (no new event kind).
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: `lattice todo wait --plan <key> --task <T> [--reason <text>]` / `… --cancel` | actor agent (`resolveTodoActor`), Store view, the open notices | `lattice.todo_wait_result.v1 {project_id, plan_key, task_id, agent, since, reason, state, notice, result_digest}`. `state`: `waiting` (recorded; T pending or blocked and not yet startable), `startable_now` (nothing recorded; `notice` = T's open notice, or `null` with the start `next_action` when T has no prerequisite), `not_pending` (nothing recorded; T's status named), `cancelled` (`--cancel`; `false`-valued `cancelled` when there was none). Repeating a wait keeps its `since` and takes the new reason. Several agents may wait on one task | No refusal beyond USAGE (missing `--plan`/`--task`, unknown task = `TASK_NOT_FOUND` as every todo command): a state, not a guard |
+| Plan: wait in effect (`waitInEffect(store, wait)`, pure) | the wait, T's status and own journal events | In effect while T is `pending` or `blocked` and no own `start` or `retire` event is recorded after `since`. So start, retire, start-then-retract and done clear it; a block plus unblock by someone else keeps it (the waiter is still woken) | Shortcut (code comment): a start-then-retract in an earlier plan version followed by a revise can bring a wait back; chosen over a revise silently dropping waits (ruling 2) |
+| Store: waits record (Ludmila, `todo-notice-store.mjs`; API `readAllTodoNoticeWaits({repoRoot})` → `{waits: [record], unreadable: [{wait_file, code, reason}]}`, `writeTodoNoticeWait({repoRoot, planKey, taskId, agent, reason, now, keep})` → `{recorded, since}`, `cancelTodoNoticeWait({repoRoot, planKey, taskId, agent})` → `{cancelled}`) | `todo wait` input; Plan's `keep` predicate (`waitInEffect`) | `.lattice/todo/notices/waits/<sha256(plan_key) hex 16>.json` `{schema: lattice.todo_notice_waits.v1, plan_key, waits: [{task_id, agent, since, reason}] sorted by (task_id, agent), waits_digest}` (self digest, canonical bytes), `atomicWrite` under `notices/.write.lock`; host-local and git-ignored like the ack sets. Each write drops the waits `keep` rejects (housekeeping) | Corrupt / prefix collision → `STORE_CORRUPT` for that file, named in `unreadable` (its waits read as none); the next write replaces it. Newer schema → `UNSUPPORTED_SCHEMA`/`newer_lattice_value` (family `todo_notice_waits`). **Known limits:** host-local, so another host's clone does not see the mark; a lost file loses the wake mark (the notice itself still lists as information), and re-running `todo wait` restores it |
+| Plan: notice fields (`projectTodoNotices`) | the waits in effect for T | Each notice gains `waiting: [{agent, since, reason}]` (sorted by agent; `[]` when nobody waits), `waiting_digest` = sha256 of canonical `[[agent, since], …]` (of `[]` when nobody waits), and `summary`: without waiters `"<plan>/<task> 「<title>」 can start now. Information, not a request: whether and when to start is the lane's call."`, with waiters `"<plan>/<task> 「<title>」 can start now. <agent>[, <agent>] waiting since <since>."` (wording aligned with Flora's delivery text, BellTeam #1190). `next_action` keeps its key and value and means "the command, if you start". `notice_id` is unchanged (waits do not change the readiness it names) | Waits unreadable → `waiting: []` for those tasks and the file named in `wait_unreadable` on `notice list` (never "nobody waits" silently) |
+| Store: ack key (Ludmila; ack set `lattice.todo_notice_acks.v2`) | `notice ack` with the current `waiting_digest` of each notice | `acks: [{notice_id, waiting_digest, recipients, acked_at, actor}]` where `recipients` = the lane plus the waiting agents the notice had when acked (sorted, unique); `ackTodoNotices({…, notices: [{notice_id, waiting_digest, recipients}], open: [{notice_id, waiting_digest}]})`. A v1 file reads as `waiting_digest` = digest of `[]` and `recipients` = `[lane]`, so existing acks stay valid for notices without waiters. `notice list` marks a notice acked iff the pair matches, so a wait added after an ack makes it unacked again (must be delivered). Every notice (mutation results and `notice list`) carries `acked_recipients` = the union of `recipients` over this lane's acks of its `notice_id` (`[]` when never acked), so delivery sends a re-opened notice only to the recipients not yet covered (Flora, 2026-11-12) | As the v1 ack set |
+| Delivery (Flora, outside Lattice) | mutation result `notices`, `notice list` | A notice with `waiting` is always delivered and wakes each waiting agent that is a roster Bot (the "writer's own lane is not sent" skip does not apply to another waiter); a notice without waiters is information to the lane. Recipients: the lane (information) plus every waiter that is a roster Bot (wake); the writing Bot is skipped whether lane or waiter (it has the notice in its own result); recipients in `acked_recipients` are skipped. One ack per notice after every recipient answered accepted/unknown/refused; a failed or thrown send = no ack, retried at the next run (Flora, agreed 2026-11-12) | As for notices |
+
+State and self-exit (no new guard):
+
+```
+(no wait) --todo wait, T not startable--> waiting
+(no wait) --todo wait, T startable--> startable_now (nothing recorded; notice/next_action returned)
+waiting   --T becomes startable--> notice open with waiting (delivered, wakes each waiter)
+waiting   --T start|retire, or --cancel--> no wait
+notice acked (waiting_digest d) --a new wait--> unacked (waiting_digest d') --ack--> acked
+```
+
+Verification for wait-impl: one test file: wait on a pending T, done of the predecessor returns the
+notice with `waiting` and the waiter-set digest; `notice list` keeps it unacked until ack; a wait
+added after an ack makes it unacked with `acked_recipients` naming the lane; start clears the wait (and a retract does not bring it back);
+wait on a startable T returns `startable_now` and writes nothing; `--cancel`; a v1 ack file still
+reads.
+
 ## Out of scope
 
-Script/CI completion notices (Trony); delivery code (Flora); notices for tasks with no prerequisite;
+Script/CI completion notices (Trony); delivery code (Flora); notices for tasks with no prerequisite (a wait on such a task answers `startable_now`);
 a session-context field (the seat already reads `turn.startable`; adding `turn.notices` is a later
 choice).
 
