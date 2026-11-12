@@ -16,13 +16,35 @@ reader, path containment and atomic writer; no new module or public helper).
 | Name | Kind | Contract |
 |---|---|---|
 | `readTodoStoreForDisplay({repoRoot, now?})` | public export | the envelope below; `now` only fixes replay/observation time in tests |
-| `readTodoStoreDisplaySource({repoRoot})` | public export | the `source` object below, metadata only; throws typed `STORE_INCONSISTENT` only when the manifest cannot be read, parsed or enumerated |
+| `readTodoStoreDisplaySource({repoRoot})` | public export | the `source` object below, metadata only; throws typed `STORE_INCONSISTENT` only when the manifest of an existing Store cannot be read, parsed or enumerated; no Store yet returns the empty source of [No Store yet](#no-store-yet-display-uninit-2026-11-12) |
 | `lattice todo display read [--json]` | CLI (host surface, 2026-11-11 BellTeam module) | `{schema:'lattice.todo_display_read_result.v1', ...readTodoStoreForDisplay}`; every state exits 0 (an inconsistency is a state, never a refusal); outside a git repository the usual `REPO_UNRESOLVED` refusal. Hosts that must not import `src/` read this. |
-| `lattice todo display source [--json]` | CLI (host surface) | the `source` object as printed by `readTodoStoreDisplaySource`; its only refusal is the probe's typed `STORE_INCONSISTENT` (exit 1) for an unenumerable manifest. A host polls this and runs `display read` only when it changes. |
+| `lattice todo display source [--json]` | CLI (host surface) | the `source` object as printed by `readTodoStoreDisplaySource`; its only refusal is the probe's typed `STORE_INCONSISTENT` (exit 1) for an unenumerable manifest of an existing Store; no Store yet exits 0. A host polls this and runs `display read` only when it changes. |
 | `readStoreStableWith(options, reader)` | private | the existing bounded publication-window retry loop, extracted unchanged; `readTodoStoreStable` uses it with `readTodoStore`, the display with the non-recovering `readTodoStoreView` |
 | `displayStoreView(store)` | private | serializable view: `schema:'lattice.todo_store_read.v1'`, `project_id`, `manifest`, `members:[{descriptor, plan, revision, journal:{events}, plan_scoped:{ref, events}, snapshot, tasks, phases, coordination, snapshot_stale}]` — the existing read model minus `journal.segments`, `journal.activeBytes`, `plan_scoped.activeBytes`, so existing renderers accept it unchanged |
 | `observeDisplaySource(repoRoot)` | private | raw manifest + per-member raw metadata; shared by the probe and the unverified result |
 | `readDisplayCheckpoint` / `publishDisplayCheckpoint` | private | checkpoint validation and atomic publication |
+
+### No Store yet (display-uninit, 2026-11-12)
+
+Found in the 0.94.0 production check: on a project with no Store, `display source`
+exited 1 `STORE_INCONSISTENT/artifact_missing` and `display read` returned
+`unavailable` with that inconsistency, while `todo show` says `STORE_UNINITIALIZED`.
+Both now use the [No Store yet](dfd-plan-create.md#no-store-yet-is-uninitialized-not-inconsistent-anchor-uninit-2026-11-12)
+classification (`isUninitializedTodoStore`): the strict read (`readStoreStableWith`)
+and `readRawManifest` raise `STORE_UNINITIALIZED/store_uninitialized {ref:.lattice/todo,
+next_action:'lattice plan create --template --json'}` instead of `artifact_missing`.
+
+| Entry | No Store yet | Store present, manifest absent |
+|---|---|---|
+| `display read` | exit 0, the existing 4th state: `state:'unavailable'` (or `last_verified` when a valid attributable checkpoint remains), `inconsistency:{code:'STORE_UNINITIALIZED', detail:{reason:'store_uninitialized', ref:'.lattice/todo', next_action}}` | unchanged: `inconsistency` `STORE_INCONSISTENT/artifact_missing` |
+| `display source` | exit 0, the source of an empty project: `project_id:null, manifest_digest:null, members:[], diagnostics:[{plan_key:null, field:'manifest', code:'STORE_UNINITIALIZED', reason:'store_uninitialized'}]` | unchanged: exit 1 `STORE_INCONSISTENT/artifact_missing` |
+
+Why source answers instead of refusing: read keeps "a state, never a refusal", so the
+probe reports the same observation the same way it reports any unreadable field
+(null plus one diagnostic). The token is stable while nothing exists and changes when
+`plan create` publishes a manifest, so the poller full-reads once and then waits for
+that change. No state is added and nothing is written: no `.lattice` directory or
+checkpoint is created for a project that has none.
 
 `source` (`schema:'lattice.todo_store_display_source.v1'`):
 `{schema, repository_identity, project_id, manifest_digest, members:[{plan_key,

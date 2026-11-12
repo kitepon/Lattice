@@ -52,6 +52,20 @@ test('no Store yet: anchor is a no-op success and every other todo command says 
       assert.equal(refused.error.code, 'STORE_UNINITIALIZED', `${layout}: ${args.join(' ')}`);
       assert.equal(refused.error.detail.next_action, CREATE, args.join(' '));
     }
+    // display-says-uninitialized: display read stays a state (unavailable) and source an observation (exit 0).
+    const source = run(root, ['todo', 'display', 'source', '--json']);
+    assert.equal(source.status, 0, layout);
+    assert.deepEqual({ ...JSON.parse(source.stdout), repository_identity: null }, {
+      schema: 'lattice.todo_store_display_source.v1', repository_identity: null, project_id: null,
+      manifest_digest: null, members: [],
+      diagnostics: [{ plan_key: null, field: 'manifest', code: 'STORE_UNINITIALIZED', reason: 'store_uninitialized' }],
+    }, layout);
+    const read = run(root, ['todo', 'display', 'read', '--json']);
+    assert.equal(read.status, 0, layout);
+    const display = JSON.parse(read.stdout);
+    assert.equal(display.state, 'unavailable', layout);
+    assert.deepEqual(display.inconsistency, { code: 'STORE_UNINITIALIZED',
+      detail: { reason: 'store_uninitialized', ref: '.lattice/todo', next_action: CREATE } }, layout);
     if (layout === 'absent') await assert.rejects(lstat(path.join(root, '.lattice')), { code: 'ENOENT' });
   }
 });
@@ -71,4 +85,10 @@ test('a Store that exists but lost its manifest stays STORE_INCONSISTENT/artifac
     assert.equal(refused.error.detail.reason, 'artifact_missing', args.join(' '));
     assert.equal(refused.error.detail.ref, '.lattice/todo/manifest.json', args.join(' '));
   }
+  const source = run(root, ['todo', 'display', 'source', '--json']);
+  assert.equal(source.status, 1);
+  assert.deepEqual([source.error.code, source.error.detail.reason], ['STORE_INCONSISTENT', 'artifact_missing']);
+  const display = JSON.parse(run(root, ['todo', 'display', 'read', '--json']).stdout);
+  assert.equal(display.state, 'unavailable');
+  assert.deepEqual([display.inconsistency.code, display.inconsistency.detail.reason], ['STORE_INCONSISTENT', 'artifact_missing']);
 });
