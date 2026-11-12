@@ -172,7 +172,7 @@ for (const imported of [false, true]) {
 
 test('absent mutation/note targets remain absent and an empty orphan root initializes', async (t) => {
   const root = await fixture(t, false);
-  await assert.rejects(rebuildTodoSnapshot({ repoRoot: root, planKey: 'main' }), reason('STORE_INCONSISTENT', 'artifact_missing'));
+  await assert.rejects(rebuildTodoSnapshot({ repoRoot: root, planKey: 'main' }), reason('STORE_UNINITIALIZED', 'store_uninitialized'));
   await assert.rejects(appendTodoNote({ repoRoot: root, projectId: 'project', planKey: 'main', planVersion: 'v1',
     taskId: 'task', actor, recordedAt: recorded_at, body: 'note', supersedes: null, eligibleSupersedes: [] }),
   reason('NOTE_WRITE_CONFLICT', 'note_store_locked'));

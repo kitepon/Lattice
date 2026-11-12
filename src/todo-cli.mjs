@@ -4879,6 +4879,13 @@ function recordedEvidence(store) {
  * existing chart. Evidence gc already pruned cannot come back and is listed as `missing`.
  */
 async function evidenceAnchor({ repoRoot }) {
+  // No Store yet: nothing recorded, so nothing to anchor. Answer like `todo status` does, not as a broken store.
+  if (await isUninitializedTodoStore({ repoRoot })) {
+    const result = { schema: 'lattice.todo_evidence_anchor_uninitialized.v1', anchored: [], already: 0, missing: [],
+      next_actions: ['lattice plan create --template --json', 'lattice plan create --input <file>'], result_digest: '' };
+    result.result_digest = todoSelfDigest(result, 'result_digest');
+    return result;
+  }
   const store = await readTodoStore({ repoRoot });
   const anchored = [];
   const missing = [];

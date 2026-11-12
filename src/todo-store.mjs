@@ -113,6 +113,13 @@ function fail(code, reason, detail) {
   throw new TodoStoreError(code, reason, reason, detail);
 }
 
+// No Store yet is an empty project, not a broken one (same classification as `status`): never invite repair or deletion.
+function failUninitialized() {
+  fail('STORE_UNINITIALIZED', 'store_uninitialized', {
+    ref: STORE_ROOT_REF, next_action: 'lattice plan create --template --json',
+  });
+}
+
 const upgradeAction = (what) => `${what} was written by a newer Lattice than ${packageJson.version}. The record is`
   + ` not corrupt: do not repair or delete it. Upgrade Lattice on this host to a version newer than`
   + ` ${packageJson.version}, then run the command again.`;
@@ -1534,8 +1541,12 @@ async function readTodoStoreView(options = {}) {
   await assertNoCrossPlanImportRecoveryNeeded(repoRoot);
   const pinnedSourceCache = { commits: new Set(), blobs: new Map() };
   const manifest = await readArtifact(repoRoot, MANIFEST_REF, {
-    code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
+    code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest, missing: true,
   });
+  if (manifest === null) {
+    if (await isUninitializedTodoStore({ repoRoot })) failUninitialized();
+    fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
+  }
   const loaded = [];
   for (const descriptor of manifest.members) {
     const plan = await readArtifact(repoRoot, descriptor.plan_ref, {
@@ -2162,11 +2173,11 @@ async function withLock(repoRoot, callback, {
   try {
     if (!initialize) {
       const root = await lstat(path.join(repoRoot, STORE_ROOT_REF)).catch((error) => {
-        if (error?.code === 'ENOENT') fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
+        if (error?.code === 'ENOENT') failUninitialized();
         throw error;
       });
       const parent = await lstat(path.join(repoRoot, '.lattice')).catch((error) => {
-        if (error?.code === 'ENOENT') fail('STORE_INCONSISTENT', 'artifact_missing', { ref: MANIFEST_REF });
+        if (error?.code === 'ENOENT') failUninitialized();
         throw error;
       });
       if (!root.isDirectory() || root.isSymbolicLink()
@@ -3546,7 +3557,7 @@ async function prepareAuthoredStoreRoot(repoRoot, options) {
   }); } catch (error) {
     const gone = (await uninitializedStoreLayout(repoRoot)).identity === null;
     if (gone && error instanceof TodoStoreError
-      && ['store_locked', 'artifact_missing'].includes(error.detail.reason)) return;
+      && ['store_locked', 'artifact_missing', 'store_uninitialized'].includes(error.detail.reason)) return;
     throw error;
   }
   await protocolStage(options, 'authoring_residue_released');

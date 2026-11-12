@@ -193,7 +193,7 @@ test('migrate dry-runは独立した複数違反を一度に返しstoreを作ら
   assert.deepEqual(result.violations[1].task_ids, ['T2']);
   assert.equal(result.violations[1].path, '/tasks/1/design_memo');
   assert.equal(result.violations[0].prompt, TODO_DESIGN_MEMO_PROMPT);
-  await assert.rejects(readTodoStore({ repoRoot }), (failure) => failure.code === 'STORE_INCONSISTENT');
+  await assert.rejects(readTodoStore({ repoRoot }), (failure) => failure.code === 'STORE_UNINITIALIZED');
 });
 
 test('migrate dry-run成功時は予定planと実write commandを返してstoreを作らない', async (t) => {
@@ -215,7 +215,7 @@ test('migrate dry-run成功時は予定planと実write commandを返してstore�
   assert.equal(result.planned.plan_schema, 'lattice.todo_plan.v6');
   assert.equal(result.planned.task_count, 1);
   assert.equal(result.next_action, 'lattice todo migrate --input input.json');
-  await assert.rejects(readTodoStore({ repoRoot }), (failure) => failure.code === 'STORE_INCONSISTENT');
+  await assert.rejects(readTodoStore({ repoRoot }), (failure) => failure.code === 'STORE_UNINITIALIZED');
 });
 
 test('migrate dry-runは循環topologyをnull参照せずplanned nullの違反として返す', async (t) => {
@@ -278,5 +278,5 @@ test('migrate dry-runはenum・配列・digest・参照・clock skewを一回で
   assert.equal(result.violations[0].expected, 'historical_import');
   assert.equal(result.violations[2].path, '/hard_dependencies/0/to');
   assert.equal(result.violations[3].expected.max_future_skew_ms, 300_000);
-  await assert.rejects(readTodoStore({ repoRoot }), (failure) => failure.code === 'STORE_INCONSISTENT');
+  await assert.rejects(readTodoStore({ repoRoot }), (failure) => failure.code === 'STORE_UNINITIALIZED');
 });

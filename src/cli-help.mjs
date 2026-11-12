@@ -347,7 +347,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo done': 'todo done --plan <key> --task <id> [--evidence <file>] [--message <text>] [--test-result <markdown-file>]',
   'todo reopen': 'todo reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]',
   'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file> | anchor [--json]',
-  'todo evidence anchor': 'todo evidence anchor [--json]  # lattice.todo_evidence_anchor_result.v1 {anchored, already, missing}',
+  'todo evidence anchor': 'todo evidence anchor [--json]  # lattice.todo_evidence_anchor_result.v1 {anchored, already, missing}; no Store yet: lattice.todo_evidence_anchor_uninitialized.v1',
   'todo evidence promote': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
   'todo dependency': [
     'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
