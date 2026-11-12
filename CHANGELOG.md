@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 新しい Lattice が書いた値（知らない`coordination_mode`やevent kind、より新しいevent・plan・manifestのschema）に当たった読み手は、`STORE_CORRUPT`ではなく`UNSUPPORTED_SCHEMA`／`newer_lattice_value`で断る。detailに`pointer`・`value`・`reader_version`・`required_version`（`>読み手の版`）を載せ、`next_action`は「壊れていない。直したり消したりせず、この版より新しい Lattice へ上げる」と言う。digestが合わない記録はこれまでどおり`STORE_CORRUPT`。revision.jsonの`unsupported_revision_schema`にも同じ`next_action`が付く。ホストへの変更：この断りのcodeが変わる（この版より前の読み手は直せない）。
+
 ## 0.88.0 — 2026-11-12
 
 飛ばされると困る手順を、宣言したplanでだけ「使わないと止まる」にする版（オーナー裁定、ADR 0200）。ホストへの変更：調整方式に`enforced`を足す。設計メモの欠け・空を断る（下の最後の項）。宣言しないplanの動きは変わらない（警告だけ）。
