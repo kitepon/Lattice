@@ -14,8 +14,10 @@ GitHub提供runnerを使い、公開jobへ`id-token: write`を与える。self-h
 今回の「毎回の認証をなくす」という目的を満たさない。
 `npm publish --dry-run`や`npm whoami`はOIDC公開認証の成立を証明しない。実公開で確認する。
 
-Latticeの公開入口は[workflow](../../.github/workflows/publish.yml)。mainだけで実行し、
-既存のrelease commit検査と製品検査を通して公開する。起動はAIが`gh workflow run publish.yml --ref main`で行う。
+Latticeの公開入口は[workflow](../../.github/workflows/publish.yml)。mainへのpushでCIが成功すると
+自動起動し、試験済みの同じ木を、既存のrelease commit検査（`prepublishOnly`）を通して公開する（製品検査は
+CIが済ませており再実行しない。[流れ](../../docs/architecture/dfd-release-publish.md)）。
+手動の再試行は`gh workflow run publish.yml --ref main`（main先頭のCI成功が前提）。
 工場のOS別CIとは別の公開jobであり、未実行の工場CIを成功扱いするものではない。
 設定の取消はnpmの該当Trusted Publisherの削除とworkflowの停止で行う。
 

@@ -324,13 +324,17 @@ AI登録の診断は`lattice setup status --json`。`--host <AI>`で対象を限
 ## Release
 
 Maintainers release Lattice from this repository. Update `package.json` and `CHANGELOG.md`, pass the
-product gate, land and push the release commit on the default branch, then publish and verify that
-same version from the registry. `prepublishOnly` rejects a dirty tree or a commit not landed on the
-remote default branch.
+product gate, land and push the release commit on the default branch. When `CI` succeeds on that
+push, `publish.yml` publishes the same tree without re-running the suite (only a version that is not on
+the registry and newer than `latest`); then verify that version from the registry. `prepublishOnly`
+rejects a dirty tree or a commit not landed on the remote default branch. `gh workflow run publish.yml`
+remains the manual retry once `CI` is green on the `main` tip
+([flow](https://github.com/kitepon/Lattice/blob/main/docs/architecture/dfd-release-publish.md)).
 
 ```bash
 npm run ci
 npm run verify:release-commit
+# publication starts by itself after CI; this is the manual retry
 gh workflow run publish.yml --repo kitepon/Lattice --ref main
 npm install -g @quolu/lattice@<version>
 lattice setup --json

@@ -1,25 +1,58 @@
 name: npm公開
 
+# mainのpushでCIが成功した後に、同じcommitの木をそのまま公開する。公開jobは検査を再実行しない
+# （木の同一性はCI成功＋checkout対象をそのshaへ固定することで担保する）。
+# 手動の入口は再試行用で、mainの先頭にCIのpush runが成功していることを要求する。
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
+# 公開する見込みのないrun（PR・失敗・他branch）は専用groupへ逃がす。同じgroupに入れると、
+# 待機中の公開runが、公開しないrunに置き換えられて消える。
 concurrency:
-  group: npm-publish
+  group: >-
+    ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    || github.event.workflow_run.conclusion == 'success'
+    && github.event.workflow_run.event == 'push'
+    && github.event.workflow_run.head_branch == 'main'
+    && github.event.workflow_run.head_repository.full_name == github.repository)
+    && 'npm-publish' || format('npm-publish-skip-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    # PR由来のrunで特権jobを動かさない。head_branchは外から名付けられるのでrepositoryも照合する。
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      || github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
+      - name: 手動実行はmain先頭のCI成功を要求
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          found=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=main&status=success&per_page=1" --jq '.total_count')
+          if [ "$found" -lt 1 ]; then
+            echo "::error::main先頭 $GITHUB_SHA に成功したCIのpush runがありません。CIが成功してから再実行してください。"
+            exit 1
+          fi
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -27,18 +60,48 @@ jobs:
           node-version: '24.22.0'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: 公開してよい版か判定
+        id: decide
+        shell: bash
+        run: |
+          # 公開するのはregistryにまだ無く、latestより新しい版だけ。non-release pushは何も起こさない。
+          # OIDCの証明書は GITHUB_SHA を名指すので、checkoutしたcommitと違う（mainが先へ進んだ）runは公開しない。
+          export TARGET_SHA="$(git rev-parse HEAD)"
+          info="$(npm view "$(node -p 'require("./package.json").name')" versions dist-tags --json)"
+          NPM_INFO="$info" node --input-type=module <<'JS'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+          const { versions, 'dist-tags': { latest } } = JSON.parse(process.env.NPM_INFO);
+          // shortcut: x.y.zだけを比べる。prerelease版を出す時はsemverへ替える。
+          const plain = /^\d+\.\d+\.\d+$/u;
+          if (!plain.test(version) || !plain.test(latest)) throw new Error(`unsupported version format: ${version} (latest ${latest})`);
+          const newer = (a, b) => { const [x, y] = [a, b].map((s) => s.split('.').map(Number)); const i = x.findIndex((n, k) => n !== y[k]); return i >= 0 && x[i] > y[i]; };
+          const reason = process.env.TARGET_SHA !== process.env.GITHUB_SHA ? `main moved past ${process.env.TARGET_SHA}; the newer commit's CI run decides`
+            : [].concat(versions).includes(version) ? `${version} is already on the registry`
+            : !newer(version, latest) ? `${version} is not newer than latest ${latest}`
+            : '';
+          const line = reason ? `skipped: ${reason}` : `publish ${version} from ${process.env.TARGET_SHA}`;
+          console.log(line);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${line}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `publish=${reason ? 'false' : 'true'}\n`);
+          JS
       - name: npmの公開認証対応版を導入
+        if: steps.decide.outputs.publish == 'true'
         run: npm install --global npm@11.17.0
       - name: 依存導入
+        if: steps.decide.outputs.publish == 'true'
         run: npm ci
-      - name: 配布物を構築して製品検査
-        run: npm run ci
+      - name: sensorを構築（CIはこの木で検査済み。配布物に入るdistだけ作る）
+        if: steps.decide.outputs.publish == 'true'
+        run: npm --prefix sensor ci && npm --prefix sensor run build
       - name: 配布物だけを導入してdashboardの読込を確認
+        if: steps.decide.outputs.publish == 'true'
         shell: bash
         run: |
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --loglevel error
           package_file="$RUNNER_TEMP/quolu-lattice-$(node --print 'require("./package.json").version').tgz"
           npm install --prefix "$RUNNER_TEMP/lattice-install" --omit=dev --ignore-scripts "$package_file"
           node "$RUNNER_TEMP/lattice-install/node_modules/@quolu/lattice/bin/lattice-dashboard.mjs" --help
-      - name: 既定ブランチの成果をOIDCで公開
+      - name: CI済みの木をOIDCで公開
+        if: steps.decide.outputs.publish == 'true'
         run: npm publish --access public

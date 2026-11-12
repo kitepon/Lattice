@@ -35,3 +35,13 @@ timeouts stay near twice the normal duration so a hang does not stay
 | `full (windows-native)` | `scripts/ci-windows-node-runtime.ps1`がjob専有の一時folderへ入れる | 取得・SHA照合・展開 | — |
 
 macOSで工場のスクリプトが失敗すると、そのjobだけが失敗する。次の通常jobは工場の状態から選び直す。
+
+## 公開（publish.yml）
+
+公開jobは検査を再実行しない。`main`へのpushで`CI`が成功すると`workflow_run`で起動し、
+そのcommitの木をそのまま公開する（公開物の木＝試験済みの木）。PR由来・失敗・他branchの`CI` runでは
+特権jobを起動しない。registryに未公開で`latest`より新しい版だけを公開し、それ以外は
+`skipped: <理由>`で緑のまま終える。`main`の先頭にCIが成功済みなら、手動の`workflow_dispatch`でも
+同じ規則で再試行できる。`main`のCIは「PRの試験済みmerge木と同一」の省略（`scripts/ci-main-coverage.mjs`）で
+成功してよく、木の同一性は満たされる。流れと状態遷移は
+[release publication flow](architecture/dfd-release-publish.md)が正本である。
