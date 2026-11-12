@@ -14,7 +14,7 @@
   5. `todo phase close-unaudited`と`phase baseline`：gate_policyが`heavy`の段階 → `enforced_heavy_phase_unaudited`。抜け道は`phase review`→`phase accept`、または段階を`light`へ改訂。
      そのplanのheavyな段階では、`todo status`の`audit_pending`・`phase status`の案内・`lattice status`の`next_action`も`close-unaudited`を出さず、`phase review`→`accept`を示す。
 - 1〜3はsensorがstoreのあるrepoを見るので、storeがそのコードの取り出しに置かれてから宣言する。
-- `enforced`を記録したstoreは、0.88.0より古いLatticeでは読めない。
+- `enforced`を記録したstoreは、0.88.0より古いLatticeでは全planが読めない（`STORE_CORRUPT`）。`witness`へ宣言し直しても戻らず、`plan revise`でだけ戻る。宣言する前に、そのstoreを読む全席を0.88.0以上にする。
 
 ## 0.87.0 — 2026-11-12
 

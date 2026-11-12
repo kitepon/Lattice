@@ -35,7 +35,11 @@ reason); Lattice does not forbid it. Which plans must be `enforced` is the host'
 
 ## Consequences
 
-- `coordination_mode` accepts a third value `enforced`. A Lattice older than 0.88.0 rejects a store that holds it.
+- `coordination_mode` accepts a third value `enforced`. A Lattice older than 0.88.0 rejects the whole store
+  (`STORE_CORRUPT` `journal_schema_invalid`, for every plan, not only that one) while an active plan version holds it.
+  Declaring `witness` again does not bring older readers back (the `enforced` event stays in the hash chain); only
+  `plan revise` does, after which 0.85.4–0.87.x read that plan as undeclared. Every reader of a store must therefore be
+  0.88.0 or later before a plan in it is declared `enforced` (Store review, Ludmilla, 2026-11-12).
 - Refusals are `TODO_TRANSITION_REFUSED` with reasons `enforced_witness_undeclared`, `enforced_witness_stale`,
   `enforced_conflict_with_active`, `enforced_done_reference_missing`, `enforced_heavy_phase_unaudited`, each with
   `next_action`. Nothing is written on a refusal.
