@@ -37,15 +37,15 @@ reopened, the plan retired). Closed notices are not listed; there is nothing to 
 | Owner / step | Input / read | Output / decision | Failure / recovery |
 |---|---|---|---|
 | Plan: `projectTodoNotices(store, {lane?})` (new, pure, todo-notices.mjs) | Store view (all active members, as `todo status`); readiness from `createTodoReadiness`; member journals for trigger events; plan coordination mode; witness rows | Open notices sorted by plan_key, task_id: `{notice_id, plan_key, plan_version, task_id, title, lane, done_condition, coordination_mode, triggers: [{plan_key, task_id \| phase_id, kind, event_digest, recorded_at, actor}], next_action}`. `next_action` is what the start path accepts: on an `enforced` plan whose witness has no row for T, the `todo independence witness declare … --task T --owns <path>` command (gate 1 would refuse a bare start; same rule as [enforced plan](dfd-enforced-plan.md) done hints); otherwise `lattice todo start --plan <key> --task <T>` | Unreadable member: skipped and named in `unreadable: [plan_key]` (as `parallel_candidates`); never "no notices" |
-| Plan: mutation result `notices` (todo-cli `mutate`, and the phase mutation for `phase accept`) | Open notice ids before the append (from the Store view the write path already validates) and the projection after it | `lattice.todo_mutation_result` gains `notices: [notice]` = notices open after the event and not before (all lanes; usually the successors this done/unblock/retire/accept released, cross-plan included). Empty array when none. `unchanged: true` results carry `notices: []` | Projection failure after a committed append does not undo or fail the mutation: `notices: null` + `notices_unavailable: <reason>`; `notice list` recovers them |
-| Plan: `lattice todo notice list --lane <lane> [--include-acked] [--json]` | `projectTodoNotices(store, {lane})`; the lane's ack set | `lattice.todo_notice_list_result.v1 {project_id, lane, notices: [notice + acked:boolean], unreadable, result_digest}`. Default lists unacked only. Lane match is the exact lane string the plan records (bot id or name; the reader passes what it delivers to) | Missing `--lane` → USAGE with next_action naming the flag. Unknown lane = empty list, not a refusal |
+| Plan: mutation result `notices` (todo-cli `mutate`, and the phase mutation for `phase accept`) | Open notice ids before the append (from the Store view the write path already validates) and the projection after it | `lattice.todo_mutation_result` (which already carries `project_id`) gains `notices: [notice]` = notices open after the event and not before (all lanes; usually the successors this done/unblock/retire/accept released, cross-plan included). Empty array when none. `unchanged: true` results carry `notices: []` | Projection failure after a committed append does not undo or fail the mutation: `notices: null` + `notices_unavailable: <reason>`; `notice list` recovers them |
+| Plan: `lattice todo notice list [--lane <lane>] [--include-acked] [--json]` | `projectTodoNotices(store, {lane})`; the ack sets | `lattice.todo_notice_list_result.v1 {project_id, lane, notices: [notice + acked:boolean], unreadable, result_digest}`. Default lists unacked only. No `--lane` = every lane (`lane: null`), so a reader recovers a whole project in one call (Flora). Lane match is the exact lane string the plan records | Unknown lane = empty list, not a refusal |
 | Store: ack set (proposal for Ludmila) | `notice ack` input | `.lattice/todo/notices/<sha256(lane) hex 16>.json` `{schema: lattice.todo_notice_acks.v1, lane, acks: [{notice_id, acked_at, actor}]}` written through the existing Store writer transaction. On each write, acks of notices no longer open are dropped (bounded by the lane's open notices) | Corrupt file → `STORE_CORRUPT` on that lane only, with the path; list still answers with `acked:false` and names it in `ack_unreadable` |
 | Plan: `lattice todo notice ack --lane <lane> --notice <id>[,<id>…]` | Current open notices of the lane | `lattice.todo_notice_ack_result.v1 {lane, acked: [id], already: [id], closed: [id], result_digest}`. An id that is already closed is reported under `closed`, not refused (nothing is left to acknowledge). Repeating an ack is `already` | Id belonging to another lane → `closed` for this lane (no cross-lane write) |
 | Delivery (Flora, outside Lattice) | (a) the `notices` array of any mutation the BellTeam `lattice` MCP tool runs; (b) `todo notice list --lane <bot> --json` for recovery (seat start, missed delivery, CLI used outside MCP) | Delivers each unacked notice to the lane's seat, then `todo notice ack`. Duplicate delivery is prevented by the ack, not by Lattice remembering deliveries | Contract: Lattice never pushes; it returns notices in the result of the write that caused them and keeps them listable until acked or closed |
 
 ## State and self-exit (guards rule)
 
-No new guard. The only refusal is USAGE (missing `--lane` / `--notice`), which names the flag.
+No new guard. The only refusal is USAGE on `notice ack` (missing `--lane` / `--notice`), which names the flag.
 
 ```
 (no notice) --done|retire|unblock|phase accept makes T ready--> open/unacked
@@ -54,11 +54,15 @@ open/*       --T started|retired|blocked|prerequisite reopened|plan retired--> c
 closed       --T ready again (new trigger set, new notice_id)--> open/unacked
 ```
 
-## Contracts to agree
+## Contracts
 
-- Flora (bot-7e777fe5): the read contract above (`notices` in mutation results, `notice list`,
-  `notice ack`, notice fields, lane = exact plan lane string). Lattice does not resolve names to
-  bots; the delivery side maps a lane to its seat.
+- Flora (bot-7e777fe5), agreed 2026-11-12: primary input is the mutation result `notices` (every
+  BellTeam Lattice write goes through the seat tool, which sees the result right after the write);
+  `notice list` (no lane, unacked) is recovery at module start, after `notices: null`, and for failed
+  deliveries. BellTeam lanes are Bot ids (or `owner`), ASCII; the module pushes only to a lane equal
+  to a roster Bot id, others stay unacked in the list. Ack after BellTeam accepts the delivery
+  (queued/running/steered) or reports it unknown (never resent); a failed delivery is not acked.
+  `notice_id` is the dedupe key. `project_id` comes from the mutation result / list result.
 - Ludmila: the ack set path, schema, pruning rule and that it is written through the Store writer
   (not a journal event, so plan journals and hold/commit/resume stay byte-identical).
 
