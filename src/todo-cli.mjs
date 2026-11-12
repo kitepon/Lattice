@@ -360,6 +360,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'reason', 'input'], required: ['plan', 'phase'] }),
   'phase reopen': Object.freeze({ known: ['plan', 'phase', 'reason', 'override-reason'], required: ['plan', 'phase', 'reason'] }),
   'evidence promote': Object.freeze({ known: ['plan', 'task', 'evidence'], required: ['plan', 'task', 'evidence'] }),
+  'evidence anchor': Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
   'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   'independence mode': Object.freeze({ known: ['plan', 'set', 'reason'], required: ['plan', 'set', 'reason'] }),
   'independence witness scaffold': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
@@ -735,6 +736,23 @@ function looksLikeEvidenceDescriptor(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// evidence-ref: every evidence blob Lattice writes is anchored here so gc keeps it. The Store's reachability walk
+// excludes refs/lattice/evidence/* (seam refs still count), so an anchored blob still reads `uncommitted` until a commit reaches it.
+const EVIDENCE_REF_PREFIX = 'refs/lattice/evidence/';
+
+function anchorEvidenceBlob(repoRoot, oid) {
+  gitSync(['update-ref', `${EVIDENCE_REF_PREFIX}${oid}`, oid], { cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'] });
+}
+
+function evidenceAnchored(repoRoot, oid) {
+  try {
+    gitSync(['show-ref', '--verify', '--quiet', `${EVIDENCE_REF_PREFIX}${oid}`], { cwd: repoRoot, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function writeEvidenceBlob(repoRoot, bytes, blobPath, write = true) {
   // worktree pathから作る証拠は`git add`と同じclean filterを通す。生のCRLF bytesを
   // そのままhashすると、commit先はLFへ正規化される一方、descriptorはdangling blobを
@@ -750,6 +768,9 @@ function writeEvidenceBlob(repoRoot, bytes, blobPath, write = true) {
     if (!write) return { git_blob_oid: oid, content_digest: null };
     throw error;
   }
+  // Anchored before the event is appended: no recorded evidence without an anchor. A failed append leaves one ref
+  // keeping one blob alive (bounded, harmless).
+  if (write) anchorEvidenceBlob(repoRoot, oid);
   return {
     git_blob_oid: oid,
     content_digest: createHash('sha256').update(storedBytes).digest('hex'),
@@ -2247,7 +2268,8 @@ function extractionFreshnessViolations(repoRoot, extraction) {
     // rev-listの出力はobject数に比例して伸びる（本repo実測で既定maxBuffer 1MiB超過済み）。
     // 隣のgit showと同様にmaxBufferを明示しないと、ENOBUFSが握られて
     // source_reachability_unreadableへ誤変換される。
-    reachable = new Set(gitSync(['rev-list', '--objects', '--all'], {
+    // evidence-ref: an anchored evidence blob is not a reachable source.
+    reachable = new Set(gitSync(['rev-list', '--objects', `--exclude=${EVIDENCE_REF_PREFIX}*`, '--all'], {
       cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 134_217_728,
     }).split('\n').filter(Boolean).map((line) => line.split(' ')[0]));
   } catch {
@@ -4820,6 +4842,71 @@ async function ensureActiveProjectDashboard({ repoRoot, env, stderr, strict = fa
   }
 }
 
+/** evidence-ref: an uncommitted item says whether gc is kept off it, and how to protect it if not. */
+function uncommittedEvidenceItem(repoRoot, store, evidence) {
+  const anchored = evidenceAnchored(evidenceRepoRoot(repoRoot, store, evidence), evidence.git_blob_oid);
+  return { repo_id: evidence.repo_id, path: evidence.path, anchored,
+    next_action: anchored
+      ? `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.`
+      : 'Anchor it so gc keeps it: `lattice todo evidence anchor --json`; commit it to make it committed.' };
+}
+
+function evidenceRepoRoot(repoRoot, store, evidence) {
+  const ref = store.manifest.repositories.find(({ repo_id: id }) => id === evidence.repo_id)?.path ?? '.';
+  return path.resolve(repoRoot, ref);
+}
+
+/** The evidence descriptors a Store records: task evidence, phase decision evidence and accepted slot evidence. */
+function recordedEvidence(store) {
+  const entries = [];
+  for (const member of store.members) {
+    const planKey = member.plan.plan_key;
+    for (const task of member.tasks) {
+      if (validateEvidenceDescriptor(task.evidence)) entries.push({ plan_key: planKey, task_id: task.task_id, evidence: task.evidence });
+    }
+    for (const event of member.journal.events) {
+      if (!['phase_accept', 'phase_reject'].includes(event.kind)) continue;
+      for (const evidence of [event.payload.decision_evidence, ...(event.payload.evidence_slots ?? []).map((slot) => slot.evidence)]) {
+        if (validateEvidenceDescriptor(evidence)) entries.push({ plan_key: planKey, phase_id: event.phase_id, evidence });
+      }
+    }
+  }
+  return entries;
+}
+
+/**
+ * `todo evidence anchor` (evidence-ref): anchor evidence recorded before writes anchored it. Idempotent; run once per
+ * existing chart. Evidence gc already pruned cannot come back and is listed as `missing`.
+ */
+async function evidenceAnchor({ repoRoot }) {
+  const store = await readTodoStore({ repoRoot });
+  const anchored = [];
+  const missing = [];
+  const seen = new Set();
+  let already = 0;
+  for (const { evidence, ...owner } of recordedEvidence(store)) {
+    const repo = evidenceRepoRoot(repoRoot, store, evidence);
+    const key = `${repo}\0${evidence.git_blob_oid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const item = { ...owner, git_blob_oid: evidence.git_blob_oid };
+    if (isTodoEvidenceUncommitted({ repoRoot, store, evidence })) {
+      if (evidenceAnchored(repo, evidence.git_blob_oid)) already += 1;
+      else { anchorEvidenceBlob(repo, evidence.git_blob_oid); anchored.push(item); }
+      continue;
+    }
+    try {
+      gitSync(['cat-file', '-e', evidence.git_blob_oid], { cwd: repo, stdio: 'ignore' });
+    } catch {
+      missing.push(item);
+    }
+  }
+  const result = { schema: 'lattice.todo_evidence_anchor_result.v1', project_id: store.project_id,
+    anchored, already, missing, result_digest: '' };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
 async function verify({ repoRoot, requestedPlanKey }) {
   const store = await readTodoStore({ repoRoot });
   const members = selectMembers(store, requestedPlanKey);
@@ -4835,13 +4922,11 @@ async function verify({ repoRoot, requestedPlanKey }) {
     const pending = member.tasks.filter((task) => task.evidence_unverified
       && isTodoEvidenceUncommitted({ repoRoot, store, evidence: task.evidence }));
     for (const { task_id: taskId, evidence } of pending) {
-      uncommittedEvidence.push({ plan_key: planKey, task_id: taskId, repo_id: evidence.repo_id, path: evidence.path,
-        next_action: `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.` });
+      uncommittedEvidence.push({ plan_key: planKey, task_id: taskId, ...uncommittedEvidenceItem(repoRoot, store, evidence) });
     }
     for (const { phase_id: phaseId, decision_evidence: evidence } of member.phases) {
       if (decisionEvidenceState(repoRoot, store, evidence) !== 'uncommitted') continue;
-      uncommittedEvidence.push({ plan_key: planKey, phase_id: phaseId, repo_id: evidence.repo_id, path: evidence.path,
-        next_action: `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.` });
+      uncommittedEvidence.push({ plan_key: planKey, phase_id: phaseId, ...uncommittedEvidenceItem(repoRoot, store, evidence) });
     }
     const unverified = member.tasks.find((task) => task.evidence_unverified && !pending.includes(task));
     if (unverified !== undefined) {
@@ -5439,6 +5524,9 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
           kind: 'unblock', payload: {}, evidenceRef: null,
         }) });
     }
+  } else if (argv[0] === 'evidence' && argv[1] === 'anchor'
+    && matchFlagCommand(argv, ['evidence', 'anchor'], TODO_FLAG_SPECS['evidence anchor']) !== null) {
+    action = (repoRoot) => evidenceAnchor({ repoRoot });
   } else if (argv[0] === 'evidence' && argv[1] === 'promote') {
     const flags = matchFlagCommand(argv, ['evidence', 'promote'], TODO_FLAG_SPECS['evidence promote']);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
