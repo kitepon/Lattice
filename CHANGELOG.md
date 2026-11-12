@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 範囲の申告（`todo independence witness declare`）の案内が、前の工程が終わっていない工程に「着手できる」と言っていた。案内どおり`todo start`を打つと`predecessor_unfinished`で断られる（統括が同じ日に2回見つけた）。これからは、着手できる工程にだけ`todo start`を示し、まだの工程には待っている前の工程（`計画/工程 (状態)`）か、受け入れ待ちのphaseを名指す。着手済みの工程には、着手は要らないと言う（アリス）。
+
 ## 0.94.0 — 2026-11-12
 
 工程表がまだ無い場所を「壊れている」と言わない版（フローラが 0.93.0 の本番確認で見つけた）。ホストへの変更：工程表の無い場所では、`todo`の各コマンドが`STORE_INCONSISTENT`でなく`STORE_UNINITIALIZED`を返す。`todo evidence anchor`は成功で`lattice.todo_evidence_anchor_uninitialized.v1`を返す。

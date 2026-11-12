@@ -101,3 +101,25 @@ test('declare-without-git: on a Store root with no commit the row is recorded an
   assert.equal(started.advisory.coverage, 'declared_unobserved');
   assert.equal(started.advisory.guidance.code, 'independence_declared_unobserved');
 });
+
+test('declare-hint-knows-order: the hint offers start only for a ready task and names what a waiting one waits on', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-unborn-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
+  await writeFile(path.join(root, 'plan.json'), JSON.stringify({
+    schema: 'lattice.plan_create_input.v5', plan_key: 'dev', phases: [{ phase_id: 'p', title: 'phase' }],
+    tasks: ['P', 'Q'].map((task_id) => ({ task_id, title: task_id, phase_id: 'p', design_memo: 'NO_PLAN' })),
+    hard_dependencies: [{ from: { task_id: 'P' }, to: { task_id: 'Q' } }],
+  }));
+  success(root, ['plan', 'create', '--input', 'plan.json']);
+  success(root, ['todo', 'independence', 'mode', '--plan', 'dev', '--set', 'enforced', '--reason', 'gates']);
+  const waiting = success(root, declare('Q', '--owns', 'src/b.js'));
+  assert.doesNotMatch(waiting.next_action, /todo start --plan dev --task Q/u);
+  assert.match(waiting.next_action, /Q cannot start yet: it waits on dev\/P \(pending\)\./u);
+  // The hinted start would have been refused; it still is.
+  assert.equal(refusal(root, ['todo', 'start', '--plan', 'dev', '--task', 'Q']).detail.cause, 'predecessor_unfinished');
+  const ready = success(root, declare('P', '--owns', 'src/a.js'));
+  assert.match(ready.next_action, /The declared task can start: `lattice todo start --plan dev --task P`\./u);
+  success(root, ['todo', 'start', '--plan', 'dev', '--task', 'P']);
+  assert.match(success(root, declare('P', '--owns', 'src/a.js')).next_action, /P is already in-progress; no start is needed\./u);
+});
