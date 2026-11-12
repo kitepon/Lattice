@@ -80,3 +80,24 @@ test('todo add accepts --json as a no-op like every write', async (context) => {
     '--design-memo', 'NO_PLAN', '--json'])
     .task_id, 'S');
 });
+
+test('declare-without-git: on a Store root with no commit the row is recorded and the enforced task starts', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-unborn-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
+  await writeFile(path.join(root, 'plan.json'), JSON.stringify({
+    schema: 'lattice.plan_create_input.v5', plan_key: 'dev', phases: [{ phase_id: 'p', title: 'phase' }],
+    tasks: ['P', 'Q'].map((task_id) => ({ task_id, title: task_id, phase_id: 'p', design_memo: 'NO_PLAN' })),
+  }));
+  success(root, ['plan', 'create', '--input', 'plan.json']);
+  success(root, ['todo', 'independence', 'mode', '--plan', 'dev', '--set', 'enforced', '--reason', 'gates']);
+  // Undeclared still refuses (gate 1); declaring records the row without observing or compiling.
+  assert.equal(refusal(root, ['todo', 'start', '--plan', 'dev', '--task', 'P']).message, 'enforced_witness_undeclared');
+  success(root, declare('Q', '--owns', 'src/b.js'));
+  const declared = success(root, declare('P', '--owns', 'src/a.js'));
+  assert.deepEqual([declared.compiled, declared.waiting_for, declared.observation], [false, [], 'unavailable']);
+  assert.match(declared.next_action, /lattice todo start --plan dev --task P/u);
+  const started = success(root, ['todo', 'start', '--plan', 'dev', '--task', 'P']);
+  assert.equal(started.advisory.coverage, 'declared_unobserved');
+  assert.equal(started.advisory.guidance.code, 'independence_declared_unobserved');
+});

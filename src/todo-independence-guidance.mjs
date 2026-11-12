@@ -28,6 +28,7 @@ export const TODO_INDEPENDENCE_GUIDANCE_CODES = Object.freeze([
   'independence_conflict_between_ready',
   'independence_verdicts_absent',
   'independence_verified',
+  'independence_declared_unobserved',
 ]);
 
 export const SEAM_PROPOSAL_GUIDANCE_CODES = Object.freeze([
@@ -112,6 +113,10 @@ const CATALOG = Object.freeze({
   independence_verdicts_absent: Object.freeze({
     message: '判定が途中で止まっており、記録はどの組についてもverdictを持たない。自分にunknownが無いことは、他と干渉しない証拠にならない。',
     next_action: 'lattice todo independence compile --plan <key> --input <file>',
+  }),
+  independence_declared_unobserved: Object.freeze({
+    message: '宣言は記録したが、Storeのrepoにcommitが無いので、触るファイルの観測と並列可否の判定はしていない。干渉しない証拠ではない。',
+    next_action: 'none',
   }),
   independence_verified: Object.freeze({
     message: '記録時点の宣言境界では、他のready工程と干渉しない。',

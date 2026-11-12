@@ -154,6 +154,7 @@ import {
 } from './todo-independence.mjs';
 import {
   selectIndependenceGuidance,
+  todoIndependenceGuidance,
   selectWitnessScaffoldGuidance,
   selectSeamProposalGuidance,
   scopeExpansionRecommendations,
@@ -1283,6 +1284,20 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
   // 調整方式の宣言（ob03）。未宣言はnullで、「まだ選んでいない」を意味する。
   const coordinationMode = store.members
     .find(({ descriptor }) => descriptor.plan_key === planKey)?.coordination?.mode ?? null;
+  if (artifact === null && unusable === null && await declaredWithoutHead({ repoRoot, planKey, taskId })) {
+    // declare-without-git: the row is recorded but a Store root with no commit cannot be observed.
+    // Declared, never "safe": coverage says so and gate 1 lets the declared task start.
+    return {
+      coverage: 'declared_unobserved',
+      drift_intersecting: null,
+      conflicts_with_active: [],
+      scope_expansion_recommendations: [],
+      uncovered_active_task_ids: projection.active_set
+        .filter((task) => task.plan_key === planKey).map(({ task_id: id }) => id),
+      self_unknowns: [{ kind: 'observation_unavailable', ref: 'git_head_unresolved' }],
+      guidance: todoIndependenceGuidance('independence_declared_unobserved', { planKey }),
+    };
+  }
   if (artifact === null) {
     // 記録が無ければ鮮度を語る相手がいない。HEADを要求すると、commitがまだ無いrepoで
     // 「判定できない」でなく「startできない」になってしまう。
@@ -1422,6 +1437,23 @@ async function startTask({
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, evidenceRef: null, advisory, noteContext,
     structureContext, featureContext });
+}
+
+/** declare-without-git: HEAD does not resolve (no commit) and the plan's witness set records this task's row. */
+async function declaredWithoutHead({ repoRoot, planKey, taskId }) {
+  if (headResolves(repoRoot)) return false;
+  const recorded = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
+  return recorded?.plan_key === planKey && Object.hasOwn(recorded.manual_witness, taskId);
+}
+
+function headResolves(repoRoot) {
+  try {
+    currentHeadSha(repoRoot);
+    return true;
+  } catch (error) {
+    if (error?.code === 'INDEPENDENCE_BASE_UNRESOLVED') return false;
+    throw error;
+  }
 }
 
 const declareCommand = (planKey, taskId) => `lattice todo independence witness declare --plan ${planKey} --task ${taskId}`
@@ -3820,13 +3852,22 @@ async function witnessDeclare({ repoRoot, planKey, flags }) {
   const waitingFor = projectTodoStatus(await readTodoStore({ repoRoot }), TODO_STATUS_DISPATCH_ONLY).next_ready
     .filter((task) => task.plan_key === planKey && !keep.has(task.task_id))
     .map(({ task_id: id }) => id).sort();
-  const compile = waitingFor.length === 0
+  // declare-without-git: a Store root with no commit cannot be observed, so the row is recorded and not compiled.
+  const observable = headResolves(repoRoot);
+  const compile = waitingFor.length === 0 && observable
     ? await independenceCompile({ repoRoot, planKey, inputRef: scaffolded.witness_ref }) : null;
   const result = {
     schema: 'lattice.todo_witness_declare_result.v1', project_id: member.plan.project_id, plan_key: planKey,
     task_id: taskId, ...row, witness_ref: scaffolded.witness_ref,
     witness_set_digest: scaffolded.witness_set_digest, compiled: compile !== null, waiting_for: waitingFor,
-    compile, result_digest: '',
+    compile,
+    ...(observable ? {} : {
+      observation: 'unavailable',
+      next_action: `The Store root has no commit (git HEAD unresolved), so ${taskId}'s row is recorded but not observed or compiled:`
+        + ' coverage reads declared_unobserved (not judged safe). The declared task can start:'
+        + ` \`lattice todo start --plan ${planKey} --task ${taskId}\`.`,
+    }),
+    result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
