@@ -1716,6 +1716,37 @@ async function inheritedTodoCoordination(repoRoot, plan) {
 }
 
 /**
+ * blockers-carry (Ludmila agreed): for each of `taskIds` (blocked, no block event in this version), the block event in
+ * effect when it was carried blocked, from the retained predecessor journals along predecessor_plan_digest (walked
+ * once per member). Follows a carry only when it carried the task blocked. Read only; a missing version, an uncarried
+ * or non-blocked carry, or any read error leaves the task null.
+ */
+export async function readTodoCarriedBlocks({ repoRoot = process.cwd(), member, taskIds }) {
+  const found = new Map(taskIds.map((id) => [id, null]));
+  const carriedBlocked = (genesis, id) => (genesis?.state_migration ?? []).find((migration) => migration.to_task_id === id
+    && CARRY_STATE_POLICIES.includes(migration.state_policy) && migration.state?.status === 'blocked')?.from_task_id ?? null;
+  if (!member.plan.predecessor_plan_digest || taskIds.length === 0) return found;
+  try {
+    const byDigest = await retainedPlanVersions(repoRoot, member.plan);
+    let open = new Map(taskIds.map((id) => [id, carriedBlocked(member.journal.events[0], id)]).filter(([, from]) => from));
+    for (let digest = member.plan.predecessor_plan_digest, steps = 0; open.size > 0 && digest && steps < byDigest.size; steps += 1) {
+      const predecessor = byDigest.get(digest);
+      if (predecessor === undefined) break;
+      const { events } = await readJournal(repoRoot, predecessor.journalRef);
+      const next = new Map();
+      for (const [taskId, id] of open) {
+        const block = events.findLast((event) => event.kind === 'block' && event.task_id === id);
+        if (block !== undefined) found.set(taskId, block);
+        else if (carriedBlocked(events[0], id)) next.set(taskId, carriedBlocked(events[0], id));
+      }
+      open = next;
+      digest = predecessor.plan.predecessor_plan_digest;
+    }
+  } catch { /* an unreadable predecessor leaves the remaining tasks null */ }
+  return found;
+}
+
+/**
  * Composes the source plan's recorded task migrations back to the version whose topology the
  * connection names (u03): returns the source task id it maps to now, 'removed', or null (unknown).
  */

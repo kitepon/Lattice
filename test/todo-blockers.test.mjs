@@ -62,3 +62,24 @@ test('every blocked task with title, lane, full reason, when and by whom; any se
   success(dir, ['todo', 'unblock', '--plan', 'b', '--task', 'U'], 'bot-c');
   assert.deepEqual(blockers().blockers, []);
 });
+
+// blockers-carry: a stop set before a revision keeps its time and actor (the block event is in an earlier version).
+test('a task blocked before revisions keeps blocked_at and blocked_by', async (context) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'lattice-blockers-carry-'));
+  context.after(() => rm(dir, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet'], { cwd: dir, stdio: 'pipe' });
+  await writeFile(path.join(dir, 'c.json'), JSON.stringify({
+    schema: 'lattice.plan_create_input.v5', plan_key: 'c', phases: [{ phase_id: 'p', title: 'phase' }],
+    tasks: [{ task_id: 'T', title: 'T', phase_id: 'p', lane: 'bot-a', design_memo: 'NO_PLAN' }],
+  }));
+  success(dir, ['plan', 'create', '--input', 'c.json']);
+  success(dir, ['todo', 'start', '--plan', 'c', '--task', 'T'], 'bot-a');
+  success(dir, ['todo', 'block', '--plan', 'c', '--task', 'T', '--reason', 'waits on the vendor'], 'bot-a');
+  const [before] = success(dir, ['todo', 'blockers', '--json']).blockers;
+  for (const id of ['U', 'V']) {
+    success(dir, ['todo', 'add', '--plan', 'c', '--task', id, '--title', id, '--phase', 'p', '--design-memo', 'NO_PLAN'], 'bot-z');
+  }
+  const [after] = success(dir, ['todo', 'blockers', '--json']).blockers;
+  assert.deepEqual([after.blocked_at, after.blocked_by], [before.blocked_at, { host: 'fixture', session: 'bot-a', agent: 'bot-a' }]);
+  assert.notEqual(after.blocked_at, null);
+});

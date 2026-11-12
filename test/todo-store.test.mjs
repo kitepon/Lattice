@@ -14,7 +14,7 @@ import {
 import {
   TodoStoreError, appendImportedPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
   createSuccessorTodoPlan, initializeAuthoredTodoStore, initializeTodoStore, readTodoStore, readTodoStoreStable,
-  rebuildTodoSnapshot, resolveTodoStartRetractionBinding,
+  readTodoCarriedBlocks, rebuildTodoSnapshot, resolveTodoStartRetractionBinding,
 } from '../src/todo-store.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 import { projectTodoChainV1 } from '../src/todo-chain.mjs';
@@ -1670,4 +1670,51 @@ test('現在のdoneが指す消えたblobは未検証と表示し、別taskの�
   assert.equal(started.event.kind, 'start');
   const after = await readTodoStore({ repoRoot: root, now: NOW });
   assert.equal(after.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
+});
+
+// blockers-carry (Ludmila agreed): the block in effect when a task was carried blocked across revisions.
+async function carriedBlocksFixture(context) {
+  const root = await bareWorkspace(context);
+  const cli = (args, agent = 'bot-a') => {
+    const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '../bin/lattice.mjs'), ...args], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0',
+        LATTICE_RUNTIME_ERROR_REPORTING: '0', LATTICE_TODO_ACTOR_HOST: 'h', LATTICE_TODO_ACTOR_SESSION: agent,
+        LATTICE_TODO_ACTOR_AGENT: agent } });
+    assert.equal(result.status, 0, `${args.join(' ')}\n${result.stderr}`);
+    return JSON.parse(result.stdout);
+  };
+  await writeFile(path.join(root, 'c.json'), JSON.stringify({ schema: 'lattice.plan_create_input.v5', plan_key: 'c',
+    phases: [{ phase_id: 'p', title: 'p' }], tasks: ['T', 'S'].map((id) => ({ task_id: id, title: id, phase_id: 'p',
+      design_memo: 'NO_PLAN' })) }));
+  cli(['plan', 'create', '--input', 'c.json']);
+  const add = (id) => cli(['todo', 'add', '--plan', 'c', '--task', id, '--title', id, '--phase', 'p', '--design-memo', 'NO_PLAN'], 'bot-z');
+  const carried = async (taskIds) => {
+    const member = (await readTodoStore({ repoRoot: root })).members[0];
+    return readTodoCarriedBlocks({ repoRoot: root, member, taskIds });
+  };
+  return { root, cli, add, carried };
+}
+
+test('blockers-carry: block in v1 then two revisions answers the v1 block; block-unblock-block answers the last', async (context) => {
+  const { cli, add, carried } = await carriedBlocksFixture(context);
+  cli(['todo', 'start', '--plan', 'c', '--task', 'T']);
+  cli(['todo', 'block', '--plan', 'c', '--task', 'T', '--reason', 'first'], 'bot-a');
+  cli(['todo', 'unblock', '--plan', 'c', '--task', 'T'], 'bot-b');
+  cli(['todo', 'block', '--plan', 'c', '--task', 'T', '--reason', 'second'], 'bot-c');
+  add('U'); add('V');
+  const event = (await carried(['T'])).get('T');
+  assert.deepEqual([event.kind, event.payload.reason, event.actor.agent, event.plan_version], ['block', 'second', 'bot-c', 'v1']);
+  assert.ok(isStrictTodoTimestamp(event.recorded_at));
+});
+
+test('blockers-carry: a task carried in progress answers null; a deleted predecessor version answers null', async (context) => {
+  const { root, cli, add, carried } = await carriedBlocksFixture(context);
+  cli(['todo', 'start', '--plan', 'c', '--task', 'S']);
+  cli(['todo', 'start', '--plan', 'c', '--task', 'T']);
+  cli(['todo', 'block', '--plan', 'c', '--task', 'T', '--reason', 'waits']);
+  add('U'); add('V');
+  assert.deepEqual([...await carried(['S', 'T'])].map(([id, event]) => [id, event?.payload.reason ?? null]),
+    [['S', null], ['T', 'waits']]);
+  await rm(path.join(root, '.lattice/todo/plans/c/v1'), { recursive: true, force: true });
+  assert.deepEqual([...await carried(['T'])], [['T', null]]);
 });

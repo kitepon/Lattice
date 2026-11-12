@@ -84,6 +84,7 @@ import {
   readTodoStructureSource,
   todoStructureSourceRef,
   resolveTodoStartRetractionBinding,
+  readTodoCarriedBlocks,
   readTodoWitnessSet,
   todoWitnessRef,
   writeTodoWitnessSet,
@@ -170,7 +171,7 @@ import {
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
 import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices.mjs';
-import { projectTodoBlockers } from './todo-blockers.mjs';
+import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
 import { projectTodoNudges } from './todo-nudges.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
@@ -4692,9 +4693,19 @@ async function readTodoStoreOrNull(repoRoot) {
 /** `todo blockers` (blockers-list, dfd-blockers.md): every blocked task with its full reason and unblock command. */
 async function blockerList({ repoRoot }) {
   const store = await readTodoStoreOrNull(repoRoot);
+  // blockers-carry: a task blocked before a revision has its block event in an earlier version's journal.
+  const blockEvents = new Map();
+  for (const member of store?.members ?? []) {
+    const taskIds = member.tasks.filter((state) => state.status === 'blocked' && !member.journal.events
+      .some((event) => event.kind === 'block' && event.task_id === state.task_id)).map(({ task_id: id }) => id);
+    if (taskIds.length === 0) continue;
+    for (const [taskId, event] of await readTodoCarriedBlocks({ repoRoot, member, taskIds })) {
+      if (event !== null) blockEvents.set(todoBlockerKey(member.plan.plan_key, taskId), event);
+    }
+  }
   const result = {
     schema: 'lattice.todo_blockers_result.v1', project_id: store?.project_id ?? null,
-    blockers: store === null ? [] : projectTodoBlockers(store),
+    blockers: store === null ? [] : projectTodoBlockers(store, { blockEvents }),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');

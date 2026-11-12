@@ -1,8 +1,13 @@
 // Blockers (blockers-list, docs/architecture/dfd-blockers.md): every blocked task in the chart with its full reason,
 // who stopped it and when, and the command to lift it. Read-only; `todo unblock` stays open to any seat.
 
-/** Blocked tasks of every member, sorted by plan_key then task_id. */
-export function projectTodoBlockers(store) {
+export const todoBlockerKey = (planKey, taskId) => `${planKey}\u0000${taskId}`;
+
+/**
+ * Blocked tasks of every member, sorted by plan_key then task_id. `blockEvents` (todoBlockerKey -> event) supplies
+ * the block event of a task carried blocked across a revision (blockers-carry).
+ */
+export function projectTodoBlockers(store, { blockEvents = new Map() } = {}) {
   const blockers = [];
   for (const member of store.members) {
     const planKey = member.plan.plan_key;
@@ -11,7 +16,7 @@ export function projectTodoBlockers(store) {
     for (const state of member.tasks) {
       if (state.status !== 'blocked') continue;
       const task = member.plan.tasks.find(({ task_id: id }) => id === state.task_id);
-      const event = lastBlock.get(state.task_id);
+      const event = lastBlock.get(state.task_id) ?? blockEvents.get(todoBlockerKey(planKey, state.task_id));
       blockers.push({
         plan_key: planKey,
         task_id: state.task_id,
