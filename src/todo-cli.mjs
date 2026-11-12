@@ -354,8 +354,8 @@ const TODO_FLAG_SPECS = Object.freeze({
   split: Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   note: NOTE_FLAG_SPEC,
   // a28: the rest of the writes, and the reads whose --json is optional (their output is JSON either way).
-  'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'input'], required: ['plan', 'phase'] }),
-  'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'reason', 'input'], required: ['plan', 'phase'] }),
+  'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'input'], required: ['plan', 'phase'] }),
+  'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'reason', 'input'], required: ['plan', 'phase'] }),
   'phase reopen': Object.freeze({ known: ['plan', 'phase', 'reason', 'override-reason'], required: ['plan', 'phase', 'reason'] }),
   'evidence promote': Object.freeze({ known: ['plan', 'task', 'evidence'], required: ['plan', 'task', 'evidence'] }),
   'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
@@ -489,18 +489,19 @@ function explainArgumentRefusal(argv) {
     }
   }
   if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
-    const given = ['evidence', 'input'].filter((name) => typeof flags[name] === 'string' && flags[name].length > 0);
+    const given = ['evidence', 'message', 'input'].filter((name) => typeof flags[name] === 'string' && flags[name].length > 0);
     if (given.length === 0) {
       return { pointer: '--evidence', rule: 'flag_missing',
-        next_action: `Add --evidence <file> (or --input <decision file>): \`${repairedCommand(head, { ...spec, required: [...spec.required, 'evidence', ...(argv[1] === 'reject' ? ['reason'] : [])] }, flags)}\`.` };
+        next_action: `Add --evidence <file> (or --message <text>, or --input <decision file>): \`${repairedCommand(head, { ...spec, required: [...spec.required, 'evidence', ...(argv[1] === 'reject' ? ['reason'] : [])] }, flags)}\`.` };
     }
-    if (given.length === 2) {
-      return { pointer: '--input', rule: 'flags_exclusive',
-        next_action: `Pass either --evidence or --input, not both: \`${repairedCommand(head, spec, { ...flags, input: undefined })}\`.` };
+    if (given.length > 1) {
+      const [keep, drop] = given;
+      return { pointer: `--${drop}`, rule: 'flags_exclusive',
+        next_action: `Pass one of --evidence, --message or --input: \`${repairedCommand(head, spec, { ...flags, ...Object.fromEntries(given.filter((name) => name !== keep).map((name) => [name, undefined])) })}\`.` };
     }
-    if (argv[1] === 'reject' && given[0] === 'evidence' && !(typeof flags.reason === 'string' && flags.reason.length > 0)) {
+    if (argv[1] === 'reject' && given[0] !== 'input' && !(typeof flags.reason === 'string' && flags.reason.length > 0)) {
       return { pointer: '--reason', rule: 'flag_missing',
-        next_action: `A reject with --evidence needs --reason <text>: \`${repairedCommand(head, { ...spec, required: [...spec.required, 'reason'] }, flags)}\`.` };
+        next_action: `A reject with --${given[0]} needs --reason <text>: \`${repairedCommand(head, { ...spec, required: [...spec.required, 'reason'] }, flags)}\`.` };
     }
     if (given[0] === 'input' && flags.reason !== undefined) {
       return { pointer: '--reason', rule: 'flag_unknown',
@@ -876,8 +877,9 @@ async function readStructureSetDraft(repoRoot, inputRef) {
 function auditGateGuidance(planKey, phaseId, auditRequired = false) {
   const target = `--plan ${planKey} --phase ${phaseId}`;
   const audit = `lattice todo phase review ${target} --reason <text> → accept ${target} --evidence <file>`;
-  // ADR 0200 gate 5: an enforced plan's heavy phase refuses close-unaudited, so only the audit is offered.
-  if (auditRequired) return `全ToDoがdone。このplanはenforcedでheavyの段階なので監査する: ${audit}`;
+  // ADR 0200 gate 5: an enforced plan's heavy phase refuses close-unaudited, so only the audit is offered,
+  // with the --message route for a seat that cannot write a file into the Store root.
+  if (auditRequired) return `全ToDoがdone。このplanはenforcedでheavyの段階なので監査する: ${audit}（fileを置けないなら --message <text>）`;
   return `全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited ${target} --reason <text>`
     + `（監査するなら ${audit}）`;
 }
@@ -1585,7 +1587,8 @@ const PHASE_DECISION_EXPECTED = Object.freeze({
   reject: '{ "schema": "lattice.phase_reject_input.v1", "review_event_digest": "<phase reviewのevent_digest>",'
     + ' "reason": "<text>", "decision_evidence": <evidence記述子>, "input_digest": "" }',
   note: 'input_digestは入口が計算する。証拠fileがcommit済みなら、`--evidence <file>`で'
-    + 'review_event_digest・記述子・必須slotを機械が埋める。evidence記述子の形はEVIDENCE_DESCRIPTOR_EXPECTEDを見る。',
+    + 'review_event_digest・記述子・必須slotを機械が埋める。fileを置けないなら`--message <text>`でも同じく埋まる'
+    + '（commitまではuncommitted）。evidence記述子の形はEVIDENCE_DESCRIPTOR_EXPECTEDを見る。',
 });
 
 async function phaseDecision({ repoRoot, env, planKey, phaseId, outcome, inputRef }) {
@@ -1622,7 +1625,9 @@ async function phaseDecision({ repoRoot, env, planKey, phaseId, outcome, inputRe
  * fileから作る。必須slotが1つならその証拠で埋める。複数slotへ1つの証拠を流用すると
  * 「各slotを別々に確かめた」ことを偽るので、その場合は`--input`で明示させる。
  */
-async function phaseDecisionFromEvidence({ repoRoot, env, planKey, phaseId, outcome, evidenceRef, reason }) {
+async function phaseDecisionFromEvidence({
+  repoRoot, env, planKey, phaseId, outcome, evidenceRef = null, evidenceMessage = null, reason,
+}) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
   if (member === undefined) {
@@ -1649,14 +1654,21 @@ async function phaseDecisionFromEvidence({ repoRoot, env, planKey, phaseId, outc
       next_action: `lattice todo phase accept --plan ${planKey} --phase ${phaseId} --input <file>`,
     });
   }
+  // A --message becomes message evidence exactly as in `todo done`: no file inside the Store root is needed.
   const evidence = await resolveDoneEvidence({
-    repoRoot, evidenceRef, evidenceMessage: null, planKey, taskId: `${phaseId}-${outcome}`,
+    repoRoot, evidenceRef, evidenceMessage, planKey, taskId: `${phaseId}-${outcome}`,
   });
   const payload = outcome === 'accept'
     ? { review_event_digest: state.review_event_digest, decision_evidence: evidence,
       evidence_slots: definition.required_evidence_slots.map((slotId) => ({ slot_id: slotId, evidence })) }
     : { review_event_digest: state.review_event_digest, reason, decision_evidence: evidence };
   return phaseMutation({ repoRoot, env, planKey, phaseId, kind: `phase_${outcome}`, payload });
+}
+
+/** A phase decision's evidence: committed, uncommitted (no ref reaches it yet, e.g. `--message` on a root with no commit) or null. */
+function decisionEvidenceState(repoRoot, store, evidence) {
+  if (evidence === null || evidence === undefined) return null;
+  return isTodoEvidenceUncommitted({ repoRoot, store, evidence }) ? 'uncommitted' : 'committed';
 }
 
 async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload }) {
@@ -1668,7 +1680,8 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
     if (phaseAuditRequired(member, phase?.gate_policy)) {
       throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_heavy_phase_unaudited', undefined, {
         plan_key: planKey, phase_id: phaseId,
-        next_action: `Audit it: \`lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>\` then \`lattice todo phase accept --plan ${planKey} --phase ${phaseId} --evidence <file>\`;`
+        next_action: `Audit it: \`lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>\` then \`lattice todo phase accept --plan ${planKey} --phase ${phaseId} --evidence <file>\``
+          + ` (or \`--message <text>\` when no file can be written into the Store root);`
           + ' or revise the phase to a non-heavy gate_policy with `lattice plan revise` (recorded).',
       });
     }
@@ -1687,7 +1700,10 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
     plan_key: event.plan_key, plan_version: event.plan_version, phase_id: event.phase_id,
     kind: event.kind, sequence: event.sequence, event_digest: event.event_digest,
     journal_head_digest: event.event_digest, snapshot_digest: snapshot.snapshot_digest,
-    status: phase.status, result_digest: '',
+    status: phase.status,
+    decision_evidence_state: phase.decision_evidence === null || phase.decision_evidence === undefined ? null
+      : decisionEvidenceState(repoRoot, await readTodoStore({ repoRoot }), phase.decision_evidence),
+    result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
@@ -2017,6 +2033,7 @@ async function phaseStatus({ repoRoot, planKey }) {
   // v4/v5の実Phaseがgate_readyになった場合も同じ理由で同じ案内が要る。
   const phases = member.phases.map((phase) => ({
     ...phase,
+    decision_evidence_state: decisionEvidenceState(repoRoot, store, phase.decision_evidence),
     acceptance_stale: phaseAcceptanceStale(member.plan, member.journal.events, phase, member.tasks),
     guidance: phaseAcceptanceStale(member.plan, member.journal.events, phase, member.tasks)
       ? staleAcceptanceGuidance(member.plan.plan_key, phase.phase_id)
@@ -4727,6 +4744,11 @@ async function verify({ repoRoot, requestedPlanKey }) {
       uncommittedEvidence.push({ plan_key: planKey, task_id: taskId, repo_id: evidence.repo_id, path: evidence.path,
         next_action: `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.` });
     }
+    for (const { phase_id: phaseId, decision_evidence: evidence } of member.phases) {
+      if (decisionEvidenceState(repoRoot, store, evidence) !== 'uncommitted') continue;
+      uncommittedEvidence.push({ plan_key: planKey, phase_id: phaseId, repo_id: evidence.repo_id, path: evidence.path,
+        next_action: `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.` });
+    }
     const unverified = member.tasks.find((task) => task.evidence_unverified && !pending.includes(task));
     if (unverified !== undefined) {
       throw new TodoStoreError('STORE_INCONSISTENT', 'evidence_unverified', 'evidence_unverified', {
@@ -5204,20 +5226,28 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } else if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
     const outcome = argv[1];
     const flags = matchFlagCommand(argv, ['phase', outcome], {
-      known: ['plan', 'phase', 'input', 'evidence', 'reason'], required: ['plan', 'phase'],
+      known: ['plan', 'phase', 'input', 'evidence', 'message', 'reason'], required: ['plan', 'phase'],
     });
+    const reasonFits = outcome === 'accept' ? flags?.reason === undefined
+      : typeof flags?.reason === 'string' && flags.reason.length > 0;
     const base = flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase);
-    if (base && isAuthoringPathToken(flags.input) && flags.evidence === undefined && flags.reason === undefined) {
+    if (base && isAuthoringPathToken(flags.input) && flags.evidence === undefined && flags.message === undefined
+      && flags.reason === undefined) {
       action = (repoRoot) => phaseDecision({
         repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
         outcome, inputRef: flags.input,
       });
-    } else if (base && flags.input === undefined && isAuthoringPathToken(flags.evidence)
-      && (outcome === 'accept' ? flags.reason === undefined
-        : typeof flags.reason === 'string' && flags.reason.length > 0)) {
+    } else if (base && flags.input === undefined && flags.message === undefined
+      && isAuthoringPathToken(flags.evidence) && reasonFits) {
       action = (repoRoot) => phaseDecisionFromEvidence({
         repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
         outcome, evidenceRef: flags.evidence, reason: flags.reason ?? null,
+      });
+    } else if (base && flags.input === undefined && flags.evidence === undefined
+      && typeof flags.message === 'string' && flags.message.length > 0 && reasonFits) {
+      action = (repoRoot) => phaseDecisionFromEvidence({
+        repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
+        outcome, evidenceMessage: flags.message, reason: flags.reason ?? null,
       });
     }
   } else if (argv[0] === 'phase' && argv[1] === 'reopen' && phaseReopenFlags(argv) !== null) {

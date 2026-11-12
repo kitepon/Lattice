@@ -162,6 +162,44 @@ test('gate 5: a heavy phase is not closed unaudited; a light one is', async (con
   success(root, close('q'));
 });
 
+test('gate 5 exit without a file or a commit: phase accept|reject --message on an unborn Store root', async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-unborn-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
+  await writeFile(path.join(root, 'plan.json'), JSON.stringify({
+    schema: 'lattice.plan_create_input.v5', plan_key: 'dev',
+    phases: [{ phase_id: 'p', title: 'heavy' }, { phase_id: 'r', title: 'heavy too' }],
+    tasks: [{ task_id: 'P', title: 'P', phase_id: 'p', design_memo: 'NO_PLAN' },
+      { task_id: 'R', title: 'R', phase_id: 'r', design_memo: 'NO_PLAN' }],
+  }));
+  success(root, ['plan', 'create', '--input', 'plan.json']);
+  success(root, ['todo', 'independence', 'mode', '--plan', 'dev', '--set', 'enforced', '--reason', 'gates']);
+  for (const [id, file] of [['P', 'src/a.js'], ['R', 'src/b.js']]) success(root, declare(id, '--owns', file));
+  for (const id of ['P', 'R']) {
+    success(root, start(id));
+    success(root, ['todo', 'done', '--plan', 'dev', '--task', id, '--message', 'https://example.invalid/pr/1']);
+  }
+  const phase = (verb, id, ...flags) => ['todo', 'phase', verb, '--plan', 'dev', '--phase', id, ...flags];
+  const closeRefused = refusal(root, phase('close-unaudited', 'p', '--reason', 'skip'));
+  assert.equal(closeRefused.message, 'enforced_heavy_phase_unaudited');
+  assert.match(closeRefused.detail.next_action, /--message <text>/u);
+  success(root, phase('review', 'p', '--reason', 'audit'));
+  assert.equal(refusal(root, phase('accept', 'p', '--message', 'ok', '--input', 'plan.json')).detail.rule, 'flags_exclusive');
+  const accepted = success(root, phase('accept', 'p', '--message', 'Audited: PR 1 merged, tests green.'));
+  assert.deepEqual([accepted.status, accepted.decision_evidence_state], ['accepted', 'uncommitted']);
+  success(root, phase('review', 'r', '--reason', 'audit'));
+  assert.equal(refusal(root, phase('reject', 'r', '--message', 'no')).detail.rule, 'flag_missing');
+  const rejected = success(root, phase('reject', 'r', '--reason', 'tests missing', '--message', 'No test for R.'));
+  assert.deepEqual([rejected.status, rejected.decision_evidence_state], ['rejected', 'uncommitted']);
+  // Never shown as audited by committed evidence: status and verify name the uncommitted decision.
+  const states = Object.fromEntries(success(root, ['todo', 'phase', 'status', '--plan', 'dev', '--json']).phases
+    .map(({ phase_id: id, decision_evidence_state: state }) => [id, state]));
+  assert.deepEqual(states, { p: 'uncommitted', r: 'uncommitted' });
+  const pending = success(root, ['todo', 'verify', '--json']).uncommitted_evidence.filter((item) => item.phase_id);
+  assert.deepEqual(pending.map(({ phase_id: id }) => id).sort(), ['p', 'r']);
+  assert.match(pending[0].path, /^\.lattice\/todo\/evidence\/dev\/[pr]-(accept|reject)\//u);
+});
+
 test('witness and conversation plans keep warnings only', async (context) => {
   for (const mode of ['witness', 'conversation']) {
     const { root } = await fixture(context, mode);
