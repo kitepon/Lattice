@@ -50,9 +50,21 @@ export function createTodoReadiness(store) {
       acceptanceIncoming.set(key, new Set());
     }
   }
+  // xchart: predecessors on other charts, as their chart reports them (`withTodoExternalTasks`); never phase-gated.
+  for (const entry of store.external_tasks ?? []) {
+    nodes.set(taskKey(entry), { status: entry.status, task_id: entry.task_id, finished: entry.finished === true,
+      schema: null, plan_key: entry.plan_key, project_id: entry.project_id, phase_id: null, reason: entry.reason });
+  }
+  // An external edge whose state was not loaded waits (fail closed), named `chart_not_read`.
+  const external = new Map();
+  const predecessorNode = (source) => nodes.get(source) ?? (external.has(source)
+    ? { ...external.get(source), status: null, finished: false, schema: null, reason: 'chart_not_read' } : undefined);
   const connect = (from, to) => {
     const source = taskKey(from);
     const target = taskKey(to);
+    if (from.project_id !== to.project_id) {
+      external.set(source, { project_id: from.project_id, plan_key: from.plan_key, task_id: from.task_id });
+    }
     incoming.get(target)?.add(source);
     outgoing.get(source)?.add(target);
   };
@@ -85,7 +97,7 @@ export function createTodoReadiness(store) {
 
   function prerequisites(key) {
     // u03 A24: 消えた端点（Storeのendpoint_missing finding）は後続を止めない。Store replayも同じ規則。
-    const predecessors = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source))
+    const predecessors = [...(incoming.get(key) ?? [])].map(predecessorNode)
       .filter((node) => node !== undefined);
     const unfinished = predecessors.filter((node) => node.finished !== true);
     const unreadyPhases = predecessors.filter((node) => !dependencyPhaseReady(node, nodes.get(key)));
@@ -107,7 +119,7 @@ export function createTodoReadiness(store) {
       cause,
       // a12: a refusal names what blocks, not only why.
       blocking: cause === 'predecessor_unfinished'
-        ? { blocking_tasks: unfinished.map(({ plan_key, task_id, status }) => ({ plan_key, task_id, status })).sort(byRef) }
+        ? { blocking_tasks: unfinished.map(blockingTask).sort(byRef) }
         : cause === 'acceptance_edge'
           ? { blocking_phases: uniqueRefs(blockingPhases).map((phase) => ({ ...phase })).sort(byRef) } : {},
     };
@@ -133,8 +145,10 @@ export function createTodoReadiness(store) {
   /** notice-impl: what a task waits on — predecessor tasks, phases whose accept it needs, and its own phase. */
   function prerequisiteRefs(key) {
     const node = nodes.get(key);
-    const tasks = [...(incoming.get(key) ?? [])].map((source) => nodes.get(source))
-      .filter((pred) => pred !== undefined).map(({ plan_key, task_id }) => ({ plan_key, task_id }));
+    const tasks = [...(incoming.get(key) ?? [])].map(predecessorNode)
+      .filter((pred) => pred !== undefined).map(({ project_id: projectId, plan_key, task_id }) => (
+        external.has(taskKey({ project_id: projectId, plan_key, task_id }))
+          ? { project_id: projectId, plan_key, task_id } : { plan_key, task_id }));
     const phaseRefs = [...(acceptanceIncoming.get(key) ?? [])].map((source) => phases.get(source))
       .filter((phase) => phase !== undefined).map(({ plan_key, phase_id }) => ({ plan_key, phase_id }));
     for (const source of incoming.get(key) ?? []) {
@@ -172,7 +186,13 @@ export function createTodoReadiness(store) {
   };
 }
 
-const refId = (ref) => `${ref.plan_key}\0${ref.task_id ?? ref.phase_id}`;
+const refId = (ref) => `${ref.project_id ?? ''}\0${ref.plan_key}\0${ref.task_id ?? ref.phase_id}`;
+
+/** a12 blocking entry; an external predecessor also names its project and why it waits (null when readable). */
+function blockingTask({ project_id: projectId, plan_key, task_id, status, reason }) {
+  return projectId === undefined ? { plan_key, task_id, status }
+    : { project_id: projectId, plan_key, task_id, status, reason: reason ?? null };
+}
 function byRef(left, right) {
   return refId(left) < refId(right) ? -1 : refId(left) > refId(right) ? 1 : 0;
 }

@@ -139,9 +139,10 @@ Write commands:
   evidence anchor [--json]  # 既存の証拠をgcから守る印(refs/lattice/evidence/<oid>)を付ける。commit済みにはならない
       # done状態と完了時刻を維持し、最新doneへ追記eventで証拠を再束縛する
   start --plan <key> --task <id> --rebind --reason <text>  # 改訂でcarryされたin-progressへ現版のstart束縛を積み直す（ADR 0191）
-  dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
-  dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
+  dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
+  dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
       # 開発中に発見した依存を明示接続する。同一plan内の辺はplan本体を軽い改訂で書き換え（plan_versionが変わる）、plan跨ぎは台帳に積む。依存の自動推定は行わない
+      # --from-project = 別の工程表(別プロジェクト)の工程を前工程にする。LATTICE_CHARTS_ROOT/<project_id>/.lattice を読むだけで書かない。読めない間は待ちのまま
   independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>
       # enforced = witness＋未宣言・古い宣言・衝突・参照なしdone・heavy段階の監査なし閉じを止める（ADR 0200）
       # このplanの調整方式（witness検証で並列するか、会話で調整するか）を記録する
@@ -352,11 +353,11 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo evidence anchor': 'todo evidence anchor [--json]  # lattice.todo_evidence_anchor_result.v1 {anchored, already, missing}; no Store yet: lattice.todo_evidence_anchor_uninitialized.v1',
   'todo evidence promote': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
   'todo dependency': [
-    'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
-    'todo dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+    'todo dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+    'todo dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   ].join('\n       lattice '),
-  'todo dependency connect': 'todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
-  'todo dependency disconnect': 'todo dependency disconnect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+  'todo dependency connect': 'todo dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+  'todo dependency disconnect': 'todo dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   'todo split': 'todo split --plan <key> --input <file>',
   'todo revise': 'todo revise --plan <key> --input <file> | --schema --json',
   'todo revise-phase': 'todo revise-phase --plan <key> --input <file> | --schema --json',

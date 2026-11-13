@@ -153,6 +153,28 @@ Help text: `dependency connect|disconnect` says same-plan edges change the plan
 Patent: authoring only; readiness, hold/commit/resume and claimed mechanisms
 are untouched.
 
+## Cross-chart dependency (xchart, 2026-11-13)
+
+Owner (Quo 2026-11-13): 「待ちには他の工程表の工程も指定できるようにしようぜ」. A task can wait on a task
+of another chart (another Lattice project, its own `.lattice` Store). Plan lattice-cross-chart-20261113,
+task xchart-impl. Store lines agreed with Ludmila: [dfd-todo-start](dfd-todo-start.md#cross-chart-ledger-edges-xchart-store-lines-2026-11-13).
+
+Locating a chart: env `LATTICE_CHARTS_ROOT` = a directory whose children are chart directories named by
+project id (`<root>/<project_id>/.lattice`). BellTeam sets it to its charts root. Any layout a standalone
+user points it at works; without it nothing changes for in-chart edges.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Plan: `todo dependency connect --from-project <id> …` (todo-cli `dependencyConnectExternal`) | `--from-project` ≠ this Store's project_id (omitted or equal = the routes above, unchanged); the other chart via `readTodoExternalChart(env, id)` (todo-external: `readTodoStoreReadOnly` at `<root>/<id>`, no lock, no write) | Validates the other chart's plan and task exist; refuses a cycle visible through readable charts (`externalCycle`: walk the other task's predecessors, in-chart and cross-chart, through every readable chart; reaching the to-task = cycle). Appends the existing `cross_plan_dependency` event on the to-plan's plan-scoped chain with `from = {project_id: <other>, plan_key, task_id, expected_topology_digest: <other plan's digest now>}`; result `lattice.todo_dependency_connect_result.v1` (unchanged shape). An existing live edge = `unchanged` result (a28). Onto an in-progress task allowed, as in-chart | No env: `DEPENDENCY_INVALID/charts_root_unset`, next_action names `LATTICE_CHARTS_ROOT`. Chart missing/unreadable or its project_id differs: `DEPENDENCY_INVALID/chart_unreadable {project_id, path}`. Plan/task missing there: existing `dependency_plan_not_found`/`dependency_task_not_found` with `project_id`. Cycle: `DEPENDENCY_CYCLE/cross_plan_dependency_cycle {from, to, cycle}`. Nothing is written on any refusal |
+| Plan: `todo dependency disconnect --from-project <id> …` | live ledger edges of this Store matched on project_id + plan + task | Existing tombstone (`cross_plan_dependency_removed`, result v1). The other chart is not read (removing a wait needs nothing from it) | None live: `DEPENDENCY_NOT_FOUND/cross_plan_dependency_not_found` |
+| Plan: external task states (`readTodoExternalTasks(store, env)`, `withTodoExternalTasks`) | live ledger edges whose `from.project_id` ≠ the Store's project_id; one read-only read per other project | `store.external_tasks: [{project_id, plan_key, task_id, status, finished, reason, trigger}]` (`finished` = `isFinishedTodoTaskState`, the in-chart rule: done or retired; `trigger` = that task's latest journal event `{kind, event_digest, recorded_at, actor}` or null). Unreadable entries add `cross_plan_findings` `{owner_plan_key, event_digest, side:'from', ref, reason}` with reason `charts_root_unset` / `chart_unreadable` / `endpoint_missing`. No external edge = the store is returned as is (nothing read) | Unreadable = `finished:false`, `status:null`, reason named. No guard: the next read resolves it once readable |
+| Plan: readiness (`createTodoReadiness`) | `store.external_tasks` | External tasks are predecessor nodes like in-chart ones (no phase: never phase-gated). An external edge whose state was not loaded reads `finished:false`, reason `chart_not_read` (fail closed: no reader can call it ready by forgetting to load). `blocking_tasks` entries for external predecessors carry `project_id` and `reason` | — |
+| Plan: every reader agrees | `todo status` and `status`/`session-context` (project-cli `resolveProjectState`): `next_ready` and findings; `todo start` (ready check, and `mutate` binds `external_tasks` into the start/authored-done validator before the lock); `todo show` gains `prerequisites {ready, tasks, blocking_tasks, blocking_phases}`; `todo notice list` and mutation `notices` (an external trigger is `{project_id, plan_key, task_id, kind, event_digest, recorded_at, actor}` from the other chart's journal: the waiting chart needed no write); Gantt next-ready mark (`renderTodoGanttForProject`); `todo display read` (`external_tasks` beside the Store envelope, `displayRead`); witness declare `waiting_for` and its start hint | Read the Store through `readTodoStoreForReadiness` (todo-cli: `readTodoStore` + `withTodoExternalTasks`) or wrap with `withTodoExternalTasks`, so one predicate decides. Status `active_set.unmet_dependencies` stays in-chart (the status graph skips foreign edges; readiness decides) | A start refusal names the external task: `blocking_tasks: [{project_id, plan_key, task_id, status, reason}]` |
+
+Shortcut: an edge binds the other task by plan_key/task_id; a revision of the other plan that renames the
+task leaves the edge waiting (`endpoint_missing`) instead of following the carry, until someone reconnects.
+Upgrade when other charts' revision carries are readable here.
+
 ## One task add, plan show memo, revise --plan (a39, 2026-11-11)
 
 BellTeam production trial (Flora/Trony, 0.85.5): adding t21/t22 needed all 22 tasks

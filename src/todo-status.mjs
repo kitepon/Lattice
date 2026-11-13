@@ -330,7 +330,7 @@ function crossPlanFindingEntry(value) {
     || !isTodoIdentifier(value.owner_plan_key)
     || !(value.event_digest === null || isTodoDigest(value.event_digest))
     || !['from', 'to'].includes(value.side)
-    || !['binding_stale', 'endpoint_missing'].includes(value.reason)) return false;
+    || !['binding_stale', 'endpoint_missing', 'charts_root_unset', 'chart_unreadable'].includes(value.reason)) return false;
   const { ref } = value;
   const common = (keys) => exactRecord(ref, keys) && isTodoIdentifier(ref.project_id)
     && isTodoIdentifier(ref.plan_key)
@@ -534,6 +534,8 @@ function buildTodoGraph(readModel) {
   // active plan topologyは追記改変しない。開発中に接続したplan-scoped edgeを同じincomingへ
   // 合成することで、projectTodoStatusとcomputeReadyFrontierが同じ待機判定を即座に読む。
   for (const dependency of projectTodoCrossPlanDependencies(members)) {
+    // xchart: a predecessor on another chart is not a node here; readiness (external_tasks) decides next_ready.
+    if (dependency.from.project_id !== dependency.to.project_id) continue;
     addPredecessor(dependency.from, dependency.to);
   }
 

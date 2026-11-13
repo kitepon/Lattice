@@ -171,6 +171,9 @@ import {
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
 import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices.mjs';
+import {
+  externalCycle, readTodoExternalChart, readTodoExternalTasks, withTodoExternalTasks,
+} from './todo-external.mjs';
 import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
@@ -330,7 +333,7 @@ const REASON_FLAG_SPEC = Object.freeze({ known: ['plan', 'task', 'reason'], requ
 const PHASE_REASON_FLAG_SPEC = Object.freeze({ known: ['plan', 'phase', 'reason'], required: ['plan', 'phase', 'reason'] });
 const NOTE_FLAG_SPEC = Object.freeze({ known: ['plan', 'task', 'message', 'input', 'supersedes'], required: ['plan'] });
 const DEPENDENCY_FLAG_SPEC = Object.freeze({
-  known: ['from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
+  known: ['from-project', 'from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
   required: ['from-plan', 'from-task', 'to-plan', 'to-task', 'reason'],
 });
 // a18: one spec per write command is both its parser and the explanation of its refusal.
@@ -406,7 +409,8 @@ function repairedCommand(head, spec, flags) {
 /** `dependency connect|disconnect` flags by name (order-free), or null. */
 function dependencyFlags(argv) {
   const flags = matchFlagCommand(argv, argv.slice(0, 2), DEPENDENCY_FLAG_SPEC);
-  return flags !== null && IDENTIFIER_FLAGS.slice(3).every((name) => isTodoIdentifier(flags[name])) ? flags : null;
+  return flags !== null && IDENTIFIER_FLAGS.slice(3).every((name) => isTodoIdentifier(flags[name]))
+    && (flags['from-project'] === undefined || isTodoIdentifier(flags['from-project'])) ? flags : null;
 }
 
 /** a28: a read command's flags by name (order-free, --json optional) with valid identifiers, or null. */
@@ -975,9 +979,14 @@ function reopenAdvisory(plan, phases, taskId) {
 async function mutate({
   repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
-  testResultRef = null, actor: carriedActor = null,
+  testResultRef = null, actor: carriedActor = null, externalTasks = null,
 }) {
   const actor = carriedActor ?? resolveTodoActor(env);
+  // xchart: start and authored done check predecessors on other charts too, read before the lock.
+  const external = externalTasks ?? (kind === 'start' || (kind === 'done' && payload === 'authored')
+    ? (await readTodoExternalTasks(await readTodoStore({ repoRoot }), env)).external_tasks : []);
+  const validator = external.length === 0 ? validateProspectiveEvent
+    : (input) => validateProspectiveEvent({ ...input, store: { ...input.store, external_tasks: external } });
   const evidence = evidenceRef === null && evidenceMessage === null
     ? null
     : await resolveDoneEvidence({
@@ -1005,7 +1014,7 @@ async function mutate({
     eventPayload = { done_mode: 'evidence_promotion', evidence };
   }
   const { event, snapshot, plan, phases } = await appendTodoEvent({
-    validateProspectiveEvent,
+    validateProspectiveEvent: validator,
     repoRoot,
     writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
     planKey,
@@ -1389,10 +1398,22 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
   };
 }
 
+/** xchart: the display envelope plus `external_tasks`, so a host computing readiness from it sees other charts too. */
+async function displayRead(repoRoot, env) {
+  const display = await readTodoStoreForDisplay({ repoRoot });
+  const externalTasks = display.store ? (await readTodoExternalTasks(display.store, env)).external_tasks : [];
+  return { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks };
+}
+
+/** xchart: the Store plus its external predecessors' states; every readiness reader reads through this. */
+async function readTodoStoreForReadiness({ repoRoot, env = process.env }) {
+  return withTodoExternalTasks(await readTodoStore({ repoRoot }), env);
+}
+
 async function startTask({
   repoRoot, env, planKey, taskId, overrideReason,
 }) {
-  const store = await readTodoStore({ repoRoot });
+  const store = await readTodoStoreForReadiness({ repoRoot, env });
   // startはready判定にしかprojectionを使わず、resultを出力しない。
   const projection = projectTodoStatus(store, TODO_STATUS_DISPATCH_ONLY);
   const readyTask = projection.next_ready.find((task) => (
@@ -1461,7 +1482,7 @@ async function startTask({
   }
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, evidenceRef: null, advisory, noteContext,
-    structureContext, featureContext });
+    structureContext, featureContext, externalTasks: store.external_tasks ?? [] });
 }
 
 /** declare-without-git: HEAD does not resolve (no commit) and the plan's witness set records this task's row. */
@@ -1872,9 +1893,11 @@ const samePlanEdge = (member, fromTaskId, toTaskId) => member.plan.hard_dependen
  * consumer planのplan-scoped chainへ。
  */
 async function dependencyConnect(options) {
-  const { repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason } = options;
-  if (fromPlanKey !== toPlanKey) return dependencyConnectLedger(options);
+  const { repoRoot, env, fromProjectId = null, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason } = options;
   const store = await readTodoStore({ repoRoot });
+  // xchart: --from-project omitted or this project = the in-chart routes below, unchanged.
+  if (fromProjectId !== null && fromProjectId !== store.project_id) return dependencyConnectExternal({ ...options, store });
+  if (fromPlanKey !== toPlanKey) return dependencyConnectLedger(options);
   const member = store.members.find(({ plan }) => plan.plan_key === fromPlanKey);
   const tasks = member?.plan.tasks ?? [];
   // 台帳経路と同じ事前検査(plan不在・task不在・自己辺・既存辺・完了済み終点)の拒否を保つ。
@@ -1897,15 +1920,15 @@ async function dependencyConnect(options) {
 }
 
 /** A live ledger edge with these endpoints (cross-plan, or an earlier same-plan connect). */
-function liveLedgerEdge(store, { fromPlanKey, fromTaskId, toPlanKey, toTaskId }) {
+function liveLedgerEdge(store, { fromProjectId = null, fromPlanKey, fromTaskId, toPlanKey, toTaskId }) {
   return projectTodoCrossPlanDependencies(store.members).some((dependency) => (
-    dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
+    dependency.from.project_id === (fromProjectId ?? store.project_id) && dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
     && dependency.to.plan_key === toPlanKey && dependency.to.task_id === toTaskId));
 }
 
 /** a28: connect of an existing edge succeeds unchanged, like a repeated done/block/retire (a12). */
-function dependencyUnchanged(store, { fromPlanKey, fromTaskId, toPlanKey, toTaskId }) {
-  const from = { project_id: store.project_id, plan_key: fromPlanKey, task_id: fromTaskId };
+function dependencyUnchanged(store, { fromProjectId = null, fromPlanKey, fromTaskId, toPlanKey, toTaskId }) {
+  const from = { project_id: fromProjectId ?? store.project_id, plan_key: fromPlanKey, task_id: fromTaskId };
   const to = { project_id: store.project_id, plan_key: toPlanKey, task_id: toTaskId };
   const result = {
     schema: 'lattice.todo_dependency_unchanged_result.v1', project_id: store.project_id,
@@ -1954,9 +1977,13 @@ async function dependencyConnectLedger({
     project_id: store.project_id, plan_key: toPlanKey, task_id: toTaskId,
     expected_topology_digest: target.plan.topology_digest,
   };
+  return appendLedgerEdge({ repoRoot, env, store, from, to, reason });
+}
+
+async function appendLedgerEdge({ repoRoot, env, store, from, to, reason }) {
   const { event } = await appendTodoEvent({
     validateProspectiveEvent,
-    repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: toPlanKey,
+    repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }), planKey: to.plan_key,
     event: {
       kind: 'cross_plan_dependency', actor: resolveTodoActor(env), payload: { from, to, reason },
     },
@@ -1972,9 +1999,54 @@ async function dependencyConnectLedger({
   return result;
 }
 
+/**
+ * xchart: wait on a task of another chart. The other chart is read read-only (plan, task, topology, cycle);
+ * the edge is the existing ledger event on this chart's to-plan, nothing is written there.
+ */
+async function dependencyConnectExternal({
+  repoRoot, env, store, fromProjectId, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason,
+}) {
+  const target = store.members.find(({ plan }) => plan.plan_key === toPlanKey);
+  if (target === undefined) {
+    throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_plan_not_found', undefined, { plan_key: toPlanKey });
+  }
+  if (!target.plan.tasks.some(({ task_id: taskId }) => taskId === toTaskId)) {
+    throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_task_not_found', undefined, {
+      plan_key: toPlanKey, task_id: toTaskId,
+    });
+  }
+  const endpoints = { fromProjectId, fromPlanKey, fromTaskId, toPlanKey, toTaskId };
+  if (liveLedgerEdge(store, endpoints)) return dependencyUnchanged(store, endpoints);
+  const other = await readTodoExternalChart(env, fromProjectId);
+  const source = other.members.find(({ plan }) => plan.plan_key === fromPlanKey);
+  if (source === undefined) {
+    throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_plan_not_found', undefined, {
+      project_id: fromProjectId, plan_key: fromPlanKey,
+    });
+  }
+  if (!source.plan.tasks.some(({ task_id: taskId }) => taskId === fromTaskId)) {
+    throw new TodoStoreError('DEPENDENCY_INVALID', 'dependency_task_not_found', undefined, {
+      project_id: fromProjectId, plan_key: fromPlanKey, task_id: fromTaskId,
+    });
+  }
+  const from = { project_id: fromProjectId, plan_key: fromPlanKey, task_id: fromTaskId,
+    expected_topology_digest: source.plan.topology_digest };
+  const to = { project_id: store.project_id, plan_key: toPlanKey, task_id: toTaskId,
+    expected_topology_digest: target.plan.topology_digest };
+  const cycle = await externalCycle({ env, fromStore: other, from, to, localStore: store });
+  if (cycle !== null) {
+    throw new TodoStoreError('DEPENDENCY_CYCLE', 'cross_plan_dependency_cycle', undefined, { from, to, cycle });
+  }
+  return appendLedgerEdge({ repoRoot, env, store, from, to, reason });
+}
+
 // connectの対。同一planでplan本体が持つ辺は軽量改訂で外し(a14)、それ以外は台帳の除去へ。
 async function dependencyDisconnect(options) {
   const { repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason } = options;
+  // xchart: --from-project equal to this project is the in-chart route.
+  const fromProjectId = options.fromProjectId === null || options.fromProjectId === undefined
+    || options.fromProjectId === (await readTodoStore({ repoRoot })).project_id ? null : options.fromProjectId;
+  if (fromProjectId !== null) return dependencyDisconnectLedger({ ...options, fromProjectId });
   if (fromPlanKey === toPlanKey) {
     const store = await readTodoStore({ repoRoot });
     const member = store.members.find(({ plan }) => plan.plan_key === fromPlanKey);
@@ -1989,17 +2061,17 @@ async function dependencyDisconnect(options) {
 // 誤って張った線の除去（tombstone）。端点で一意に生きた接続を特定し、
 // その接続eventが積まれているplanのplan-scoped chainへ除去eventを積む。
 async function dependencyDisconnectLedger({
-  repoRoot, env, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason,
+  repoRoot, env, fromProjectId = null, fromPlanKey, fromTaskId, toPlanKey, toTaskId, reason,
 }) {
   const store = await readTodoStore({ repoRoot });
   const live = projectTodoCrossPlanDependencies(store.members).filter((dependency) => (
-    dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
+    dependency.from.project_id === (fromProjectId ?? store.project_id) && dependency.from.plan_key === fromPlanKey && dependency.from.task_id === fromTaskId
     && dependency.to.plan_key === toPlanKey && dependency.to.task_id === toTaskId
   ));
   if (live.length === 0) {
-    const from = { plan_key: fromPlanKey, task_id: fromTaskId };
+    const from = { ...(fromProjectId === null ? {} : { project_id: fromProjectId }), plan_key: fromPlanKey, task_id: fromTaskId };
     const to = { plan_key: toPlanKey, task_id: toTaskId };
-    if (fromPlanKey === toPlanKey) {
+    if (fromPlanKey === toPlanKey && fromProjectId === null) {
       const member = store.members.find(({ plan }) => plan.plan_key === toPlanKey);
       const predecessors = (member?.plan.hard_dependencies ?? [])
         .filter((edge) => edge.to.task_id === toTaskId).map((edge) => edge.from.task_id).sort();
@@ -2607,7 +2679,7 @@ async function splitTodo({ repoRoot, env, planKey, inputRef }) {
   return result;
 }
 
-async function status({ repoRoot }) {
+async function status({ repoRoot, env }) {
   // No plan yet is an empty project, not a broken store: answer zero plans and how to make one.
   if (await isUninitializedTodoStore({ repoRoot })) {
     const result = {
@@ -2619,7 +2691,7 @@ async function status({ repoRoot }) {
     result.result_digest = todoSelfDigest(result, 'result_digest');
     return result;
   }
-  const store = await readTodoStore({ repoRoot });
+  const store = await readTodoStoreForReadiness({ repoRoot, env });
   const result = projectTodoStatus(store, {
     planNotes: await readTodoPlanNotesForStatus({ repoRoot, store }),
     parallelCandidates: await readTodoParallelCandidatesForStatus({
@@ -2650,8 +2722,8 @@ async function adoptDashboardRoot({ repoRoot, env }) {
   return result;
 }
 
-async function todoDetail({ repoRoot, planKey, taskId }) {
-  const store = await readTodoStore({ repoRoot });
+async function todoDetail({ repoRoot, env, planKey, taskId }) {
+  const store = await readTodoStoreForReadiness({ repoRoot, env });
   const [member] = selectMembers(store, planKey);
   const task = selectNoteTask(member, taskId);
   const state = member.tasks.find(({ task_id: current }) => current === task.task_id);
@@ -2671,12 +2743,22 @@ async function todoDetail({ repoRoot, planKey, taskId }) {
     task: { ...task, done_condition: task.done_condition ?? null },
     design_memo: designMemoProjection(task),
     state,
+    prerequisites: taskPrerequisites(store, member, task.task_id),
     note_context: context,
     ...(featureContext === null ? {} : { feature_context: featureContext }),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+/** xchart: what a task waits on, by the readiness predicate (`ready` is the start path's own answer). */
+function taskPrerequisites(store, member, taskId) {
+  const readiness = createTodoReadiness(store);
+  const key = readiness.key({ ...member.plan, task_id: taskId });
+  const { blocking } = readiness.prerequisites(key);
+  return { ready: readiness.isReady(key), tasks: readiness.prerequisiteRefs(key).tasks,
+    blocking_tasks: blocking.blocking_tasks ?? [], blocking_phases: blocking.blocking_phases ?? [] };
 }
 
 /**
@@ -3882,8 +3964,8 @@ function declaredStartHint(store, member, state) {
  * a40: one task's witness row, declared by its member. Rows nobody declared stay out (an empty row
  * would claim "touches nothing"); compile runs once every ready task is declared.
  */
-async function witnessDeclare({ repoRoot, planKey, flags }) {
-  const store = await readTodoStore({ repoRoot });
+async function witnessDeclare({ repoRoot, env, planKey, flags }) {
+  const store = await readTodoStoreForReadiness({ repoRoot, env });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
   const taskId = flags.task;
@@ -3910,7 +3992,7 @@ async function witnessDeclare({ repoRoot, planKey, flags }) {
       pointer: at, ...keys, next_action: witnessRoute(planKey) });
   }
   const scaffolded = await scaffoldWitnessDraft({ repoRoot, planKey, draft });
-  const waitingFor = projectTodoStatus(await readTodoStore({ repoRoot }), TODO_STATUS_DISPATCH_ONLY).next_ready
+  const waitingFor = projectTodoStatus(await readTodoStoreForReadiness({ repoRoot, env }), TODO_STATUS_DISPATCH_ONLY).next_ready
     .filter((task) => task.plan_key === planKey && !keep.has(task.task_id))
     .map(({ task_id: id }) => id).sort();
   // declare-without-git: a Store root with no commit cannot be observed, so the row is recorded and not compiled.
@@ -4408,8 +4490,8 @@ export async function renderTodoGanttForProject({
   repoRoot, stable = false, displayName = null, env = process.env, readModel = null,
   scope = DEFAULT_GANTT_SCOPE, degraded = false,
 }) {
-  const store = readModel
-    ?? (stable ? await readTodoStoreStable({ repoRoot }) : await readTodoStore({ repoRoot }));
+  const store = await withTodoExternalTasks(readModel
+    ?? (stable ? await readTodoStoreStable({ repoRoot }) : await readTodoStore({ repoRoot })), env);
   const identity = displayName === null
     ? await resolveProjectIdentity({ repoRoot, projectId: store.project_id, env })
     : { displayName };
@@ -4696,8 +4778,8 @@ async function blockerList({ repoRoot }) {
 }
 
 /** Open notices with their waiters (wait-design); an unreadable wait file is named, its waits read as none. */
-async function openNoticeView(repoRoot) {
-  const store = await readTodoStore({ repoRoot });
+async function openNoticeView(repoRoot, env) {
+  const store = await readTodoStoreForReadiness({ repoRoot, env });
   const declared = await declaredWitnessRows(repoRoot, store);
   const stored = await readAllTodoNoticeWaits({ repoRoot });
   // Readers return raw records: waits that ended since the file's last write are dropped here.
@@ -4709,8 +4791,8 @@ async function openNoticeView(repoRoot) {
   return { store, notices, waitUnreadable: stored.unreadable };
 }
 
-async function openNotices(repoRoot) {
-  return (await openNoticeView(repoRoot)).notices;
+async function openNotices(repoRoot, env) {
+  return (await openNoticeView(repoRoot, env)).notices;
 }
 
 /** lane -> notice_id -> [{waiting_digest, recipients}] from ack set records. */
@@ -4737,12 +4819,12 @@ function withAckState(notice, index) {
 const noticeRecipients = (notice) => [...new Set([notice.lane, ...notice.waiting.map(({ agent }) => agent)])].sort();
 
 /** A committed write is never undone for its notices: an unreadable projection says so and `notice list` recovers. */
-async function withNotices(repoRoot, result, before) {
+async function withNotices(repoRoot, result, before, env) {
   if (result === null || typeof result !== 'object' || typeof result.result_digest !== 'string') return result;
   let extra;
   try {
     if (before === null) throw new Error('notices_before_unreadable');
-    const released = newTodoNotices(before, await openNotices(repoRoot));
+    const released = newTodoNotices(before, await openNotices(repoRoot, env));
     // An unreadable ack set only means nobody counts as covered yet: delivery repeats, nothing is lost.
     const index = ackIndex(released.length === 0 ? []
       : await readAllTodoNoticeAcks({ repoRoot }).then(({ acks }) => acks, () => []));
@@ -4768,8 +4850,8 @@ function noticeAckRefusal(error, lane) {
 }
 
 /** `todo notice list`: open notices, unacked unless asked; one unreadable ack file never hides the rest. */
-async function noticeList({ repoRoot, lane, includeAcked }) {
-  const view = await openNoticeView(repoRoot);
+async function noticeList({ repoRoot, env, lane, includeAcked }) {
+  const view = await openNoticeView(repoRoot, env);
   const open = view.notices.filter((notice) => lane === null || notice.lane === lane);
   const records = [];
   const ackUnreadable = [];
@@ -4798,7 +4880,7 @@ async function noticeList({ repoRoot, lane, includeAcked }) {
 
 /** `todo notice ack`: an id that is no longer open is reported as closed, never refused (nothing is left to ack). */
 async function noticeAck({ repoRoot, env, lane, ids }) {
-  const view = await openNoticeView(repoRoot);
+  const view = await openNoticeView(repoRoot, env);
   const laneNotices = view.notices.filter((notice) => notice.lane === lane);
   const openIds = laneNotices.map(({ notice_id: id }) => id);
   const open = new Set(openIds);
@@ -4824,7 +4906,7 @@ async function noticeAck({ repoRoot, env, lane, ids }) {
  * gate: an already startable or finished T is answered with a state and nothing is written.
  */
 async function noticeWait({ repoRoot, env, planKey, taskId, reason, cancel }) {
-  const view = await openNoticeView(repoRoot);
+  const view = await openNoticeView(repoRoot, env);
   const { store } = view;
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
@@ -5196,7 +5278,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     action = (repoRoot) => repairStoreEol({ repoRoot });
   } else if ((argv.length === 1 && argv[0] === 'status')
     || (argv.length === 2 && argv[0] === 'status' && argv[1] === '--json')) {
-    action = (repoRoot) => status({ repoRoot });
+    action = (repoRoot) => status({ repoRoot, env });
   } else if (argv.length === 3 && argv[0] === 'dashboard'
     && argv[1] === 'adopt' && argv[2] === '--json') {
     action = (repoRoot) => adoptDashboardRoot({ repoRoot, env });
@@ -5213,7 +5295,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     };
   } else if (argv[0] === 'show' && readFlags(argv, ['show']) !== null) {
     const flags = readFlags(argv, ['show']);
-    action = (repoRoot) => todoDetail({ repoRoot, planKey: flags.plan, taskId: flags.task });
+    action = (repoRoot) => todoDetail({ repoRoot, env, planKey: flags.plan, taskId: flags.task });
   } else if ((argv.length === 1 && argv[0] === 'bindings')
     || (argv.length === 2 && argv[0] === 'bindings' && argv[1] === '--json')) {
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: null });
@@ -5225,7 +5307,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && (argv.length === 2 || (argv.length === 3 && argv[2] === '--json'))) {
     // Host display read (BellTeam module): a typed inconsistency is a state, never a refusal.
     action = argv[1] === 'read'
-      ? async (repoRoot) => ({ schema: 'lattice.todo_display_read_result.v1', ...await readTodoStoreForDisplay({ repoRoot }) })
+      ? async (repoRoot) => displayRead(repoRoot, env)
       : (repoRoot) => readTodoStoreDisplaySource({ repoRoot });
   } else if (argv[0] === 'note' && argv[1] !== 'list') {
     const flags = matchFlagCommand(argv, ['note'], NOTE_FLAG_SPEC);
@@ -5247,7 +5329,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && matchFlagCommand(argv, ['notice', 'list'], TODO_FLAG_SPECS['notice list']) !== null) {
     const flags = matchFlagCommand(argv, ['notice', 'list'], TODO_FLAG_SPECS['notice list']);
     if (flags.lane === undefined || isNoticeLane(flags.lane)) {
-      action = (repoRoot) => noticeList({ repoRoot, lane: flags.lane ?? null, includeAcked: flags['include-acked'] === true });
+      action = (repoRoot) => noticeList({ repoRoot, env, lane: flags.lane ?? null, includeAcked: flags['include-acked'] === true });
     }
   } else if (argv[0] === 'notice' && argv[1] === 'ack'
     && matchFlagCommand(argv, ['notice', 'ack'], TODO_FLAG_SPECS['notice ack']) !== null) {
@@ -5284,14 +5366,14 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && dependencyFlags(argv) !== null) {
     const flags = dependencyFlags(argv);
     action = (repoRoot) => dependencyConnect({
-      repoRoot, env, fromPlanKey: flags['from-plan'], fromTaskId: flags['from-task'],
+      repoRoot, env, fromProjectId: flags['from-project'] ?? null, fromPlanKey: flags['from-plan'], fromTaskId: flags['from-task'],
       toPlanKey: flags['to-plan'], toTaskId: flags['to-task'], reason: flags.reason,
     });
   } else if (argv[0] === 'dependency' && argv[1] === 'disconnect'
     && dependencyFlags(argv) !== null) {
     const flags = dependencyFlags(argv);
     action = (repoRoot) => dependencyDisconnect({
-      repoRoot, env, fromPlanKey: flags['from-plan'], fromTaskId: flags['from-task'],
+      repoRoot, env, fromProjectId: flags['from-project'] ?? null, fromPlanKey: flags['from-plan'], fromTaskId: flags['from-task'],
       toPlanKey: flags['to-plan'], toTaskId: flags['to-task'], reason: flags.reason,
     });
   } else if (argv[0] === 'independence' && argv[1] === 'compile') {
@@ -5362,7 +5444,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const flags = matchFlagCommand(argv, ['independence', 'witness', 'declare'],
       TODO_FLAG_SPECS['independence witness declare']);
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)) {
-      action = (repoRoot) => witnessDeclare({ repoRoot, planKey: flags.plan, flags });
+      action = (repoRoot) => witnessDeclare({ repoRoot, env, planKey: flags.plan, flags });
     }
   } else if (argv[0] === 'independence' && argv[1] === 'witness' && argv[2] === 'scaffold') {
     const flags = matchFlagCommand(argv, ['independence', 'witness', 'scaffold'],
@@ -5647,11 +5729,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (writesTodoStore(argv)) {
       await ensureActiveProjectDashboard({ repoRoot, env, stderr });
     }
-    const before = releasesTasks(argv) ? await openNotices(repoRoot).catch(() => null) : null;
+    const before = releasesTasks(argv) ? await openNotices(repoRoot, env).catch(() => null) : null;
     const written = atomicCommit
       ? await commitTodoStoreMutation({ repoRoot, argv, action, env })
       : await action(repoRoot);
-    const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before) : written;
+    const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before, env) : written;
     if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     return 0;
   } catch (error) {
