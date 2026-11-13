@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.99.0 — 2026-11-13
+
+ほかの工程表の工程を待ち（前工程）に指定できる版。ホストへの変更：有り（`LATTICE_CHARTS_ROOT`を設定する。`todo display read`に`external_tasks`、`todo show`に`prerequisites`が加わる）。
+
 - ほかの工程表（別のプロジェクト）の工程を、待ち（前工程）に指定できる（クオ 2026-11-13：「待ちには他の工程表の工程も指定できるようにしようぜ」）。`lattice todo dependency connect --from-project <id> --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>`。ほかの工程表は、環境変数`LATTICE_CHARTS_ROOT`の下の`<project_id>/.lattice`から読むだけで、書かない。線は待つ側の工程表にだけ記録する。その工程が終わる（done か retired）までは着手できず、`todo status`の`next_ready`にも知らせにも出ない。終われば、待つ側に何も書かなくても、次に読んだ時に着手できる知らせが出る。ほかの工程表が読めない間は待ちのままで、`todo status`の`cross_plan_findings`が理由（`charts_root_unset`/`chart_unreadable`/`endpoint_missing`）を付けて名指しする。`--from-project`を付けなければ、今までと同じ。環境変数が無い時や知らないプロジェクトの時は、接続を断って何も書かない。ホストへの変更：有り。`todo display read`に`external_tasks`、`todo show`に`prerequisites`が加わる。着手の断りの`blocking_tasks`と知らせの`triggers`は、ほかの工程表の工程に`project_id`が付く。`cross_plan_findings`の`reason`に`charts_root_unset`と`chart_unreadable`が加わる。BellTeam は`LATTICE_CHARTS_ROOT`を設定する（アリス。Store の行はルドミラと合意）。
 
 ## 0.98.0 — 2026-11-13
