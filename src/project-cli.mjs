@@ -1,3 +1,4 @@
+import { withTodoExternalTasks } from './todo-external.mjs';
 import { gitSync } from './git-process.mjs';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
@@ -240,7 +241,7 @@ function invalidStatus({ cliVersion, repoRoot, reason, nextAction = null }) {
  * store読みはここでしか行わない——session開始経路が同じstoreを二度払っていたのが
  * ADR 0131で直した欠陥である。
  */
-async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts = false }) {
+async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts = false, env = process.env }) {
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) {
     return { exitCode: 1, repoRoot: null, store: null, todo: null,
@@ -290,7 +291,8 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
     return invalid('store_layout_invalid');
   }
   try {
-    const store = await readTodoStore({ repoRoot });
+    // xchart: predecessors on other charts count for next_ready here too.
+    const store = await withTodoExternalTasks(await readTodoStore({ repoRoot }), env);
     if (diagnoseStructureArtifacts) {
       const diagnostics = await readTodoStructureArtifactDiagnostics({ repoRoot, store });
       if (diagnostics.length > 0) {
@@ -362,7 +364,7 @@ export async function runProjectStatus({ cwd, stdout, stderr = process.stderr, c
   ensureDashboardActivity = ensureTodoDashboardActivity,
   reportDelivery = reportProjectDashboardDelivery }) {
   const state = await resolveProjectState({
-    cwd, cliVersion, diagnoseStructureArtifacts: true,
+    cwd, cliVersion, diagnoseStructureArtifacts: true, env,
   });
   // dashboard活動の登録はdiscovery面の副作用として維持する（ADR 0131 Decision 4で
   // session-context側だけが持たない、と決めた面である）。
@@ -431,7 +433,7 @@ export function projectTurn({ store, todo, actor, reason = 'store_unavailable' }
  * dashboard活動の登録は行わない。現在地を知るために呼ぶ面であり、常駐面を起こす面ではない。
  */
 export async function runSessionContext({ cwd, stdout, cliVersion, env = process.env }) {
-  const state = await resolveProjectState({ cwd, cliVersion });
+  const state = await resolveProjectState({ cwd, cliVersion, env });
   const independence = state.store === null || state.todo === null
     ? [] : await summarizeIndependence({ repoRoot: state.repoRoot, store: state.store, todo: state.todo });
   const result = {

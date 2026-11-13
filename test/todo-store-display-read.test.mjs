@@ -340,7 +340,7 @@ test('todo display read/source expose the envelope over the CLI; inconsistency i
   assert.equal(verified.schema, 'lattice.todo_display_read_result.v1');
   assert.equal(verified.state, 'verified');
   assert.deepEqual(Object.keys(verified).sort(),
-    ['dropped_members', 'inconsistency', 'schema', 'source', 'state', 'store', 'verified_at']);
+    ['dropped_members', 'external_tasks', 'inconsistency', 'schema', 'source', 'state', 'store', 'verified_at']);
   assert.deepEqual(cli('source'), verified.source);
   await corruptManifestDigest(w);
   const degraded = cli('read');

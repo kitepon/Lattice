@@ -517,3 +517,17 @@ State diagram (task): `pending --start--> in-progress --done--> done --reopen-->
 | cli: `todo reopen` result (`reopenTask`) | after the reopen | status `pending`; `next_action` = `lattice todo start --plan P --task T` (the redo records a start). The rebind hint is gone (nothing is held) | — |
 | guid: reopen / retract refusals | detail `status` | Reopen of an in-progress task offers done or `todo retract … --reason` (any seat). `authored_start_binding_missing` names retract's binding rule and `lattice todo show`. | — |
 | Old readers (C) | journals with an other-seat retract or a pending reopen | Pre-retract-anyone Lattice replays them as `START_RETRACTION_INVALID/start_actor_mismatch` or `STORE_INCONSISTENT` and refuses the journal: upgrade Lattice (nothing to repair) | — |
+
+## Cross-chart ledger edges (xchart Store lines, 2026-11-13)
+
+Plan lattice-cross-chart-20261113, task xchart-impl; Plan flow in
+[dfd-plan-revise](dfd-plan-revise.md#cross-chart-dependency-xchart-2026-11-13). A `cross_plan_dependency`
+event whose `from.project_id` is another project (another chart) lives only in the waiting chart's
+plan-scoped chain; payload shape unchanged. Ludmila AGREED S1-S3 with amendments (S2 ledger loop only; S3
+only on the appendTodoEvent path), carried by Alice.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Store S1: `readTodoStoreReadOnly({repoRoot})` | another chart's root | `readStoreStableWith({repoRoot}, readTodoStoreView)`: the non-recovering view the display uses; no lock, no recovery, no write | Throws where that chart's own writer recovers (`manifest_journal_head_mismatch` after the stable-read attempts, `cross_plan_import_recovery_required`, `source_cutover_recovery_required`) and on `STORE_UNINITIALIZED`. Plan compares the read project_id with the requested one (wrong-target guard) and reads any throw as `chart_unreadable` for that edge only, never refusing the waiting chart's own commands. Self-exit: `cross_plan_dependency_removed` needs no foreign read |
+| Store S2: `validateMergedGraph`, ledger loop only | a ledger edge whose `from.project_id` differs from the owner plan's (`to` is same-project by S3) | `continue` before `bind(from)`: no finding, no adjacency, so `repairCrossPlanBindings` and `dependency_rebind` never see it. `bindIn` is unchanged: a plan-body edge (hard_dependencies, joins, phase_accept_dependencies) naming another project still yields `endpoint_missing` | — |
+| Store S3: `validateCrossPlanDependencyTransition(store, owner, input, {foreignFrom})` | append of a `cross_plan_dependency` | `to.project_id` must be this Store's (`dependency_project_mismatch`). Only the appendTodoEvent path (`todo dependency connect`) passes `foreignFrom: true`: then `from.project_id` may differ and `crossPlanDependencyTask(from)` is skipped (Plan validated plan/task/topology in the other chart just before). The three `prepareCrossPlanDependencies` paths (import genesis via `prepareImportedCrossPlanDependencies`, `connectionOnly`) keep refusing a foreign from with `dependency_project_mismatch`. Self-reference, duplicate, `dependency_target_terminal` and the merged-cycle check stay (the foreign node has no out-edges here; cross-chart cycles are Plan's check) | as before |

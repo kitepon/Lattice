@@ -123,8 +123,8 @@ test('公開subcommand helpは正規構文をstore非依存で表示する', () 
 test('todo dependency helpはconnectとdisconnectの両方を示し、todo helpは矛盾する説明を持たない（a19）', () => {
   const dependency = runCli(['todo', 'dependency', '--help']);
   assert.equal(dependency.status, 0);
-  assert.match(dependency.stdout, /lattice todo dependency connect --from-plan/u);
-  assert.match(dependency.stdout, /lattice todo dependency disconnect --from-plan/u);
+  assert.match(dependency.stdout, /lattice todo dependency connect \[--from-project <id>\] --from-plan/u);
+  assert.match(dependency.stdout, /lattice todo dependency disconnect \[--from-project <id>\] --from-plan/u);
 
   const { stdout: help } = runCli(['todo', '--help']);
   // 未宣言・失効でもstartは止まらず助言になる（u03）。拒否すると述べる文は残さない。

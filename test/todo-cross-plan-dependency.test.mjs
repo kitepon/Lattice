@@ -205,7 +205,7 @@ test('公開helpは発見時接続のexact argvを案内する', () => {
   const help = execFileSync(process.execPath, [bin, 'todo', 'dependency', 'connect', '--help'], {
     encoding: 'utf8',
   });
-  assert.match(help, /todo dependency connect --from-plan <key> --from-task <id>/u);
+  assert.match(help, /todo dependency connect \[--from-project <id>\] --from-plan <key> --from-task <id>/u);
   assert.match(help, /--to-plan <key> --to-task <id> --reason <text>/u);
 });
 

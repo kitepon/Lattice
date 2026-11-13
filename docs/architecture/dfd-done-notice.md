@@ -106,6 +106,17 @@ added after an ack makes it unacked with `acked_recipients` naming the lane; sta
 wait on a startable T returns `startable_now` and writes nothing; `--cancel`; a v1 ack file still
 reads.
 
+## Predecessors on another chart (xchart, 2026-11-13)
+
+A task may wait on a task of another chart ([cross-chart dependency](dfd-plan-revise.md#cross-chart-dependency-xchart-2026-11-13)).
+The done is written in the other chart, so nothing is written in the waiting chart: the notice is computed at read.
+`projectTodoNotices` reads `store.external_tasks` (`withTodoExternalTasks`, done by `openNoticeView` for `notice list`,
+`notice ack`, `todo wait` and the mutation `notices`); an external prerequisite's trigger is its latest event in the
+other chart, `{project_id, plan_key, task_id, kind, event_digest, recorded_at, actor}` (`project_id` only on external
+triggers). The notice id rule is unchanged (digest over the trigger digests), so the notice appears on the first read
+after the other chart's done and keeps its id. A write in the waiting chart does not see the other chart's done as
+"released by this write", so mutation `notices` do not carry it; `notice list` does (Flora's recovery read).
+
 ## Out of scope
 
 Script/CI completion notices (Trony); delivery code (Flora); notices for tasks with no prerequisite (a wait on such a task answers `startable_now`);

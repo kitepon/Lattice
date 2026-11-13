@@ -1032,6 +1032,8 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
     const owner = members.find(({ plan }) => plan.project_id === dependency.to.project_id
       && plan.plan_key === dependency.to.plan_key);
     if (owner === undefined) fail('STORE_INCONSISTENT', 'cross_plan_dependency_owner_missing');
+    // xchart S2: a predecessor on another chart is Plan's node (read there); no finding, no adjacency here.
+    if (dependency.from.project_id !== owner.plan.project_id) continue;
     const digest = dependency.event_digest ?? null;
     const from = bind(dependency.from, owner.plan, digest, 'from');
     const to = bind(dependency.to, owner.plan, digest, 'to');
@@ -1077,9 +1079,14 @@ function crossPlanDependencyTask(store, ref) {
   return { member, task };
 }
 
-function validateCrossPlanDependencyTransition(store, owner, input) {
+/**
+ * xchart S3: only `todo dependency connect` (appendTodoEvent, `foreignFrom`) may record a predecessor on another
+ * chart; Plan checked it there just before. Genesis, import and connectionOnly keep refusing a foreign from.
+ */
+function validateCrossPlanDependencyTransition(store, owner, input, { foreignFrom = false } = {}) {
   const { from, to } = input.payload;
-  if (from.project_id !== store.project_id || to.project_id !== store.project_id) {
+  const foreign = from.project_id !== store.project_id;
+  if ((foreign && !foreignFrom) || to.project_id !== store.project_id) {
     fail('DEPENDENCY_INVALID', 'dependency_project_mismatch');
   }
   // 同一plan内の後追い接続も受ける（2026-08-25 オーナー裁定）。「工程の線を誤ったので足す」という
@@ -1097,7 +1104,7 @@ function validateCrossPlanDependencyTransition(store, owner, input) {
     edge.from.task_id === from.task_id && edge.to.task_id === to.task_id))) {
     fail('DEPENDENCY_EXISTS', 'dependency_already_in_plan', { from, to });
   }
-  const source = crossPlanDependencyTask(store, from);
+  if (!foreign) crossPlanDependencyTask(store, from);
   const target = crossPlanDependencyTask(store, to);
   // A completed source already satisfies the prerequisite. Keep the existing
   // completion record as the proof instead of creating a second ledger entry.
@@ -1850,6 +1857,16 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
   return repairs;
 }
 
+/**
+ * xchart S1: read another chart without touching it: the non-recovering view (no lock, no recovery, no write).
+ * Throws where that chart's own writer must recover (manifest_journal_head_mismatch after the stable-read attempts,
+ * cross_plan_import_recovery_required, source_cutover_recovery_required) and STORE_UNINITIALIZED; Plan reads any
+ * throw as "that chart is unreadable" for its edges only.
+ */
+export async function readTodoStoreReadOnly({ repoRoot }) {
+  return readStoreStableWith({ repoRoot }, readTodoStoreView);
+}
+
 export async function readTodoStoreStable(options = {}) {
   return readStoreStableWith(options, readTodoStore);
 }
@@ -2409,7 +2426,7 @@ export async function appendTodoEvent(options = {}) {
     // 「作業が進んだ」の意味であり、方式選択や依存接続でそこを動かすと意味がずれる。
     if (TODO_PLAN_SCOPED_EVENT_KINDS.includes(options.event.kind)) {
       if (options.event.kind === 'cross_plan_dependency') {
-        validateCrossPlanDependencyTransition(store, member, options.event);
+        validateCrossPlanDependencyTransition(store, member, options.event, { foreignFrom: true });
       }
       if (options.event.kind === 'cross_plan_dependency_removed') {
         const digest = options.event.payload.target_event_digest;

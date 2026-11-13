@@ -59,6 +59,8 @@ function noticeSummary(planKey, task, waiting) {
 export function projectTodoNotices(store, { lane = null, declared = () => true, waits = [] } = {}) {
   const readiness = createTodoReadiness(store);
   const members = new Map(store.members.map((member) => [member.plan.plan_key, member]));
+  const external = new Map((store.external_tasks ?? []).map((entry) => [
+    `${entry.project_id}\0${entry.plan_key}\0${entry.task_id}`, entry]));
   const notices = [];
   for (const ready of projectTodoStatus(store, TODO_STATUS_DISPATCH_ONLY).next_ready) {
     const member = members.get(ready.plan_key);
@@ -67,6 +69,12 @@ export function projectTodoNotices(store, { lane = null, declared = () => true, 
     const refs = readiness.prerequisiteRefs(readiness.key({ ...member.plan, ...task }));
     const triggers = [];
     for (const ref of refs.tasks) {
+      if (ref.project_id !== undefined) {
+        // xchart: the done was written in the other chart; its latest event is read there (withTodoExternalTasks).
+        const trigger = external.get(`${ref.project_id}\0${ref.plan_key}\0${ref.task_id}`)?.trigger ?? null;
+        if (trigger !== null) triggers.push({ project_id: ref.project_id, plan_key: ref.plan_key, task_id: ref.task_id, ...trigger });
+        continue;
+      }
       const event = latestEvent(members.get(ref.plan_key), (entry) => entry.task_id === ref.task_id);
       if (event !== null) triggers.push(triggerOf(members.get(ref.plan_key), event, { task_id: ref.task_id }));
     }
