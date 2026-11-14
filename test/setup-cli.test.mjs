@@ -35,7 +35,8 @@ test('Grokの設定先指定と名前による無効化を尊重する', async (
     const result = await invoke(env, argv, { probe: async () => { calls += 1; return { state: 'verified' }; } });
     assert.equal(result.value.hosts[0].mcp.config_path, target);
     assert.equal(result.value.hosts[0].mcp.state, 'disabled');
-    assert.equal(result.exit, 1);
+    assert.equal(result.value.state, 'partial');
+    assert.equal(result.exit, 0);
   }
   assert.equal(calls, 0);
   assert.deepEqual(parseSetupConfig(await readFile(target, 'utf8'), 'toml').value.disabled_mcp_servers, ['lattice']);
@@ -62,7 +63,7 @@ test('4 AIの初回・再実行・診断が設定と他登録を保持する', a
     assert.equal(first.value.hosts[0].mcp.state, 'verified');
     const unsupported = host === 'grok' || process.platform === 'win32';
     assert.equal(first.value.hosts[0].hooks.state, unsupported ? 'unsupported' : 'verified');
-    assert.equal(first.exit, unsupported ? 1 : 0);
+    assert.equal(first.exit, 0);
     const written = await readFile(paths.mcp, 'utf8');
     assert.match(written, /利用者の注記/u);
     const parsed = parseSetupConfig(written, paths.format).value;
@@ -81,7 +82,7 @@ test('4 AIの初回・再実行・診断が設定と他登録を保持する', a
 test('Windows未対応hookがMCPの登録・読戻しを妨げない', async (t) => {
   const { env } = await fixture(t);
   const result = await invoke(env, ['--host', 'all', '--json'], { platform: 'win32' });
-  assert.equal(result.exit, 1);
+  assert.equal(result.exit, 0);
   assert.equal(result.value.state, 'partial');
   for (const host of result.value.hosts) {
     assert.equal(host.mcp.state, 'verified');
@@ -143,6 +144,7 @@ test('利用者の無効化を保持しMCPを起動しない', async (t) => {
   const result = await invoke(env, ['--host', 'codex'], { probe: async () => { assert.fail('無効化されたMCPを起動した'); } });
   assert.equal(result.value.hosts[0].mcp.state, 'disabled');
   assert.equal(result.value.state, 'partial');
+  assert.equal(result.exit, 0);
 });
 
 test('設定競合と接続失敗は成功へ丸めない', async (t) => {
@@ -155,6 +157,7 @@ test('設定競合と接続失敗は成功へ丸めない', async (t) => {
   assert.equal(conflict.value.hosts[0].mcp.code, 'MCP_REGISTRATION_CONFLICT');
   assert.equal(await readFile(paths.mcp, 'utf8'), original);
   const failed = await invoke(env, ['--host', 'cursor'], { probe: async () => { throw Object.assign(new Error('接続失敗'), { code: 'MCP_TIMEOUT' }); } });
+  assert.equal(failed.value.state, 'failed');
   assert.equal(failed.exit, 1);
   assert.equal(failed.value.hosts[0].mcp.code, 'MCP_TIMEOUT');
 });

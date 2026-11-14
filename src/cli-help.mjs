@@ -258,7 +258,7 @@ registerはLATTICE_BRIDGE_REGISTRAR_SSH_HOSTとLATTICE_BRIDGE_REGISTRAR_SCRIPT�
 host省略時は既存AI設定を検出する。明示hostは初回設定を作成する。
 setupは登録・hook準備・MCP接続確認まで実行する。更新後も同じコマンドを使う。
 statusは設定変更をせず登録とMCP接続を診断する。
-結果は機能別のverified／unsupported／disabled／failed。readyだけexit 0、partial／failedはexit 1。
+結果は機能別のverified／unsupported／disabled／failed。ready／partialはexit 0、failedだけexit 1。
 Windows製品hookとGrok製品hookは未対応として返し、MCPは独立して実行する。
 `,
   hooks: `Usage: lattice hooks <install|status|uninstall|emit> --host <claude|codex|cursor>

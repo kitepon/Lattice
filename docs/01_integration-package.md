@@ -149,7 +149,8 @@ JSONは既存の`jsonc-parser`、TOMLは位置情報を持つ`toml-eslint-parser
 hookは既存installerの実行とstatus読戻しを完了してから`verified`になる。
 Windows hookは`HOST_PLATFORM_UNSUPPORTED`、Grok hookは`HOST_FEATURE_UNSUPPORTED`。
 未対応を含む全体結果は`partial`、失敗は`failed`、全機能verifiedだけ`ready`とし、
-exitはreadyのみ0、partial／failedは1、用法違反は2を返す。
+exitはready／partialが0、failedだけ1、用法違反は2を返す。partialは設計上の未対応と
+利用者の無効化だけで、失敗を含まないため、呼び手が失敗と数えないよう0を返す。
 利用者のMCP無効化は`USER_DISABLED`で残し、診断目的でも勝手に起動しない。
 Grokの`disabled_mcp_servers`による名前単位の無効化も同じように扱う。
 一機能の未対応や失敗で他の対応機能を省略しない。

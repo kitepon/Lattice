@@ -121,5 +121,6 @@ export async function runSetupCli({ argv, stdout, env = process.env, platform = 
     platform, state, ...(hosts.length ? {} : { code: 'HOST_NOT_PRESENT',
       message: 'このHOMEにはAIの設定フォルダがありません',
       next_action: 'lattice setup --host <claude|codex|grok|cursor>' }), hosts: results })}\n`);
-  return state === 'ready' ? 0 : 1;
+  // partial = designed-unsupported or user-disabled only; nothing failed, so callers must not count it as failure.
+  return state === 'failed' ? 1 : 0;
 }
