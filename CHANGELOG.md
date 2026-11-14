@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.101.0 — 2026-11-14
+
+ホスト（BellTeam）が Lattice の中を直接見ずに済む、契約した窓口の版（クオ 2026-11-14：「プロダクト間の繋ぎはしっかりと図で定義しよう」）。ホストへの変更：有り（新しいコマンドの加算のみ。既存のコマンドと結果の形は変わらない）。契約は`docs/architecture/dfd-charts-read.md`（K1〜K8、フローラと合意）。
+
+- 工程表の指定（K8）：`LATTICE_CHARTS_ROOT`と`LATTICE_PROJECT_ID`の両方があれば、どのコマンドも`<root>/<id>`の工程表で動く。ホストは道を組み立てず、作業場所も移さない。
+- 工程表の作成（K5）：まだ無い工程表に`plan create`か`chart set`を打つと、Lattice がフォルダと git を作る。失敗したら、その回に作ったフォルダだけを消す。ほかのコマンドは`CHART_NOT_FOUND`、リンクやフォルダでない道は`CHART_PATH_INVALID`で断る。
+- 一覧（K1）：`lattice charts list --json`は、全工程表の`project_id`・名前・作った人・作った時刻・変化の印（`source`）を1回の処理で返す。読めない工程表は`source: null`と所見で示し、ほかを止めない。
+- 変化の印（K2）：`lattice charts source [--project <id>]... --json`は、選んだ工程表の印を1回の処理で返す。
+- 名前と作った人（K4）：`lattice chart set --name <名前> [--created-by <id>]`。作った人は Store を作った席（`LATTICE_SEAT_ID`）が記録され、上書きされない。`--created-by`は、まだ記録が無い時だけ効く（既存の工程表の移し替え用）。
+- コードの工程表（K7）：`lattice chart repo bind --url <url> --branch <branch>`と`lattice chart repo sync --json`。浅く取り込み、最後に受け入れた先頭からの早送りだけをし、巻き戻しや強制はしない。そのあと sensor を同期する。結果は current / synced / dirty / diverged / failed。
+- 実装：アリス（PR #179、CLI）、ルドミラ（PR #177、Store）。
+
 ## 0.100.0 — 2026-11-14
 
 工程の「木」と、その大きさを返す版。計画の改訂でつなぎが消える不具合と、大きな計画で書き込みが遅い不具合も直した。ホストへの変更：有り（`todo display read`に`trees`が加わる。加算のみ）。BellTeam は早めにこの版へ上げる。
