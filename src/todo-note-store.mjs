@@ -7,6 +7,7 @@ import path from 'node:path';
 import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
 import { normalizeCheckoutEol } from './todo-store-view.mjs';
+import { memoByFileIdentity } from './todo-version-memo.mjs';
 
 import {
   TODO_LIMITS,
@@ -504,31 +505,38 @@ async function readNoteMigrations(repoRoot, planKey, eventVersions) {
       fail('NOTE_PROJECTION_INVALID', 'note_plan_history_inventory_invalid', { plan_key: planKey });
     }
     const versionRoot = path.join(base, entry.name);
-    // A revision directory is published before manifest activation.  A crash during
-    // that window can leave an unreferenced directory containing only a journal
-    // stub.  It is not a historical plan until its canonical plan artifact exists.
-    // Do not make that unreachable residue poison note projection; if a note event
-    // names this version, the origin-version check below still fails closed.
-    const plan = await readCanonicalJson(path.join(versionRoot, 'plan.json'), { missing: true });
-    if (plan === null) continue;
-    if (!validateTodoPlan(plan) || plan.plan_key !== planKey || plan.plan_version !== entry.name) {
-      fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: entry.name });
-    }
-    versions.add(entry.name);
-    const revision = await readCanonicalJson(path.join(versionRoot, 'revision.json'), { missing: true });
-    if (revision === null) continue;
-    if (!(validateTodoRevision(revision) || validatePhaseTodoRevision(revision))
-      || revision.plan_key !== planKey || revision.predecessor?.plan_version === undefined
-      || !Array.isArray(revision.task_migration)) {
-      fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: entry.name });
-    }
-    migrations.push({
-      from_plan_version: revision.predecessor.plan_version,
-      to_plan_version: entry.name,
-      task_migration: revision.task_migration.map(({ from_task_id: fromTaskId, to_task_id: toTaskId }) => ({
-        from_task_id: fromTaskId, to_task_id: toTaskId,
-      })),
+    const planPath = path.join(versionRoot, 'plan.json');
+    const revisionPath = path.join(versionRoot, 'revision.json');
+    // perf-store: validated once per process while both files are unchanged (todo-version-memo).
+    const version = await memoByFileIdentity([planPath, revisionPath], async () => {
+      // A revision directory is published before manifest activation.  A crash during
+      // that window can leave an unreferenced directory containing only a journal
+      // stub.  It is not a historical plan until its canonical plan artifact exists.
+      // Do not make that unreachable residue poison note projection; if a note event
+      // names this version, the origin-version check below still fails closed.
+      const plan = await readCanonicalJson(planPath, { missing: true });
+      if (plan === null) return null;
+      if (!validateTodoPlan(plan) || plan.plan_key !== planKey || plan.plan_version !== entry.name) {
+        fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: entry.name });
+      }
+      const revision = await readCanonicalJson(revisionPath, { missing: true });
+      if (revision === null) return { migration: null };
+      if (!(validateTodoRevision(revision) || validatePhaseTodoRevision(revision))
+        || revision.plan_key !== planKey || revision.predecessor?.plan_version === undefined
+        || !Array.isArray(revision.task_migration)) {
+        fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: entry.name });
+      }
+      return { migration: {
+        from_plan_version: revision.predecessor.plan_version,
+        to_plan_version: entry.name,
+        task_migration: revision.task_migration.map(({ from_task_id: fromTaskId, to_task_id: toTaskId }) => ({
+          from_task_id: fromTaskId, to_task_id: toTaskId,
+        })),
+      } };
     });
+    if (version === null) continue;
+    versions.add(entry.name);
+    if (version.migration !== null) migrations.push(structuredClone(version.migration));
   }
   if ([...eventVersions].some((version) => !versions.has(version))) {
     fail('NOTE_PROJECTION_INVALID', 'note_origin_plan_version_unknown');
