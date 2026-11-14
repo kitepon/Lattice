@@ -24,6 +24,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import {
+  TODO_CHART_META_SCHEMA,
   TODO_COORDINATION_MODES,
   TODO_EVENT_KINDS,
   TODO_LIMITS,
@@ -38,6 +39,7 @@ import {
   isTodoRef,
   todoSelfDigest,
   validateEvidenceDescriptor,
+  validateTodoChartMeta,
   validateTodoImportSource,
   validateTodoEvent,
   validateTodoManifest,
@@ -151,7 +153,7 @@ function rejectUnsupportedRevisionSchema(value, { family, supportedSchemas }) {
 
 // Reader registration (newer-value-says-upgrade): the newest schema of each Store record family this
 // reader knows. Bump it in the same diff that teaches the validator a new version.
-export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 2, todo_notice_waits: 1 });
+export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 2, todo_notice_waits: 1, chart_meta: 1 });
 const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest']]);
 const vocabularyWord = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
 
@@ -3706,11 +3708,96 @@ async function withInitialStoreLocks(stage, currentRoot, callback) {
 }
 
 /** G5-only initial authoring transaction. Store membership appears by one final directory rename. */
+const CHART_META_REF = '.lattice/chart.json';
+const CHART_META_MAX_BYTES = 65_536;
+const CHART_META_PATCH_KEYS = ['name', 'created_by', 'repo'];
+
+/** The recorded chart identity, or null when `.lattice/chart.json` does not exist. */
+async function readChartMetaRecord(repoRoot) {
+  const absolute = path.join(repoRoot, CHART_META_REF);
+  const invalid = () => fail('STORE_INCONSISTENT', 'chart_meta_invalid', { ref: CHART_META_REF });
+  let bytes;
+  try {
+    const state = await lstat(absolute);
+    if (state.isSymbolicLink() || !state.isFile() || state.size > CHART_META_MAX_BYTES) invalid();
+    bytes = normalizeCheckoutEol(await readFile(absolute));
+  } catch (error) {
+    if (error instanceof TodoStoreError) throw error;
+    if (error?.code === 'ENOENT') return null;
+    if (error?.code === 'ENOTDIR') invalid();
+    throw error;
+  }
+  let value;
+  try { value = JSON.parse(decodeUtf8(bytes, 'STORE_INCONSISTENT', 'chart_meta_invalid')); }
+  catch (error) { if (error instanceof TodoStoreError) throw error; invalid(); }
+  rejectNewerTodoSchema(value, 'chart_meta', CHART_META_REF);
+  if (!validateTodoChartMeta(value)) invalid();
+  return value;
+}
+
+const chartMetaView = (record) => ({ name: record?.name ?? null, created_by: record?.created_by ?? null,
+  created_at: record?.created_at ?? null, repo: record?.repo ?? null });
+
+/**
+ * a101 K4: chart identity `.lattice/chart.json` (dfd-charts-read). Read only, no lock, no Store needed: a missing file
+ * reads all null; a malformed one STORE_INCONSISTENT/chart_meta_invalid; a newer schema UNSUPPORTED_SCHEMA.
+ */
+export async function readTodoChartMeta({ repoRoot = process.cwd() } = {}) {
+  return chartMetaView(await readChartMetaRecord(path.resolve(repoRoot)));
+}
+
+/**
+ * a101 K4: patch {name?, created_by?, repo?} (absent key = keep). `created_by` applies only while unrecorded and
+ * `created_at` is stamped when the file is first created: the creator is never overwritten. Works before the first plan
+ * (creates `.lattice/`). The read-modify-write holds `.lattice/.chart.write.lock` so two writers cannot both see an
+ * unrecorded creator (identified lock, proven-dead recovery). Name rules are the CLI's.
+ */
+export async function writeTodoChartMeta({ repoRoot = process.cwd(), patch = {} } = {}) {
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)
+    || Object.keys(patch).some((key) => !CHART_META_PATCH_KEYS.includes(key))) {
+    throw new TypeError('chart meta patch invalid');
+  }
+  const root = path.resolve(repoRoot);
+  const latticeRoot = path.join(root, '.lattice');
+  const parent = await lstat(latticeRoot).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (parent === null) {
+    await mkdir(latticeRoot, { mode: 0o700 }).catch((error) => { if (error?.code !== 'EEXIST') throw error; });
+  } else if (parent.isSymbolicLink() || !parent.isDirectory()) {
+    fail('STORE_INCONSISTENT', 'unsafe_lattice_root');
+  }
+  try {
+    return await withStoreLock({ lockPath: path.join(latticeRoot, '.chart.write.lock'), createParent: false,
+      waitMs: LOCK_WAIT_MS }, async () => {
+      const current = await readChartMetaRecord(root);
+      const next = {
+        schema: TODO_CHART_META_SCHEMA,
+        name: 'name' in patch ? patch.name : current?.name ?? null,
+        created_by: current?.created_by ?? patch.created_by ?? null,
+        created_at: current === null ? new Date().toISOString() : current.created_at,
+        repo: 'repo' in patch ? patch.repo : current?.repo ?? null,
+      };
+      if (!validateTodoChartMeta(next)) throw new TypeError('chart meta patch invalid');
+      if (current !== null && canonicalizeTodoArtifact(next) === canonicalizeTodoArtifact(current)) {
+        return { meta: chartMetaView(current), unchanged: true };
+      }
+      await atomicWrite(path.join(root, CHART_META_REF), canonicalLine(next));
+      return { meta: chartMetaView(next), unchanged: false };
+    });
+  } catch (error) {
+    if (error instanceof StoreLockError) fail('STORE_WRITE_CONFLICT', error.reason, error.detail);
+    throw error;
+  }
+}
+
 export async function initializeAuthoredTodoStore(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
   const optionKeys = [
     'repoRoot', 'writer', 'projectId', 'repositories', 'plan', 'genesis',
+    ...(options.chartCreator === undefined ? [] : ['chartCreator']),
   ];
   const allowedOptions = options.featureChain === undefined ? optionKeys : [...optionKeys, 'featureChain'];
   if (!(exactRecord(options, allowedOptions)
@@ -3755,8 +3842,9 @@ export async function initializeAuthoredTodoStore(options = {}) {
   await prepareAuthoredStoreRoot(repoRoot, options);
   await mkdir(stage, { mode: 0o700 });
   stageIdentity = await lstat(stage);
+  let created;
   try {
-    return await withInitialStoreLocks(stage, async () => {
+    created = await withInitialStoreLocks(stage, async () => {
         const current = renamed ? storeRoot : stage;
         const identity = await lstat(current).catch((error) => {
           if (error?.code !== 'ENOENT') throw error;
@@ -3892,6 +3980,11 @@ export async function initializeAuthoredTodoStore(options = {}) {
       }
     }
   }
+  // a101 K4: the creating run is the chart's creator (only while unrecorded). After activation, so the rollback above
+  // never meets chart.json; the Store is published, so a chart.json fault is the readers' finding, not this run's failure.
+  try { await writeTodoChartMeta({ repoRoot, patch: { created_by: options.chartCreator ?? null } }); }
+  catch (error) { if (!(error instanceof TodoStoreError)) throw error; }
+  return created;
 }
 
 async function sourceItemBytes(repoRoot, sourceRef) {

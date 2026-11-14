@@ -44,6 +44,8 @@ export const TODO_NOTE_EVENT_V2_SCHEMA = 'lattice.todo_note_event.v2';
 // Per-lane startable-notice ack set and per-plan waits (host-local; todo-notice-store.mjs).
 export const TODO_NOTICE_ACKS_SCHEMA = 'lattice.todo_notice_acks.v2';
 export const TODO_NOTICE_WAITS_SCHEMA = 'lattice.todo_notice_waits.v1';
+/** a101 K4: chart identity `.lattice/chart.json` (dfd-charts-read). */
+export const TODO_CHART_META_SCHEMA = 'lattice.chart_meta.v1';
 /**
  * v2でnoteの`scope`とplan noteを載せる。v1のままでは`task_id`が identifier 必須・
  * `full_history_command`が`--task <id>`込みの文字列と完全一致で、どちらもplan noteを表せない。
@@ -845,4 +847,15 @@ export function validateTodoSnapshot(value) {
           || value.phases[index - 1].phase_id < entry.phase_id)))
       && isTodoDigest(value.snapshot_digest) && value.snapshot_digest === todoSelfDigest(value, 'snapshot_digest');
   } catch { return false; }
+}
+
+export function validateTodoChartMeta(value) {
+  const text = (field) => field === null || (typeof field === 'string' && field.length > 0 && field.length <= 1024);
+  const word = (field) => typeof field === 'string' && field.length > 0 && field.length <= 1024;
+  const { repo } = value ?? {};
+  return exactRecord(value, ['schema', 'name', 'created_by', 'created_at', 'repo'])
+    && value.schema === TODO_CHART_META_SCHEMA && text(value.name) && text(value.created_by)
+    && (value.created_at === null || isStrictTodoTimestamp(value.created_at))
+    && (repo === null || (exactRecord(repo, ['url', 'branch', 'accepted_tip'])
+      && word(repo.url) && word(repo.branch) && text(repo.accepted_tip)));
 }
