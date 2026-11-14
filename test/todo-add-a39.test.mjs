@@ -11,14 +11,14 @@ import { readTodoStore } from '../src/todo-store.mjs';
 // design_memo; plan revise takes --plan like every todo write.
 const CLI = path.resolve(import.meta.dirname, '../bin/lattice.mjs');
 
-function run(root, args) {
+function run(root, args, agent = 'fixture') {
   return spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8',
     env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0',
       LATTICE_RUNTIME_ERROR_REPORTING: '0', LATTICE_TODO_ACTOR_HOST: 'fixture',
-      LATTICE_TODO_ACTOR_SESSION: 'fixture', LATTICE_TODO_ACTOR_AGENT: 'fixture' } });
+      LATTICE_TODO_ACTOR_SESSION: 'fixture', LATTICE_TODO_ACTOR_AGENT: agent } });
 }
-function success(root, args) {
-  const result = run(root, args);
+function success(root, args, agent) {
+  const result = run(root, args, agent);
   assert.equal(result.status, 0, `${args.join(' ')}\n${result.stderr}\n${result.stdout}`);
   return JSON.parse(result.stdout);
 }
@@ -70,6 +70,26 @@ test('todo add adds one task with edges and carries every other task state', asy
     ['a>b', 'a>d', 'b>d', 'd>c']);
   assert.match(JSON.stringify(success(root, ['todo', 'note', 'list', '--plan', 'work', '--json'])),
     /todo add d: found in review/u);
+});
+
+// perf-rebind (2026-11-14): every carried in-progress task is rebound after one todo add, by its own start actor.
+test('todo add rebinds several in-progress tasks of different seats in one pass', async (context) => {
+  const root = await fixture(context);
+  success(root, ['todo', 'start', '--plan', 'work', '--task', 'a'], 'seat-1');
+  success(root, ['todo', 'add', '--plan', 'work', '--task', 'e', '--title', 'E', '--phase', 'p1',
+    '--design-memo', 'NO_PLAN'], 'seat-2');
+  success(root, ['todo', 'start', '--plan', 'work', '--task', 'c'], 'seat-2');
+  success(root, ['todo', 'start', '--plan', 'work', '--task', 'e'], 'seat-3');
+  const result = success(root, ['todo', 'add', '--plan', 'work', '--task', 'd', '--title', 'D',
+    '--phase', 'p1', '--design-memo', 'NO_PLAN'], 'seat-4');
+  assert.deepEqual([...result.rebound_task_ids].sort(), ['a', 'c', 'e']);
+  const member = await readWork(root);
+  const status = Object.fromEntries(member.tasks.map(({ task_id: id, status: s }) => [id, s]));
+  assert.deepEqual(status, { a: 'in-progress', b: 'pending', c: 'in-progress', d: 'pending', e: 'in-progress' });
+  const rebinds = member.journal.events.filter(({ kind, payload }) => kind === 'start' && payload.start_mode === 'rebind');
+  assert.deepEqual(rebinds.map(({ task_id: id, actor, plan_version: version }) => [id, actor.agent, version])
+    .sort(), [['a', 'seat-1', member.plan.plan_version], ['c', 'seat-2', member.plan.plan_version],
+    ['e', 'seat-3', member.plan.plan_version]]);
 });
 
 test('todo add refuses an existing id or an unknown edge end before writing', async (context) => {
