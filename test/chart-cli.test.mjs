@@ -68,6 +68,16 @@ test('K8/K5/K4/K1/K2: plan create and chart set address and create charts; list 
   assert.deepEqual(ok(['charts', 'list', '--json']).charts.map(({ project_id: id, name }) => [id, name]),
     [['alpha', 'Alpha chart']]);
 
+  // a102 migration of a nameless chart with no recorded creator: --created-by alone keeps the name null.
+  const gamma = { LATTICE_PROJECT_ID: 'gamma' };
+  ok(['plan', 'create', '--input', 'plan.json'], { ...gamma, LATTICE_SEAT_ID: '' });
+  const moved = ok(['chart', 'set', '--created-by', 'bot-old', '--json'], gamma);
+  assert.deepEqual([moved.name, moved.created_by, moved.unchanged], [null, 'bot-old', false]);
+  const again = ok(['chart', 'set', '--created-by', 'bot-new', '--json'], gamma);
+  assert.deepEqual([again.name, again.created_by, again.unchanged], [null, 'bot-old', true]);
+  const neither = refused(['chart', 'set', '--json'], gamma);
+  assert.deepEqual([neither.code, neither.detail?.field], ['CHART_NAME_INVALID', '--name'], JSON.stringify(neither));
+
   await writeFile(path.join(root, 'file'), 'not a chart');
   assert.equal(refused(['todo', 'status', '--json'], { LATTICE_PROJECT_ID: 'file' }).code, 'CHART_PATH_INVALID');
   assert.equal(refused(['todo', 'status', '--json'], { LATTICE_PROJECT_ID: '..' }).code, 'CHART_PATH_INVALID');
