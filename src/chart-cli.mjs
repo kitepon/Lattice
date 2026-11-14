@@ -175,24 +175,33 @@ function projectIdOf(env, dir) {
   return env[PROJECT_ID_ENV] || path.basename(dir);
 }
 
-/** K4 `chart set --name <text> [--created-by <id>]`; `created` = K5 made the chart in this run. */
+/**
+ * K4 `chart set [--name <text>] [--created-by <id>]`, at least one; `created` = K5 made the chart in this run.
+ * Without --name the patch has no `name` key, so the name stays as is (null stays null): the a102 sidecar migration.
+ */
 async function chartSet({ cwd, env, flags, created }) {
-  const name = typeof flags.name === 'string' ? flags.name.trim() : null;
-  if (!validChartName(name)) {
+  if (!('name' in flags) && !('created-by' in flags)) {
+    throw refusal('CHART_NAME_INVALID', 'chart_set_flag_missing', { field: '--name',
+      rule: '--name, --created-by or both',
+      next_action: 'lattice chart set --name <text> [--created-by <id>] (or --created-by <id> alone)' });
+  }
+  const name = 'name' in flags ? (typeof flags.name === 'string' ? flags.name.trim() : null) : undefined;
+  if (name !== undefined && !validChartName(name)) {
     throw refusal('CHART_NAME_INVALID', 'chart_name_invalid', { field: '--name',
       rule: '1-40 characters after trimming, no control characters',
       next_action: 'lattice chart set --name <text>' });
   }
-  const explicit = typeof flags['created-by'] === 'string' ? flags['created-by'].trim() : undefined;
+  const explicit = 'created-by' in flags ? (typeof flags['created-by'] === 'string' ? flags['created-by'].trim() : null)
+    : undefined;
   if (explicit !== undefined && !validChartName(explicit)) {
     throw refusal('CHART_NAME_INVALID', 'chart_created_by_invalid', { field: '--created-by',
       rule: '1-40 characters after trimming, no control characters',
-      next_action: 'lattice chart set --name <text> --created-by <id>' });
+      next_action: 'lattice chart set --created-by <id>' });
   }
   const dir = await repoRoot(cwd);
   const createdBy = explicit ?? (created ? env[SEAT_ID_ENV] || null : undefined);
   const { meta, unchanged } = await writeTodoChartMeta({ repoRoot: dir,
-    patch: { name, ...(createdBy === undefined ? {} : { created_by: createdBy }) } });
+    patch: { ...(name === undefined ? {} : { name }), ...(createdBy === undefined ? {} : { created_by: createdBy }) } });
   return { schema: 'lattice.chart_set_result.v1', project_id: projectIdOf(env, dir), name: meta.name,
     created_by: meta.created_by, created_at: meta.created_at, unchanged };
 }
@@ -317,7 +326,7 @@ export async function runChartCli({ argv, cwd, env, stdout, stderr, created = fa
     } else if (group === 'chart' && command === 'set') {
       const { flags, rest } = parseFlagMap(words.slice(2));
       if (rest.length > 0 || Object.keys(flags).some((key) => !['name', 'created-by'].includes(key))) {
-        return usage(stderr, 'chart set --name <text> [--created-by <id>] [--json]');
+        return usage(stderr, 'chart set [--name <text>] [--created-by <id>] [--json]');
       }
       result = await chartSet({ cwd, env, flags, created });
     } else if (group === 'chart' && command === 'repo' && sub === 'bind') {
