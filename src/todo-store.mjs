@@ -1703,7 +1703,7 @@ async function retainedPlanVersions(repoRoot, activePlan) {
 
 /**
  * a35: the coordination declaration belongs to the plan, not to one version (ADR 0160 Decision 2).
- * A revision starts an empty plan-scoped chain, so a version that has not declared its own reads the
+ * A revision does not copy the declaration into the new plan-scoped chain, so a version that has not declared its own reads the
  * newest declaration along its retained predecessors. Read only: nothing is copied into the new chain.
  * An unreadable predecessor ends the walk as undeclared, which is what the version showed before a35.
  */
@@ -2573,6 +2573,49 @@ async function appendPlanScopedEvent({ repoRoot, member, input, assertHeld }) {
     plan_scoped_head_digest: event.event_digest,
     coordination: projectTodoCoordination(events) ?? member.coordination ?? null,
   };
+}
+
+/**
+ * edge-carry: a successor's plan-scoped chain starts with the predecessor's live incoming connections, so a revision
+ * no longer drops them. `to` and a same-plan `from` follow the genesis task_migration onto the successor topology; a
+ * removed endpoint, a self edge or a duplicate after mapping drops the edge; any other `from` stays as recorded (its
+ * own plan's revision is the u03 repair's, another chart's is Plan's). Actor, time and provenance stay the
+ * connection's, so the bytes depend only on the predecessor chain and the successor and a resumed transaction rebuilds
+ * them. Coordination declarations are not copied (read-time inheritance, a35).
+ */
+function carriedPlanScopedChain(store, previous, plan, journalRef, taskMigration) {
+  const live = new Set(projectTodoCrossPlanDependencies(store.members).map(({ event_digest: digest }) => digest));
+  const ids = new Map(taskMigration.map(({ from_task_id: from, to_task_id: to }) => [from, to]));
+  const carry = (ref) => {
+    if (ref.project_id !== plan.project_id || ref.plan_key !== plan.plan_key) return ref;
+    const taskId = ids.get(ref.task_id);
+    return taskId === undefined || taskId === 'removed' ? null
+      : { ...ref, task_id: taskId, expected_topology_digest: plan.topology_digest };
+  };
+  const successor = { plan, plan_scoped: { ref: planScopedJournalRef(journalRef), events: [], activeBytes: Buffer.alloc(0) } };
+  const seen = new Set();
+  for (const event of previous.plan_scoped?.events ?? []) {
+    if (event.kind !== 'cross_plan_dependency' || !live.has(event.event_digest)) continue;
+    const from = carry(event.payload.from); const to = carry(event.payload.to);
+    if (from === null || to === null || mergedTaskKey(from) === mergedTaskKey(to)) continue;
+    const key = `${mergedTaskKey(from)}\0${mergedTaskKey(to)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const carried = buildPlanScopedEvent(successor, { kind: event.kind, actor: event.actor,
+      recorded_at: event.recorded_at, provenance: event.provenance,
+      payload: { from, to, reason: event.payload.reason } });
+    successor.plan_scoped.activeBytes = Buffer.concat([successor.plan_scoped.activeBytes,
+      planScopedEventBytes(successor, carried)]);
+    successor.plan_scoped.events.push(carried);
+  }
+  return successor.plan_scoped;
+}
+
+/** Written before the manifest switch; the version is not active yet, so a retry rewrites it from the current predecessor. */
+async function writeCarriedPlanScopedChain(repoRoot, chain) {
+  const absolute = path.resolve(repoRoot, chain.ref);
+  if (chain.events.length === 0) await rm(absolute, { force: true });
+  else await atomicWrite(absolute, chain.activeBytes);
 }
 
 /** Rebind existing connections to a carried source without changing their endpoints. */
@@ -4873,8 +4916,9 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     verifyPlanNarrativeAnchors(repoRoot, revision.desired_plan, previous.plan);
     const stateMigration = stateMigrationFor(previous, revision);
     const phaseStateMigration = phaseStateMigrationFor(previous, revision);
+    const carriedChain = carriedPlanScopedChain(store, previous, revision.desired_plan, journalRef, stateMigration);
     validateMergedGraph(store.members.map((member) => member === previous
-      ? { ...member, plan: revision.desired_plan, plan_scoped: null } : member));
+      ? { ...member, plan: revision.desired_plan, plan_scoped: carriedChain } : member));
     const candidateGenesis = buildPhaseRevisionGenesis(revision.desired_plan, {
       previous_digest: revision.predecessor.journal_head_digest, actor: options.actor,
       recorded_at: options.recordedAt, provenance: options.provenance ?? null,
@@ -4997,6 +5041,7 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     await publishRevisionArtifact(path.join(transaction, 'phase-revision-commit-receipt.json'),
       path.resolve(repoRoot, commitReceiptRef), canonicalLine(commitReceipt));
     await protocolStage(options, 'phase_v3_commit_receipt_durable');
+    await writeCarriedPlanScopedChain(repoRoot, carriedChain);
     const nextManifest = { schema: 'lattice.todo_manifest.v2', project_id: currentManifest.project_id,
       repositories: currentManifest.repositories, members, manifest_digest: '' };
     nextManifest.manifest_digest = todoSelfDigest(nextManifest, 'manifest_digest');
@@ -5043,8 +5088,12 @@ export async function applyPhaseTodoRevision(options = {}) {
     verifyPlanNarrativeAnchors(repoRoot, revision.desired_plan, previous.plan);
     const stateMigration = stateMigrationFor(previous, revision);
     const phaseStateMigration = phaseStateMigrationFor(previous, revision);
+    const base = `${STORE_ROOT_REF}/plans/${revision.plan_key}/${revision.desired_plan.plan_version}`;
+    const revisionRef = `${base}/revision.json`; const planRef = `${base}/plan.json`;
+    const journalRef = `${base}/journal/active.jsonl`; const snapshotRef = `${base}/snapshot.json`;
+    const carriedChain = carriedPlanScopedChain(store, previous, revision.desired_plan, journalRef, stateMigration);
     const prospective = store.members.map((member) => member === previous
-      ? { ...member, plan: revision.desired_plan, plan_scoped: null } : member);
+      ? { ...member, plan: revision.desired_plan, plan_scoped: carriedChain } : member);
     validateMergedGraph(prospective);
     const candidateGenesis = buildPhaseRevisionGenesis(revision.desired_plan, {
       previous_digest: revision.predecessor.journal_head_digest,
@@ -5071,9 +5120,6 @@ export async function applyPhaseTodoRevision(options = {}) {
       }));
     }
     await protocolStage(options, 'phase_revision_marker_durable');
-    const base = `${STORE_ROOT_REF}/plans/${revision.plan_key}/${revision.desired_plan.plan_version}`;
-    const revisionRef = `${base}/revision.json`; const planRef = `${base}/plan.json`;
-    const journalRef = `${base}/journal/active.jsonl`; const snapshotRef = `${base}/snapshot.json`;
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(),
       verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
@@ -5096,6 +5142,7 @@ export async function applyPhaseTodoRevision(options = {}) {
       else if (!existing.equals(bytes)) fail('REVISION_CONFLICT', 'revision_bytes_conflict');
       await protocolStage(options, stage);
     }
+    await writeCarriedPlanScopedChain(repoRoot, carriedChain);
     const currentManifest = await readArtifact(repoRoot, MANIFEST_REF, {
       code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
     });
@@ -5192,8 +5239,11 @@ export async function applyTodoRevision(options = {}) {
     }
     verifyPlanNarrativeAnchors(repoRoot, revision.desired_plan, previous.plan);
     const stateMigration = stateMigrationFor(previous, revision);
+    const carriedChain = carriedPlanScopedChain(store, previous, revision.desired_plan,
+      `${STORE_ROOT_REF}/plans/${revision.plan_key}/${revision.desired_plan.plan_version}/journal/active.jsonl`,
+      stateMigration);
     const prospective = store.members.map((member) => member === previous
-      ? { ...member, plan: revision.desired_plan, plan_scoped: null } : member);
+      ? { ...member, plan: revision.desired_plan, plan_scoped: carriedChain } : member);
     validateMergedGraph(prospective);
 
     const candidateGenesis = buildRevisionGenesis(revision.desired_plan, {
@@ -5270,6 +5320,7 @@ export async function applyTodoRevision(options = {}) {
     }
 
     try {
+      await writeCarriedPlanScopedChain(repoRoot, carriedChain);
       const currentManifest = await readArtifact(repoRoot, MANIFEST_REF, {
         code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
       });
@@ -5462,13 +5513,16 @@ export async function applyTodoRevisionSet(options = {}) {
         : buildRevisionGenesis(revision.desired_plan, {
           ...commonGenesis, reconciliation_digest: revision.reconciliation.reconciliation_digest,
         });
-      prepared.push({ revision, previous, stateMigration, phaseStateMigration, genesis, cutoverImages });
+      const carriedChain = carriedPlanScopedChain(store, previous, revision.desired_plan,
+        `${STORE_ROOT_REF}/plans/${revision.plan_key}/${revision.desired_plan.plan_version}/journal/active.jsonl`,
+        stateMigration);
+      prepared.push({ revision, previous, stateMigration, phaseStateMigration, genesis, cutoverImages, carriedChain });
     }
 
-    const desiredByPlan = new Map(prepared.map((entry) => [entry.revision.plan_key,
-      entry.revision.desired_plan]));
+    const desiredByPlan = new Map(prepared.map((entry) => [entry.revision.plan_key, entry]));
     validateMergedGraph(store.members.map((member) => desiredByPlan.has(member.descriptor.plan_key)
-      ? { ...member, plan: desiredByPlan.get(member.descriptor.plan_key), plan_scoped: null } : member));
+      ? { ...member, plan: desiredByPlan.get(member.descriptor.plan_key).revision.desired_plan,
+        plan_scoped: desiredByPlan.get(member.descriptor.plan_key).carriedChain } : member));
 
     await ensureSafeStoreDirectory(repoRoot, transaction);
     const mixedPhaseSet = prepared.some(({ revision }) => ([
@@ -5570,6 +5624,7 @@ export async function applyTodoRevisionSet(options = {}) {
     }
 
     try {
+      for (const entry of prepared) await writeCarriedPlanScopedChain(repoRoot, entry.carriedChain);
       const currentManifest = await readArtifact(repoRoot, MANIFEST_REF, {
         code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoManifest,
       });
@@ -5670,10 +5725,11 @@ export async function createSuccessorTodoPlan(options = {}) {
     const genesis = buildPlanGenesis(plan, {
       ...options.genesis, previous_digest: previous.journal.events.at(-1).event_digest,
     });
-    const prospective = store.members.map((member) => member === previous ? { ...member, plan, plan_scoped: null } : member);
-    validateMergedGraph(prospective);
     const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}/${plan.plan_version}`;
     const planRef = `${base}/plan.json`; const journalRef = `${base}/journal/active.jsonl`; const snapshotRef = `${base}/snapshot.json`;
+    const carriedChain = carriedPlanScopedChain(store, previous, plan, journalRef, migration);
+    const prospective = store.members.map((member) => member === previous ? { ...member, plan, plan_scoped: carriedChain } : member);
+    validateMergedGraph(prospective);
     try { await lstat(path.resolve(repoRoot, planRef)); fail('STORE_WRITE_CONFLICT', 'successor_version_exists'); }
     catch (error) { if (error instanceof TodoStoreError) throw error; if (error?.code !== 'ENOENT') throw error; }
     const tasks = replay(plan, [genesis], { now: options.now ? new Date(options.now) : new Date() });
@@ -5683,6 +5739,7 @@ export async function createSuccessorTodoPlan(options = {}) {
     await atomicWrite(path.resolve(repoRoot, planRef), canonicalLine(plan));
     await atomicWrite(path.resolve(repoRoot, journalRef), canonicalLine(genesis));
     await atomicWrite(path.resolve(repoRoot, snapshotRef), canonicalLine(snapshot));
+    await writeCarriedPlanScopedChain(repoRoot, carriedChain);
     Object.assign(previous.descriptor, {
       active_plan_version: plan.plan_version, plan_ref: planRef, journal_ref: journalRef,
       snapshot_ref: snapshotRef, topology_digest: plan.topology_digest,

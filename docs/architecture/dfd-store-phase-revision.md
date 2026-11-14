@@ -56,12 +56,30 @@ All successor writers (`applyPhaseTodoRevision`, its v3 source path,
 `applyTodoRevision`, `applyTodoRevisionSet`, `createSuccessorTodoPlan`) validate
 the complete prospective merged graph, including projected live plan-scoped
 connections, before publishing a marker, source change, successor artifact or
-manifest. Replaced members have the successor's initially empty plan-scoped
-chain; their predecessor chains remain immutable history. Untouched members keep
-their live connections. Since u03 (A24/A25b/N6) a stale or removed cross-plan
+manifest. A replaced member's successor chain starts with the predecessor's
+live incoming connections (edge-carry, 2026-11-14, below); the predecessor
+chains remain immutable history. Untouched members keep their live connections. Since u03 (A24/A25b/N6) a stale or removed cross-plan
 endpoint never refuses a read or a successor writer; see "Cross-plan binding
 findings and automatic repair" below. The recovery API below stays for bindings
 stale across more than one source revision.
+
+Edge-carry (2026-11-14, plan lattice-edge-carry-20261114 / carry-impl). Before
+it every successor started an empty plan-scoped chain, so any revision of the
+waiting plan (`todo add`, `plan revise`, an in-plan `todo dependency connect`)
+dropped every ledger edge whose `to` is in that plan, cross-chart ones included.
+Store `carriedPlanScopedChain` (private, all five writers above):
+
+| Step | Input | Output / failure |
+|---|---|---|
+| Build | predecessor plan-scoped chain; live set = `projectTodoCrossPlanDependencies(store.members)` (tombstones applied); the genesis `task_migration`; successor plan and journal ref | One `cross_plan_dependency` event per live edge, chain order, new hash chain from sequence 0 in the successor version: `to` (and a `from` in the same plan) mapped by `task_migration` with `expected_topology_digest` = successor topology; any other `from` unchanged (its own plan's revision is the u03 repair below, another chart's is Plan's); actor, recorded_at, provenance and reason are the original connection's. Dropped: an endpoint mapped to `removed`, a self edge or a duplicate after mapping. `coordination_mode` is not copied (a35 read-time inheritance) |
+| Validate | prospective members with the carried chain instead of none | Existing `validateMergedGraph`: a carried edge closing a cycle with the successor's own edges refuses the revision (`STORE_INCONSISTENT/merged_cycle`, nothing published); exit = disconnect that edge, then revise |
+| Publish | carried chain bytes | `writeCarriedPlanScopedChain`: written (or removed when empty) after the successor artifacts and before the manifest switch. The version is not active yet, so a resumed transaction rewrites it from the current predecessor; the bytes depend only on predecessor chain and successor |
+
+Edges already lost before edge-carry stay in the retained predecessor chains
+(`plans/<key>/<old version>/plan-scoped.jsonl`, never deleted) but are not
+restored automatically: the carry reads only the direct predecessor, and a
+restore across versions could revive an edge the team has since replaced or no
+longer wants. Waiting bots reconnect by hand.
 
 | Step / owner | Input and decision | Publication / failure and exit |
 |---|---|---|

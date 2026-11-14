@@ -171,6 +171,11 @@ user points it at works; without it nothing changes for in-chart edges.
 | Plan: readiness (`createTodoReadiness`) | `store.external_tasks` | External tasks are predecessor nodes like in-chart ones (no phase: never phase-gated). An external edge whose state was not loaded reads `finished:false`, reason `chart_not_read` (fail closed: no reader can call it ready by forgetting to load). `blocking_tasks` entries for external predecessors carry `project_id` and `reason` | — |
 | Plan: every reader agrees | `todo status` and `status`/`session-context` (project-cli `resolveProjectState`): `next_ready` and findings; `todo start` (ready check, and `mutate` binds `external_tasks` into the start/authored-done validator before the lock); `todo show` gains `prerequisites {ready, tasks, blocking_tasks, blocking_phases}`; `todo notice list` and mutation `notices` (an external trigger is `{project_id, plan_key, task_id, kind, event_digest, recorded_at, actor}` from the other chart's journal: the waiting chart needed no write); Gantt next-ready mark (`renderTodoGanttForProject`); `todo display read` (`external_tasks` beside the Store envelope, `displayRead`); witness declare `waiting_for` and its start hint | Read the Store through `readTodoStoreForReadiness` (todo-cli: `readTodoStore` + `withTodoExternalTasks`) or wrap with `withTodoExternalTasks`, so one predicate decides. Status `active_set.unmet_dependencies` stays in-chart (the status graph skips foreign edges; readiness decides) | A start refusal names the external task: `blocking_tasks: [{project_id, plan_key, task_id, status, reason}]` |
 
+Revision of the waiting plan (edge-carry, 2026-11-14): `todo add`, `plan revise` and an in-plan connect carry the
+live incoming edges, cross-chart ones included, into the successor's plan-scoped chain with `to` mapped and rebound
+and `from` (the other chart's ref and digest) unchanged; see
+[phase revision flow](dfd-store-phase-revision.md#journal-backed-prospective-validation-and-identity-preserving-repair).
+
 Shortcut: an edge binds the other task by plan_key/task_id; a revision of the other plan that renames the
 task leaves the edge waiting (`endpoint_missing`) instead of following the carry, until someone reconnects.
 Upgrade when other charts' revision carries are readable here.
