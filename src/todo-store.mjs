@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
 import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
+import { memoByFileIdentity } from './todo-version-memo.mjs';
 import {
   lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir,
 } from 'node:fs/promises';
@@ -1687,18 +1688,35 @@ async function readTodoStoreView(options = {}) {
   };
 }
 
+/**
+ * One retained version's plan identity `{plan, journalRef}` (plan = its plan/predecessor/topology digests), or null when
+ * unreadable. perf-store: validated once per process per unchanged plan.json (todo-version-memo).
+ */
+async function retainedPlanVersion(repoRoot, base, version) {
+  const ref = `${base}/${version}/plan.json`;
+  const plan = await memoByFileIdentity([path.resolve(repoRoot, ref)], async () => {
+    const value = await readArtifact(repoRoot, ref, {
+      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
+    }).catch(() => null);
+    return value === null ? null : { plan_digest: value.plan_digest,
+      predecessor_plan_digest: value.predecessor_plan_digest, topology_digest: value.topology_digest };
+  });
+  return plan === null ? null : { plan, journalRef: `${base}/${version}/journal/active.jsonl` };
+}
+
+async function retainedVersionNames(repoRoot, base, activePlan) {
+  let names = [];
+  try { names = await readdir(path.resolve(repoRoot, base)); } catch { /* no retained versions */ }
+  return names.filter((version) => version !== activePlan.plan_version && isTodoIdentifier(version));
+}
+
 /** The plan's other retained versions, by plan digest (unreadable ones are skipped). */
 async function retainedPlanVersions(repoRoot, activePlan) {
   const base = `${STORE_ROOT_REF}/plans/${activePlan.plan_key}`;
   const byDigest = new Map();
-  let names = [];
-  try { names = await readdir(path.resolve(repoRoot, base)); } catch { /* no retained versions */ }
-  for (const version of names) {
-    if (version === activePlan.plan_version || !isTodoIdentifier(version)) continue;
-    const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
-      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
-    }).catch(() => null);
-    if (plan !== null) byDigest.set(plan.plan_digest, { plan, journalRef: `${base}/${version}/journal/active.jsonl` });
+  for (const version of await retainedVersionNames(repoRoot, base, activePlan)) {
+    const retained = await retainedPlanVersion(repoRoot, base, version);
+    if (retained !== null) byDigest.set(retained.plan.plan_digest, retained);
   }
   return byDigest;
 }
@@ -1711,13 +1729,26 @@ async function retainedPlanVersions(repoRoot, activePlan) {
  */
 async function inheritedTodoCoordination(repoRoot, plan) {
   if (!plan.predecessor_plan_digest) return null;
-  const byDigest = await retainedPlanVersions(repoRoot, plan);
-  for (let digest = plan.predecessor_plan_digest, steps = 0; digest && steps < byDigest.size; steps += 1) {
-    const predecessor = byDigest.get(digest);
+  // perf-store: versions are read lazily, only until the walk finds the predecessor it needs.
+  const base = `${STORE_ROOT_REF}/plans/${plan.plan_key}`;
+  const names = await retainedVersionNames(repoRoot, base, plan);
+  const byDigest = new Map();
+  let scanned = 0;
+  const find = async (digest) => {
+    while (!byDigest.has(digest) && scanned < names.length) {
+      const retained = await retainedPlanVersion(repoRoot, base, names[scanned]);
+      scanned += 1;
+      if (retained !== null) byDigest.set(retained.plan.plan_digest, retained);
+    }
+    return byDigest.get(digest);
+  };
+  for (let digest = plan.predecessor_plan_digest, steps = 0; digest && steps < names.length; steps += 1) {
+    const predecessor = await find(digest);
     if (predecessor === undefined) return null;
-    const chain = await readPlanScopedJournal(repoRoot, predecessor.journalRef).catch(() => null);
-    if (chain === null) return null;
-    const declared = projectTodoCoordination(chain.events);
+    const declared = await memoByFileIdentity([path.resolve(repoRoot, planScopedJournalRef(predecessor.journalRef))],
+      () => readPlanScopedJournal(repoRoot, predecessor.journalRef)
+        .then((chain) => projectTodoCoordination(chain.events), () => undefined));
+    if (declared === undefined) return null;
     if (declared !== null) return declared;
     digest = predecessor.plan.predecessor_plan_digest;
   }
