@@ -174,6 +174,7 @@ import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices
 import {
   externalCycle, readTodoExternalChart, readTodoExternalTasks, withTodoExternalTasks,
 } from './todo-external.mjs';
+import { projectTodoTrees } from './todo-trees.mjs';
 import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
@@ -1398,11 +1399,15 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
   };
 }
 
-/** xchart: the display envelope plus `external_tasks`, so a host computing readiness from it sees other charts too. */
+/**
+ * xchart: the display envelope plus `external_tasks`, so a host computing readiness from it sees other charts too;
+ * a100: plus `trees`, each task tree and its size, so the host never computes the graph.
+ */
 async function displayRead(repoRoot, env) {
   const display = await readTodoStoreForDisplay({ repoRoot });
   const externalTasks = display.store ? (await readTodoExternalTasks(display.store, env)).external_tasks : [];
-  return { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks };
+  return { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
+    trees: display.store ? projectTodoTrees(display.store) : [] };
 }
 
 /** xchart: the Store plus its external predecessors' states; every readiness reader reads through this. */
