@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.100.0 — 2026-11-14
+
+工程の「木」と、その大きさを返す版。ホストへの変更：有り（`todo display read`に`trees`が加わる。加算のみ）。
+
+- `todo display read`の結果に`trees: [{tree_id, tasks: [{plan_key, task_id}], total, finished}]`が加わる（クオ 2026-11-14：「木の大きさ（工程の数）については、それを返す機能はスノーホワイト達が作るべき」）。木は、この工程表の工程を、依存（計画の依存・joins・同じ工程表の計画またぎ）と親子でどちら向きにでもつないだまとまり。ほかの工程表の前工程は木に入れない。つながりの無い工程は1件の木。`total`は木の工程数、`finished`は終わった（done か retired）数。`tree_id`は木の中で一番小さい`plan_key/task_id`。形はフローラと合意（アリス、PR #173）。
+
 ## 0.99.0 — 2026-11-13
 
 ほかの工程表の工程を待ち（前工程）に指定できる版。ホストへの変更：有り（`LATTICE_CHARTS_ROOT`を設定する。`todo display read`に`external_tasks`、`todo show`に`prerequisites`が加わる）。
