@@ -10,11 +10,13 @@ import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.
 import { runTodoCli } from '../src/todo-cli.mjs';
 import {
   TodoStoreError,
+  appendTodoEvent,
   applyTodoRevision,
   applyTodoRevisionSet,
   buildTodoPlan,
   createTodoStoreWriter,
   initializeTodoStore,
+  projectTodoCrossPlanDependencies,
   readTodoStore,
 } from '../src/todo-store.mjs';
 import {
@@ -238,6 +240,24 @@ test('revision setはcross-plan successorsを同時activationしてfindingを残
   assert.deepEqual(active.members.map(({ plan }) => [plan.plan_key, plan.plan_version]), [
     ['a', set[0].desired_plan.plan_version], ['b', set[1].desired_plan.plan_version],
   ]);
+});
+
+test('edge-carry: revision setは改訂したplanへ入る台帳の線を引き継ぎ、改訂されたfromはu03修理が結び直す', async (context) => {
+  const root = await fixture(context);
+  const before = await readTodoStore({ repoRoot: root, now: NOW });
+  const topology = (key) => before.members.find(({ plan }) => plan.plan_key === key).plan.topology_digest;
+  await appendTodoEvent({ repoRoot: root, writer, planKey: 'a', now: NOW, validateProspectiveEvent: () => ({ ok: true }), event: {
+    kind: 'cross_plan_dependency', actor: ACTOR, recorded_at: NOW,
+    payload: { from: ref('b', 'B1', topology('b')), to: ref('a', 'A1', topology('a')), reason: '台帳の線' } } });
+  const set = await revisions(root);
+  await applyTodoRevisionSet({
+    repoRoot: root, writer, revisionSet: revisionSet(set), actor: ACTOR, recordedAt: NOW, now: NOW,
+  });
+  const active = await readTodoStore({ repoRoot: root });
+  assert.deepEqual(active.cross_plan_findings, []);
+  const [edge] = projectTodoCrossPlanDependencies(active.members);
+  assert.deepEqual([edge.from, edge.to, edge.reason], [ref('b', 'B1', set[1].desired_plan.topology_digest),
+    ref('a', 'A1', set[0].desired_plan.topology_digest), '台帳の線']);
 });
 
 test('revision setもv6からmemo無しschemaへの後退を一括activation前に拒否する', async (context) => {
