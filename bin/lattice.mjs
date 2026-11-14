@@ -7,18 +7,38 @@ import packageJson from '../package.json' with { type: 'json' };
 
 installPipeCloseGuard();
 
-const args = withImpliedJson(process.argv.slice(2));
+let args = withImpliedJson(process.argv.slice(2));
 // 作業ディレクトリを読まないsurface。cwdが消えた席（閉じたworktree）からでも動かす。
-const CWD_FREE_COMMANDS = new Set(['runtime-errors', 'bridge', 'hooks', 'setup', 'factory-diagnostics']);
+const CWD_FREE_COMMANDS = new Set(['runtime-errors', 'bridge', 'hooks', 'setup', 'factory-diagnostics', 'charts']);
 // 内部故障の観測（下のobserveInternalFailure）が終わるのを、exit前に待つための置き場。
 let pendingObservation = Promise.resolve();
 installSqliteExperimentalWarningFilter();
 const help = renderCliHelp(args);
+// K8/K5 (a101, docs/architecture/dfd-charts-read.md): a host addresses a chart by project id; a Store-creating
+// command makes it, and a failed run removes only the dir it made (below the dispatch).
+let chartCreated = null;
+let chartRefusal = null;
+if (help === null && args[0] !== '--version' && !CWD_FREE_COMMANDS.has(args[0])
+  && process.env.LATTICE_CHARTS_ROOT && process.env.LATTICE_PROJECT_ID) {
+  const { enterAddressedChart } = await import('../src/chart-cli.mjs');
+  try {
+    const chart = await enterAddressedChart({ env: process.env, argv: args, cwd: workingDirectory() ?? '.' });
+    args = chart.argv;
+    chartCreated = chart.created;
+    process.chdir(chart.dir);
+  } catch (error) {
+    chartRefusal = error;
+  }
+}
 
 if (help !== null) {
   process.stdout.write(help);
 } else if (args.length === 1 && args[0] === '--version') {
   process.stdout.write(`${packageJson.version}\n`);
+} else if (chartRefusal !== null) {
+  process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: chartRefusal?.code ?? 'INTERNAL_FAILURE',
+    message: chartRefusal?.message ?? String(chartRefusal), detail: chartRefusal?.detail ?? null })}\n`);
+  process.exitCode = 1;
 } else if (!CWD_FREE_COMMANDS.has(args[0]) && workingDirectory() === null) {
   // 呼び出し元のcwdが削除済み（閉じたworktreeに残ったshell等）。`process.cwd()`のENOENTが
   // 各分岐で生のstackや内部故障（LATTICE.CLI_INTERNAL_FAILED）として漏れていた。製品の故障ではなく
@@ -29,6 +49,10 @@ if (help !== null) {
     detail: { next_action: 'cd_to_existing_project_directory_then_retry' },
   })}\n`);
   process.exitCode = 1;
+} else if (args[0] === 'charts' || args[0] === 'chart') {
+  const { runChartCli } = await import('../src/chart-cli.mjs');
+  process.exitCode = await runChartCli({ argv: args, cwd: process.cwd(), env: process.env,
+    stdout: process.stdout, stderr: process.stderr, created: chartCreated !== null });
 } else if (args.length === 2 && args[0] === 'session-context' && args[1] === '--json') {
   const { runSessionContext } = await import('../src/project-cli.mjs');
   process.exitCode = await runSessionContext({
@@ -254,6 +278,12 @@ if (help !== null) {
 }
 
 await pendingObservation;
+if (chartCreated !== null && (process.exitCode ?? 0) !== 0) {
+  // shortcut: an exception that escapes the dispatch skips this removal; every branch above returns a typed exit.
+  const { rm } = await import('node:fs/promises');
+  process.chdir(process.env.LATTICE_CHARTS_ROOT);
+  await rm(chartCreated, { recursive: true, force: true });
+}
 await scheduleRuntimeErrorReport();
 
 /**

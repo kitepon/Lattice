@@ -864,7 +864,9 @@ export async function runPlanCreate({
   };
   const store = manifest === null
     ? await initializeAuthoredTodoStore({ ...options,
-      projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }] })
+      projectId: input.project_id, repositories: [{ repo_id: 'self', path: '.' }],
+      // K4 (a101): the seat that creates the Store is the chart's creator unless one is already recorded.
+      chartCreator: env.LATTICE_SEAT_ID || null })
     : await appendAuthoredTodoPlan(options).catch((error) => {
       // a27: Storeの拒否はkeyを持たないので、断りの文が名指せるようにここで添える。
       if (error?.detail?.reason !== 'plan_key_already_exists') throw error;

@@ -53,6 +53,7 @@ const COMMANDS = [
   ['bridge', 'setup'], ['bridge', 'reconfigure'], ['bridge', 'status'],
   ['bridge', 'disable'], ['bridge', 'register'],
   ['hooks', 'install'], ['hooks', 'status'], ['hooks', 'uninstall'], ['hooks', 'emit'],
+  ['charts', 'list'], ['charts', 'source'], ['chart', 'set'], ['chart', 'repo', 'bind'], ['chart', 'repo', 'sync'],
 ];
 
 /** argvを受けるCLI入口。ここを通らないtestは、引数解析とexit契約を確かめていない。 */

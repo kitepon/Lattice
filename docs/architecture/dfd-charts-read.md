@@ -76,6 +76,21 @@ silently:
   `plan_key/task_id` in the tree; `trees` sorted by tree_id, `tasks` by (plan_key, task_id).
 - `source`: opaque string; compare for equality only.
 
+## Implementation binding: CLI side (host-cli, Alice)
+
+Store exports agreed with Ludmila 2026-11-14 (host-store): `readTodoChartMeta({repoRoot})` →
+`{name, created_by, created_at, repo}` (missing file = all null; a newer `schema` = `UNSUPPORTED_SCHEMA`, a bad file =
+`STORE_INCONSISTENT/chart_meta_invalid`); `writeTodoChartMeta({repoRoot, patch})` → `{meta, unchanged}` under its own
+`.lattice/.chart.write.lock` (`created_by` only while null, `created_at` when chart.json is first made, `repo` replaced
+whole); `initializeAuthoredTodoStore({..., chartCreator})` stamps the creator right after the Store is activated (a malformed chart.json does not fail creation; readers report it).
+
+| Name | Where | Contract |
+|---|---|---|
+| `enterAddressedChart({env, argv, cwd})` | `src/chart-cli.mjs`, called by `bin/lattice.mjs` before dispatch | K8: both env vars set → `process.chdir(<root>/<id>)`; every command except help, `--version`, `charts` and the other cwd-free groups. Relative `--input` / `--plan-input` / `--review` values are resolved against the caller's cwd first. K5: `plan create --input` and `chart set` on a missing dir `mkdir` (0700) + `git init`; the bin removes that dir when the command exits non-zero (shortcut: an escaped exception skips the removal; every branch returns a typed exit). Refusals (exit 1, `cli_error.v2`): `CHART_PATH_INVALID` (id not a plain name, or a link / non-directory: writes outside the root), `CHART_NOT_FOUND {project_id, path, next_action}` for any other command on a missing chart (protection: running on the caller's cwd is the wrong chart; self-exit: `chart set` or `plan create` creates it) |
+| `listCharts(env)` / `chartSources(env, ids)` | `src/chart-cli.mjs` | K1/K2 as above; `source` = sha256 of `[display source, chart meta]`; a meta or display-source failure = `source: null` + finding `{project_id, reason}` (K1); K2 has no findings field, so an unreadable chart is `null` there too |
+| `runChartCli({argv, cwd, env, stdout, stderr, created})` | `src/chart-cli.mjs`, `bin/lattice.mjs` `charts`/`chart` branch | K4 `chart set`: `created_by` patch = `--created-by`, else `LATTICE_SEAT_ID` only when K5 created the chart in this run (an existing chart with no creator is not claimed by whoever renames it). `project_id` in results = `LATTICE_PROJECT_ID`, else the repo directory name. K7 `chart repo bind` result: `{schema: lattice.chart_repo_result.v1, project_id, status: 'bound', repo, unchanged}`; invalid url/branch = `CHART_REPO_INVALID {field, rule, next_action}`; a new url or branch resets `accepted_tip` to null. K7 `sync`: adds `.lattice/` to `.git/info/exclude`; `dirty` (tracked edits) before any fetch; unsets promisor config; baseline = `accepted_tip`, else (charts moved before 0.101.0) `refs/remotes/origin/<branch>`; `git fetch --depth=1 --no-tags <url> <branch>` (origin is never touched); HEAD unborn or equal to the baseline → `checkout -B <branch> <tip>`, any other HEAD ≠ tip → `diverged`; new tip saved as `accepted_tip`; then `sensor sync` (`init` when it answers `LATTICE_SENSOR_NOT_INITIALIZED`) on every sync. Result adds `failure: {step, message} | null`; no binding = `failed` with step `bind` |
+| `runPlanCreate` | `src/project-cli.mjs` | passes `chartCreator: LATTICE_SEAT_ID || null` to `initializeAuthoredTodoStore` (Store does not read env) |
+
 ## Speed
 
 K1 and K2 run in one process for all charts (a95: in-process reads of 37 charts took 10-40 ms in production). They read
