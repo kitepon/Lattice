@@ -176,7 +176,7 @@ AIの設定がまだ無い初回は`lattice setup --host claude --json`のよう
 
 結果はOS・AI・機能別に返す。Windows nativeの製品hookとGrokの製品hookは`unsupported`、
 利用者が無効化したMCPは`disabled`として保持する。対応MCPの登録・確認は続行し、
-全機能確認済みの`ready`だけexit 0、`partial`と`failed`はexit 1である。
+`ready`と`partial`（未対応・利用者の無効化だけで、失敗は無い）はexit 0、`failed`だけexit 1である。
 設定形式と機能表は[導入契約](https://github.com/kitepon/Lattice/blob/main/docs/01_integration-package.md#製品所有のai導入入口)を参照。
 
 ## Quick start

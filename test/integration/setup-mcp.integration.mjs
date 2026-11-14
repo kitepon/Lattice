@@ -16,6 +16,6 @@ test('setupが実配布MCPを起動し初回・再実行・診断で公開tool�
     const result = JSON.parse(output);
     assert.equal(result.hosts[0].mcp.state, 'verified', output);
     assert.ok(result.hosts[0].mcp.tool_count > 0);
-    assert.equal(exit, process.platform === 'win32' ? 1 : 0, output);
+    assert.equal(exit, 0, output);
   }
 });
