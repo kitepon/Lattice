@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.101.1 — 2026-11-14
+
+`lattice chart set`を名前なしで使えるようにした版（フローラの a102 の移し替え用）。ホストへの変更：有り（加算のみ。今の使い方は変わらない）。
+
+- 名前と作った人（K4）：`lattice chart set [--name <名前>] [--created-by <id>]`。どちらか1つ以上が要る。`--created-by`だけなら名前に手を付けない（無い名前は無いまま）。作った人がもう記録されていれば上書きせず`unchanged: true`を返す。どちらも無ければ`CHART_NAME_INVALID`（`chart_set_flag_missing`）で、`field`と`next_action`を添えて断る。
+- 実装：アリス（PR #183）。
+
 ## 0.101.0 — 2026-11-14
 
 ホスト（BellTeam）が Lattice の中を直接見ずに済む、契約した窓口の版（クオ 2026-11-14：「プロダクト間の繋ぎはしっかりと図で定義しよう」）。ホストへの変更：有り（新しいコマンドの加算のみ。既存のコマンドと結果の形は変わらない）。契約は`docs/architecture/dfd-charts-read.md`（K1〜K8、フローラと合意）。
