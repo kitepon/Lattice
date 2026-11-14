@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.102.0 — 2026-11-15
+
+`lattice setup`の終了コードの版。ホストへの変更：有り（終了コードだけ。JSON の形は変わらない）。
+
+- `lattice setup`と`lattice setup status`は、`partial`でも exit 0 を返す。exit 1 は`failed`の時だけ、用法違反は 2。`partial`は、壊れた機能が一つも無く、想定どおり使えない機能（Grok の製品 hook、Windows native の製品 hook）か利用者が止めた MCP があるだけの状態だ。これまでは exit 1 だったので、Grok を含む席の更新処理は毎回失敗と数えていた（Mac の agents-update、2026-11-15 02:00 JST）。JSON の`state: "partial"`と、各機能の`unsupported`・`disabled`は従来どおり出る。終了コードで`partial`を見分けていた呼び出し側は、JSON の`state`を読む。
+- 実装：アリス（PR #185）。
+
 ## 0.101.1 — 2026-11-14
 
 `lattice chart set`を名前なしで使えるようにした版（フローラの a102 の移し替え用）。ホストへの変更：有り（加算のみ。今の使い方は変わらない）。
