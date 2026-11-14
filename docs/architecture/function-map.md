@@ -136,6 +136,20 @@ The later split moves functions to their owner without changing the contract.
 | `readTodoStoreForDisplay({repoRoot})` and cheap unverified `readTodoStoreDisplaySource({repoRoot})`; derived `.lattice/generated/store-display/last-verified.json` | Store: strict raw read without recovery, complete view serialization, repository/project/source identity, atomic checkpoint only on validated source change, source/head change hints, per-member raw display reads and non-fatal checkpoint write failure | [Store display DFD](dfd-store-display-read.md) returns verified/unverified/last_verified/unavailable in Store-owned precedence plus typed inconsistency and dropped_members; raw current member snapshots and observed source never feed the checkpoint. Snow White owns the connected [display row](dfd-display-gantt-read.md) (one ordered state rule verified > unverified current raw > last_verified > unavailable, banner, empty state only when nothing is readable, no HTTP 500 for a typed display result). Lifecycle writes, validation and recovery never consume the checkpoint. Implemented in `src/todo-store.mjs` (task u01-display-never-stops). No Store yet: read `unavailable` with `STORE_UNINITIALIZED`, source exit 0 with a manifest diagnostic ([No Store yet](dfd-store-display-read.md#no-store-yet-display-uninit-2026-11-12)). |
 | Display half: `todo-gantt-display.mjs` (`projectUnverifiedStore`, `degradedBannerHtml`, `emptyStateHtml`, `displayHeadDigest`, `createTodoGanttDisplayReader`) and `createTodoGanttDisplayServing` in `todo-cli.mjs` | Display (Snow White) | Public daemon `bin/lattice-dashboard.mjs` and local `serveGantt` render/readHead; `todo-gantt-live.mjs` passes `banner_html` into the live shell. Reads only the two Store exports above; one-shot renders stay strict (`renderTodoGanttForProject` `degraded` is display-only). The render path (`todo-gantt-layout.mjs`, `todo-gantt-html.mjs`, `renderTodoGanttForProject`) never refuses on scale, cycle, drift, invalid edge, embedded prose, page size or an invalid presentation: it draws and attaches `notices` ([Render notices](dfd-display-gantt-read.md#render-notices-u03-d-gantt)). |
 
+## Host connection (a101)
+
+Contract and data flow: [host connection](dfd-charts-read.md) (K1-K8, agreed with Flora). A host (BellTeam) reads
+charts only through these commands; Lattice owns everything under `LATTICE_CHARTS_ROOT`.
+
+| Public function / state | Single owner | Consumer / failure contract |
+|---|---|---|
+| K8 addressing `LATTICE_CHARTS_ROOT` + `LATTICE_PROJECT_ID` → repoRoot; K5 chart creation (dir + `git init`) on the first Store-creating command, removed on failure | Plan CLI (Alice); Store creation (Ludmila) | Every command; read commands never create a chart; symlink or non-dir path refused `CHART_PATH_INVALID` |
+| K4 `.lattice/chart.json` `{name, created_by, created_at, repo}`: `readTodoChartMeta`, `writeTodoChartMeta`, creator on Store creation | Store (Ludmila) | `chart set`, `charts list/source`, `chart repo`; creator never overwritten |
+| K4 `lattice chart set --name [--created-by]` (`lattice.chart_set_result.v1`) | Plan CLI (Alice) | BellTeam naming and the one-time sidecar migration |
+| K1 `lattice charts list` (`lattice.charts_list_result.v1`), K2 `lattice charts source [--project]...` (`lattice.charts_source_result.v1`) | Plan CLI (Alice) over Store display source + chart meta | BellTeam list and change detection; one process for all charts; one bad chart is a finding, never a refusal |
+| K3 `projectTodoTrees(store)` → `trees` in `todo display read` | Plan/lifecycle (Alice) | BellTeam fractions and hide rule (a100) |
+| K7 `lattice chart repo bind|sync` (`lattice.chart_repo_result.v1`): depth-1 fetch, fast-forward only from `accepted_tip`, then sensor | Plan CLI (Alice) | BellTeam code chart `bellteam`; dirty/diverged move nothing |
+
 ## Dependency direction after the proposed split
 
 `surfaces → plan/lifecycle → store`; independence/seam consumes Store and Sensor
