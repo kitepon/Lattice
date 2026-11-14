@@ -603,26 +603,23 @@ export function carriedStartActors(member) {
 export async function rebindCarriedWork({ repoRoot, planKey, env,
   reason = 'ゴール変更後のplan versionへ作業中ToDoを結び直す',
   failureCode = 'BACKCHAIN_REBIND_PENDING', carriedActors = new Map() }) {
+  // perf-rebind: one store read for every carried task (was 5 full passes per task through rebindStart).
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
-  const rebound = [];
-  for (const state of member.tasks.filter(({ status }) => status === 'in-progress')) {
-    const hasCurrentStart = member.journal.events.some((event) => event.kind === 'start'
-      && event.task_id === state.task_id && event.payload?.start_mode !== 'historical_import');
-    if (hasCurrentStart) continue;
-    const { rebindStart } = await import('./todo-cli.mjs');
-    try {
-      await rebindStart({ repoRoot, env, planKey, taskId: state.task_id,
-        reason, actor: carriedActors.get(state.task_id) ?? null });
-    } catch (error) {
+  const rebound = member.tasks.filter(({ status, task_id: taskId }) => status === 'in-progress'
+    && !member.journal.events.some((event) => event.kind === 'start'
+      && event.task_id === taskId && event.payload?.start_mode !== 'historical_import'))
+    .map(({ task_id: taskId }) => taskId);
+  const { rebindCarriedStarts } = await import('./todo-cli.mjs');
+  await rebindCarriedStarts({ repoRoot, env, store, planKey, reason,
+    tasks: rebound.map((taskId) => ({ task_id: taskId, actor: carriedActors.get(taskId) ?? null })),
+    onFailure: (taskId, error) => {
       throw new TodoStoreError(failureCode, 'carried_task_rebind_failed', undefined, {
-        task_id: state.task_id, plan_version: member.plan.plan_version,
+        task_id: taskId, plan_version: member.plan.plan_version,
         cause_code: error?.code ?? 'unknown',
-        next_action: `lattice todo start --plan ${planKey} --task ${state.task_id} --rebind --reason <text>`,
+        next_action: `lattice todo start --plan ${planKey} --task ${taskId} --rebind --reason <text>`,
       });
-    }
-    rebound.push(state.task_id);
-  }
+    } });
   return rebound;
 }
 

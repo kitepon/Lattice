@@ -977,6 +977,12 @@ function reopenAdvisory(plan, phases, taskId) {
   };
 }
 
+/** The prospective validator with `external` (xchart predecessor states) bound into the locked store. */
+function externalValidator(external) {
+  return external.length === 0 ? validateProspectiveEvent
+    : (input) => validateProspectiveEvent({ ...input, store: { ...input.store, external_tasks: external } });
+}
+
 async function mutate({
   repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
@@ -986,8 +992,7 @@ async function mutate({
   // xchart: start and authored done check predecessors on other charts too, read before the lock.
   const external = externalTasks ?? (kind === 'start' || (kind === 'done' && payload === 'authored')
     ? (await readTodoExternalTasks(await readTodoStore({ repoRoot }), env)).external_tasks : []);
-  const validator = external.length === 0 ? validateProspectiveEvent
-    : (input) => validateProspectiveEvent({ ...input, store: { ...input.store, external_tasks: external } });
+  const validator = externalValidator(external);
   const evidence = evidenceRef === null && evidenceMessage === null
     ? null
     : await resolveDoneEvidence({
@@ -1588,6 +1593,27 @@ export async function rebindStart({ repoRoot, env, planKey, taskId, reason, acto
     repoRoot, env, planKey, taskId, kind: 'start',
     payload: { start_mode: 'rebind', reason }, evidenceRef: null, noteContext, actor,
   });
+}
+
+/**
+ * perf-rebind: rebind every carried in-progress task after a revision with the same start event and validator as
+ * `rebindStart`, but one store read and one external-chart read for all of them (the caller has the store and drops the
+ * per-task result, so no per-task store or note-context read). Each event is still its own locked append, so a
+ * refusal names its task. `tasks: [{task_id, actor}]`; calls `onFailure(taskId, error)` and stops at the first refusal.
+ */
+export async function rebindCarriedStarts({ repoRoot, env, store, planKey, tasks, reason, onFailure }) {
+  if (tasks.length === 0) return;
+  const validator = externalValidator((await readTodoExternalTasks(store, env)).external_tasks);
+  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  for (const { task_id: taskId, actor } of tasks) {
+    try {
+      await appendTodoEvent({ validateProspectiveEvent: validator, repoRoot, writer, planKey,
+        event: { kind: 'start', task_id: taskId, actor: actor ?? resolveTodoActor(env),
+          payload: { start_mode: 'rebind', reason } } });
+    } catch (error) {
+      onFailure(taskId, error);
+    }
+  }
 }
 
 async function retractStart({ repoRoot, env, planKey, taskId, reason }) {
