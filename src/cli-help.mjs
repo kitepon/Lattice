@@ -15,6 +15,12 @@ Commands:
   bridge <command>              Configure the optional network bridge
   hooks <command>               Install and run sensor-awareness hooks
   setup [status]                AI別のMCP登録・製品hook準備・接続確認
+  charts <list|source>          LATTICE_CHARTS_ROOT配下の工程表一覧と変更検知（host向け, a101）
+  chart <set|repo>              工程表の名前・作成者とコード工程表のrepo（host向け, a101）
+
+Environment:
+  LATTICE_CHARTS_ROOT + LATTICE_PROJECT_ID  両方あれば <root>/<id> の工程表で動く。
+                                            無ければ plan create / chart set が作る（git init込み）
 
 Options:
   -h, --help                    Show help
@@ -312,6 +318,14 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # lattice.todo_wait_result.v1 {state: waiting|startable_now|not_pending|cancelled}',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
   'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
+  charts: 'charts list [--json] | source [--project <id>]... [--json]  # LATTICE_CHARTS_ROOT配下の全工程表を1プロセスで読む',
+  'charts list': 'charts list [--json]  # lattice.charts_list_result.v1 {charts_root, charts:[{project_id, name, created_by, created_at, source}], findings}',
+  'charts source': 'charts source [--project <id>]... [--json]  # lattice.charts_source_result.v1 {charts:{<id>: <source>|null}}（--project無し=全工程表）',
+  chart: 'chart set --name <text> [--created-by <id>] [--json] | repo bind --url <url> --branch <branch> [--json] | repo sync [--json]',
+  'chart set': 'chart set --name <text> [--created-by <id>] [--json]  # lattice.chart_set_result.v1（名前は1-40字・制御文字なし。--created-byは作成者が空の時だけ）',
+  'chart repo': 'chart repo bind --url <url> --branch <branch> [--json] | sync [--json]  # lattice.chart_repo_result.v1',
+  'chart repo bind': 'chart repo bind --url <url> --branch <branch> [--json]  # コード工程表のrepoを記録する',
+  'chart repo sync': 'chart repo sync [--json]  # depth-1 fetch、accepted_tipからだけ前進（reset/forceしない）、その後sensor。status current|synced|dirty|diverged|failed',
   'todo display read': 'todo display read [--json]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）',
   'todo display source': 'todo display source [--json]  # lattice.todo_store_display_source.v1（安い変更検知。変わった時だけreadする）',
   'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation|enforced> --reason <text>'
