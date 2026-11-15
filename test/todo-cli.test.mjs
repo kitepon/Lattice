@@ -466,6 +466,8 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
     if (['done', 'retire', 'unblock'].includes(kind)) keys.push('notices');
     // retract-anyone: a reopen names the start that redoes the task.
     if (kind === 'reopen') keys.push('next_action');
+    // block says what to use first: 前工程 (predecessor add) or 接続 (connect condition add); ブロック is the last resort.
+    if (kind === 'block') { keys.push('next_action'); assert.match(output.next_action, /predecessor add.*connect condition add.*ブロックは最後の手段/u); }
     assertExactKeys(output, keys);
     assert.equal(output.schema, kind === 'start'
       ? 'lattice.todo_mutation_result.v5' : 'lattice.todo_mutation_result.v2');

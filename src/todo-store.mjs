@@ -1095,7 +1095,7 @@ function crossPlanDependencyTask(store, ref) {
 }
 
 /**
- * xchart S3: only `todo dependency connect` (appendTodoEvent, `foreignFrom`) may record a predecessor on another
+ * xchart S3: only `todo connect condition add` (`dependency connect --from-project`, retired alias) (appendTodoEvent, `foreignFrom`) may record a predecessor on another
  * chart; Plan checked it there just before. Genesis, import and connectionOnly keep refusing a foreign from.
  */
 function validateCrossPlanDependencyTransition(store, owner, input, { foreignFrom = false } = {}) {
@@ -3457,7 +3457,7 @@ async function appendPlanMembership(repoRoot, options, authored) {
     const full = importedCrossPlan.artifacts.find(({ sealed }) => sealed.length > 0);
     if (full !== undefined) {
       fail('STORE_WRITE_REFUSED', 'cross_plan_import_segment_full', { ref: full.ref,
-        next_action: 'import without this cross-plan edge, then connect it with `lattice todo dependency connect`' });
+        next_action: 'import without this cross-plan edge, then add it with `lattice todo predecessor add`' });
     }
     const transactionRef = hasCrossPlanDependencies
       ? `${CROSS_PLAN_IMPORT_TRANSACTIONS_REF}/${transactionDigest}`

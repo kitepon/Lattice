@@ -15,7 +15,7 @@ export { TODO_NOTICE_ACKS_SCHEMA, TODO_NOTICE_WAITS_SCHEMA };
  * Per-lane ack set of startable notices and per-plan waits (dfd-done-notice.md, rows "Store: ack set",
  * "Store: waits record", "Store: ack key"). Host-local delivery state, not a plan fact: git-ignored (its own
  * .gitignore), one lock for both, never touching the lifecycle journals. Losing an ack means a notice is
- * delivered again; losing a wait loses the wake mark (the notice still lists) until `todo wait` runs again.
+ * delivered again; losing a wait loses the wake mark (the notice still lists) until `todo connect priority` runs again.
  */
 export const TODO_NOTICE_ROOT_REF = '.lattice/todo/notices';
 const ACKS_V1_SCHEMA = 'lattice.todo_notice_acks.v1';
@@ -101,7 +101,7 @@ const ACK_FILE = {
 const WAIT_RECORD = {
   family: 'todo_notice_waits', label: 'notice_waits', digest: 'waits_digest',
   advice: 'is a host-local notice wait file, not plan data. Delete it to drop the plan\'s wake marks'
-    + ' (re-run `lattice todo wait` to restore one), or run `lattice todo wait` to replace it.',
+    + ' (re-run `lattice todo connect priority` to restore one), or run `lattice todo connect priority` to replace it.',
   parse(record) {
     if (!exactRecord(record, ['schema', 'plan_key', 'waits', 'waits_digest']) || record.schema !== TODO_NOTICE_WAITS_SCHEMA
       || !isTodoIdentifier(record.plan_key) || !Array.isArray(record.waits) || !record.waits.every(isWait)

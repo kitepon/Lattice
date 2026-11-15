@@ -65,7 +65,7 @@ stale across more than one source revision.
 
 Edge-carry (2026-11-14, plan lattice-edge-carry-20261114 / carry-impl). Before
 it every successor started an empty plan-scoped chain, so any revision of the
-waiting plan (`todo add`, `plan revise`, an in-plan `todo dependency connect`)
+waiting plan (`todo add`, `plan revise`, an in-plan `todo predecessor add`)
 dropped every ledger edge whose `to` is in that plan, cross-chart ones included.
 Store `carriedPlanScopedChain` (private, all five writers above):
 

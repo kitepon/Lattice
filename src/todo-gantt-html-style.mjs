@@ -101,6 +101,7 @@ button.fold-chip[aria-expanded="true"]{border-color:var(--text-primary)}
 .status-in-progress .status-bar{stroke:var(--accent);stroke-width:2;stroke-linecap:round}
 .status-done .node-surface{fill:var(--surface-2);stroke:var(--border);stroke-width:1}
 .status-done .status-mark{fill:var(--good)}
+.connections ul{margin:4px 0 8px;padding-left:18px}.connection time{color:var(--text-secondary);font-size:12px;white-space:nowrap}.connection-chip{display:inline-block;margin-left:6px;padding:0 8px;border:1px solid var(--accent);border-radius:9999px;color:var(--accent);font-size:12px;white-space:nowrap}
 .status-blocked .node-surface{fill:var(--surface-1);stroke:var(--critical);stroke-width:2}
 .status-blocked .status-mark{fill:var(--critical)}
 .next-ready-node .node-surface{stroke:var(--accent);stroke-width:2;stroke-dasharray:4 3}

@@ -23,7 +23,7 @@ retains superseded metadata, original identities and carry projection.
 | Plan workflow reader | One batch read with includeHistory:true → parse/filter typed workflow records by scope/task and superseded metadata | Latest relevant workflow facts survive later prose even when omitted from bounded context. Plan owns malformed/unknown body handling, result schema and surfaces; no second raw-chain read or duplicate migration implementation. |
 
 Revision records (n3, 2026-11-15): a plan-scope note whose whole body is one of
-Lattice's own revision records (`todo add`, same-plan `dependency connect|disconnect`,
+Lattice's own revision records (`todo add`, same-plan `dependency connect|disconnect` (record grammar kept so old records still parse; the commands are now `todo predecessor add|remove`),
 `plan revise` retire; grammar in Plan's `todo-revision-note.mjs`, which has no
 imports) enters a task's bounded context only when it names that task. Other
 revision records stay in `history`, `includeHistory` and `note list`, and do not

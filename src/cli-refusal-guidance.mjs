@@ -42,6 +42,19 @@ const unfinishedFirst = (detail, ctx) => {
     blocked: `Unblock ${name} with \`lattice todo unblock ${on}\`, then record done on it`,
   })[first.status] ?? `Record done on ${name} first with \`${doneCommand(first.plan_key, first.task_id, ctx, ' --message <text>')}\` (see \`lattice todo show ${on} --json\`)`;
 };
+// 接続: an open 他条件に接続 is not a 前工程; name how it settles and how to remove it (Store: blocking_connections).
+const openConnections = (detail) => (Array.isArray(detail.blocking_connections) ? detail.blocking_connections.filter(record) : []);
+const connectionsFirst = (detail, ctx) => {
+  const [first] = openConnections(detail);
+  const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
+  if (first === undefined) return `It has an open 接続; see \`${showTask(detail, ctx)}\` (prerequisites.connections)`;
+  const to = first.kind === 'task' ? `task:${first.ref}` : `schedule:${first.ref}`;
+  const settles = first.kind === 'task'
+    ? `Finish ${first.ref} on its chart (the 接続 settles when that task is done or retired)`
+    : `Schedule ${first.ref} has not settled the 接続 yet (its command exits 0 when the awaited condition holds)`;
+  return `${settles}, or remove the 接続 with \`lattice todo connect condition remove ${on} --to ${to} --reason <text>\``;
+};
+const withConnections = (detail, ctx, text) => (openConnections(detail).length === 0 ? text : `${text} Also open: ${connectionsFirst(detail, ctx)}.`);
 // a36: a start without LATTICE_SEAT_ID is recorded under the OS user; after the seat sets its id that
 // start looks like another seat's. Say so and give the seat contract's one-time fix.
 const inProgressHolder = (detail, ctx, on) => {
@@ -82,7 +95,7 @@ const edgeName = (detail) => (record(detail.from) && record(detail.to)
 const dependencyCycle = {
   repair: (detail) => {
     const path = cyclePath(detail);
-    return `${edgeName(detail)} would close a cycle${path === null ? '' : ` (${path})`}: leave it out, or disconnect one edge of that path with \`lattice todo dependency disconnect\`.`;
+    return `${edgeName(detail)} would close a cycle${path === null ? '' : ` (${path})`}: leave it out, or remove one edge of that path: \`lattice todo predecessor remove\` for a 前工程 on this chart, \`lattice todo connect condition remove\` for a 接続 to another chart.`;
   },
 };
 // a23: dependency refusals name the edge or the task and a command that lists valid ones.
@@ -200,14 +213,16 @@ const REGISTRY = {
 
   invalid_done_transition: {
     repair: (detail, ctx) => ({
-      predecessor_unfinished: `${unfinishedFirst(detail, ctx)}.`,
+      predecessor_unfinished: withConnections(detail, ctx, `${unfinishedFirst(detail, ctx)}.`),
+      connection_open: `${connectionsFirst(detail, ctx)}.`,
       acceptance_edge: phaseAcceptFirst(detail, ctx),
       task_state: doneState(detail, ctx),
     })[detail.cause] ?? `Check the task state with \`${showTask(detail, ctx)}\`, then rerun.`,
   },
   invalid_start_transition: {
     repair: (detail, ctx) => ({
-      predecessor_unfinished: `${unfinishedFirst(detail, ctx)}, or start with --override-reason <text>.`,
+      predecessor_unfinished: withConnections(detail, ctx, `${unfinishedFirst(detail, ctx)}, or start with --override-reason <text>.`),
+      connection_open: `${connectionsFirst(detail, ctx)}, or start with --override-reason <text>.`,
       acceptance_edge: phaseAcceptFirst(detail, ctx),
       task_state: startState(detail, ctx),
       phase_state: 'Its phase is not active; check the phase status with `lattice todo status --json`.',

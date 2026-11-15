@@ -242,6 +242,23 @@ still starts and reports it in `advisory.guidance`. `independence compile` fails
 lattice todo start --plan <key> --task <id>
 ```
 
+### What a task waits for: four words, four commands
+
+Each word names one thing; none stands in for another ([connect flow](docs/architecture/dfd-connect.md)).
+
+| Word | Means | Command |
+|---|---|---|
+| 前工程 | a task on **this** chart that must finish first; its done notice wakes the lane | `lattice todo predecessor add\|remove --plan <key> --task <id> --after <plan>/<task> --reason <text>` |
+| 他条件に接続 (接続) | a condition **outside** this chart: a task on another chart, or a BellTeam schedule (a check, a time, CI, a publication) | `lattice todo connect condition add\|remove --plan <key> --task <id> --to task:<project>/<plan>/<task>\|schedule:<id> --reason <text>`; a schedule settles with `connect condition resolve --to schedule:<id> --message <evidence>` |
+| 優先接続 | "tell me the moment this task can start", interrupting my work; gates nothing | `lattice todo connect priority --plan <key> --task <id> [--reason <text>] \| --cancel` |
+| ブロック | last resort: something stops an in-progress task, nothing can be connected, no AI can operate it | `lattice todo block\|unblock` |
+
+`predecessor` refuses a task on another chart or a schedule (`predecessor_target_not_same_chart`, next_action
+`connect condition add`); `connect condition` refuses a task on this chart (`condition_target_same_chart`, next_action
+`predecessor add`). A task with an open 接続 cannot start. Every `connect condition` write is idempotent:
+a repeat answers `unchanged: true`. `todo dependency connect|disconnect` and `todo wait` still work for one minor
+version and print the command that replaces them.
+
 Full CLI surface: `lattice --help`, then
 `lattice <plan|run|event|todo|sensor|factory-diagnostics|runtime-errors|bridge|hooks> --help`.
 

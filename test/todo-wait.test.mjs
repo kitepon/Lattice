@@ -34,16 +34,16 @@ async function fixture(context) {
   success(root, ['plan', 'create', '--input', 'a.json']);
   return root;
 }
-const wait = (task, ...flags) => ['todo', 'wait', '--plan', 'a', '--task', task, ...flags];
+const wait = (task, ...flags) => ['todo', 'connect', 'priority', '--plan', 'a', '--task', task, ...flags];
 
 test('a waiting lane is named on the notice; a wait added after an ack re-opens it for the uncovered only', async (context) => {
   const root = await fixture(context);
   const waiting = success(root, wait('Q', '--reason', 'idle until P lands'), 'bot-b');
-  assert.equal(waiting.schema, 'lattice.todo_wait_result.v1');
-  assert.deepEqual([waiting.state, waiting.agent, waiting.reason], ['waiting', 'bot-b', 'idle until P lands']);
+  assert.equal(waiting.schema, 'lattice.todo_connect_priority_result.v1');
+  assert.deepEqual([waiting.state, waiting.agent, waiting.reason], ['prioritized', 'bot-b', 'idle until P lands']);
   // Repeating keeps since and takes the new reason.
   const again = success(root, wait('Q', '--reason', 'still idle'), 'bot-b');
-  assert.deepEqual([again.state, again.since, again.reason], ['waiting', waiting.since, 'still idle']);
+  assert.deepEqual([again.state, again.since, again.reason], ['prioritized', waiting.since, 'still idle']);
   // Host-local and git-ignored, flat beside the ack sets.
   assert.deepEqual((await readdir(path.join(root, '.lattice/todo/notices'))).filter((name) => name.startsWith('wait-')).length, 1);
   assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.lattice/todo/notices'], { cwd: root, encoding: 'utf8' }), '');
@@ -84,7 +84,7 @@ test('wait answers a state instead of refusing; --cancel removes it; a summary w
   success(root, ['todo', 'start', '--plan', 'a', '--task', 'P']);
   const busy = success(root, wait('P'));
   assert.deepEqual([busy.state, busy.status], ['not_pending', 'in-progress']);
-  assert.equal(success(root, wait('Q'), 'bot-b').state, 'waiting');
+  assert.equal(success(root, wait('Q'), 'bot-b').state, 'prioritized');
   const cancelled = success(root, wait('Q', '--cancel'), 'bot-b');
   assert.deepEqual([cancelled.state, cancelled.cancelled], ['cancelled', true]);
   assert.equal(success(root, wait('Q', '--cancel'), 'bot-b').cancelled, false);
@@ -93,4 +93,13 @@ test('wait answers a state instead of refusing; --cancel removes it; a summary w
   assert.match(notice.summary, /Information, not a request: whether and when to start is the lane's call\.$/u);
   const refused = run(root, wait('Q', '--cancel', '--reason', 'x'), 'bot-b');
   assert.notEqual(refused.status, 0);
+});
+
+test('todo wait is an alias of todo connect priority and says so on stderr', async (context) => {
+  const root = await fixture(context);
+  const alias = run(root, ['todo', 'wait', '--plan', 'a', '--task', 'Q'], 'bot-b');
+  assert.equal(alias.status, 0);
+  assert.equal(JSON.parse(alias.stdout).schema, 'lattice.todo_connect_priority_result.v1');
+  assert.deepEqual([JSON.parse(alias.stderr).schema, JSON.parse(alias.stderr).use],
+    ['lattice.todo_command_retired.v1', 'lattice todo connect priority --plan a --task Q']);
 });

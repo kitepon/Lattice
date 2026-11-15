@@ -70,7 +70,8 @@ function digest(value) {
  * still read, because anchor verification needs them, and their size is still
  * bounded — but they are not rendered into the page.
  */
-function normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, omitProse = false) {
+function normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, omitProse = false, connections = []) {
+  const connected = new Map(connections.map((entry) => [refKey(entry), entry.connections]));
   const supplied = new Map(narratives.map((entry) => [refKey(entry.ref), entry]));
   const outcomes = new Map(anchorOutcomes.map((entry) => [refKey(entry.ref), entry]));
   const notes = noteContexts === null ? null : new Map(noteContexts.map((entry) => [
@@ -123,6 +124,7 @@ function normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, 
       }
       result.push({
         ref, task: shownTask, state: states.get(task.task_id), narrativeRef, anchorOutcome, noteContext,
+        connections: connected.get(refKey(ref)) ?? [],
       });
     }
   }
@@ -216,8 +218,9 @@ const NESTED_CONTROLLER = `
 export function renderTodoGanttHtml({
   readModel, layout, narratives = [], anchorOutcomes = [], presentation = null, metadata = {},
   expandedLayout = null, noteContexts = null, noteWarnings = [], structurePresentation = null,
-  notices = [],
+  notices = [], connections = [],
 }) {
+  if (!Array.isArray(connections)) throw new TypeError('connections must be an array');
   if (readModel?.schema !== 'lattice.todo_store_read.v1' || !Array.isArray(readModel.members)) {
     throw new TypeError('readModel must be lattice.todo_store_read.v1');
   }
@@ -262,13 +265,13 @@ export function renderTodoGanttHtml({
     return html;
   };
   const layoutNotices = [...(layout?.notices ?? []), ...notices];
-  let normalized = normalizeSections(readModel, narratives, anchorOutcomes, noteContexts);
+  let normalized = normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, false, connections);
   let pageNotices = [...layoutNotices, ...normalized.notices];
   let html = build(normalized, pageNotices);
   let htmlBytes = Buffer.byteLength(html, 'utf8');
   if (htmlBytes > TODO_GANTT_HTML_MAX_BYTES) {
     // u03 D-gantt: draw the page without the embedded prose; if it is still over, serve it with the notice.
-    normalized = normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, true);
+    normalized = normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, true, connections);
     pageNotices = [...layoutNotices, { code: 'TODO_SCALE_EXCEEDED',
       message: 'ページ全体の大きさが上限を超えたため、設計メモ・終了条件・作業記録を省いて描いています',
       detail: { html_bytes: htmlBytes, html_limit: TODO_GANTT_HTML_MAX_BYTES } }];
