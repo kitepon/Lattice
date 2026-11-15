@@ -75,6 +75,26 @@ Store `carriedPlanScopedChain` (private, all five writers above):
 | Validate | prospective members with the carried chain instead of none | Existing `validateMergedGraph`: a carried edge closing a cycle with the successor's own edges refuses the revision (`STORE_INCONSISTENT/merged_cycle`, nothing published); exit = disconnect that edge, then revise |
 | Publish | carried chain bytes | `writeCarriedPlanScopedChain`: written (or removed when empty) after the successor artifacts and before the manifest switch. The version is not active yet, so a resumed transaction rewrites it from the current predecessor; the bytes depend only on predecessor chain and successor |
 
+Plan-scoped chain sealing (s1-seal, 2026-11-15, production outage). The
+plan-scoped chain refused every write once `plan-scoped.jsonl` reached
+`journalSegmentBytes` (1 MiB), so start/block/connect/rebind and the rebind
+after `todo add` stopped on bellteam-dev-added with no exit. That refusal is
+removed; the chain seals like the lifecycle journal. Only a single event larger
+than a whole segment still refuses (no segment could hold it; it would be
+unreadable).
+
+| Step / owner | Input and decision | Output / failure and exit |
+|---|---|---|
+| Store `pushPlanScopedEvent` (every writer: `appendPlanScopedEvent`, binding repair, `rebindTodoCrossPlanDependencies`, `carriedPlanScopedChain`, `prepareCrossPlanDependencies`) | chain `{ref, events, activeBytes, sealed}` + event; active non-empty and active + event > 1 MiB | The active bytes become a pending sealed segment `journal/plan-scoped-sealed/<first seq>-<last seq>-<previous segment last digest or 0×64>-<sha256 of bytes>.jsonl` (lifecycle naming) and the event starts a new active. A successor whose carried edges exceed 1 MiB seals as many times as needed. |
+| Store `writePlanScopedChain` | pending sealed segments, then active | Sealed files are written before the active replacement. The first one holds exactly the bytes already in `plan-scoped.jsonl`, so a crash between the two writes leaves a redundant active equal to the newest sealed segment, which every reader skips (same rule as the lifecycle journal): the chain reads identically. A successor version (not active yet) clears its sealed directory before writing, so a resumed transaction never keeps segments from an earlier attempt. |
+| Store `readPlanScopedJournal` (readTodoStore, coordination inheritance, carry) | `plan-scoped-sealed/*` in name order + active | Each segment checked for name, range, digest and link as lifecycle sealed segments; one hash chain from sequence 0 across all segments; kinds stay plan-scoped only. No active and no sealed = empty chain. `activeBytes` is empty when the active is redundant. |
+| Display `rawLastEventDigest` | active `plan-scoped.jsonl` only | Unchanged: the active always holds the chain head (also in the redundant state). |
+| Historical import with cross-plan edges | a target whose append would seal | Refuses `STORE_WRITE_REFUSED/cross_plan_import_segment_full` before any write; its staged recovery has no place for segments. Exit: import without the edge, then `todo dependency connect`, which seals. |
+
+Older Lattice versions read only `plan-scoped.jsonl`; after the first seal they
+see a chain that does not start at sequence 0 and refuse it as corrupt. They
+already refused every write on such a plan; upgrading resolves both.
+
 Edges already lost before edge-carry stay in the retained predecessor chains
 (`plans/<key>/<old version>/plan-scoped.jsonl`, never deleted) but are not
 restored automatically: the carry reads only the direct predecessor, and a
