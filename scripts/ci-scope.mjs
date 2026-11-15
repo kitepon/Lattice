@@ -3,12 +3,15 @@ import { readFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { affectedNodes, buildFunctionGraph, changedNodes, hunkRanges } from './ci-function-scope.mjs';
 
 /*
  * PR CI scope (common rule verification.minimal: scope CI by the diagrams to the range the
  * change affects). The function map's "Callers / connections" column is realised in code as
- * imports, so the affected range of a change is: the changed modules plus every module and
- * test that reaches them through imports (the callers), plus changed tests. The Sensor role
+ * references, so the affected range of a change is: the changed functions of src/ and bin/
+ * modules plus every function and test that names them (ci-function-scope.mjs); a module-level
+ * change, or any file the function graph cannot place, widens to the whole file and every module
+ * and test that reaches it through imports (the callers); plus changed tests. The Sensor role
  * (`sensor/`) has its own gate (`test:sensor`) and runs only when that role is touched.
  * Anything the graph cannot place (gate/workflow/package files, a source file no one imports)
  * runs the full gate. main pushes, tags and manual runs run the full gate, except that a main push
@@ -43,12 +46,13 @@ export function referencesIn(text, fromFile, modules = []) {
 }
 
 /** Pure selection over a reverse import graph; `importers(file)` lists files that reference it. */
-export function selectScope({ changed, tests, importers, isImported }) {
+export function selectScope({ changed, tests, importers, isImported, functions = null }) {
   const reasons = [];
   const full = changed.filter((file) => FULL_GATE.some((pattern) => pattern.test(file)));
   if (full.length > 0) return { full: true, reason: `gate inputs changed: ${full.join(', ')}`, tests, sensor: true };
   let sensor = false;
   const affected = new Set();
+  const seeds = new Set();
   for (const file of changed) {
     if (DOCS_ONLY.test(file)) continue;
     if (SENSOR.some((pattern) => pattern.test(file))) { sensor = true; affected.add('sensor/'); }
@@ -60,8 +64,11 @@ export function selectScope({ changed, tests, importers, isImported }) {
     if (!suite && (!MODULE.test(file) || !isImported(file))) {
       return { full: true, reason: `no import path places ${file}`, tests, sensor: true };
     }
-    affected.add(file);
+    const placed = suite ? null : functions?.seedsFor(file);
+    if (placed) for (const node of placed) seeds.add(node);
+    else affected.add(file);
   }
+  const reached = seeds.size > 0 ? functions.affected(seeds) : new Set();
   // Reverse closure: every module/test that reaches a changed file is in the affected range.
   const queue = [...affected];
   while (queue.length > 0) {
@@ -69,8 +76,9 @@ export function selectScope({ changed, tests, importers, isImported }) {
       if (!affected.has(importer)) { affected.add(importer); queue.push(importer); }
     }
   }
-  const selected = tests.filter((relative) => affected.has(`test/${relative}`));
+  const selected = tests.filter((relative) => affected.has(`test/${relative}`) || reached.has(`test/${relative}#*`));
   reasons.push(`${selected.length} of ${tests.length} product suites reach the change`);
+  if (seeds.size > 0) reasons.push(`${seeds.size} changed function nodes placed by the function graph`);
   reasons.push(sensor ? 'Sensor role touched: test:sensor runs' : 'Sensor role untouched: test:sensor skipped');
   return { full: false, reason: reasons.join('; '), tests: selected, sensor };
 }
@@ -112,11 +120,32 @@ export async function computeCiScope(base, { allTests }) {
   // A release bump changes only `version`: run what reads the package files, not the full gate.
   const bumped = changed.filter((file) => /^package(-lock)?\.json$/u.test(file) && versionOnly(base, file));
   // shortcut: a bump runs only suites that read the package files themselves; the bump changes no code, so the rest is unaffected, and this scoped run covers main's same tree.
+  const texts = new Map();
   const graph = await referenceGraph((file, text) => {
+    texts.set(file, text);
     if (bumped.length > 0 && allTests.includes(file.slice('test/'.length)) && /package(-lock)?\.json/u.test(text)) changed.push(file);
   });
   changed = changed.filter((file) => !bumped.includes(file));
-  return selectScope({ changed, tests: allTests, ...graph });
+  return selectScope({ changed, tests: allTests, ...graph, functions: functionScope(base, texts) });
+}
+
+/** Function-level seeds of a changed src/ or bin/ module from its `git diff -U0`; null runs the file-level scope for it. */
+function functionScope(base, texts) {
+  const modules = [...texts.keys()].filter((file) => /^(src|bin)\//u.test(file));
+  const git = (...args) => spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
+  const mergeBase = git('merge-base', base, 'HEAD').stdout.trim();
+  let graph = null;
+  return {
+    seedsFor(file) {
+      if (!modules.includes(file) || SENSOR.some((pattern) => pattern.test(file)) || !mergeBase) return null;
+      const diff = git('diff', '-U0', '--no-renames', `${mergeBase}`, 'HEAD', '--', file);
+      const before = git('show', `${mergeBase}:${file}`);
+      if (diff.status !== 0 || (before.status !== 0 && !/^new file mode/mu.test(diff.stdout))) return null;
+      graph ??= buildFunctionGraph(texts, modules, referencesIn);
+      return changedNodes(file, { oldText: before.status === 0 ? before.stdout : '', newText: texts.get(file), ...hunkRanges(diff.stdout) });
+    },
+    affected: (seeds) => affectedNodes(graph, seeds),
+  };
 }
 
 /** Reverse reference graph over src/, bin/ and test/ of this checkout; `visit(file, text)` sees each file. */
