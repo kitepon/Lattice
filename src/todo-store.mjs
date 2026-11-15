@@ -1190,12 +1190,15 @@ function reachableObjects(absoluteRepo) {
 // blob は内容アドレスなので oid が同じなら bytes は不変。gantt serve 等が store を再読する
 // たびに同じ evidence blob を git 子起動で読み直すのを避ける（Windows のウィンドウ雪崩と
 // 走査コストの主犯）。成功した読みだけを覚え、失敗は覚えない（repo 状態は変わりうる）。
-const EVIDENCE_BLOB_CACHE_LIMIT = 512;
-const evidenceBlobCache = new Map();
+// b11: 覚えるのは bytes ではなく sha256 だけ（検証が使うのはそれだけ）。件数上限は置かない:
+// 以前の512件上限を超えた store（本番 bellteam-dev-added）は、超えた分と追い出しのたびに
+// 1件ずつ git を起動し、1回の書込みの 16 s のうち 13 s を使っていた。
+const evidenceBlobDigestCache = new Map();
+const EVIDENCE_PREFETCH_BATCH = 128;
 
-function readEvidenceBlob(absoluteRepo, oid) {
+function readEvidenceBlobDigest(absoluteRepo, oid) {
   const key = `${absoluteRepo}\0${oid}`;
-  const cached = evidenceBlobCache.get(key);
+  const cached = evidenceBlobDigestCache.get(key);
   if (cached !== undefined) return cached;
   const [entry] = gitCatFileBatch([oid], {
     cwd: absoluteRepo, maxBodyBytes: TODO_LIMITS.narrativeSectionBytes + 1,
@@ -1204,11 +1207,9 @@ function readEvidenceBlob(absoluteRepo, oid) {
   // 契約上限はbytesで明示判定し、process bufferの打切りを意味判定に使わない。
   if (entry.missing || entry.type !== 'blob'
     || entry.bytes.length > TODO_LIMITS.narrativeSectionBytes) throw new Error('not bounded blob');
-  if (evidenceBlobCache.size >= EVIDENCE_BLOB_CACHE_LIMIT) {
-    evidenceBlobCache.delete(evidenceBlobCache.keys().next().value);
-  }
-  evidenceBlobCache.set(key, entry.bytes);
-  return entry.bytes;
+  const digest = sha256Bytes(entry.bytes);
+  evidenceBlobDigestCache.set(key, digest);
+  return digest;
 }
 
 function evidenceVerifier(manifest, repoRoot, hard, newEventDigest = null) {
@@ -1219,7 +1220,7 @@ function evidenceVerifier(manifest, repoRoot, hard, newEventDigest = null) {
     if (repoRef === undefined) fail('STORE_INCONSISTENT', 'evidence_repo_missing');
     const absoluteRepo = path.resolve(repoRoot, repoRef);
     try {
-      const bytes = readEvidenceBlob(absoluteRepo, descriptor.git_blob_oid);
+      const blobDigest = readEvidenceBlobDigest(absoluteRepo, descriptor.git_blob_oid);
       // **objectが在ることと、cloneした人が読めることは別である。** commitやtagから辿れない
       // dangling blobでも`cat-file`は通るので、手元では検証済みに見えるのに、fresh cloneでは
       // 誰も確かめられない証拠が残る。実際に16件そうなっており、公開CIで初めて露見した。
@@ -1231,7 +1232,7 @@ function evidenceVerifier(manifest, repoRoot, hard, newEventDigest = null) {
       if (!hard && !reachableObjects(absoluteRepo).has(descriptor.git_blob_oid)) {
         throw new Error('blob unreachable from refs');
       }
-      if (sha256Bytes(bytes) !== descriptor.content_digest) throw new Error('digest mismatch');
+      if (blobDigest !== descriptor.content_digest) throw new Error('digest mismatch');
       return true;
     } catch {
       // 既存の不達は未検証として残す。新eventの証拠だけは書込み前にhard検証する。
@@ -1258,7 +1259,7 @@ export function isTodoEvidenceUncommitted({ repoRoot, store, evidence }) {
   if (repoRef === undefined) return false;
   const absoluteRepo = path.resolve(repoRoot, repoRef);
   try {
-    return sha256Bytes(readEvidenceBlob(absoluteRepo, evidence.git_blob_oid)) === evidence.content_digest
+    return readEvidenceBlobDigest(absoluteRepo, evidence.git_blob_oid) === evidence.content_digest
       && !reachableObjects(absoluteRepo).has(evidence.git_blob_oid);
   } catch {
     return false;
@@ -1344,7 +1345,7 @@ function prefetchVerificationObjects(manifest, repoRoot, events, pinnedSourceCac
       const repoRef = repositories.get(candidate.repo_id);
       if (repoRef === undefined) continue;
       const absoluteRepo = path.resolve(repoRoot, repoRef);
-      if (evidenceBlobCache.has(`${absoluteRepo}\0${candidate.git_blob_oid}`)) continue;
+      if (evidenceBlobDigestCache.has(`${absoluteRepo}\0${candidate.git_blob_oid}`)) continue;
       let oids = oidsByRepo.get(absoluteRepo);
       if (oids === undefined) oidsByRepo.set(absoluteRepo, oids = new Set());
       oids.add(candidate.git_blob_oid);
@@ -1355,24 +1356,23 @@ function prefetchVerificationObjects(manifest, repoRoot, events, pinnedSourceCac
     }
   }
   for (const [absoluteRepo, oids] of oidsByRepo) {
-    let entries;
-    try {
-      entries = gitCatFileBatch([...oids], {
-        cwd: absoluteRepo, maxBodyBytes: TODO_LIMITS.narrativeSectionBytes + 1,
-      });
-    } catch { continue; }
-    let index = 0;
-    for (const oid of oids) {
-      const entry = entries[index];
-      index += 1;
+    // One `cat-file --batch` per EVIDENCE_PREFETCH_BATCH oids keeps the output buffer bounded.
+    const all = [...oids];
+    for (let start = 0; start < all.length; start += EVIDENCE_PREFETCH_BATCH) {
+      const chunk = all.slice(start, start + EVIDENCE_PREFETCH_BATCH);
+      let entries;
+      try {
+        entries = gitCatFileBatch(chunk, {
+          cwd: absoluteRepo, maxBodyBytes: TODO_LIMITS.narrativeSectionBytes + 1,
+        });
+      } catch { continue; }
       // seedしないだけで正誤は変えない: 上限超過bodyは単体読みのmaxBufferでは読めない
-      // （＝従来は未検証）ので、batch同乗の予算合算で検証済みへ昇格させない。cacheが
-      // 満杯なら追い出さずseedを止める——seeding自身の追い出しは自分のseedを連鎖破壊し、
-      // 513件以上で全件個別spawnへ戻る。溢れた分はper-item経路が従来どおり扱う。
-      if (entry.missing || entry.type !== 'blob'
-        || entry.bytes.length > TODO_LIMITS.narrativeSectionBytes
-        || evidenceBlobCache.size >= EVIDENCE_BLOB_CACHE_LIMIT) continue;
-      evidenceBlobCache.set(`${absoluteRepo}\0${oid}`, entry.bytes);
+      // （＝従来は未検証）ので、batch同乗の予算合算で検証済みへ昇格させない。
+      chunk.forEach((oid, index) => {
+        const entry = entries[index];
+        if (entry.missing || entry.type !== 'blob' || entry.bytes.length > TODO_LIMITS.narrativeSectionBytes) return;
+        evidenceBlobDigestCache.set(`${absoluteRepo}\0${oid}`, sha256Bytes(entry.bytes));
+      });
     }
   }
   const pinnedNames = [...pinnedCommits, ...pinnedSpecs];
