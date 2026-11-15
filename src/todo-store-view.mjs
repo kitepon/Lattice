@@ -75,6 +75,65 @@ export function projectTodoCrossPlanDependencies(members) {
   });
 }
 
+/**
+ * 接続 (schedule): one plan chain's connection_added events with how each ended. `ended` is 'removed' or
+ * 'resolved' (an add has at most one end, which Store append enforces); a state of 'removed' is not shown.
+ */
+export function projectTodoScheduleConnections(events) {
+  const ends = new Map();
+  for (const event of events ?? []) {
+    if (event.kind === 'connection_removed') ends.set(event.payload.target_event_digest, { ended: 'removed', event });
+    if (event.kind === 'connection_resolved') ends.set(event.payload.target_event_digest, { ended: 'resolved', event });
+  }
+  return (events ?? []).filter((event) => event.kind === 'connection_added').map((event) => {
+    const end = ends.get(event.event_digest);
+    return { kind: 'schedule', task_id: event.payload.task_id, ref: event.payload.to.id,
+      state: end === undefined ? 'open' : end.ended === 'resolved' ? 'settled' : 'removed',
+      reason: event.payload.reason, since: event.recorded_at, event_digest: event.event_digest,
+      actor: event.actor, provenance: event.provenance, ended: end?.ended ?? null,
+      ...(end?.ended === 'resolved' ? { settled_at: end.event.recorded_at, evidence: end.event.payload.evidence } : {}) };
+  });
+}
+
+const connectionTaskKey = (projectId, planKey, taskId) => `${projectId}\0${planKey}\0${taskId}`;
+export { connectionTaskKey as todoConnectionTaskKey };
+
+/**
+ * 接続 per task, keyed `project\0plan\0task`: schedule connections from the plan chain, and task connections from
+ * today's cross-chart ledger edges (settled once that task is done or retired, open while its chart is unread).
+ * Pure; a removed connection is not listed. Entry: {kind, ref, state, reason, since, event_digest, settled_at?,
+ * evidence?, state_reason?}, sorted by since then digest.
+ */
+export function projectTodoConnections(members, externalTasks = []) {
+  const external = new Map(externalTasks.map((entry) => [connectionTaskKey(entry.project_id, entry.plan_key, entry.task_id), entry]));
+  const byTask = new Map();
+  const push = (key, entry) => byTask.set(key, [...(byTask.get(key) ?? []), entry]);
+  for (const member of members) {
+    const { plan } = member;
+    for (const entry of projectTodoScheduleConnections(member.plan_scoped?.events)) {
+      if (entry.state === 'removed') continue;
+      const { task_id: taskId, actor: _actor, provenance: _provenance, ended: _ended, ...shown } = entry;
+      push(connectionTaskKey(plan.project_id, plan.plan_key, taskId), shown);
+    }
+  }
+  for (const dependency of projectTodoCrossPlanDependencies(members)) {
+    if (dependency.from.project_id === dependency.to.project_id) continue;
+    const { from, to } = dependency;
+    const source = external.get(connectionTaskKey(from.project_id, from.plan_key, from.task_id));
+    const settled = source?.finished === true;
+    push(connectionTaskKey(to.project_id, to.plan_key, to.task_id), {
+      kind: 'task', ref: `${from.project_id}/${from.plan_key}/${from.task_id}`,
+      state: settled ? 'settled' : 'open', reason: dependency.reason, since: dependency.connected_at,
+      event_digest: dependency.event_digest,
+      ...(!settled && (source === undefined || source.status === null || source.status === undefined)
+        ? { state_reason: source?.reason ?? 'chart_not_read' } : {}) });
+  }
+  for (const [key, entries] of byTask) {
+    byTask.set(key, entries.sort((left, right) => (left.since + left.event_digest < right.since + right.event_digest ? -1 : 1)));
+  }
+  return byTask;
+}
+
 function mappedNodeRef(ref, plan, idMap) {
   if (ref.project_id !== plan.project_id || ref.plan_key !== plan.plan_key) return ref;
   return { ...ref, task_id: idMap.get(ref.task_id) ?? ref.task_id };

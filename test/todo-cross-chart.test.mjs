@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { renderTodoGanttForProject } from '../src/todo-cli.mjs';
 
 import {
   appendImportedPlan, createTodoStoreWriter, initializeTodoStore, readTodoStore, readTodoStoreReadOnly,
@@ -57,7 +58,7 @@ async function charts(context) {
 const ready = (status) => status.next_ready.map(({ plan_key: plan, task_id: task }) => `${plan}/${task}`);
 
 test('a task waits on another chart: not startable until that task is done, then startable and noticed', async (context) => {
-  const { root, ok, refused, connect } = await charts(context);
+  const { root, env, ok, refused, connect } = await charts(context);
   const connected = ok('beta', connect);
   assert.deepEqual(connected.from, { project_id: 'alpha', plan_key: 'a', task_id: 'P',
     expected_topology_digest: connected.from.expected_topology_digest });
@@ -70,12 +71,19 @@ test('a task waits on another chart: not startable until that task is done, then
   assert.deepEqual(ready(ok('beta', ['todo', 'status', '--json'])), []);
   const show = ok('beta', ['todo', 'show', '--plan', 'b', '--task', 'R', '--json']).prerequisites;
   assert.equal(show.ready, false);
-  assert.deepEqual(show.blocking_tasks, [{ project_id: 'alpha', plan_key: 'a', task_id: 'P', status: 'pending', reason: null }]);
+  // A task on another chart is a 接続, not a 前工程: blocking_tasks stays same-chart only.
+  assert.deepEqual(show.blocking_tasks, []);
+  assert.deepEqual(show.connections.map(({ kind, ref, state }) => ({ kind, ref, state })),
+    [{ kind: 'task', ref: 'alpha/a/P', state: 'open' }]);
   const startRefusal = refused('beta', ['todo', 'start', '--plan', 'b', '--task', 'R']);
-  assert.equal(startRefusal.detail.cause, 'predecessor_unfinished');
-  assert.deepEqual(startRefusal.detail.blocking_tasks,
-    [{ project_id: 'alpha', plan_key: 'a', task_id: 'P', status: 'pending', reason: null }]);
+  assert.equal(startRefusal.detail.cause, 'connection_open');
+  assert.deepEqual(startRefusal.detail.blocking_connections.map(({ kind, ref }) => ({ kind, ref })),
+    [{ kind: 'task', ref: 'alpha/a/P' }]);
+  assert.equal(startRefusal.detail.blocking_tasks, undefined);
   assert.deepEqual(ok('beta', ['todo', 'notice', 'list']).notices, []);
+  // A task on another chart is a 接続: the drawing has no edge for it and no skipped-edge notice.
+  const { rendered } = await renderTodoGanttForProject({ repoRoot: path.join(root, 'beta'), env });
+  assert.ok(!JSON.stringify(rendered).includes('端点を図に描けない'));
 
   ok('alpha', ['todo', 'start', '--plan', 'a', '--task', 'P']);
   const done = ok('alpha', ['todo', 'done', '--plan', 'a', '--task', 'P', '--message', 'merged']);
@@ -120,7 +128,7 @@ test('an unreadable chart reads as waiting and is named; connect without the env
   await rename(path.join(root, 'alpha'), path.join(root, 'alpha-moved'));
   const gone = ok('beta', ['todo', 'status', '--json']);
   assert.deepEqual([ready(gone), findings(gone)], [[], [['alpha', 'P', 'chart_unreadable']]]);
-  assert.equal(refused('beta', ['todo', 'start', '--plan', 'b', '--task', 'R']).detail.blocking_tasks[0].reason,
+  assert.equal(refused('beta', ['todo', 'start', '--plan', 'b', '--task', 'R']).detail.blocking_connections[0].state_reason,
     'chart_unreadable');
   // No guard: once readable again, the next read resolves it.
   await rename(path.join(root, 'alpha-moved'), path.join(root, 'alpha'));

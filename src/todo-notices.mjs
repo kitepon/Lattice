@@ -2,7 +2,7 @@
 // Store journals. Lattice records and shows; a notice starts nothing and gates nothing.
 
 import { digestTodoArtifact } from './todo-contracts.mjs';
-import { todoNoticeWaitingDigest } from './todo-notice-store.mjs';
+import { readAllTodoNoticeWaits, todoNoticeWaitingDigest } from './todo-notice-store.mjs';
 import { createTodoReadiness } from './todo-readiness.mjs';
 import { projectTodoStatus, TODO_STATUS_DISPATCH_ONLY } from './todo-status.mjs';
 
@@ -42,6 +42,17 @@ export function waitInEffect(store, wait) {
   if (task === undefined || !['pending', 'blocked'].includes(task.status)) return false;
   return !member.journal.events.some((event) => event.task_id === wait.task_id
     && ['start', 'retire'].includes(event.kind) && event.recorded_at > wait.since);
+}
+
+/**
+ * 優先接続: `store` plus `priority_waits`, the host-local `todo wait` marks still in effect (an unreadable file reads as
+ * none, as for notices), so every read surface draws the same `connections` list. Gates nothing.
+ */
+export async function withTodoPriorityWaits(store, { repoRoot }) {
+  if (store.priority_waits !== undefined) return store;
+  const stored = await readAllTodoNoticeWaits({ repoRoot });
+  return { ...store, priority_waits: stored.waits.flatMap((record) => record.waits
+    .map((wait) => ({ plan_key: record.plan_key, ...wait }))).filter((wait) => waitInEffect(store, wait)) };
 }
 
 function noticeSummary(planKey, task, waiting) {

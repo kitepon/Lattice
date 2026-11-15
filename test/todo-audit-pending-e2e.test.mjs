@@ -38,7 +38,7 @@ const ACTOR_ENV = {
 const TERMINAL_AUDIT = 'terminal-audit';
 const STATUS_KEYS = [
   'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier', 'blocked',
-  'audit_pending', 'structure_finalization_pending', 'plan_notes',
+  'connection_pending', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
   'coordination', 'parallel_candidates', 'cross_plan_findings',
   'member_heads', 'truncated', 'result_digest',
 ];
