@@ -138,14 +138,11 @@ Write commands:
   add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>]
       [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]
         # 1件を足す（a39）。planの全体を書かずに軽量改訂で新plan_versionを作り、他のtaskはcarry
-  done --plan <key> --task <id> [--evidence <file>] [--message <text>]
-        # taskを閉じる。どちらも省略でき、両方なら本文がfileを名指す（A58）。--evidenceはdescriptor JSONでも証拠本文でもよい。repo内なら絶対path可。
+  done --plan <key> --task <id> [--message <text>] [--test-result <markdown-file>]
+        # taskを閉じる。--messageの文が閉じた記録になる（省略すると既定の文）。--evidence <file>は次のminorまでの別名で、fileの文を--messageとして読む。
         # 既にdoneなら何も足さずunchanged:trueで成功する（a12）
         # 監査と構造finalizationは残作業であり、doneの門ではない
   reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]
-  evidence promote --plan <key> --task <id> --evidence <file>
-  evidence anchor [--json]  # 既存の証拠をgcから守る印(refs/lattice/evidence/<oid>)を付ける。commit済みにはならない
-      # done状態と完了時刻を維持し、最新doneへ追記eventで証拠を再束縛する
   start --plan <key> --task <id> --rebind --reason <text>  # 改訂でcarryされたin-progressへ現版のstart束縛を積み直す（ADR 0191）
   predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>
   predecessor remove --plan <key> --task <id> --after <plan>/<task> --reason <text>
@@ -201,8 +198,8 @@ Write commands:
       # 実際に受理する最新契約のJSON Schemaを返す（storeを読まない）。
       # 入力が契約に合わないときは、違反フィールドのpathがerror detailへ載る
   phase review --plan <key> --phase <id> --reason <text>
-  phase accept --plan <key> --phase <id> --evidence <file> | --message <text>  # 監査file/文から入力を機械が組む
-  phase reject --plan <key> --phase <id> --reason <text> --evidence <file> | --message <text>
+  phase accept --plan <key> --phase <id> [--message <text>]
+  phase reject --plan <key> --phase <id> --reason <text> [--message <text>]
   phase <accept|reject> --plan <key> --phase <id> --input <file>
   phase reopen --plan <key> --phase <id> --reason <text> [--override-reason <text>]
   phase close-unaudited --plan <key> --phase <id> --reason <text>
@@ -368,8 +365,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
     + ' | baseline --reason <text> [--except <plan_key>]...',
   'todo phase status': 'todo phase status --plan <key> [--json]',
   'todo phase review': 'todo phase review --plan <key> --phase <id> --reason <text>',
-  'todo phase accept': 'todo phase accept --plan <key> --phase <id> --evidence <file> | --message <text> | --input <file>',
-  'todo phase reject': 'todo phase reject --plan <key> --phase <id> --reason <text> --evidence <file> | --message <text> | --input <file>',
+  'todo phase accept': 'todo phase accept --plan <key> --phase <id> [--message <text>]',
+  'todo phase reject': 'todo phase reject --plan <key> --phase <id> --reason <text> [--message <text>]',
   'todo phase reopen': 'todo phase reopen --plan <key> --phase <id> --reason <text> [--override-reason <text>]',
   'todo phase close-unaudited': 'todo phase close-unaudited --plan <key> --phase <id> --reason <text>',
   'todo phase baseline': 'todo phase baseline --reason <text> [--except <plan_key>]...',
@@ -381,11 +378,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo retire': 'todo retire --plan <key> --task <id> --reason <text>',
   'todo add': 'todo add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>]'
     + ' [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]',
-  'todo done': 'todo done --plan <key> --task <id> [--evidence <file>] [--message <text>] [--test-result <markdown-file>]',
+  'todo done': 'todo done --plan <key> --task <id> [--message <text>] [--test-result <markdown-file>]',
   'todo reopen': 'todo reopen --plan <key> --task <id> --reason <text> [--override-reason <text>]',
-  'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file> | anchor [--json]',
-  'todo evidence anchor': 'todo evidence anchor [--json]  # lattice.todo_evidence_anchor_result.v1 {anchored, already, missing}; no Store yet: lattice.todo_evidence_anchor_uninitialized.v1',
-  'todo evidence promote': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
   'todo predecessor': [
     'todo predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>',
     'todo predecessor remove --plan <key> --task <id> --after <plan>/<task> --reason <text>',

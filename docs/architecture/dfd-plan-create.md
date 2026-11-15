@@ -57,9 +57,9 @@ and `lattice todo status` both use it, so an uninitialized Store reads as zero p
 with the create commands as next actions, never as `artifact_missing`.
 Both Store transactions perform the authoritative layout/identity/race checks.
 
-### No Store yet is uninitialized, not inconsistent (anchor-uninit, 2026-11-12)
+### No Store yet is uninitialized, not inconsistent (anchor-uninit, 2026-11-12; the anchor command is gone)
 
-Found in the 0.93.0 production check: `todo evidence anchor`, and every other todo
+Found in the 0.93.0 production check: every todo
 command that reads or locks the Store, answered `STORE_INCONSISTENT/artifact_missing`
 (ref manifest) on a project whose `status` says `uninitialized`. "Inconsistent"
 invites repair or deletion of a Store that does not exist yet.
@@ -72,13 +72,8 @@ invites repair or deletion of a Store that does not exist yet.
 | `prepareAuthoredStoreRoot` cleanup | root vanished while held | `store_uninitialized` joins `store_locked`/`artifact_missing` as "already gone" |
 | `readStoreStableWith` (`readTodoStoreStable` and the strict display read) manifest reads | same two layouts | same two answers, through the shared `readManifest` (display-uninit, 2026-11-12: these reads skipped `readTodoStoreView`'s classification) |
 | Store display read / source (`readRawManifest`) | same two layouts | see [Store display DFD, No Store yet](dfd-store-display-read.md#no-store-yet-display-uninit-2026-11-12): read `unavailable` with that `inconsistency`, source exit 0 with a manifest diagnostic |
-| `todo evidence anchor` (todo-cli) | `isUninitializedTodoStore` true | exit 0, `lattice.todo_evidence_anchor_uninitialized.v1 {anchored: [], already: 0, missing: [], next_actions: [plan create --template --json, plan create --input <file>], result_digest}`; no bytes written |
 
-Why anchor is a success and the others refuse: `status` answers an empty project with a
-success (zero plans plus the create commands). Anchor's contract is "every recorded
-evidence blob is protected from gc"; with no Store nothing is recorded, so the
-contract already holds and a refusal would only stop scripts that anchor every
-project (a guard with nothing to protect). show/verify/start/notice ask about a plan,
+`status` answers an empty project with a success (zero plans plus the create commands). show/verify/start/notice ask about a plan,
 task or record that cannot exist yet, so they refuse with the typed
 `STORE_UNINITIALIZED` and the same create next_action. The legacy g4 bootstrap
 (`appendImportedPlan` with residue) keeps its own `artifact_missing` manual-recovery

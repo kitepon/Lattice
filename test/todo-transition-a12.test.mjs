@@ -89,19 +89,3 @@ test('repeated start, done, block and unblock succeed unchanged without an event
   assert.deepEqual([done.unchanged, done.status, done.kind], [true, 'done', 'done']);
   assert.equal(await journalLength(root), length);
 });
-
-test('verify lists message evidence waiting for a commit instead of refusing', async (context) => {
-  const root = await fixture(context);
-  success(root, ['todo', 'start', ...task('a')]);
-  success(root, ['todo', 'done', ...task('a'), '--message', 'checked by hand']);
-  const result = success(root, ['todo', 'verify', '--json']);
-  assert.equal(result.schema, 'lattice.todo_verify_result.v4');
-  assert.equal(result.uncommitted_evidence.length, 1);
-  const [item] = result.uncommitted_evidence;
-  assert.deepEqual([item.plan_key, item.task_id], ['work', 'a']);
-  assert.match(item.next_action, /^Commit \.lattice\/todo\/evidence\//u);
-  execFileSync('git', ['add', '-A'], { cwd: root });
-  execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'store'], { cwd: root });
-  assert.deepEqual(success(root, ['todo', 'verify', '--json']).uncommitted_evidence, []);
-});

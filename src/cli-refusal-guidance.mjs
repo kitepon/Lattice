@@ -24,11 +24,7 @@ const run = (ctx, ...tail) => ['lattice', ctx.family ?? 'todo', ctx.command, ...
 const schemaCommand = (ctx) => run(ctx, '--schema', '--json');
 const showTask = (detail, ctx) => `lattice todo show --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --json`;
 const startTask = (detail, ctx) => `lattice todo start --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
-// The --message an enforced plan's done gate (ADR 0200 gate 4) accepts; the gate's own next_action uses it too.
-export const ENFORCED_DONE_MESSAGE = '"<PR URL or merged commit sha>"';
-// A done hint that the done gate accepts: on an enforced plan (ctx.enforcedPlans) it names the change, else `rest`.
-const doneCommand = (planKey, taskId, ctx, rest = '') => `lattice todo done --plan ${planKey} --task ${taskId}${
-  strings(ctx.enforcedPlans).includes(planKey) ? ` --message ${ENFORCED_DONE_MESSAGE}` : rest}`;
+const doneCommand = (planKey, taskId, rest = '') => `lattice todo done --plan ${planKey} --task ${taskId}${rest}`;
 // a12: name the blocking task (seat contract), falling back to the refused task's own detail.
 const blocker = (detail) => (Array.isArray(detail.blocking_tasks) ? detail.blocking_tasks.find(record) : undefined);
 // a18: the step that moves the blocker on depends on its status (a pending one is started first).
@@ -40,7 +36,7 @@ const unfinishedFirst = (detail, ctx) => {
   return ({
     pending: `Start ${name} first with \`lattice todo start ${on}\`, then record done on it`,
     blocked: `Unblock ${name} with \`lattice todo unblock ${on}\`, then record done on it`,
-  })[first.status] ?? `Record done on ${name} first with \`${doneCommand(first.plan_key, first.task_id, ctx, ' --message <text>')}\` (see \`lattice todo show ${on} --json\`)`;
+  })[first.status] ?? `Record done on ${name} first with \`${doneCommand(first.plan_key, first.task_id, ' --message <text>')}\` (see \`lattice todo show ${on} --json\`)`;
 };
 // 接続: an open 他条件に接続 is not a 前工程; name how it settles and how to remove it (Store: blocking_connections).
 const openConnections = (detail) => (Array.isArray(detail.blocking_connections) ? detail.blocking_connections.filter(record) : []);
@@ -64,7 +60,7 @@ const inProgressHolder = (detail, ctx, on) => {
     return `It is in-progress under '${holder}', the name a start gets without LATTICE_SEAT_ID: most likely this seat's own`
       + ` start from before it set LATTICE_SEAT_ID. One-time fix (seat contract): with LATTICE_SEAT_ID unset, undo that start`
       + ` with \`lattice todo retract ${on} --reason <text>\` and start it again here, or finish it there first with`
-      + ` \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx, ' --message <text>')}\`.`;
+      + ` \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ' --message <text>')}\`.`;
   }
   return `It is already in-progress under ${holder === null ? 'another seat' : `seat '${holder}'`}; see \`${showTask(detail, ctx)}\`.`
     + ` To move it to this seat run \`lattice todo start ${on} --rebind --reason <text>\`.`;
@@ -238,7 +234,7 @@ const REGISTRY = {
     // a32: only a done task can be reopened; say the state and the step that fits it.
     repair: (detail, ctx) => {
       const on = `--plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)}`;
-      const done = doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx);
+      const done = doneCommand(planOf(detail, ctx), taskOf(detail, ctx));
       return `Only a done task can be reopened; ${planOf(detail, ctx)}/${taskOf(detail, ctx)} is ${detail.status ?? 'not done'}. ` + ({
         // retract-anyone: any seat may return an in-progress task to unstarted.
         'in-progress': `It is still open: finish it with \`${done}\`, or return it to unstarted with \`lattice todo retract ${on} --reason <text>\`.`,
@@ -257,7 +253,7 @@ const REGISTRY = {
       const status = detail.phase_status;
       const head = `Phase ${plan}/${phase} is ${status ?? 'not gate_ready'}; review and close-unaudited need gate_ready. `;
       if (isAuditPendingPhaseStatus(status) && status !== 'gate_ready') {
-        const [first, second] = auditPendingNextCommands(plan, phase, status, strings(detail.required_evidence_slots).length || 1);
+        const [first, second] = auditPendingNextCommands(plan, phase, status);
         return head + (status === 'reviewing'
           ? `It is already in review: decide it with \`${first}\`, or \`${second}\`.`
           : `Its review was rejected: run \`${first}\`, then review it again.`);
@@ -274,7 +270,7 @@ const REGISTRY = {
     // retract-anyone: retract targets the event that last made the task in-progress (start, reopen or carrying revision).
     repair: (detail, ctx) => `retract targets the event that last put ${planOf(detail, ctx)}/${taskOf(detail, ctx)} in progress`
       + ` and found none in this plan version; see \`${showTask(detail, ctx)}\`, or finish it with`
-      + ` \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx), ctx)}\`.`,
+      + ` \`${doneCommand(planOf(detail, ctx), taskOf(detail, ctx))}\`.`,
   },
   reopen_has_started_successor: {
     repair: (detail, ctx) => `A successor of ${taskOf(detail, ctx)} has already started: to reopen it anyway run \`lattice todo reopen --plan ${planOf(detail, ctx)} --task ${taskOf(detail, ctx)} --reason <text> --override-reason <text>\`.`,
@@ -396,11 +392,7 @@ const REGISTRY = {
   note_input_too_large: inputFile('The input is too large.'),
   evidence_input_invalid_utf8: {
     pointer: '--evidence',
-    repair: () => 'Save the evidence file as UTF-8 and pass it to --evidence again.',
-  },
-  authored_evidence_descriptor_invalid: {
-    pointer: '--evidence',
-    repair: () => 'Pass a non-empty text file to --evidence (or use --message <text>) whose content can be stored as evidence.',
+    repair: () => 'Save the file as UTF-8 and pass it to --evidence again, or pass the text with --message <text>.',
   },
   test_result_must_be_non_empty_markdown: {
     pointer: '--test-result',

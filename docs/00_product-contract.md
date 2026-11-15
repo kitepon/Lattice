@@ -353,7 +353,7 @@ predecessor source消失は`predecessor_source_silently_dropped`として拒否�
 成功は単体通常revisionが`lattice.todo_revise_result.v1`（revision入力がv2なら
 `lattice.todo_revise_result.v2`）、revision setが
 `lattice.todo_revision_set_result.v1`、statusはreconciliation identityを含む
-`lattice.todo_status_result.v6`、verifyはsource inventoryを再検査する`lattice.todo_verify_result.v4`を返す（v3＋commit前の証拠を項目で示す`uncommitted_evidence`、a12）。
+`lattice.todo_status_result.v6`、verifyはsource inventoryを再検査する`lattice.todo_verify_result.v4`を返す（`uncommitted_evidence`はこの版では常に空配列で、次のverify schemaで外す）。
 verify v3の各memberは`reconciliation_guidance`を持ち、`registered_unreconciled`がsource inventoryの
 検証状態であってlifecycle操作とdashboard表示を塞がず、何もしなくてよいこと（`next_action: "none"`、a22。a27からreconciledのmemberも`"none"`）を示す。次の軽い改訂（`lattice plan revise`）がreconciledにする。`--json`が無い`todo verify`は、同じ結果から導いた判定1行だけを返す（a19）。
 status v6の`dispatch_frontier`は`next_ready`全件を既定の同時dispatch集合とし、推奨同時数、
@@ -424,42 +424,20 @@ repo外inputはそれぞれ`UNKNOWN_SUBCOMMAND`、
 plan本体（phase定義と状態・task一覧と状態・依存本数・依存辺`hard_dependencies`／`joins`／`phase_accept_dependencies`・topology要約）を投影する——
 `todo bindings`が`compile_binding`付きtaskだけを投影することによる「planが空」という誤読を塞ぐ面である。
 
-通常の状態遷移は`todo start / block / unblock / done / evidence promote / reopen`のclosed面で行う。
+通常の状態遷移は`todo start / block / unblock / done / reopen`のclosed面で行う。
 mutation callerは`LATTICE_TODO_ACTOR_HOST`, `LATTICE_TODO_ACTOR_SESSION`,
 `LATTICE_TODO_ACTOR_AGENT`をtodo identifierとして受理する。欠落時のdefaultは、hostが端末の識別子から
 導いたlabel（`terminal-`と16進12桁。識別子を読めず作れない端末は`host`）、sessionが`session`、agentが
 USERをsanitizeした値である。OSのhost名はjournalへ書かない（ADR 0197）。渡した値がidentifierとして
 不正なら未設定と同じdefaultを使う（u03 A57）。
-`done`はtaskを閉じる。evidenceはrepo内のdescriptor JSONでも証拠本文でもよく、`--message`は
-本文からblob descriptorを書く。両方を渡すとmessageへevidence fileの場所とdigestを添えた本文、
-どちらも無いと「証拠の指定なしで完了した。」を証拠として記録する（u03 A58）。dashboard故障とstructure realizationはdoneの門ではない。
-`evidence promote`は現在doneのtaskへ最新done digestで束縛した追記eventを積み、authored／importedを
-問わずevidenceだけを再束縛する。done_atとimportedはlock内の現状態を維持し、対象taskの過去evidence
-不達を新eventのhard検証で置き換える。以後のreplayは最新の証拠束縛だけを検証し、importedは
-完了来歴として維持したまま通常evidenceを後続revisionへcarryできる。複数taskの旧証拠や
-import sourceが不達でも、各taskを未検証と表示して通常の書込みと順次promoteを進める。
-`todo verify`は未検証を報告して失敗する。新eventのevidenceが不正ならstore bytes不変で
-拒否する（ADR 0183・0192）。
-監査と構造finalizationはstatusの残作業である（ADR 0159・0181）。成功は
-`lattice.todo_mutation_result.v2`一行（`note_context`を同梱する成功は
-`lattice.todo_mutation_result.v5`）、失敗とusage違反は`lattice.cli_error.v2`一行で、
-失敗時のstore bytesは不変とする。`advisory`は`todo start`だけが非nullで返し、着手対象と
-進行中ToDoの競合・切断可能性・未検査の内訳を機械可読で載せる（ADR 0128）。
-どの ready を取るかは host の所有のまま変えない。記録があるのに対象工程が未宣言・失効でも
-`todo start`は止めず、`advisory.guidance`で示す（u03 B1–B6、ADR 0182を置き換える）。
-`independence compile`は`next_ready`が witness に無いとき`INDEPENDENCE_READY_UNDECLARED`で拒否する。
-記録が読めない、またはHEADを解決できない場合は、記録なしと同じ助言と警告で通す（u03 B7・B16）。`todo start`はさらに`structure_context`を
-必ず返す。構造機能が有効なら対象taskのcanonical planned構造、structure set identity、compile freshness、
-realizationの次操作を同梱し、未適用なら`status=not_enabled`、破損なら`status=unreadable`を明示する。
-note chainが壊れていてもstartは通り、`note_context`はunreadableを返す。実装者へ別コマンドやsource file探索を
-要求しない（ADR 0172・0181）。
+`done`はtaskを閉じる。`--message`の文が閉じた記録になり、Storeは`task.evidence.message`として持つ。無いと「証拠の指定なしで完了した。」を記録する。`--evidence <file>`は次のminorまでの別名で、fileの文を`--message`として読むだけでblobは書かない。dashboard故障とstructure realizationはdoneの門ではない。旧eventのevidence記述子は有効なまま読める。
 
 PhaseはToDoの直列化groupではなく重監査の制御境界である。現行`todo_plan.v7`は各ToDoの`phase_id`、
 gate policy、前段Phase、required evidence slotを所有するが、通常ToDoのstart/done readinessはToDo DAGだけで決める。
 前段Phaseは監査のreview/accept順だけを制御する。特定ToDoがPhase受理を必要とする時だけ
 `phase_accept_dependencies`へPhase ref→task refを明示し、task・Phase gateを合わせたmerged graphでcycleと
 cross-plan topology bindingを検査する。所属ToDoが全てdoneでも`gate_ready`までしか進まず、
-`phase_review`とimmutable evidence付き`phase_accept`を同じjournalへ記録して監査判断を残す。
+`phase_review`と`phase_accept`（任意の`message`付き。証拠は求めない）を同じjournalへ記録して監査判断を残す。
 この契約はPhase数、監査回数、required evidence slotを自動的に増やさない。旧v4／v5は互換読取契約として
 維持し、v4だけはPhase acceptまで後続ToDoを暗黙に閉じる。旧plan versionやjournal headを
 下流eventの永続依存先にはしない。revisionではPhase定義と所属ToDo集合が同じ時だけDecision stateをcarryし、
@@ -538,8 +516,8 @@ Peertable（MIT・npm `peertable`）はLatticeの外部消費者である。公�
   lease／hold／resume。席自身が先にclaim／`todo start`したtaskだけをintakeし、隔離worktreeと競合介入を
   設備として受け取る。bridgeはrun進行と介入のread-only中継に限る。eventのactorは操作主体の記録であり、
   taskへassigneeを持たせて消費者側のclaimと二重正本にしない。
-- **結果・証跡・着地の束縛**: `todo done --evidence <descriptor> [--test-result <markdown-file>]`は、
-  repo内descriptorとpinned Git objectをhard検証し、任意の非空Markdown `test_result`を同じdone eventへ保存する
+- **結果・証跡・着地の束縛**: `todo done --message <text> [--test-result <markdown-file>]`は、
+  文を閉じた記録として、任意の非空Markdown `test_result`を同じdone eventへ保存する
   （公開契約`lattice.todo_test_result.v1`）。未記録の既存ToDoは`todo show`で`test_result: null`として読み、
   evidenceの代替・自動生成・採点には使わない。`run intake accept`、`run close`、`run landing`まで束縛し、
   accept後もcanonical統合とremote既定branchへのlandingが確認できるまで完走へ丸めない。

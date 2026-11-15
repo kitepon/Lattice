@@ -95,7 +95,7 @@ append-only realizationとして記録します。有効化済みplanのgraph ta
 
 ```bash
 lattice todo structure realize --plan <key> --task <id> --input realization.json
-lattice todo done --plan <key> --task <id> --evidence evidence.json
+lattice todo done --plan <key> --task <id> --message "<やったこと>"
 lattice todo structure finalize --plan <key> --json
 ```
 
@@ -318,7 +318,7 @@ remainingのA工程は同じwitnessへ含めます。競合の同時起動は助
 起動するものではなく、実際のdispatchはhostが行います。ready全件が着手されたかは
 `active_set`と`next_ready`で観測できます。
 ToDo完了は軽量確認までで、所属ToDoが全てdoneになったPhaseは`gate_ready`となり、`todo phase review`後に
-required evidenceを束縛した`todo phase accept`で重監査の判断を記録します。監査回数やPhase数を自動追加する
+`todo phase accept`（任意の`--message`付き）で重監査の判断を記録します。監査回数やPhase数を自動追加する
 機能ではありません。
 
 **監査の既定は「有り」です。** phaseを持たないplanも終端に重監査が要ります（予約Phase
@@ -332,12 +332,10 @@ required evidenceを束縛した`todo phase accept`で重監査の判断を記�
 ```bash
 lattice todo phase status --plan <key>   # phase無しplanでも暗黙Phaseを返す（implicit: true）
 lattice todo phase review --plan <key> --phase terminal-audit --reason <text>
-lattice todo phase accept --plan <key> --phase terminal-audit --evidence <監査file>
+lattice todo phase accept --plan <key> --phase terminal-audit [--message <text>]
 ```
 
-`--evidence`には、commit済みの監査本文をrepo相対pathで渡します。reviewのevent digest、証拠の記述子、
-必須evidence slotはLatticeが組み立てます。必須slotが複数あるPhaseや、記述子を自分で渡したい時は
-`--input <file>`（`lattice.phase_accept_input.v1`、`input_digest`は空でよい）を使います。
+acceptとrejectは証拠を求めません。任意の`--message`の文は、その判断のeventにだけ残ります。
 
 **過去の工程は監査できません。** 監査対象のコードが既に変化しているためです。そこで
 「監査なしで閉じた」という状態を別に持ちます——`accepted`（監査を通った）へは絶対に化けず、
@@ -407,7 +405,7 @@ daemonの生死はdescriptor 1枚では持ちません。daemonは自分のpid�
 配信を続けているdaemonを引き取ります。signalを送るのはその場で再認証を通った相手だけで、応答しない
 pidへは送りません（pid再利用で無関係のprocessを止めうるためです）。規約は
 [ADR 0157](https://github.com/kitepon/Lattice/blob/main/docs/adr/0157-dashboard-daemons-are-discoverable-by-record.md)が正です。
-状態を書き込む`start / block / unblock / done / evidence promote / reopen / note / independence mode /
+状態を書き込む`start / block / unblock / done / reopen / note / independence mode /
 revise / revise-phase / revise-set / phase review|accept|reject|reopen|close-unaudited|baseline /
 dashboard adopt`では、監査actorとして次の3環境変数を渡せます。未設定なら、hostは端末ごとのlabel
 （`terminal-`と16進12桁）、sessionは`session`、agentはUSERになります。hostのlabelは端末の乱数の識別子
@@ -421,8 +419,7 @@ export LATTICE_TODO_ACTOR_SESSION=<session-id>
 export LATTICE_TODO_ACTOR_AGENT=<agent-id>
 ```
 
-`todo done`は`--evidence`にdescriptor JSONでも証拠本文でも渡せます。`--message`なら本文から
-blobを書きます。flagの順は問いません。空の設計メモは拒否します。無策なら`NO_PLAN`と書いてください。
+`todo done`は`--message`の文を閉じた記録として残します（`--evidence <file>`は次のminorまでの別名で、fileの文を読むだけです）。flagの順は問いません。空の設計メモは拒否します。無策なら`NO_PLAN`と書いてください。
 
 authoring入口と閉じる口の契約は
 [ADR 0181](https://github.com/kitepon/Lattice/blob/main/docs/adr/0181-authoring-entry-accepts-drafts.md)を参照してください。

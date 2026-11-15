@@ -89,52 +89,6 @@ test('gate 3: main moving under the declared files stops start until redeclared'
   success(root, start('P'));
 });
 
-test('gate 4: done names the change (URL or a commit in HEAD)', async (context) => {
-  const { root, commit } = await fixture(context);
-  for (const [id, file] of [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js']]) success(root, declare(id, '--owns', file));
-  success(root, start('P'));
-  const done = (...flags) => ['todo', 'done', '--plan', 'dev', '--task', 'P', ...flags];
-  assert.equal(refusal(root, done()).message, 'enforced_done_reference_missing');
-  assert.equal(refusal(root, done('--message', 'finished, see deadbeef1')).message, 'enforced_done_reference_missing');
-  const sha = await commit('src/a.js'); // P's own file; Q's record stays fresh
-  success(root, done('--message', `merged ${sha.slice(0, 8)}`));
-  // A repeated done is unchanged, not re-gated.
-  assert.equal(success(root, done()).unchanged, true);
-  success(root, start('Q'));
-  success(root, ['todo', 'done', '--plan', 'dev', '--task', 'Q', '--message', 'https://github.com/example/repo/pull/1']);
-});
-
-test('a refusal that offers done offers the form gate 4 accepts; typed as given, it passes', async (context) => {
-  const { root } = await fixture(context);
-  for (const [id, file] of [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js']]) success(root, declare(id, '--owns', file));
-  success(root, start('P'));
-  const hint = refusal(root, ['todo', 'reopen', '--plan', 'dev', '--task', 'P', '--reason', 'r']).detail.next_action;
-  const offered = hint.match(/`(lattice todo done [^`]*)`/u)?.[1];
-  assert.equal(offered, 'lattice todo done --plan dev --task P --message "<PR URL or merged commit sha>"');
-  const typed = offered.replace('"<PR URL or merged commit sha>"', 'https://github.com/example/repo/pull/2');
-  assert.equal(success(root, typed.split(' ').slice(1)).status, 'done');
-  // Every other done hint of the shared guidance takes the same form on an enforced plan, and stays as it was elsewhere.
-  const { withRefusalGuidance } = await import('../src/cli-refusal-guidance.mjs');
-  const hints = (enforcedPlans) => [
-    { rule: 'authored_start_binding_missing', plan_key: 'dev', task_id: 'P', opened_by: 'reopen' },
-    { rule: 'invalid_done_transition', cause: 'predecessor_unfinished',
-      blocking_tasks: [{ plan_key: 'dev', task_id: 'Q', status: 'in-progress' }] },
-    { rule: 'invalid_start_transition', cause: 'task_state', status: 'in-progress', started_by: 'os-user' },
-  ].map((detail) => withRefusalGuidance({ code: 'TODO_TRANSITION_REFUSED', message: detail.rule, detail },
-    { plan: 'dev', task: 'P', actors: { anonymous: 'os-user', agent: 'seat' }, enforcedPlans }).next_action
-    .match(/`(lattice todo done [^`]*)`/u)?.[1]);
-  assert.deepEqual(hints(['dev']), [
-    'lattice todo done --plan dev --task P --message "<PR URL or merged commit sha>"',
-    'lattice todo done --plan dev --task Q --message "<PR URL or merged commit sha>"',
-    'lattice todo done --plan dev --task P --message "<PR URL or merged commit sha>"',
-  ]);
-  assert.deepEqual(hints([]), [
-    'lattice todo done --plan dev --task P',
-    'lattice todo done --plan dev --task Q --message <text>',
-    'lattice todo done --plan dev --task P --message <text>',
-  ]);
-});
-
 test('a witness plan keeps the done hint it had', async (context) => {
   const { root } = await fixture(context, 'witness');
   success(root, start('P'));
@@ -162,7 +116,7 @@ test('gate 5: a heavy phase is not closed unaudited; a light one is', async (con
   success(root, close('q'));
 });
 
-test('gate 5 exit without a file or a commit: phase accept|reject --message on an unborn Store root', async (context) => {
+test('gate 5 exit without evidence: phase accept|reject with an optional --message on an unborn Store root', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-unborn-'));
   context.after(() => rm(root, { recursive: true, force: true }));
   execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
@@ -182,22 +136,14 @@ test('gate 5 exit without a file or a commit: phase accept|reject --message on a
   const phase = (verb, id, ...flags) => ['todo', 'phase', verb, '--plan', 'dev', '--phase', id, ...flags];
   const closeRefused = refusal(root, phase('close-unaudited', 'p', '--reason', 'skip'));
   assert.equal(closeRefused.message, 'enforced_heavy_phase_unaudited');
-  assert.match(closeRefused.detail.next_action, /--message <text>/u);
+  assert.match(closeRefused.detail.next_action, /phase accept --plan dev --phase p/u);
   success(root, phase('review', 'p', '--reason', 'audit'));
-  assert.equal(refusal(root, phase('accept', 'p', '--message', 'ok', '--input', 'plan.json')).detail.rule, 'flags_exclusive');
   const accepted = success(root, phase('accept', 'p', '--message', 'Audited: PR 1 merged, tests green.'));
-  assert.deepEqual([accepted.status, accepted.decision_evidence_state], ['accepted', 'uncommitted']);
+  assert.equal(accepted.status, 'accepted');
   success(root, phase('review', 'r', '--reason', 'audit'));
   assert.equal(refusal(root, phase('reject', 'r', '--message', 'no')).detail.rule, 'flag_missing');
   const rejected = success(root, phase('reject', 'r', '--reason', 'tests missing', '--message', 'No test for R.'));
-  assert.deepEqual([rejected.status, rejected.decision_evidence_state], ['rejected', 'uncommitted']);
-  // Never shown as audited by committed evidence: status and verify name the uncommitted decision.
-  const states = Object.fromEntries(success(root, ['todo', 'phase', 'status', '--plan', 'dev', '--json']).phases
-    .map(({ phase_id: id, decision_evidence_state: state }) => [id, state]));
-  assert.deepEqual(states, { p: 'uncommitted', r: 'uncommitted' });
-  const pending = success(root, ['todo', 'verify', '--json']).uncommitted_evidence.filter((item) => item.phase_id);
-  assert.deepEqual(pending.map(({ phase_id: id }) => id).sort(), ['p', 'r']);
-  assert.match(pending[0].path, /^\.lattice\/todo\/evidence\/dev\/[pr]-(accept|reject)\//u);
+  assert.equal(rejected.status, 'rejected');
 });
 
 test('witness and conversation plans keep warnings only', async (context) => {

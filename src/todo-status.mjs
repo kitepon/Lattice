@@ -436,7 +436,6 @@ function collectAuditPending(member, sink) {
       implicit,
       required_evidence_slots: [...definition.required_evidence_slots],
       next_commands: auditPendingNextCommands(member.plan.plan_key, phase.phase_id, phase.status,
-        definition.required_evidence_slots.length,
         { auditRequired: phaseAuditRequired(member, definition.gate_policy) }),
     });
   }

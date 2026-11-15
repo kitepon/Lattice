@@ -110,7 +110,7 @@ recompiles the final HEAD and requires a fresh, consistent finalization before t
 
 ```bash
 lattice todo structure realize --plan <key> --task <id> --input realization.json
-lattice todo done --plan <key> --task <id> --evidence evidence.json
+lattice todo done --plan <key> --task <id> --message "<what was done>"
 lattice todo structure finalize --plan <key> --json
 ```
 
@@ -281,7 +281,7 @@ re-derived is not recorded.
 **Heavy audit is on by default.** A plan without explicit phases still carries an implicit
 terminal audit: every task being done means `gate_ready` — *awaiting audit* — not finished. The
 live dependency diagram refuses to fold such a plan away, because folding is how the product
-says "closed", and nothing gets there without an evidence-bound `phase accept`. Creation is never
+says "closed", and nothing gets there without a recorded `phase accept` (or `close-unaudited`). Creation is never
 rejected over it; the requirement is reported instead. And the audit gate never touches dispatch:
 phases order reviews, the ToDo DAG orders work
 ([ADR 0147](https://github.com/kitepon/Lattice/blob/main/docs/adr/0147-audit-is-on-by-default.md)).

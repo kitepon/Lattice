@@ -1,7 +1,7 @@
 import { createTodoReadiness, listTodoConnections, retireStateConflict, validateProspectiveEvent } from './todo-readiness.mjs';
 import { cliCommandKind } from './cli-command-kind.mjs';
 import { cliFailureClass } from './cli-failure-class.mjs';
-import { ENFORCED_DONE_MESSAGE, FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
+import { FLAG_PLACEHOLDER, publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 import { readTaskBackchainContext } from './plan-backchain.mjs';
 import { auditPendingNextCommands, phaseAuditRequired } from './todo-audit-pending.mjs';
 import { gitSync } from './git-process.mjs';
@@ -16,7 +16,6 @@ import {
   isAuthoringPathToken,
   matchFlagCommand,
   parseFlagMap,
-  parseAuthoringJson,
   readAuthoringJsonFile,
   repairAuthoringArtifact,
   resolveAuthoringInputPath,
@@ -30,7 +29,6 @@ import {
   TODO_TEST_RESULT_CONTRACT_ID,
   canonicalizeTodoArtifact,
   digestTodoArtifact,
-  exactRecord,
   explainTodoDesignMemo,
   isTodoDigest,
   isTodoDesignMemo,
@@ -38,7 +36,6 @@ import {
   isTodoRef,
   isTodoTestResult,
   todoSelfDigest,
-  validateEvidenceDescriptor,
 } from './todo-contracts.mjs';
 import {
   adoptTodoDashboardActivity,
@@ -71,8 +68,6 @@ import {
   createTodoStoreWriter,
   TodoStoreError,
   isPhaselessTodoPlanSchema,
-  findUnverifiedTodoEvidence,
-  isTodoEvidenceUncommitted,
   isUninitializedTodoStore,
   projectTodoCrossPlanDependencies,
   TERMINAL_AUDIT_PHASE_ID,
@@ -212,8 +207,8 @@ import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
 const CLI_ERROR_SCHEMA = 'lattice.cli_error.v2';
 const DEFAULT_GANTT_SCOPE = 'live';
 const MAX_NOTE_INPUT_BYTES = 16_384;
-/** u03 A58: `todo done` without --evidence/--message records this text as its evidence. */
-const DONE_WITHOUT_EVIDENCE_MESSAGE = '証拠の指定なしで完了した。\n';
+/** `todo done` without --message records this text. */
+const DONE_WITHOUT_MESSAGE = '証拠の指定なしで完了した。\n';
 
 /**
  * `revise` / `revise-set` / `revise-phase` / `migrate`が配布する名前付き入力契約のJSON
@@ -279,16 +274,6 @@ function guidanceContext(argv, env = {}) {
   };
 }
 
-/** Enforced plans, so a refusal's done hint names the change their done gate needs; none when the store is unreadable. */
-async function enforcedPlanKeys(cwd) {
-  try {
-    const { members } = await readTodoStore({ repoRoot: resolveRepoRoot(cwd) });
-    return members.filter((member) => member.coordination?.mode === 'enforced').map(({ descriptor }) => descriptor.plan_key);
-  } catch {
-    return [];
-  }
-}
-
 /**
  * An error that reached here is, by definition, one none of the typed
  * TodoStoreError/TypeError branches recognized — the one case where the
@@ -315,7 +300,7 @@ function internalFailure(stderr, error) {
 const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
-  'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
+  'unblock', 'retire', 'done', 'reopen', 'split', 'revise', 'revise-phase', 'revise-set',
   'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers', 'compact',
 ]);
 
@@ -372,11 +357,9 @@ const TODO_FLAG_SPECS = Object.freeze({
   split: Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   note: NOTE_FLAG_SPEC,
   // a28: the rest of the writes, and the reads whose --json is optional (their output is JSON either way).
-  'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'input'], required: ['plan', 'phase'] }),
-  'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'reason', 'input'], required: ['plan', 'phase'] }),
+  'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message'], required: ['plan', 'phase'] }),
+  'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'reason'], required: ['plan', 'phase'] }),
   'phase reopen': Object.freeze({ known: ['plan', 'phase', 'reason', 'override-reason'], required: ['plan', 'phase', 'reason'] }),
-  'evidence promote': Object.freeze({ known: ['plan', 'task', 'evidence'], required: ['plan', 'task', 'evidence'] }),
-  'evidence anchor': Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
   'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   'independence mode': Object.freeze({ known: ['plan', 'set', 'reason'], required: ['plan', 'set', 'reason'] }),
   'independence witness scaffold': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
@@ -402,9 +385,8 @@ const TODO_SUBCOMMANDS = Object.freeze({
   predecessor: { names: ['add', 'remove'], example: 'add' },
   connect: { names: ['condition', 'priority'], example: 'priority' },
   phase: { names: ['status', 'review', 'accept', 'reject', 'reopen', 'close-unaudited', 'baseline'], example: 'review' },
-  evidence: { names: ['promote'], example: 'promote' },
 });
-const GROUP_COMMANDS = ['dependency', 'predecessor', 'connect', 'phase', 'evidence', 'independence', 'note', 'structure'];
+const GROUP_COMMANDS = ['dependency', 'predecessor', 'connect', 'phase', 'independence', 'note', 'structure'];
 const IDENTIFIER_FLAGS = ['plan', 'task', 'phase', 'from-plan', 'from-task', 'to-plan', 'to-task'];
 // The shared table is FLAG_PLACEHOLDER (cli-refusal-guidance, a27).
 const placeholder = (name) => FLAG_PLACEHOLDER[name] ?? `<${name}>`;
@@ -523,23 +505,13 @@ function explainArgumentRefusal(argv) {
     }
   }
   if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
-    const given = ['evidence', 'message', 'input'].filter((name) => typeof flags[name] === 'string' && flags[name].length > 0);
-    if (given.length === 0) {
-      return { pointer: '--evidence', rule: 'flag_missing',
-        next_action: `Add --evidence <file> (or --message <text>, or --input <decision file>): \`${repairedCommand(head, { ...spec, required: [...spec.required, 'evidence', ...(argv[1] === 'reject' ? ['reason'] : [])] }, flags)}\`.` };
+    if (flags.evidence !== undefined && flags.message !== undefined) {
+      return { pointer: '--evidence', rule: 'flags_exclusive',
+        next_action: `Pass --message <text> alone: \`${repairedCommand(head, spec, { ...flags, evidence: undefined })}\`.` };
     }
-    if (given.length > 1) {
-      const [keep, drop] = given;
-      return { pointer: `--${drop}`, rule: 'flags_exclusive',
-        next_action: `Pass one of --evidence, --message or --input: \`${repairedCommand(head, spec, { ...flags, ...Object.fromEntries(given.filter((name) => name !== keep).map((name) => [name, undefined])) })}\`.` };
-    }
-    if (argv[1] === 'reject' && given[0] !== 'input' && !(typeof flags.reason === 'string' && flags.reason.length > 0)) {
+    if (argv[1] === 'reject' && !(typeof flags.reason === 'string' && flags.reason.length > 0)) {
       return { pointer: '--reason', rule: 'flag_missing',
-        next_action: `A reject with --${given[0]} needs --reason <text>: \`${repairedCommand(head, { ...spec, required: [...spec.required, 'reason'] }, flags)}\`.` };
-    }
-    if (given[0] === 'input' && flags.reason !== undefined) {
-      return { pointer: '--reason', rule: 'flag_unknown',
-        next_action: `With --input the reason is inside the decision file; drop --reason: \`${repairedCommand(head, spec, { ...flags, reason: undefined })}\`.` };
+        next_action: `A reject needs --reason <text>: \`${repairedCommand(head, { ...spec, required: [...spec.required, 'reason'] }, flags)}\`.` };
     }
   }
   for (const name of ['input', 'evidence']) {
@@ -588,7 +560,6 @@ function supportsAtomicStoreCommit(argv) {
   if (command === 'migrate') return !argv.includes('--dry-run') && !argv.includes('--schema');
   if (['revise', 'split', 'revise-set', 'revise-phase', 'start', 'retract', 'block',
     'unblock', 'retire', 'done', 'reopen', 'add'].includes(command)) return true;
-  if (command === 'evidence') return argv[1] === 'promote';
   if (command === 'phase') return argv[1] !== 'status';
   return false;
 }
@@ -748,130 +719,22 @@ async function readRevisionInput(repoRoot, inputRef, {
   return revision;
 }
 
-// --evidenceが受け取るのは生の証拠ファイルではなくJSON記述子。ここを間違えた呼び出しAIが
-// json_parse_failed/schema_invalidだけを見て手詰まりになるので、期待形をエラーに同梱する（ADR 0130）。
-const EVIDENCE_DESCRIPTOR_EXPECTED = Object.freeze({
-  shape: '{ "evidence_id": "<identifier>", "repo_id": "<identifier>", "path": "<repo相対path>",'
-    + ' "git_blob_oid": "<40/64桁hex>", "content_digest": "<sha256 64桁hex>",'
-    + ' "media_type": "text/markdown", "anchor_digest": null }',
-  note: '証拠ファイル本体ではなく、コミット済みblobを指すJSON記述子を渡す。'
-    + '対象ファイルをcommitした後、git_blob_oidは `git rev-parse HEAD:<path>`、'
-    + 'content_digestはblob bytesのsha256（hex）で得る。refsから到達可能なblobだけが検証を通る',
-});
-
-function evidenceIdFor(planKey, taskId) {
-  const compact = `ev-${planKey}-${taskId}`.replace(/[^0-9A-Za-z._-]/gu, '-').slice(0, 128);
-  return isTodoIdentifier(compact) ? compact : 'evidence';
-}
-
-function mediaTypeFor(ref) {
-  if (ref.endsWith('.md')) return 'text/markdown';
-  if (ref.endsWith('.json')) return 'application/json';
-  return 'text/plain';
-}
-
-function looksLikeEvidenceDescriptor(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-// evidence-ref: every evidence blob Lattice writes is anchored here so gc keeps it. The Store's reachability walk
-// excludes refs/lattice/evidence/* (seam refs still count), so an anchored blob still reads `uncommitted` until a commit reaches it.
-const EVIDENCE_REF_PREFIX = 'refs/lattice/evidence/';
-
-function anchorEvidenceBlob(repoRoot, oid) {
-  gitSync(['update-ref', `${EVIDENCE_REF_PREFIX}${oid}`, oid], { cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'] });
-}
-
-function evidenceAnchored(repoRoot, oid) {
-  try {
-    gitSync(['show-ref', '--verify', '--quiet', `${EVIDENCE_REF_PREFIX}${oid}`], { cwd: repoRoot, stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function writeEvidenceBlob(repoRoot, bytes, blobPath, write = true) {
-  // worktree pathから作る証拠は`git add`と同じclean filterを通す。生のCRLF bytesを
-  // そのままhashすると、commit先はLFへ正規化される一方、descriptorはdangling blobを
-  // 指すため、commit後もhard検証を通せない。
-  const oid = gitSync(['hash-object', ...(write ? ['-w'] : []), `--path=${blobPath}`, '--stdin'], {
-    cwd: repoRoot, input: bytes, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'],
-  }).trim();
-  let storedBytes;
-  try {
-    storedBytes = gitSync(['cat-file', 'blob', oid], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch (error) {
-    // a23: a comparison-only hash writes nothing; content never stored has no digest to compare.
-    if (!write) return { git_blob_oid: oid, content_digest: null };
-    throw error;
-  }
-  // Anchored before the event is appended: no recorded evidence without an anchor. A failed append leaves one ref
-  // keeping one blob alive (bounded, harmless).
-  if (write) anchorEvidenceBlob(repoRoot, oid);
-  return {
-    git_blob_oid: oid,
-    content_digest: createHash('sha256').update(storedBytes).digest('hex'),
-  };
-}
-
-async function resolveDoneEvidence({
-  repoRoot, evidenceRef, evidenceMessage, planKey, taskId, write = true, inlineFlag = null,
-}) {
-  if (typeof evidenceMessage === 'string') {
-    const bytes = Buffer.from(evidenceMessage, 'utf8');
-    const sourceDigest = createHash('sha256').update(bytes).digest('hex');
-    const evidencePath = `.lattice/todo/evidence/${planKey}/${taskId}/${sourceDigest}.md`;
-    const descriptor = {
-      evidence_id: evidenceIdFor(planKey, taskId),
-      repo_id: 'self',
-      path: evidencePath,
-      ...writeEvidenceBlob(repoRoot, bytes, evidencePath, write),
-      media_type: 'text/markdown',
-      anchor_digest: null,
-    };
-    if (write && (!validateEvidenceDescriptor(descriptor) || !isTodoRef(descriptor.path))) {
-      throw new TodoStoreError('INVALID_EVIDENCE', 'authored_evidence_descriptor_invalid');
-    }
-    return descriptor;
-  }
+/**
+ * One-version alias: `--evidence <file>` stands for `--message <text>` with the file's text. No blob is written
+ * and no descriptor is built; the text is the record.
+ */
+async function readEvidenceText(repoRoot, evidenceRef, { inlineFlag = null } = {}) {
   const located = await resolveAuthoringInputPath(repoRoot, evidenceRef, { inlineFlag });
   const bytes = await readFile(located.absolute);
-  let text;
-  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { throw new TodoStoreError('INVALID_EVIDENCE', 'evidence_input_invalid_utf8'); }
-  let parsed = null;
-  try {
-    parsed = parseAuthoringJson(text, { invalidCode: 'INVALID_JSON' });
-  } catch (error) {
-    if (error instanceof TodoStoreError && error.code !== 'INVALID_JSON') throw error;
-  }
-  if (looksLikeEvidenceDescriptor(parsed)) {
-    if (!validateEvidenceDescriptor(parsed)) {
-      throw new TodoStoreError('INVALID_EVIDENCE', 'schema_invalid', undefined, {
-        expected: EVIDENCE_DESCRIPTOR_EXPECTED,
-      });
-    }
-    return parsed;
-  }
-  const descriptor = {
-    evidence_id: evidenceIdFor(planKey, taskId),
-    repo_id: 'self',
-    path: located.inputRef,
-    ...writeEvidenceBlob(repoRoot, bytes, located.inputRef, write),
-    media_type: mediaTypeFor(located.inputRef),
-    anchor_digest: null,
-  };
-  if (write && !validateEvidenceDescriptor(descriptor)) {
-    throw new TodoStoreError('INVALID_EVIDENCE', 'authored_evidence_descriptor_invalid');
-  }
-  return descriptor;
 }
 
-async function readEvidenceInput(repoRoot, inputRef) {
-  return resolveDoneEvidence({
-    repoRoot, evidenceRef: inputRef, evidenceMessage: null, planKey: 'evidence', taskId: 'body',
-  });
+/** The alias says which flag replaces it, after the command succeeded. */
+function retiredEvidenceFlag(stderr, command, result) {
+  stderr.write(`${JSON.stringify({ schema: 'lattice.todo_command_retired.v1', command: `${command} --evidence`,
+    still_works_until: 'the next minor version', use: `lattice ${command} --message <text>` })}\n`);
+  return result;
 }
 
 async function readJsonInput(repoRoot, inputRef, { validate, invalidCode, expected = null }) {
@@ -938,19 +801,16 @@ async function readStructureSetDraft(repoRoot, inputRef) {
  */
 function auditGateGuidance(planKey, phaseId, auditRequired = false) {
   const target = `--plan ${planKey} --phase ${phaseId}`;
-  const audit = `lattice todo phase review ${target} --reason <text> → accept ${target} --evidence <file>`;
-  // ADR 0200 gate 5: an enforced plan's heavy phase refuses close-unaudited, so only the audit is offered,
-  // with the --message route for a seat that cannot write a file into the Store root.
-  if (auditRequired) return `全ToDoがdone。このplanはenforcedでheavyの段階なので監査する: ${audit}（fileを置けないなら --message <text>）`;
+  const audit = `lattice todo phase review ${target} --reason <text> → accept ${target} [--message <text>]`;
+  // ADR 0200 gate 5: an enforced plan's heavy phase refuses close-unaudited, so only the audit is offered.
+  if (auditRequired) return `全ToDoがdone。このplanはenforcedでheavyの段階なので監査する: ${audit}`;
   return `全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited ${target} --reason <text>`
     + `（監査するなら ${audit}）`;
 }
 
 /** a36: reviewing and rejected phases say their next command too (the same lines as audit_pending). */
 function auditDecisionGuidance(plan, phase) {
-  const slots = todoPhaseDefinitions(plan).find(({ phase_id: id }) => id === phase.phase_id)
-    ?.required_evidence_slots.length ?? 1;
-  const [first, second] = auditPendingNextCommands(plan.plan_key, phase.phase_id, phase.status, slots);
+  const [first, second] = auditPendingNextCommands(plan.plan_key, phase.phase_id, phase.status);
   return phase.status === 'reviewing'
     ? `監査中（review済み）。受け入れるなら: ${first}（通らないなら: ${second}）`
     : `監査が通らなかった。やり直すなら: ${first}`;
@@ -1014,7 +874,7 @@ function externalValidator(external) {
 }
 
 async function mutate({
-  repoRoot, env, planKey, taskId, kind, payload, evidenceRef, evidenceMessage = null,
+  repoRoot, env, planKey, taskId, kind, payload, message = null,
   advisory = null, noteContext = null, structureContext = null, featureContext = null,
   testResultRef = null, actor: carriedActor = null, externalTasks = null,
 }) {
@@ -1023,31 +883,10 @@ async function mutate({
   const external = externalTasks ?? (kind === 'start' || (kind === 'done' && payload === 'authored')
     ? (await readTodoExternalTasks(await readTodoStore({ repoRoot }), env)).external_tasks : []);
   const validator = externalValidator(external);
-  const evidence = evidenceRef === null && evidenceMessage === null
-    ? null
-    : await resolveDoneEvidence({
-      repoRoot, evidenceRef, evidenceMessage, planKey, taskId,
-      // Only an authored done takes --message as the inline alternative to --evidence.
-      inlineFlag: kind === 'done' && payload === 'authored' ? '--message' : null,
-    });
   const testResult = testResultRef === null ? null : await readTestResultInput(repoRoot, testResultRef);
-  const materializedEvidence = typeof evidenceMessage === 'string'
-    ? {
-      ref: evidence.path,
-      bytes: gitSync(['cat-file', 'blob', evidence.git_blob_oid], {
-        cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'],
-      }),
-    }
-    : null;
   let eventPayload = payload;
   if (kind === 'done' && payload === 'authored') {
-    eventPayload = { evidence, ...(testResult === null ? {} : { test_result: testResult }) };
-  }
-  if (kind === 'done' && payload === 'evidence_promotion') {
-    // imported/authored の由来はlock内のcanonical stateから解決する。
-    // CLI側で固定するとauthored doneの証拠を再束縛できず、path更新後の
-    // evidence_unverifiedを修復する公開経路が無くなる。
-    eventPayload = { done_mode: 'evidence_promotion', evidence };
+    eventPayload = { message, ...(testResult === null ? {} : { test_result: testResult }) };
   }
   const { event, snapshot, plan, phases } = await appendTodoEvent({
     validateProspectiveEvent: validator,
@@ -1055,7 +894,6 @@ async function mutate({
     writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
     planKey,
     event: { kind, task_id: taskId, actor, payload: eventPayload },
-    materializedEvidence,
   });
   const task = snapshot.tasks.find(({ task_id: current }) => current === event.task_id);
   const authoredTask = plan.tasks.find(({ task_id: current }) => current === event.task_id);
@@ -1109,7 +947,7 @@ function withBlockGuidance(result) {
 
 /** retract-anyone: a reopened task is unstarted again; the redo records a start (from any seat). */
 async function reopenTask({ repoRoot, env, planKey, taskId, payload }) {
-  const result = await mutate({ repoRoot, env, planKey, taskId, kind: 'reopen', payload, evidenceRef: null });
+  const result = await mutate({ repoRoot, env, planKey, taskId, kind: 'reopen', payload });
   const hinted = {
     ...result,
     next_action: `${result.plan_key}/${result.task_id} is unstarted again; redo it with`
@@ -1188,38 +1026,21 @@ async function mutateUnlessUnchanged(options) {
 /** a23: block/retire drop a --reason that differs from the recorded one. */
 const reasonDropped = (reason) => async (recorded) => (recorded?.payload?.reason === reason ? [] : ['--reason']);
 
-/** The evidence a `todo done` records: the message (naming the file when both are given), the file, or the default text. */
-async function doneEvidenceInput({ repoRoot, flags, write = true }) {
-  const hasEvidence = isAuthoringPathToken(flags.evidence);
-  const hasMessage = typeof flags.message === 'string' && flags.message.length > 0;
-  if (hasEvidence && hasMessage) {
-    // The message is the record; it names the resolved file so nothing given is lost.
-    const file = await resolveDoneEvidence({
-      repoRoot, evidenceRef: flags.evidence, evidenceMessage: null, planKey: flags.plan, taskId: flags.task,
-      write, inlineFlag: '--message',
-    });
-    return { evidenceRef: null, evidenceMessage: `${flags.message}\n\nevidence: ${file.repo_id}:${file.path}`
-      + ` (git blob ${file.git_blob_oid}, sha256 ${file.content_digest})\n` };
-  }
-  if (hasEvidence) return { evidenceRef: flags.evidence, evidenceMessage: null };
-  return { evidenceRef: null, evidenceMessage: hasMessage ? flags.message : DONE_WITHOUT_EVIDENCE_MESSAGE };
+/** The text a `todo done` records: --message, else the text of the one-version `--evidence <file>` alias, else the default. */
+async function doneMessage({ repoRoot, flags }) {
+  if (typeof flags.message === 'string' && flags.message.length > 0) return flags.message;
+  if (isAuthoringPathToken(flags.evidence)) return readEvidenceText(repoRoot, flags.evidence);
+  return DONE_WITHOUT_MESSAGE;
 }
 
-/**
- * a23: the content flags of a repeated done that the recorded done does not hold. Compared by git blob,
- * hashed without writing; a file that cannot be read counts as differing.
- */
+/** a23: the content flags of a repeated done that the recorded done does not hold. */
 async function doneDropped({ repoRoot, flags, recorded }) {
-  const given = (names) => names.filter((name) => flags[name] !== undefined).map((name) => `--${name}`);
-  const sameEvidence = async () => {
-    const evidence = await resolveDoneEvidence({ repoRoot, ...await doneEvidenceInput({ repoRoot, flags, write: false }),
-      planKey: flags.plan, taskId: flags.task, write: false });
-    return evidence.git_blob_oid === recorded?.payload?.evidence?.git_blob_oid;
-  };
+  const sameMessage = async () => (await doneMessage({ repoRoot, flags })) === recorded?.payload?.message;
   const sameTestResult = async () => (await readTestResultInput(repoRoot, flags['test-result'])) === recorded?.payload?.test_result;
   const differs = async (same) => { try { return !(await same()); } catch { return true; } };
+  const given = ['message', 'evidence'].filter((name) => flags[name] !== undefined).map((name) => `--${name}`);
   return [
-    ...(given(['message', 'evidence']).length > 0 && await differs(sameEvidence) ? given(['message', 'evidence']) : []),
+    ...(given.length > 0 && await differs(sameMessage) ? given : []),
     ...(flags['test-result'] !== undefined && await differs(sameTestResult) ? ['--test-result'] : []),
   ];
 }
@@ -1250,7 +1071,7 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
   const state = member?.tasks.find(({ task_id: current }) => current === taskId);
   if (state === undefined) {
     // 未知のplan/taskはStoreの既存の拒否をそのまま通す。
-    return mutate({ repoRoot, env, planKey, taskId, kind: 'retire', payload: { reason }, evidenceRef: null });
+    return mutate({ repoRoot, env, planKey, taskId, kind: 'retire', payload: { reason } });
   }
   if (state.status === 'retired') {
     return unchangedTransition(store, { env, planKey, taskId, kind: 'retire', dropped: reasonDropped(reason) });
@@ -1260,7 +1081,7 @@ async function retireTask({ repoRoot, env, planKey, taskId, reason }) {
     let result;
     try {
       result = await mutate({ repoRoot, env, planKey, taskId, kind: 'retire',
-        payload: { reason, prior_status: state.status }, evidenceRef: null });
+        payload: { reason, prior_status: state.status } });
     } catch (error) {
       throw retireStateConflict(error, { planKey, taskId, priorStatus: state.status });
     }
@@ -1543,7 +1364,7 @@ async function startTask({
       { code: 'LATTICE_START_BACKCHAIN_UNUSABLE' });
   }
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
-    payload: { override_reason: overrideReason }, evidenceRef: null, advisory, noteContext,
+    payload: { override_reason: overrideReason }, advisory, noteContext,
     structureContext, featureContext, externalTasks: store.external_tasks ?? [] });
 }
 
@@ -1587,24 +1408,6 @@ function enforcedStartGate({ advisory, planKey, taskId, overrideReason }) {
   }
 }
 
-/** ADR 0200 gate 4: done on an enforced plan names the change: evidence, an http(s) URL, or a commit in HEAD. */
-async function enforcedDoneGate({ repoRoot, planKey, flags }) {
-  const member = (await readTodoStore({ repoRoot })).members.find(({ descriptor }) => descriptor.plan_key === planKey);
-  if (member?.coordination?.mode !== 'enforced' || flags.evidence !== undefined) return;
-  const message = typeof flags.message === 'string' ? flags.message : '';
-  if (/https?:\/\/\S+/u.test(message)) return;
-  for (const token of message.match(/\b[0-9a-f]{7,40}\b/gu) ?? []) {
-    try {
-      gitSync(['merge-base', '--is-ancestor', token, 'HEAD'], { cwd: repoRoot, stdio: 'ignore' });
-      return;
-    } catch { /* not a commit in HEAD; try the next token */ }
-  }
-  throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_done_reference_missing', undefined, {
-    plan_key: planKey, task_id: flags.task,
-    next_action: `Name the adopted change: \`lattice todo done --plan ${planKey} --task ${flags.task} --message ${ENFORCED_DONE_MESSAGE}\` (a sha must be in HEAD).`,
-  });
-}
-
 // plan改訂でcarryされたin-progress ToDoの再束縛入口（ADR 0191）。task状態・開始時刻は
 // 変えず、現plan_version・現actorのstart束縛だけをjournalへ積む。runtime intakeは
 // literal startだけを束縛に使いcarryを推定しないため、改訂を跨いだ進行中工程の
@@ -1643,7 +1446,7 @@ export async function rebindStart({ repoRoot, env, planKey, taskId, reason, acto
   }
   return mutate({
     repoRoot, env, planKey, taskId, kind: 'start',
-    payload: { start_mode: 'rebind', reason }, evidenceRef: null, noteContext, actor,
+    payload: { start_mode: 'rebind', reason }, noteContext, actor,
   });
 }
 
@@ -1679,85 +1482,22 @@ async function retractStart({ repoRoot, env, planKey, taskId, reason }) {
     action: () => mutate({
       repoRoot, env, planKey, taskId: binding.task_id, kind: 'start_retracted',
       payload: { reason, target_start_digest: binding.activation_event_digest },
-      evidenceRef: null,
     }),
   });
 }
 
-function validatePhaseDecisionInput(value, outcome) {
-  const keys = outcome === 'accept'
-    ? ['schema', 'review_event_digest', 'decision_evidence', 'evidence_slots', 'input_digest']
-    : ['schema', 'review_event_digest', 'reason', 'decision_evidence', 'input_digest'];
-  return exactRecord(value, keys) && value.schema === `lattice.phase_${outcome}_input.v1`
-    && isTodoDigest(value.review_event_digest) && validateEvidenceDescriptor(value.decision_evidence)
-    && (outcome === 'accept'
-      ? Array.isArray(value.evidence_slots) && value.evidence_slots.length > 0
-        && value.evidence_slots.every((entry) => exactRecord(entry, ['slot_id', 'evidence'])
-          && isTodoIdentifier(entry.slot_id) && validateEvidenceDescriptor(entry.evidence))
-        && value.evidence_slots.every((entry, index) => index === 0
-          || value.evidence_slots[index - 1].slot_id < entry.slot_id)
-      : typeof value.reason === 'string' && value.reason.length > 0)
-    && isTodoDigest(value.input_digest) && value.input_digest === todoSelfDigest(value, 'input_digest');
-}
-
-// `--input`の形が合わないとき、期待形をerrorへ同梱する（ADR 0130）。自己digestは入口が補うので
-// 空でよい（ADR 0181）。証拠記述子を手で作らせないために、ふつうは`--evidence`を案内する。
-const PHASE_DECISION_EXPECTED = Object.freeze({
-  accept: '{ "schema": "lattice.phase_accept_input.v1", "review_event_digest": "<phase reviewのevent_digest>",'
-    + ' "decision_evidence": <evidence記述子>, "evidence_slots": [{ "slot_id": "<必須slot>", "evidence": <evidence記述子> }],'
-    + ' "input_digest": "" }',
-  reject: '{ "schema": "lattice.phase_reject_input.v1", "review_event_digest": "<phase reviewのevent_digest>",'
-    + ' "reason": "<text>", "decision_evidence": <evidence記述子>, "input_digest": "" }',
-  note: 'input_digestは入口が計算する。証拠fileがcommit済みなら、`--evidence <file>`で'
-    + 'review_event_digest・記述子・必須slotを機械が埋める。fileを置けないなら`--message <text>`でも同じく埋まる'
-    + '（commitまではuncommitted）。evidence記述子の形はEVIDENCE_DESCRIPTOR_EXPECTEDを見る。',
-});
-
-async function phaseDecision({ repoRoot, env, planKey, phaseId, outcome, inputRef }) {
-  let input;
-  try {
-    input = await readRevisionInput(repoRoot, inputRef, {
-      validate: (value) => validatePhaseDecisionInput(value, outcome),
-      invalidCode: 'PHASE_DECISION_INVALID', invalidReason: 'phase_decision_schema_or_digest_invalid',
-      // phase decision入力はrevision契約と別形状。既定のrevision explainを誤って当てない。
-      explain: null,
-    });
-  } catch (error) {
-    if (error instanceof TodoStoreError && error.code === 'PHASE_DECISION_INVALID') {
-      throw new TodoStoreError('PHASE_DECISION_INVALID', 'phase_decision_schema_or_digest_invalid', undefined, {
-        expected: PHASE_DECISION_EXPECTED[outcome], note: PHASE_DECISION_EXPECTED.note,
-        evidence_descriptor: EVIDENCE_DESCRIPTOR_EXPECTED,
-        next_action: `lattice todo phase ${outcome} --plan ${planKey} --phase ${phaseId}`
-          + (outcome === 'reject' ? ' --reason <text>' : '') + ' --evidence <repo内の監査file>',
-      });
-    }
-    throw error;
-  }
-  const payload = outcome === 'accept'
-    ? { review_event_digest: input.review_event_digest, decision_evidence: input.decision_evidence,
-      evidence_slots: input.evidence_slots }
-    : { review_event_digest: input.review_event_digest, reason: input.reason,
-      decision_evidence: input.decision_evidence };
-  return phaseMutation({ repoRoot, env, planKey, phaseId, kind: `phase_${outcome}`, payload });
-}
-
 /**
- * `--evidence <file>`から判断入力を組み立てる（ADR 0181の下書き受理をphase判断へ広げる）。
- * review_event_digestはstoreの現在のreviewから、記述子は`todo done`と同じ処理でcommit済み
- * fileから作る。必須slotが1つならその証拠で埋める。複数slotへ1つの証拠を流用すると
- * 「各slotを別々に確かめた」ことを偽るので、その場合は`--input`で明示させる。
+ * `phase accept|reject`: the decision binds to the current review and records an optional --message.
+ * No evidence is asked for; the phase closes on the decision alone.
  */
-async function phaseDecisionFromEvidence({
-  repoRoot, env, planKey, phaseId, outcome, evidenceRef = null, evidenceMessage = null, reason,
-}) {
+async function phaseDecision({ repoRoot, env, planKey, phaseId, outcome, message = null, reason = null }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
   if (member === undefined) {
     throw new TodoStoreError('PHASE_DECISION_INVALID', 'plan_not_active', undefined, { plan_key: planKey });
   }
   const state = member.phases.find(({ phase_id: current }) => current === phaseId);
-  const definition = todoPhaseDefinitions(member.plan).find(({ phase_id: current }) => current === phaseId);
-  if (state === undefined || definition === undefined) {
+  if (state === undefined) {
     throw new TodoStoreError('PHASE_DECISION_INVALID', 'phase_not_found', undefined, {
       plan_key: planKey, phase_id: phaseId,
       phases: todoPhaseDefinitions(member.plan).map(({ phase_id: id }) => id),
@@ -1769,28 +1509,12 @@ async function phaseDecisionFromEvidence({
       next_action: `lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>`,
     });
   }
-  if (outcome === 'accept' && definition.required_evidence_slots.length !== 1) {
-    throw new TodoStoreError('PHASE_DECISION_INVALID', 'multiple_evidence_slots_need_input', undefined, {
-      required_evidence_slots: definition.required_evidence_slots,
-      expected: PHASE_DECISION_EXPECTED.accept, evidence_descriptor: EVIDENCE_DESCRIPTOR_EXPECTED,
-      next_action: `lattice todo phase accept --plan ${planKey} --phase ${phaseId} --input <file>`,
-    });
-  }
-  // A --message becomes message evidence exactly as in `todo done`: no file inside the Store root is needed.
-  const evidence = await resolveDoneEvidence({
-    repoRoot, evidenceRef, evidenceMessage, planKey, taskId: `${phaseId}-${outcome}`,
-  });
-  const payload = outcome === 'accept'
-    ? { review_event_digest: state.review_event_digest, decision_evidence: evidence,
-      evidence_slots: definition.required_evidence_slots.map((slotId) => ({ slot_id: slotId, evidence })) }
-    : { review_event_digest: state.review_event_digest, reason, decision_evidence: evidence };
+  const payload = {
+    review_event_digest: state.review_event_digest,
+    ...(outcome === 'reject' ? { reason } : {}),
+    ...(message === null ? {} : { message }),
+  };
   return phaseMutation({ repoRoot, env, planKey, phaseId, kind: `phase_${outcome}`, payload });
-}
-
-/** A phase decision's evidence: committed, uncommitted (no ref reaches it yet, e.g. `--message` on a root with no commit) or null. */
-function decisionEvidenceState(repoRoot, store, evidence) {
-  if (evidence === null || evidence === undefined) return null;
-  return isTodoEvidenceUncommitted({ repoRoot, store, evidence }) ? 'uncommitted' : 'committed';
 }
 
 async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload }) {
@@ -1802,9 +1526,8 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
     if (phaseAuditRequired(member, phase?.gate_policy)) {
       throw new TodoStoreError('TODO_TRANSITION_REFUSED', 'enforced_heavy_phase_unaudited', undefined, {
         plan_key: planKey, phase_id: phaseId,
-        next_action: `Audit it: \`lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>\` then \`lattice todo phase accept --plan ${planKey} --phase ${phaseId} --evidence <file>\``
-          + ` (or \`--message <text>\` when no file can be written into the Store root);`
-          + ' or revise the phase to a non-heavy gate_policy with `lattice plan revise` (recorded).',
+        next_action: `Audit it: \`lattice todo phase review --plan ${planKey} --phase ${phaseId} --reason <text>\` then \`lattice todo phase accept --plan ${planKey} --phase ${phaseId}\``
+          + ' (a --message <text> is optional); or revise the phase to a non-heavy gate_policy with `lattice plan revise` (recorded).',
       });
     }
   }
@@ -1823,8 +1546,6 @@ async function phaseMutation({ repoRoot, env, planKey, phaseId, kind, payload })
     kind: event.kind, sequence: event.sequence, event_digest: event.event_digest,
     journal_head_digest: event.event_digest, snapshot_digest: snapshot.snapshot_digest,
     status: phase.status,
-    decision_evidence_state: phase.decision_evidence === null || phase.decision_evidence === undefined ? null
-      : decisionEvidenceState(repoRoot, await readTodoStore({ repoRoot }), phase.decision_evidence),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
@@ -2348,7 +2069,6 @@ async function phaseStatus({ repoRoot, planKey }) {
   // v4/v5の実Phaseがgate_readyになった場合も同じ理由で同じ案内が要る。
   const phases = member.phases.map((phase) => ({
     ...phase,
-    decision_evidence_state: decisionEvidenceState(repoRoot, store, phase.decision_evidence),
     acceptance_stale: phaseAcceptanceStale(member.plan, member.journal.events, phase, member.tasks),
     guidance: phaseAcceptanceStale(member.plan, member.journal.events, phase, member.tasks)
       ? staleAcceptanceGuidance(member.plan.plan_key, phase.phase_id)
@@ -2559,8 +2279,8 @@ function extractionFreshnessViolations(repoRoot, extraction) {
     // rev-listの出力はobject数に比例して伸びる（本repo実測で既定maxBuffer 1MiB超過済み）。
     // 隣のgit showと同様にmaxBufferを明示しないと、ENOBUFSが握られて
     // source_reachability_unreadableへ誤変換される。
-    // evidence-ref: an anchored evidence blob is not a reachable source.
-    reachable = new Set(gitSync(['rev-list', '--objects', `--exclude=${EVIDENCE_REF_PREFIX}*`, '--all'], {
+    // Blobs anchored by 0.105 and earlier live under refs/lattice/evidence/*; they are not a reachable source.
+    reachable = new Set(gitSync(['rev-list', '--objects', '--exclude=refs/lattice/evidence/*', '--all'], {
       cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 134_217_728,
     }).split('\n').filter(Boolean).map((line) => line.split(' ')[0]));
   } catch {
@@ -3492,7 +3212,7 @@ async function recordStructureRealization({ repoRoot, planKey, taskId, realizati
     previous_realization_digest: appended.previous_realization_digest,
     history_length: appended.history_length,
     effective: taskProjection,
-    next_action: `lattice todo done --plan ${planKey} --task ${taskId} --evidence <file>`,
+    next_action: `lattice todo done --plan ${planKey} --task ${taskId} --message <text>`,
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
@@ -4950,7 +4670,6 @@ function writesTodoStore(argv) {
     case 'structure': return ['compile', 'realize', 'finalize'].includes(second)
       || (second === 'input' && !argv.includes('--dry-run'));
     case 'seam-proposal': return ['compile', 'apply', 'land'].includes(second);
-    case 'evidence': return second === 'promote';
     case 'dependency': return ['connect', 'disconnect'].includes(second);
     case 'predecessor': return ['add', 'remove'].includes(second);
     case 'connect': return second === 'condition' && ['add', 'remove', 'resolve'].includes(argv[2]);
@@ -5212,78 +4931,6 @@ async function ensureActiveProjectDashboard({ repoRoot, env, stderr, strict = fa
   }
 }
 
-/** evidence-ref: an uncommitted item says whether gc is kept off it, and how to protect it if not. */
-function uncommittedEvidenceItem(repoRoot, store, evidence) {
-  const anchored = evidenceAnchored(evidenceRepoRoot(repoRoot, store, evidence), evidence.git_blob_oid);
-  return { repo_id: evidence.repo_id, path: evidence.path, anchored,
-    next_action: anchored
-      ? `Commit ${evidence.path} (repository ${evidence.repo_id}), then rerun \`lattice todo verify --json\`.`
-      : 'Anchor it so gc keeps it: `lattice todo evidence anchor --json`; commit it to make it committed.' };
-}
-
-function evidenceRepoRoot(repoRoot, store, evidence) {
-  const ref = store.manifest.repositories.find(({ repo_id: id }) => id === evidence.repo_id)?.path ?? '.';
-  return path.resolve(repoRoot, ref);
-}
-
-/** The evidence descriptors a Store records: task evidence, phase decision evidence and accepted slot evidence. */
-function recordedEvidence(store) {
-  const entries = [];
-  for (const member of store.members) {
-    const planKey = member.plan.plan_key;
-    for (const task of member.tasks) {
-      if (validateEvidenceDescriptor(task.evidence)) entries.push({ plan_key: planKey, task_id: task.task_id, evidence: task.evidence });
-    }
-    for (const event of member.journal.events) {
-      if (!['phase_accept', 'phase_reject'].includes(event.kind)) continue;
-      for (const evidence of [event.payload.decision_evidence, ...(event.payload.evidence_slots ?? []).map((slot) => slot.evidence)]) {
-        if (validateEvidenceDescriptor(evidence)) entries.push({ plan_key: planKey, phase_id: event.phase_id, evidence });
-      }
-    }
-  }
-  return entries;
-}
-
-/**
- * `todo evidence anchor` (evidence-ref): anchor evidence recorded before writes anchored it. Idempotent; run once per
- * existing chart. Evidence gc already pruned cannot come back and is listed as `missing`.
- */
-async function evidenceAnchor({ repoRoot }) {
-  // No Store yet: nothing recorded, so nothing to anchor. Answer like `todo status` does, not as a broken store.
-  if (await isUninitializedTodoStore({ repoRoot })) {
-    const result = { schema: 'lattice.todo_evidence_anchor_uninitialized.v1', anchored: [], already: 0, missing: [],
-      next_actions: ['lattice plan create --template --json', 'lattice plan create --input <file>'], result_digest: '' };
-    result.result_digest = todoSelfDigest(result, 'result_digest');
-    return result;
-  }
-  const store = await readTodoStore({ repoRoot });
-  const anchored = [];
-  const missing = [];
-  const seen = new Set();
-  let already = 0;
-  for (const { evidence, ...owner } of recordedEvidence(store)) {
-    const repo = evidenceRepoRoot(repoRoot, store, evidence);
-    const key = `${repo}\0${evidence.git_blob_oid}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const item = { ...owner, git_blob_oid: evidence.git_blob_oid };
-    if (isTodoEvidenceUncommitted({ repoRoot, store, evidence })) {
-      if (evidenceAnchored(repo, evidence.git_blob_oid)) already += 1;
-      else { anchorEvidenceBlob(repo, evidence.git_blob_oid); anchored.push(item); }
-      continue;
-    }
-    try {
-      gitSync(['cat-file', '-e', evidence.git_blob_oid], { cwd: repo, stdio: 'ignore' });
-    } catch {
-      missing.push(item);
-    }
-  }
-  const result = { schema: 'lattice.todo_evidence_anchor_result.v1', project_id: store.project_id,
-    anchored, already, missing, result_digest: '' };
-  result.result_digest = todoSelfDigest(result, 'result_digest');
-  return result;
-}
-
 async function verify({ repoRoot, requestedPlanKey }) {
   // k4: the full history checks (hash chain, canonical bytes, whole-snapshot comparison) run only here, on request.
   const store = await readTodoStore({ repoRoot, verifyHistory: true });
@@ -5293,26 +4940,8 @@ async function verify({ repoRoot, requestedPlanKey }) {
     await readTodoNoteEvents({ repoRoot, planKey: member.plan.plan_key });
   }
   const verifiedSourceInventories = new Map();
-  const uncommittedEvidence = [];
   for (const member of members) {
     const planKey = member.descriptor.plan_key;
-    // a12: evidence waiting for a commit is an item; missing or changed evidence still refuses.
-    const unverifiedTasks = findUnverifiedTodoEvidence({ repoRoot, store, member });
-    const pending = unverifiedTasks.filter((task) => isTodoEvidenceUncommitted({ repoRoot, store, evidence: task.evidence }));
-    for (const { task_id: taskId, evidence } of pending) {
-      uncommittedEvidence.push({ plan_key: planKey, task_id: taskId, ...uncommittedEvidenceItem(repoRoot, store, evidence) });
-    }
-    for (const { phase_id: phaseId, decision_evidence: evidence } of member.phases) {
-      if (decisionEvidenceState(repoRoot, store, evidence) !== 'uncommitted') continue;
-      uncommittedEvidence.push({ plan_key: planKey, phase_id: phaseId, ...uncommittedEvidenceItem(repoRoot, store, evidence) });
-    }
-    const unverified = unverifiedTasks.find((task) => !pending.includes(task));
-    if (unverified !== undefined) {
-      throw new TodoStoreError('STORE_INCONSISTENT', 'evidence_unverified', 'evidence_unverified', {
-        plan_key: member.descriptor.plan_key,
-        task_id: unverified.task_id,
-      });
-    }
     if (member.revision !== null) {
       switch (member.revision.schema) {
         case 'lattice.todo_revision.v1':
@@ -5391,7 +5020,8 @@ async function verify({ repoRoot, requestedPlanKey }) {
     requested_plan_key: requestedPlanKey,
     verified_members: verifiedMembers,
     snapshot_stale: verifiedMembers.some((member) => member.snapshot_stale),
-    uncommitted_evidence: uncommittedEvidence,
+    // shortcut: constant [] so v4 readers keep working; drop the key with the next verify schema bump.
+    uncommitted_evidence: [],
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
@@ -5399,15 +5029,12 @@ async function verify({ repoRoot, requestedPlanKey }) {
 }
 
 // `todo verify`の人間向け1行。--jsonと同じresultから導く（verifyは不整合を例外で拒否するので、
-// ここへ届くのは検証が通った結果だけ。注意が要るのはsnapshot古さとcommit前の証拠）。
+// ここへ届くのは検証が通った結果だけ。注意が要るのはsnapshot古さだけ）。
 function verifyVerdictLine(result) {
   const members = result.verified_members.map((member) => `${member.plan_key} ${member.reconciliation_state}${
     member.reconciliation_state === 'reconciled' ? '' : ', nothing to do'}`);
   const notes = [];
   if (result.snapshot_stale) notes.push('snapshot stale');
-  if (result.uncommitted_evidence.length > 0) {
-    notes.push(`${result.uncommitted_evidence.length} uncommitted evidence (commit it, then rerun)`);
-  }
   const count = result.verified_members.length;
   return `todo verify: ${notes.length === 0 ? 'ok' : 'attention'}, ${count} plan${count === 1 ? '' : 's'} verified`
     + `${notes.map((note) => `, ${note}`).join('')} (${members.join('; ')})`;
@@ -5822,30 +5449,19 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       kind: 'phase_review', payload: { reason: flags.reason } });
   } else if (argv[0] === 'phase' && ['accept', 'reject'].includes(argv[1])) {
     const outcome = argv[1];
-    const flags = matchFlagCommand(argv, ['phase', outcome], {
-      known: ['plan', 'phase', 'input', 'evidence', 'message', 'reason'], required: ['plan', 'phase'],
-    });
+    const flags = matchFlagCommand(argv, ['phase', outcome], TODO_FLAG_SPECS[`phase ${outcome}`]);
     const reasonFits = outcome === 'accept' ? flags?.reason === undefined
       : typeof flags?.reason === 'string' && flags.reason.length > 0;
-    const base = flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase);
-    if (base && isAuthoringPathToken(flags.input) && flags.evidence === undefined && flags.message === undefined
-      && flags.reason === undefined) {
-      action = (repoRoot) => phaseDecision({
-        repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
-        outcome, inputRef: flags.input,
-      });
-    } else if (base && flags.input === undefined && flags.message === undefined
-      && isAuthoringPathToken(flags.evidence) && reasonFits) {
-      action = (repoRoot) => phaseDecisionFromEvidence({
-        repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
-        outcome, evidenceRef: flags.evidence, reason: flags.reason ?? null,
-      });
-    } else if (base && flags.input === undefined && flags.evidence === undefined
-      && typeof flags.message === 'string' && flags.message.length > 0 && reasonFits) {
-      action = (repoRoot) => phaseDecisionFromEvidence({
-        repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
-        outcome, evidenceMessage: flags.message, reason: flags.reason ?? null,
-      });
+    const textFits = flags !== null && (flags.message === undefined || flags.evidence === undefined)
+      && (flags.message === undefined || (typeof flags.message === 'string' && flags.message.length > 0))
+      && (flags.evidence === undefined || isAuthoringPathToken(flags.evidence));
+    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.phase) && reasonFits && textFits) {
+      action = async (repoRoot) => {
+        const message = flags.evidence === undefined ? flags.message ?? null : await readEvidenceText(repoRoot, flags.evidence);
+        const result = await phaseDecision({ repoRoot, env, planKey: flags.plan, phaseId: flags.phase,
+          outcome, message, reason: flags.reason ?? null });
+        return flags.evidence === undefined ? result : retiredEvidenceFlag(stderr, `todo phase ${outcome}`, result);
+      };
     }
   } else if (argv[0] === 'phase' && argv[1] === 'reopen' && phaseReopenFlags(argv) !== null) {
     const flags = phaseReopenFlags(argv);
@@ -5880,19 +5496,19 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   } else if (argv[0] === 'done') {
     const flags = matchFlagCommand(argv, ['done'], DONE_FLAG_SPEC);
-    // u03 A58: both, one or neither of --evidence/--message is accepted.
     if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
+      && (flags.message === undefined || flags.evidence === undefined)
       && (flags.evidence === undefined || isAuthoringPathToken(flags.evidence))
       && (flags['test-result'] === undefined || isAuthoringPathToken(flags['test-result']))) {
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'done', dropped: (recorded) => doneDropped({ repoRoot, flags, recorded }),
         action: async () => {
-          await enforcedDoneGate({ repoRoot, planKey: flags.plan, flags });
-          return mutate({
+          const result = await mutate({
             repoRoot, env, planKey: flags.plan, taskId: flags.task, kind: 'done', payload: 'authored',
-            ...await doneEvidenceInput({ repoRoot, flags }),
+            message: await doneMessage({ repoRoot, flags }),
             testResultRef: flags['test-result'] ?? null,
           });
+          return flags.evidence === undefined ? result : retiredEvidenceFlag(stderr, 'todo done', result);
         } });
     }
   }
@@ -5909,7 +5525,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'block', dropped: reasonDropped(flags.reason), action: async () => withBlockGuidance(await mutate({
           repoRoot, env, planKey: flags.plan, taskId: flags.task,
-          kind: 'block', payload: { reason: flags.reason }, evidenceRef: null,
+          kind: 'block', payload: { reason: flags.reason },
         })) });
     }
   } else if (argv[0] === 'add') {
@@ -5931,20 +5547,8 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'unblock', action: () => mutate({
           repoRoot, env, planKey: flags.plan, taskId: flags.task,
-          kind: 'unblock', payload: {}, evidenceRef: null,
+          kind: 'unblock', payload: {},
         }) });
-    }
-  } else if (argv[0] === 'evidence' && argv[1] === 'anchor'
-    && matchFlagCommand(argv, ['evidence', 'anchor'], TODO_FLAG_SPECS['evidence anchor']) !== null) {
-    action = (repoRoot) => evidenceAnchor({ repoRoot });
-  } else if (argv[0] === 'evidence' && argv[1] === 'promote') {
-    const flags = matchFlagCommand(argv, ['evidence', 'promote'], TODO_FLAG_SPECS['evidence promote']);
-    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
-      && isAuthoringPathToken(flags.evidence)) {
-      action = (repoRoot) => mutate({
-        repoRoot, env, planKey: flags.plan, taskId: flags.task,
-        kind: 'done', payload: 'evidence_promotion', evidenceRef: flags.evidence,
-      });
     }
   } else if (argv[0] === 'reopen') {
     const flags = matchFlagCommand(argv, ['reopen'], TODO_FLAG_SPECS.reopen);
@@ -6007,7 +5611,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'
       && error.detail !== null && typeof error.detail === 'object')) {
-      return typedFailure(stderr, error, { ...guidanceContext(argv, env), enforcedPlans: await enforcedPlanKeys(cwd) });
+      return typedFailure(stderr, error, guidanceContext(argv, env));
     }
     // 漏れた`fetch failed`もTypeErrorで届く。呼び出し側の契約違反と答えず、内部故障として観測口へ渡す。
     if (error instanceof TypeError && cliFailureClass(error) !== 'transport') {
