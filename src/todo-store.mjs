@@ -291,10 +291,9 @@ function parseJournalSegment(bytes, ref = null) {
   });
 }
 
-async function readJournal(repoRoot, journalRef) {
-  const state = await pathState(repoRoot, journalRef, 'STORE_CORRUPT');
-  const directory = path.dirname(state.absolute);
-  const sealedDirectory = path.join(directory, 'sealed');
+/** Sealed segments of one chain, in order, each checked for name, digest, range and link. */
+async function readSealedSegments(repoRoot, journalRef, directoryName) {
+  const sealedDirectory = path.resolve(repoRoot, path.dirname(journalRef), directoryName);
   const segments = [];
   try {
     const sealedStats = await lstat(sealedDirectory);
@@ -304,7 +303,7 @@ async function readJournal(repoRoot, journalRef) {
       if (!/^\d{12}-\d{12}-[0-9a-f]{64}-[0-9a-f]{64}\.jsonl$/u.test(name)) {
         fail('STORE_CORRUPT', 'sealed_segment_name_invalid', { name });
       }
-      const ref = path.posix.join(path.posix.dirname(journalRef), 'sealed', name);
+      const ref = path.posix.join(path.posix.dirname(journalRef), directoryName, name);
       const sealed = await pathState(repoRoot, ref, 'STORE_CORRUPT');
       const bytes = normalizeCheckoutEol(await readFile(sealed.absolute));
       const [, startText, endText, previousDigest, segmentDigest] = name.match(
@@ -324,6 +323,12 @@ async function readJournal(repoRoot, journalRef) {
     if (error instanceof TodoStoreError) throw error;
     if (error?.code !== 'ENOENT') fail('STORE_CORRUPT', 'sealed_segment_read_failed');
   }
+  return segments;
+}
+
+async function readJournal(repoRoot, journalRef) {
+  const state = await pathState(repoRoot, journalRef, 'STORE_CORRUPT');
+  const segments = await readSealedSegments(repoRoot, journalRef, 'sealed');
   const activeBytes = normalizeCheckoutEol(await readFile(state.absolute));
   const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
   if (!duplicateActive) {
@@ -376,6 +381,8 @@ async function readJournal(repoRoot, journalRef) {
  * （`independence.json`が同じ性質で既に出荷されている・ADR 0127 Decision 1）。したがって
  * 兄弟fileを置いても旧CLIは存在に気づかず、互換もrollbackも保たれる。
  */
+const PLAN_SCOPED_SEALED_DIRECTORY = 'plan-scoped-sealed';
+
 function planScopedJournalRef(journalRef) {
   return path.posix.join(path.posix.dirname(journalRef), 'plan-scoped.jsonl');
 }
@@ -389,17 +396,22 @@ function planScopedJournalRef(journalRef) {
 async function readPlanScopedJournal(repoRoot, journalRef) {
   const ref = planScopedJournalRef(journalRef);
   const absolute = path.resolve(repoRoot, ref);
-  let bytes;
+  // s1-seal: sealed segments first, then the active file (same rules as the lifecycle journal).
+  const segments = await readSealedSegments(repoRoot, journalRef, PLAN_SCOPED_SEALED_DIRECTORY);
+  let bytes = null;
   try {
     const state = await lstat(absolute);
     if (state.isSymbolicLink() || !state.isFile()) fail('STORE_CORRUPT', 'plan_scoped_journal_unsafe');
     bytes = normalizeCheckoutEol(await readFile(absolute));
   } catch (error) {
     if (error instanceof TodoStoreError) throw error;
-    if (error?.code === 'ENOENT') return { ref, events: [], activeBytes: Buffer.alloc(0) };
-    fail('STORE_CORRUPT', 'plan_scoped_journal_read_failed');
+    if (error?.code !== 'ENOENT') fail('STORE_CORRUPT', 'plan_scoped_journal_read_failed');
   }
-  const events = parseJournalSegment(bytes, ref);
+  if (bytes === null && segments.length === 0) return { ref, events: [], activeBytes: Buffer.alloc(0), sealed: [] };
+  // A crash between sealing and the active replacement leaves an active equal to the newest sealed segment.
+  const redundant = bytes === null || segments.at(-1)?.bytes.equals(bytes) === true;
+  const events = [...segments.flatMap(({ events: entries }) => entries),
+    ...(redundant ? [] : parseJournalSegment(bytes, ref))];
   if (!events.every(({ kind }) => TODO_PLAN_SCOPED_EVENT_KINDS.includes(kind))) {
     fail('STORE_CORRUPT', 'plan_scoped_journal_kind_invalid');
   }
@@ -412,7 +424,7 @@ async function readPlanScopedJournal(repoRoot, journalRef) {
   if (failures.size > 0) {
     fail('STORE_CORRUPT', [...failures].sort()[0], { failed_conditions: [...failures].sort() });
   }
-  return { ref, events, activeBytes: bytes };
+  return { ref, events, activeBytes: redundant ? Buffer.alloc(0) : bytes, sealed: [] };
 }
 
 function taskState(taskId) {
@@ -1842,11 +1854,10 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
     const mapped = await carriedSourceTask(repoRoot, source, dependency.from, versionsCache);
     if (mapped === null) continue;
     if (!staged.has(owner)) {
-      staged.set(owner, { ...owner, plan_scoped: { ...owner.plan_scoped,
-        events: [...owner.plan_scoped.events], activeBytes: owner.plan_scoped.activeBytes } });
+      staged.set(owner, { ...owner, plan_scoped: stagePlanScopedChain(owner.plan_scoped) });
     }
     const target = staged.get(owner);
-    const before = { events: target.plan_scoped.events.length, activeBytes: target.plan_scoped.activeBytes };
+    const before = stagePlanScopedChain(target.plan_scoped);
     const inputs = [{ kind: 'cross_plan_dependency_removed', payload: {
       target_event_digest: dependency.event_digest,
       reason: `source ${source.plan.plan_key} ${source.plan.plan_version} ${mapped === 'removed'
@@ -1858,9 +1869,7 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
     } });
     for (const input of inputs) {
       const event = buildPlanScopedEvent(target, { ...input, actor, recorded_at: recordedAt });
-      target.plan_scoped.activeBytes = Buffer.concat([target.plan_scoped.activeBytes,
-        planScopedEventBytes(target, event)]);
-      target.plan_scoped.events.push(event);
+      pushPlanScopedEvent(target.plan_scoped, event);
     }
     const prospective = store.members.map((member) => staged.get(member) ?? member);
     const keys = projectTodoCrossPlanDependencies(prospective)
@@ -1870,8 +1879,7 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
       findings = validateMergedGraph(prospective);
     } catch (error) {
       if (!(error instanceof TodoStoreError)) throw error;
-      target.plan_scoped.events.length = before.events;
-      target.plan_scoped.activeBytes = before.activeBytes;
+      target.plan_scoped = before;
       continue;
     }
     repairs.push({ owner_plan_key: owner.plan.plan_key, original_event_digest: dependency.event_digest,
@@ -1882,7 +1890,7 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
   await assertHeld();
   for (const [owner, target] of staged) {
     if (target.plan_scoped.events.length === owner.plan_scoped.events.length) continue;
-    await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), target.plan_scoped.activeBytes);
+    await writePlanScopedChain(repoRoot, target.plan_scoped);
     owner.plan_scoped = target.plan_scoped;
     owner.coordination = projectTodoCoordination(target.plan_scoped.events) ?? owner.coordination;
   }
@@ -2582,25 +2590,60 @@ function buildPlanScopedEvent(member, input) {
   return event;
 }
 
-function planScopedEventBytes(member, event) {
+/**
+ * s1-seal: append one event to an in-memory chain, sealing the active bytes first when the event would push them past
+ * a segment. Sealed segments stay pending in `chain.sealed` until `writePlanScopedChain` writes them.
+ */
+function pushPlanScopedEvent(chain, event) {
   const bytes = canonicalLine(event);
-  if (member.plan_scoped.activeBytes.length + bytes.length > TODO_LIMITS.journalSegmentBytes) {
-    // 宣言は1 planあたり数件の想定なので封緘機構は持たない。上限へ達したら黙って捨てず、
-    // typedに止めて「この設計では足りない」ことを表に出す。
-    fail('STORE_WRITE_REFUSED', 'plan_scoped_journal_segment_limit_exceeded', {
-      ref: member.plan_scoped.ref, limit: TODO_LIMITS.journalSegmentBytes,
+  if (bytes.length > TODO_LIMITS.journalSegmentBytes) {
+    // No segment can hold it, so no reader could read it back.
+    fail('STORE_WRITE_REFUSED', 'plan_scoped_event_exceeds_segment', {
+      ref: chain.ref, limit: TODO_LIMITS.journalSegmentBytes,
     });
   }
-  return bytes;
+  if (chain.activeBytes.length > 0 && chain.activeBytes.length + bytes.length > TODO_LIMITS.journalSegmentBytes) {
+    const count = chain.activeBytes.reduce((lines, byte) => lines + (byte === 0x0a ? 1 : 0), 0);
+    const active = chain.events.slice(-count);
+    const previous = chain.events.at(-count - 1)?.event_digest ?? '0'.repeat(64);
+    const sequence = (value) => String(value).padStart(12, '0');
+    chain.sealed = [...(chain.sealed ?? []), {
+      name: `${sequence(active[0].sequence)}-${sequence(active.at(-1).sequence)}-${previous}-${sha256Bytes(chain.activeBytes)}.jsonl`,
+      bytes: chain.activeBytes,
+    }];
+    chain.activeBytes = bytes;
+  } else {
+    chain.activeBytes = Buffer.concat([chain.activeBytes, bytes]);
+  }
+  chain.events = [...chain.events, event];
+}
+
+/** Copy a chain so a staged change never touches the read one. */
+function stagePlanScopedChain(chain) {
+  return { ...chain, events: [...chain.events], sealed: [...(chain.sealed ?? [])] };
+}
+
+/**
+ * Pending sealed segments first, then the active file. The first pending segment holds the bytes already active, so a
+ * crash in between reads identically (redundant active). `fresh`: a not-yet-active version clears earlier attempts.
+ */
+async function writePlanScopedChain(repoRoot, chain, { fresh = false } = {}) {
+  const directory = path.resolve(repoRoot, path.dirname(chain.ref), PLAN_SCOPED_SEALED_DIRECTORY);
+  if (fresh) await rm(directory, { recursive: true, force: true });
+  for (const { name, bytes } of chain.sealed ?? []) await atomicWrite(path.join(directory, name), bytes);
+  chain.sealed = [];
+  const absolute = path.resolve(repoRoot, chain.ref);
+  if (chain.events.length === 0) await rm(absolute, { force: true });
+  else await atomicWrite(absolute, chain.activeBytes);
 }
 
 async function appendPlanScopedEvent({ repoRoot, member, input, assertHeld }) {
   const event = buildPlanScopedEvent(member, input);
-  const bytes = planScopedEventBytes(member, event);
+  const chain = stagePlanScopedChain(member.plan_scoped);
+  pushPlanScopedEvent(chain, event);
   await assertHeld();
-  await atomicWrite(path.resolve(repoRoot, member.plan_scoped.ref),
-    Buffer.concat([member.plan_scoped.activeBytes, bytes]));
-  const events = [...member.plan_scoped.events, event];
+  await writePlanScopedChain(repoRoot, chain);
+  const { events } = chain;
   return {
     event, plan: member.plan, snapshot: member.snapshot,
     plan_scoped_head_digest: event.event_digest,
@@ -2625,7 +2668,8 @@ function carriedPlanScopedChain(store, previous, plan, journalRef, taskMigration
     return taskId === undefined || taskId === 'removed' ? null
       : { ...ref, task_id: taskId, expected_topology_digest: plan.topology_digest };
   };
-  const successor = { plan, plan_scoped: { ref: planScopedJournalRef(journalRef), events: [], activeBytes: Buffer.alloc(0) } };
+  const successor = { plan, plan_scoped: {
+    ref: planScopedJournalRef(journalRef), events: [], activeBytes: Buffer.alloc(0), sealed: [] } };
   const seen = new Set();
   for (const event of previous.plan_scoped?.events ?? []) {
     if (event.kind !== 'cross_plan_dependency' || !live.has(event.event_digest)) continue;
@@ -2637,18 +2681,14 @@ function carriedPlanScopedChain(store, previous, plan, journalRef, taskMigration
     const carried = buildPlanScopedEvent(successor, { kind: event.kind, actor: event.actor,
       recorded_at: event.recorded_at, provenance: event.provenance,
       payload: { from, to, reason: event.payload.reason } });
-    successor.plan_scoped.activeBytes = Buffer.concat([successor.plan_scoped.activeBytes,
-      planScopedEventBytes(successor, carried)]);
-    successor.plan_scoped.events.push(carried);
+    pushPlanScopedEvent(successor.plan_scoped, carried);
   }
   return successor.plan_scoped;
 }
 
 /** Written before the manifest switch; the version is not active yet, so a retry rewrites it from the current predecessor. */
 async function writeCarriedPlanScopedChain(repoRoot, chain) {
-  const absolute = path.resolve(repoRoot, chain.ref);
-  if (chain.events.length === 0) await rm(absolute, { force: true });
-  else await atomicWrite(absolute, chain.activeBytes);
+  await writePlanScopedChain(repoRoot, { ...chain, sealed: [...(chain.sealed ?? [])] }, { fresh: true });
 }
 
 /** Rebind existing connections to a carried source without changing their endpoints. */
@@ -2705,8 +2745,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
       fail(validation.code, reason, detail);
     }
     if (validation?.ok !== true) throw new TypeError('binding carry validator must return an ok result');
-    const staged = { ...owner, plan_scoped: { ...owner.plan_scoped,
-      events: [...owner.plan_scoped.events] } };
+    const staged = { ...owner, plan_scoped: stagePlanScopedChain(owner.plan_scoped) };
     const replacements = [];
     for (const dependency of dependencies) {
       for (const input of [
@@ -2720,9 +2759,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
       ]) {
         const event = buildPlanScopedEvent(staged, { ...input, actor: options.actor,
           recorded_at: options.recordedAt ?? new Date().toISOString() });
-        const bytes = planScopedEventBytes(staged, event);
-        staged.plan_scoped.events.push(event);
-        staged.plan_scoped.activeBytes = Buffer.concat([staged.plan_scoped.activeBytes, bytes]);
+        pushPlanScopedEvent(staged.plan_scoped, event);
       }
       replacements.push({ original_event_digest: dependency.event_digest,
         replacement_event_digest: staged.plan_scoped.events.at(-1).event_digest });
@@ -2735,7 +2772,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
     }
     validateMergedGraph(prospective, projected);
     await protocolStage(options, 'dependency_rebind_validated');
-    await atomicWrite(path.resolve(repoRoot, owner.plan_scoped.ref), staged.plan_scoped.activeBytes);
+    await writePlanScopedChain(repoRoot, staged.plan_scoped);
     await protocolStage(options, 'dependency_rebind_published');
     return { schema: 'lattice.todo_dependency_rebind_result.v1', project_id: store.project_id,
       plan_key: owner.plan.plan_key, source_plan_key: source.plan.plan_key,
@@ -3007,6 +3044,7 @@ function cloneImportedDependencyMember(member) {
       ...(member.plan_scoped ?? {}),
       events: [...(member.plan_scoped?.events ?? [])],
       activeBytes: Buffer.from(member.plan_scoped?.activeBytes ?? Buffer.alloc(0)),
+      sealed: [...(member.plan_scoped?.sealed ?? [])],
     },
   };
 }
@@ -3026,7 +3064,7 @@ function prepareCrossPlanDependencies({ store, dependencies, genesis, imported =
     members.push({
       plan: imported.plan, tasks: imported.tasks,
       plan_scoped: {
-        ref: planScopedJournalRef(imported.journalRef), events: [], activeBytes: Buffer.alloc(0),
+        ref: planScopedJournalRef(imported.journalRef), events: [], activeBytes: Buffer.alloc(0), sealed: [],
       },
     });
   }
@@ -3049,22 +3087,21 @@ function prepareCrossPlanDependencies({ store, dependencies, genesis, imported =
     const validationStore = { ...store, members };
     validateCrossPlanDependencyTransition(validationStore, target, input);
     const event = buildPlanScopedEvent(target, input);
-    const bytes = planScopedEventBytes(target, event);
     const key = target.plan_scoped.ref;
     const artifact = artifacts.get(key) ?? {
-      ref: key,
+      ref: key, chain: target.plan_scoped,
       originalBytes: Buffer.from(target.plan_scoped.activeBytes),
-      finalBytes: Buffer.from(target.plan_scoped.activeBytes),
       events: [],
     };
-    artifact.finalBytes = Buffer.concat([artifact.finalBytes, bytes]);
+    pushPlanScopedEvent(target.plan_scoped, event);
     artifact.events.push(event);
     artifacts.set(key, artifact);
-    target.plan_scoped.events.push(event);
-    target.plan_scoped.activeBytes = Buffer.concat([target.plan_scoped.activeBytes, bytes]);
     events.push(event);
   }
-  return { events, artifacts: [...artifacts.values()] };
+  // finalBytes is the new active; `sealed` the segments to write before it (s1-seal).
+  return { events, artifacts: [...artifacts.values()].map(({ chain, ...artifact }) => ({
+    ...artifact, finalBytes: chain.activeBytes, sealed: chain.sealed ?? [],
+  })) };
 }
 
 function prepareImportedCrossPlanDependencies({ store, plan, tasks, dependencies, genesis, journalRef }) {
@@ -3289,7 +3326,8 @@ async function appendExistingCrossPlanDependency(options) {
     }
     const artifact = prepared.artifacts[0];
     await protocolStage(options, 'cross_plan_connection_validated');
-    await atomicWrite(path.resolve(repoRoot, artifact.ref), artifact.finalBytes);
+    await writePlanScopedChain(repoRoot, { ref: artifact.ref, events: artifact.events,
+      activeBytes: artifact.finalBytes, sealed: artifact.sealed });
     await protocolStage(options, 'cross_plan_connection_activated');
     return {
       plan: source.plan, genesis: source.journal.events[0], events: source.journal.events,
@@ -3415,6 +3453,12 @@ async function appendPlanMembership(repoRoot, options, authored) {
       store, plan, tasks, dependencies: options.crossPlanDependencies, genesis, journalRef,
     });
     const hasCrossPlanDependencies = importedCrossPlan.artifacts.length > 0;
+    // The staged import recovery holds one active file per target and no segments; connect after the import instead.
+    const full = importedCrossPlan.artifacts.find(({ sealed }) => sealed.length > 0);
+    if (full !== undefined) {
+      fail('STORE_WRITE_REFUSED', 'cross_plan_import_segment_full', { ref: full.ref,
+        next_action: 'import without this cross-plan edge, then connect it with `lattice todo dependency connect`' });
+    }
     const transactionRef = hasCrossPlanDependencies
       ? `${CROSS_PLAN_IMPORT_TRANSACTIONS_REF}/${transactionDigest}`
       : `${STORE_ROOT_REF}/transactions/${plan.plan_key}-${plan.plan_version}`;
