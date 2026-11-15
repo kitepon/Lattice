@@ -110,6 +110,7 @@ Read commands:
 
 Write commands:
   notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # 届けた知らせに印を付ける（閉じた知らせはclosedで返す）
+  compact [--plan <key>] [--limit <n>] [--json]  # 退避済みの版のplan.json・revision.json・snapshot.jsonを、後継との差分(compact.json)だけに置き換える（既定40版まで。続きは再実行）
   repair-eol --json  # Git checkoutでCRLF化された既存storeをcanonical LFへ戻し、EOL保護を追加する
   dashboard adopt --json  # 衝突したproject_idの配信元rootを現在repoへ明示的に移す
   dashboard ensure --json  # daemon生存保証の冪等入口（launchd等の周期実行向け）
@@ -331,6 +332,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo notice': 'todo notice list [--lane <lane>] [--include-acked] [--json] | ack --lane <lane> --notice <id>[,<id>...] [--json]',
   'todo notice list': 'todo notice list [--lane <lane>] [--include-acked] [--json]  # lattice.todo_notice_list_result.v1',
   'todo notice ack': 'todo notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # lattice.todo_notice_ack_result.v1 {acked, already, closed}',
+  'todo compact': 'todo compact [--plan <key>] [--limit <n>] [--json]  # lattice.todo_compact_result.v1 {plans: [{plan_key, compacted, stopped, next_version}]}',
   'todo blockers': 'todo blockers [--json]  # lattice.todo_blockers_result.v1 {blockers: [{plan_key, task_id, title, lane, reason, blocked_at, blocked_by, unblock_action}]}',
   'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 廃止予定の別名: todo connect priority',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
