@@ -71,6 +71,7 @@ import {
   createTodoStoreWriter,
   TodoStoreError,
   isPhaselessTodoPlanSchema,
+  findUnverifiedTodoEvidence,
   isTodoEvidenceUncommitted,
   isUninitializedTodoStore,
   projectTodoCrossPlanDependencies,
@@ -5284,7 +5285,8 @@ async function evidenceAnchor({ repoRoot }) {
 }
 
 async function verify({ repoRoot, requestedPlanKey }) {
-  const store = await readTodoStore({ repoRoot });
+  // k4: the full history checks (hash chain, canonical bytes, whole-snapshot comparison) run only here, on request.
+  const store = await readTodoStore({ repoRoot, verifyHistory: true });
   const members = selectMembers(store, requestedPlanKey);
   // note chainはlifecycle storeと独立だが、verifyは両方を検査する。破損を空扱いしない。
   for (const member of members) {
@@ -5295,8 +5297,8 @@ async function verify({ repoRoot, requestedPlanKey }) {
   for (const member of members) {
     const planKey = member.descriptor.plan_key;
     // a12: evidence waiting for a commit is an item; missing or changed evidence still refuses.
-    const pending = member.tasks.filter((task) => task.evidence_unverified
-      && isTodoEvidenceUncommitted({ repoRoot, store, evidence: task.evidence }));
+    const unverifiedTasks = findUnverifiedTodoEvidence({ repoRoot, store, member });
+    const pending = unverifiedTasks.filter((task) => isTodoEvidenceUncommitted({ repoRoot, store, evidence: task.evidence }));
     for (const { task_id: taskId, evidence } of pending) {
       uncommittedEvidence.push({ plan_key: planKey, task_id: taskId, ...uncommittedEvidenceItem(repoRoot, store, evidence) });
     }
@@ -5304,7 +5306,7 @@ async function verify({ repoRoot, requestedPlanKey }) {
       if (decisionEvidenceState(repoRoot, store, evidence) !== 'uncommitted') continue;
       uncommittedEvidence.push({ plan_key: planKey, phase_id: phaseId, ...uncommittedEvidenceItem(repoRoot, store, evidence) });
     }
-    const unverified = member.tasks.find((task) => task.evidence_unverified && !pending.includes(task));
+    const unverified = unverifiedTasks.find((task) => !pending.includes(task));
     if (unverified !== undefined) {
       throw new TodoStoreError('STORE_INCONSISTENT', 'evidence_unverified', 'evidence_unverified', {
         plan_key: member.descriptor.plan_key,

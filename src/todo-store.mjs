@@ -41,6 +41,7 @@ import {
   exactRecord,
   isStrictTodoTimestamp,
   isTodoDigest,
+  isTodoDoneMessage,
   isTodoIdentifier,
   isTodoRef,
   todoSelfDigest,
@@ -230,7 +231,7 @@ function decodeUtf8(bytes, code, reason) {
   catch { fail(code, reason); }
 }
 
-function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref = null }) {
+function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref = null, canonical = true }) {
   const detail = ref === null ? undefined : { ref };
   if (bytes.length === 0 || bytes.length > maxBytes) {
     fail(code, bytes.length > maxBytes ? 'size_limit_exceeded' : reason, detail);
@@ -241,9 +242,11 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
   let value;
   try { value = JSON.parse(body); } catch { fail(code, reason, detail); }
   if (!text.endsWith('\n')) fail(code, reason, detail);
-  let expected;
-  try { expected = `${canonicalizeTodoArtifact(value)}\n`; } catch { fail(code, reason, detail); }
-  if (text !== expected) fail(code, 'non_canonical_or_duplicate_key', detail);
+  if (canonical) {
+    let expected;
+    try { expected = `${canonicalizeTodoArtifact(value)}\n`; } catch { fail(code, reason, detail); }
+    if (text !== expected) fail(code, 'non_canonical_or_duplicate_key', detail);
+  }
   if (!validate(value)) {
     const newer = NEWER_SCHEMA_FAMILY.has(validate) ? newerSchema(value, NEWER_SCHEMA_FAMILY.get(validate)) : null;
     if (newer !== null) failNewer(newer, ref);
@@ -252,12 +255,12 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
   return value;
 }
 
-async function readArtifact(repoRoot, ref, { code, maxBytes, validate, missing = false }) {
+async function readArtifact(repoRoot, ref, { code, maxBytes, validate, missing = false, canonical = true }) {
   const state = await pathState(repoRoot, ref, code, { missing });
   if (state === null) return null;
   const bytes = normalizeCheckoutEol(await readFile(state.absolute));
   return parseCanonicalJsonLine(bytes, {
-    code, reason: 'artifact_truncated_or_trailing_bytes', maxBytes, validate, ref,
+    code, reason: 'artifact_truncated_or_trailing_bytes', maxBytes, validate, ref, canonical,
   });
 }
 
@@ -271,7 +274,7 @@ async function readSnapshotArtifact(repoRoot, ref) {
   });
 }
 
-function parseJournalSegment(bytes, ref = null) {
+function parseJournalSegment(bytes, ref = null, { canonical: checkCanonical = true } = {}) {
   const detail = ref === null ? undefined : { ref };
   if (bytes.length === 0 || bytes.length > TODO_LIMITS.journalSegmentBytes) {
     fail('STORE_CORRUPT', bytes.length > TODO_LIMITS.journalSegmentBytes
@@ -285,8 +288,8 @@ function parseJournalSegment(bytes, ref = null) {
     let event;
     try { event = JSON.parse(line); } catch { fail('STORE_CORRUPT', 'journal_json_invalid'); }
     let canonical;
-    try { canonical = canonicalizeTodoArtifact(event); } catch { fail('STORE_CORRUPT', 'journal_schema_invalid'); }
-    if (line !== canonical) fail('STORE_CORRUPT', 'journal_non_canonical_or_duplicate_key');
+    if (checkCanonical) try { canonical = canonicalizeTodoArtifact(event); } catch { fail('STORE_CORRUPT', 'journal_schema_invalid'); }
+    if (checkCanonical && line !== canonical) fail('STORE_CORRUPT', 'journal_non_canonical_or_duplicate_key');
     if (!validateTodoEvent(event)) {
       const newer = newerEventValue(event);
       if (newer !== null) failNewer(newer, ref);
@@ -297,7 +300,7 @@ function parseJournalSegment(bytes, ref = null) {
 }
 
 /** Sealed segments of one chain, in order, each checked for name, digest, range and link. */
-async function readSealedSegments(repoRoot, journalRef, directoryName) {
+async function readSealedSegments(repoRoot, journalRef, directoryName, { canonical = true } = {}) {
   const sealedDirectory = path.resolve(repoRoot, path.dirname(journalRef), directoryName);
   const segments = [];
   try {
@@ -314,7 +317,7 @@ async function readSealedSegments(repoRoot, journalRef, directoryName) {
       const [, startText, endText, previousDigest, segmentDigest] = name.match(
         /^(\d{12})-(\d{12})-([0-9a-f]{64})-([0-9a-f]{64})\.jsonl$/u,
       );
-      const events = parseJournalSegment(bytes, ref);
+      const events = parseJournalSegment(bytes, ref, { canonical });
       if (sha256Bytes(bytes) !== segmentDigest) fail('STORE_CORRUPT', 'sealed_segment_digest_mismatch');
       if (events[0].sequence !== Number(startText) || events.at(-1).sequence !== Number(endText)) {
         fail('STORE_CORRUPT', 'sealed_segment_range_mismatch');
@@ -331,11 +334,15 @@ async function readSealedSegments(repoRoot, journalRef, directoryName) {
   return segments;
 }
 
-async function readJournal(repoRoot, journalRef) {
+/**
+ * k4 (ADR 0204): `verify: false` skips the per-event canonical re-check and the whole hash-chain re-verification (a read
+ * recomputed every event's digest on every operation and protected nothing named). `verify` stays true for `todo verify`.
+ */
+async function readJournal(repoRoot, journalRef, { verify = true } = {}) {
   // b10: a retained version's active segment may be kept gzip-packed as `active.jsonl.gz` (same bytes once unpacked).
   const state = await pathState(repoRoot, journalRef, 'STORE_CORRUPT', { missing: true });
   const packed = state === null ? await pathState(repoRoot, `${journalRef}.gz`, 'STORE_CORRUPT') : null;
-  const segments = await readSealedSegments(repoRoot, journalRef, 'sealed');
+  const segments = await readSealedSegments(repoRoot, journalRef, 'sealed', { canonical: verify });
   let activeBytes;
   try {
     activeBytes = state === null ? gunzipSync(await readFile(packed.absolute), { maxOutputLength: TODO_LIMITS.journalSegmentBytes })
@@ -343,10 +350,10 @@ async function readJournal(repoRoot, journalRef) {
   } catch { fail('STORE_CORRUPT', 'journal_gzip_invalid', { ref: `${journalRef}.gz` }); }
   const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
   if (!duplicateActive) {
-    segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef) });
+    segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef, { canonical: verify }) });
   }
   const events = segments.flatMap(({ events: entries }) => entries);
-  const failures = verifyLinearHashChain({
+  const failures = !verify ? new Set() : verifyLinearHashChain({
     entries: events,
     canonicalize: canonicalizeTodoArtifact,
     digestField: 'event_digest',
@@ -533,11 +540,11 @@ function projectPhaseStates(plan, events, taskStates) {
     } else if (event.kind === 'phase_accept') {
       const state = states.get(event.phase_id);
       state.status = 'accepted'; state.decision_event_digest = event.event_digest;
-      state.decision_evidence = event.payload.decision_evidence;
+      state.decision_evidence = event.payload.decision_evidence ?? null;
     } else if (event.kind === 'phase_reject') {
       const state = states.get(event.phase_id);
       state.status = 'rejected'; state.decision_event_digest = event.event_digest;
-      state.decision_evidence = event.payload.decision_evidence;
+      state.decision_evidence = event.payload.decision_evidence ?? null;
     } else if (event.kind === 'phase_close_unaudited') {
       // ADR 0148: 監査していないので証拠(decision_evidence)は残さない。理由はevent payload
       // 自身(decision_event_digestで指せるこの event)に記録済みで、accept/rejectと違い
@@ -693,12 +700,14 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
         pendingVerifications.delete(`phase:${event.phase_id}`);
       } else if (event.kind === 'phase_accept') {
         const phase = phasesOf(plan).find(({ phase_id }) => phase_id === event.phase_id);
-        const slots = event.payload.evidence_slots.map(({ slot_id }) => slot_id);
+        // k4: a new accept names no slots; only a legacy accept (evidence_slots) is matched against the phase definition.
+        const slots = event.payload.evidence_slots?.map(({ slot_id }) => slot_id);
         if (currentStatus !== 'reviewing' || state.review_event_digest !== event.payload.review_event_digest
-          || canonicalizeTodoArtifact(slots) !== canonicalizeTodoArtifact(phase.required_evidence_slots)) {
+          || (slots !== undefined
+            && canonicalizeTodoArtifact(slots) !== canonicalizeTodoArtifact(phase.required_evidence_slots))) {
           fail('STORE_INCONSISTENT', 'phase_accept_binding_invalid');
         }
-        if (verifyEvidence) {
+        if (verifyEvidence && event.payload.decision_evidence !== undefined) {
           const decisionEvidence = event.payload.decision_evidence;
           const slotEvidence = event.payload.evidence_slots.map((slot) => slot.evidence);
           pendingVerifications.set(`phase:${event.phase_id}`, () => {
@@ -709,19 +718,19 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
           });
         }
         state.status = 'accepted'; state.decision_event_digest = event.event_digest;
-        state.decision_evidence = event.payload.decision_evidence;
+        state.decision_evidence = event.payload.decision_evidence ?? null;
       } else if (event.kind === 'phase_reject') {
         if (currentStatus !== 'reviewing' || state.review_event_digest !== event.payload.review_event_digest) {
           fail('STORE_INCONSISTENT', 'phase_reject_binding_invalid');
         }
-        if (verifyEvidence) {
+        if (verifyEvidence && event.payload.decision_evidence !== undefined) {
           const decisionEvidence = event.payload.decision_evidence;
           pendingVerifications.set(`phase:${event.phase_id}`, () => verifyEvidence(decisionEvidence, {
             plan_key: plan.plan_key, phase_id: event.phase_id, event_digest: event.event_digest,
           }));
         }
         state.status = 'rejected'; state.decision_event_digest = event.event_digest;
-        state.decision_evidence = event.payload.decision_evidence;
+        state.decision_evidence = event.payload.decision_evidence ?? null;
       } else if (event.kind === 'phase_close_unaudited') {
         // ADR 0148裁定3: reviewと同じ前提(gate_ready)を課す——所属ToDoが全てdoneでない段階では
         // まだ監査の地点に到達していないので、監査なしで閉じることもできない。
@@ -850,13 +859,13 @@ function replay(plan, events, { verifyEvidence, verifyImportSource } = {}) {
     } else if (event.kind === 'done') {
       if (event.payload.done_mode === 'authored') {
         if (state.status !== 'in-progress' || !dependenciesDone) fail('STORE_INCONSISTENT', 'invalid_done_transition');
-        if (verifyEvidence) {
+        if (verifyEvidence && event.payload.evidence !== undefined) {
           const evidence = event.payload.evidence;
           pendingVerifications.set(`task:${event.task_id}`, () => verifyEvidence(evidence, {
             plan_key: plan.plan_key, task_id: event.task_id, event_digest: event.event_digest,
           }));
         }
-        state.status = 'done'; state.done_at = event.recorded_at; state.evidence = event.payload.evidence;
+        state.status = 'done'; state.done_at = event.recorded_at; state.evidence = event.payload.evidence ?? { message: event.payload.message };
         state.test_result = event.payload.test_result ?? null;
         state.imported = false;
         completion.set(event.task_id, { mode: 'authored', completed_at: event.recorded_at });
@@ -1212,40 +1221,62 @@ function readEvidenceBlobDigest(absoluteRepo, oid) {
   return digest;
 }
 
-function evidenceVerifier(manifest, repoRoot, hard, newEventDigest = null) {
+/**
+ * b11: what a writer's replay needs from evidence. `replay` discards the verifier's answer (only a thrown refusal changes the
+ * outcome), and the only refusals are a malformed descriptor and an unknown repository. A writer therefore checks those two
+ * without reading the blob; reading every done task's blob through git on every write cost 13 s of a 16 s `todo add` on
+ * bellteam-dev-added. The blob itself is read by readers (the `evidence_unverified` annotation) and, hard, for the new event.
+ */
+function structuralEvidenceVerifier(manifest) {
+  const repositories = new Set(manifest.repositories.map((repo) => repo.repo_id));
+  return (descriptor) => {
+    if (isTodoDoneMessage(descriptor)) return true;
+    if (!validateEvidenceDescriptor(descriptor)) fail('STORE_INCONSISTENT', 'evidence_descriptor_invalid');
+    if (!repositories.has(descriptor.repo_id)) fail('STORE_INCONSISTENT', 'evidence_repo_missing');
+    return true;
+  };
+}
+
+function structuralImportSourceVerifier(descriptor) {
+  if (!validateTodoImportSource(descriptor)) fail('STORE_INCONSISTENT', 'import_source_descriptor_invalid');
+  return true;
+}
+
+/** `todo verify` only (k4): can a recorded evidence blob be read back with its digest and reached from a ref? Reads and writes never ask. */
+function evidenceVerifier(manifest, repoRoot) {
   const repositories = new Map(manifest.repositories.map((repo) => [repo.repo_id, repo.path]));
-  return (descriptor, context = {}) => {
+  return (descriptor) => {
+    if (isTodoDoneMessage(descriptor)) return true; // plain text: nothing to read back
     if (!validateEvidenceDescriptor(descriptor)) fail('STORE_INCONSISTENT', 'evidence_descriptor_invalid');
     const repoRef = repositories.get(descriptor.repo_id);
     if (repoRef === undefined) fail('STORE_INCONSISTENT', 'evidence_repo_missing');
     const absoluteRepo = path.resolve(repoRoot, repoRef);
     try {
-      const blobDigest = readEvidenceBlobDigest(absoluteRepo, descriptor.git_blob_oid);
-      // **objectが在ることと、cloneした人が読めることは別である。** commitやtagから辿れない
-      // dangling blobでも`cat-file`は通るので、手元では検証済みに見えるのに、fresh cloneでは
-      // 誰も確かめられない証拠が残る。実際に16件そうなっており、公開CIで初めて露見した。
-      // 手元とCIで判定が食い違う状態を残さない。
-      //
-      // ただし**書き込み時には要求しない**。証拠文書は同じ変更でcommitするのが普通の流れで、
-      // `todo done`の時点ではindexに在るだけである。そこで拒むと正常な運用が止まる。
-      // 「記録はできるが、commitするまでverifyは通らない」が正しい強さである。
-      if (!hard && !reachableObjects(absoluteRepo).has(descriptor.git_blob_oid)) {
-        throw new Error('blob unreachable from refs');
-      }
-      if (blobDigest !== descriptor.content_digest) throw new Error('digest mismatch');
-      return true;
+      // An object being present is not the same as a fresh clone being able to read it: a dangling blob passes `cat-file`.
+      return readEvidenceBlobDigest(absoluteRepo, descriptor.git_blob_oid) === descriptor.content_digest
+        && reachableObjects(absoluteRepo).has(descriptor.git_blob_oid);
     } catch {
-      // 既存の不達は未検証として残す。新eventの証拠だけは書込み前にhard検証する。
-      if (newEventDigest !== null && context.event_digest !== newEventDigest) return false;
-      if (hard) fail('STORE_INCONSISTENT', 'evidence_unverified', {
-        ...context,
-        next_action: context.plan_key === undefined
-          ? 'verify_the_evidence_descriptor_and_retry'
-          : `lattice todo verify --plan ${context.plan_key} --json`,
-      });
       return false;
     }
   };
+}
+
+/**
+ * b11: `todo verify`'s explicit, opt-in evidence check (read-only): the tasks of `member` whose recorded evidence blob
+ * cannot be read back with its digest (or is not reachable from a ref). Reads in `cat-file --batch` chunks. Reads and writes
+ * no longer do this; it was the `evidence_unverified` annotation.
+ */
+export function findUnverifiedTodoEvidence({ repoRoot, store, member }) {
+  const cache = { commits: new Set(), blobs: new Map() };
+  prefetchVerificationObjects(store.manifest, repoRoot, member.journal.events, cache);
+  const verifyEvidence = evidenceVerifier(store.manifest, repoRoot);
+  const verifyImportSource = importSourceVerifier(repoRoot, false, cache);
+  return member.tasks.filter((task) => {
+    if (task.evidence === null) return false;
+    const context = { plan_key: member.plan.plan_key, task_id: task.task_id, event_digest: null };
+    return !(validateTodoImportSource(task.evidence)
+      ? verifyImportSource(task.evidence, context) : verifyEvidence(task.evidence, context));
+  });
 }
 
 /**
@@ -1419,6 +1450,7 @@ function liveReplacementPreservesListStructure(lineBytes, replacement) {
 function importSourceVerifier(repoRoot, hard, cache = null, newEventDigest = null) {
   return (descriptor, context = {}) => {
     if (!validateTodoImportSource(descriptor)) fail('STORE_INCONSISTENT', 'import_source_descriptor_invalid');
+    if (newEventDigest !== null && context.event_digest !== newEventDigest) return true; // b11, as evidenceVerifier
     try {
       pinnedSourceLine(repoRoot, descriptor, cache);
       return true;
@@ -1586,18 +1618,20 @@ async function readTodoStoreView(options = {}) {
     }
   }
   await assertNoCrossPlanImportRecoveryNeeded(repoRoot);
-  const pinnedSourceCache = { commits: new Set(), blobs: new Map() };
   const manifest = await readManifest(repoRoot);
   const loaded = [];
   for (const descriptor of manifest.members) {
+    // k4 (ADR 0204): a read no longer re-verifies history. `verifyHistory` (only `todo verify`) restores the canonical-byte
+    // checks, the hash chain, the revision/genesis binding and the whole-snapshot comparison.
+    const verifyHistory = options.verifyHistory === true;
     const plan = await readArtifact(repoRoot, descriptor.plan_ref, {
-      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan,
+      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, canonical: verifyHistory,
     });
     if (plan.project_id !== manifest.project_id || plan.plan_key !== descriptor.plan_key
       || plan.plan_version !== descriptor.active_plan_version || plan.topology_digest !== descriptor.topology_digest) {
       fail('STORE_INCONSISTENT', 'manifest_plan_binding_mismatch');
     }
-    const journal = await readJournal(repoRoot, descriptor.journal_ref);
+    const journal = await readJournal(repoRoot, descriptor.journal_ref, { verify: verifyHistory });
     if (journal.events.at(-1).event_digest !== descriptor.journal_head_digest) {
       if (!options.recovery || !journal.events.some(({ event_digest: digest }) => (
         digest === descriptor.journal_head_digest))) {
@@ -1612,7 +1646,7 @@ async function readTodoStoreView(options = {}) {
       const revisionRef = path.posix.join(path.posix.dirname(descriptor.plan_ref), 'revision.json');
       const phaseRevision = genesis.schema === 'lattice.todo_event.v4';
       revision = await readArtifact(repoRoot, revisionRef, {
-        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes,
+        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, canonical: verifyHistory,
         validate: (value) => {
           rejectUnsupportedRevisionSchema(value, phaseRevision ? {
             family: 'phase_todo_revision', supportedSchemas: PHASE_TODO_REVISION_SCHEMAS,
@@ -1622,35 +1656,37 @@ async function readTodoStoreView(options = {}) {
           return phaseRevision ? validatePhaseTodoRevision(value) : validateTodoRevision(value);
         },
       });
-      const migrationProjection = genesis.state_migration.map((entry) => ({
-        from_task_id: entry.from_task_id, to_task_id: entry.to_task_id,
-        state_policy: entry.state_policy,
-      }));
-      if (canonicalizeTodoArtifact(revision.desired_plan) !== canonicalizeTodoArtifact(plan)
-        || revision.revision_digest !== genesis.revision_digest
-        || revision.predecessor.plan_digest !== genesis.payload.predecessor_plan_digest
-        || revision.predecessor.journal_head_digest !== genesis.previous_digest
-        || canonicalizeTodoArtifact(revision.task_migration)
-          !== canonicalizeTodoArtifact(migrationProjection)) {
-        fail('STORE_INCONSISTENT', 'revision_genesis_binding_mismatch');
-      }
-      if (manifest.schema === 'lattice.todo_manifest.v2'
-        && descriptor.active_revision_digest !== genesis.revision_digest) {
-        fail('STORE_INCONSISTENT', 'manifest_revision_binding_mismatch');
-      }
-      if (genesis.schema === 'lattice.todo_event.v2'
-        && revision.reconciliation.reconciliation_digest !== genesis.reconciliation_digest) {
-        fail('STORE_INCONSISTENT', 'revision_genesis_binding_mismatch');
-      }
-      if (genesis.schema === 'lattice.todo_event.v4') {
-        const phaseProjection = revision.phase_migration
-          .filter(({ to_phase_id }) => to_phase_id !== 'removed')
-          .map(({ to_phase_id, state_policy }) => ({ phase_id: to_phase_id, state_policy }))
-          .sort((left, right) => left.phase_id.localeCompare(right.phase_id));
-        const genesisProjection = genesis.phase_state_migration
-          .map(({ phase_id, state_policy }) => ({ phase_id, state_policy }));
-        if (canonicalizeTodoArtifact(phaseProjection) !== canonicalizeTodoArtifact(genesisProjection)) {
+      if (verifyHistory) {
+        const migrationProjection = genesis.state_migration.map((entry) => ({
+          from_task_id: entry.from_task_id, to_task_id: entry.to_task_id,
+          state_policy: entry.state_policy,
+        }));
+        if (canonicalizeTodoArtifact(revision.desired_plan) !== canonicalizeTodoArtifact(plan)
+          || revision.revision_digest !== genesis.revision_digest
+          || revision.predecessor.plan_digest !== genesis.payload.predecessor_plan_digest
+          || revision.predecessor.journal_head_digest !== genesis.previous_digest
+          || canonicalizeTodoArtifact(revision.task_migration)
+            !== canonicalizeTodoArtifact(migrationProjection)) {
           fail('STORE_INCONSISTENT', 'revision_genesis_binding_mismatch');
+        }
+        if (manifest.schema === 'lattice.todo_manifest.v2'
+          && descriptor.active_revision_digest !== genesis.revision_digest) {
+          fail('STORE_INCONSISTENT', 'manifest_revision_binding_mismatch');
+        }
+        if (genesis.schema === 'lattice.todo_event.v2'
+          && revision.reconciliation.reconciliation_digest !== genesis.reconciliation_digest) {
+          fail('STORE_INCONSISTENT', 'revision_genesis_binding_mismatch');
+        }
+        if (genesis.schema === 'lattice.todo_event.v4') {
+          const phaseProjection = revision.phase_migration
+            .filter(({ to_phase_id }) => to_phase_id !== 'removed')
+            .map(({ to_phase_id, state_policy }) => ({ phase_id: to_phase_id, state_policy }))
+            .sort((left, right) => left.phase_id.localeCompare(right.phase_id));
+          const genesisProjection = genesis.phase_state_migration
+            .map(({ phase_id, state_policy }) => ({ phase_id, state_policy }));
+          if (canonicalizeTodoArtifact(phaseProjection) !== canonicalizeTodoArtifact(genesisProjection)) {
+            fail('STORE_INCONSISTENT', 'revision_genesis_binding_mismatch');
+          }
         }
       }
     }
@@ -1658,38 +1694,32 @@ async function readTodoStoreView(options = {}) {
       && descriptor.active_revision_digest !== plan.plan_digest) {
       fail('STORE_INCONSISTENT', 'manifest_revision_binding_mismatch');
     }
-    prefetchVerificationObjects(manifest, repoRoot, journal.events, pinnedSourceCache);
-    const verifyEvidence = evidenceVerifier(manifest, repoRoot, false);
-    const verifyImportSource = importSourceVerifier(repoRoot, false, pinnedSourceCache);
+    // b11 (ADR 0203): a read or write no longer re-verifies stored evidence. It read every done task's blob through
+    // `git cat-file` and only set `evidence_unverified`, which blocked nothing (guards.remove-unnamed). Writers keep the
+    // descriptor-shape check (no git); `todo verify` checks the blobs on request (`findUnverifiedTodoEvidence`).
     const tasks = replay(plan, journal.events, {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: options.forWrite === true ? verifyEvidence : undefined,
-      verifyImportSource: options.forWrite === true ? verifyImportSource : undefined,
+      verifyEvidence: options.forWrite === true ? structuralEvidenceVerifier(manifest) : undefined,
+      verifyImportSource: options.forWrite === true ? structuralImportSourceVerifier : undefined,
     });
-    const expectedSnapshot = snapshotFor(plan, journal.events, structuredClone(tasks));
-    // Read-time evidence failure is annotation, never store rejection.
-    for (const task of tasks) if (task.evidence !== null) {
-      const context = {
-        plan_key: plan.plan_key,
-        task_id: task.task_id,
-        event_digest: null,
-      };
-      const verified = validateTodoImportSource(task.evidence)
-        ? verifyImportSource(task.evidence, context) : verifyEvidence(task.evidence, context);
-      if (!verified) task.evidence_unverified = true;
-    }
     let snapshot = null;
     let snapshotStale = false;
+    let expectedSnapshot = null;
     try {
       snapshot = await readSnapshotArtifact(repoRoot, descriptor.snapshot_ref);
-      snapshotStale = snapshot === null || canonicalizeTodoArtifact(snapshot) !== canonicalizeTodoArtifact(expectedSnapshot);
+      // The snapshot is current when it names the journal head (O(1)); only `todo verify` compares its whole content.
+      snapshotStale = snapshot === null || snapshot.journal_head_digest !== journal.events.at(-1).event_digest;
+      if (!snapshotStale && verifyHistory) {
+        expectedSnapshot = snapshotFor(plan, journal.events, structuredClone(tasks));
+        snapshotStale = canonicalizeTodoArtifact(snapshot) !== canonicalizeTodoArtifact(expectedSnapshot);
+      }
     } catch (error) {
       if (error instanceof TodoStoreError && error.code === 'SNAPSHOT_INVALID'
         && !['unsafe_artifact_path', 'path_alias_or_escape', 'path_outside_store']
           .includes(error.detail.reason)) snapshotStale = true;
       else throw error;
     }
-    if (options.forWrite === true && snapshotStale && !options.recovery) fail('STORE_WRITE_REFUSED', 'snapshot_stale');
+    if (snapshotStale) expectedSnapshot ??= snapshotFor(plan, journal.events, structuredClone(tasks)); // a stale snapshot is rebuilt, never a refusal
     // 導出済みphase状態(ADR 0147)。snapshot artifactの形式(v1/v2)には縛られず、v4/v5・
     // phase無しplanのどちらでも同じ形(暗黙のterminal-audit Phase込み)で常に埋める。
     // 消費者はここを読み、snapshot.phases(v1には存在しない)を直接読まない。
@@ -2657,13 +2687,11 @@ export async function appendTodoEvent(options = {}) {
       fail(validation.code, reason, detail);
     }
     if (validation?.ok !== true) throw new TypeError('prospective validator must return an ok result');
-    const appendSourceCache = { commits: new Set(), blobs: new Map() };
-    prefetchVerificationObjects(store.manifest, repoRoot,
-      [...member.journal.events, event], appendSourceCache);
+    // k4 (ADR 0204): the prospective replay validates the transition; no evidence or import source is read back (descriptor shape only).
     replay(member.plan, [...member.journal.events, event], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, true, event.event_digest),
-      verifyImportSource: importSourceVerifier(repoRoot, true, appendSourceCache, event.event_digest),
+      verifyEvidence: structuralEvidenceVerifier(store.manifest),
+      verifyImportSource: structuralImportSourceVerifier,
     });
     if (options.materializedEvidence !== null && options.materializedEvidence !== undefined) {
       const asset = options.materializedEvidence;
@@ -2697,8 +2725,8 @@ export async function appendTodoEvent(options = {}) {
     await protocolStage(options, 'event_journal_published');
     const tasks = replay(member.plan, [...member.journal.events, event], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
-      verifyImportSource: importSourceVerifier(repoRoot, false, appendSourceCache),
+      verifyEvidence: structuralEvidenceVerifier(store.manifest),
+      verifyImportSource: structuralImportSourceVerifier,
     });
     const snapshot = snapshotFor(member.plan, [...member.journal.events, event], tasks);
     await atomicWrite(path.resolve(repoRoot, member.descriptor.snapshot_ref), canonicalLine(snapshot));
@@ -5258,8 +5286,8 @@ async function applyPhaseTodoRevisionV3(options, revision, repoRoot) {
     await protocolStage(options, 'phase_v3_marker_durable');
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
-      verifyImportSource: importSourceVerifier(repoRoot, false),
+      verifyEvidence: structuralEvidenceVerifier(store.manifest),
+      verifyImportSource: structuralImportSourceVerifier,
     });
     const snapshot = snapshotFor(revision.desired_plan, [genesis], tasks);
     for (const [stage, ref, bytes] of [
@@ -5429,8 +5457,8 @@ export async function applyPhaseTodoRevision(options = {}) {
     await protocolStage(options, 'phase_revision_marker_durable');
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(),
-      verifyEvidence: evidenceVerifier(store.manifest, repoRoot, false),
-      verifyImportSource: importSourceVerifier(repoRoot, false),
+      verifyEvidence: structuralEvidenceVerifier(store.manifest),
+      verifyImportSource: structuralImportSourceVerifier,
     });
     const snapshot = snapshotFor(revision.desired_plan, [genesis], tasks);
     const artifacts = [
@@ -5587,8 +5615,8 @@ export async function applyTodoRevision(options = {}) {
     }
     await protocolStage(options, 'revision_marker_durable');
 
-    const verifyEvidence = evidenceVerifier(store.manifest, repoRoot, false);
-    const verifyImportSource = importSourceVerifier(repoRoot, false);
+    const verifyEvidence = structuralEvidenceVerifier(store.manifest);
+    const verifyImportSource = structuralImportSourceVerifier;
     const tasks = replay(revision.desired_plan, [genesis], {
       now: options.now ? new Date(options.now) : new Date(), verifyEvidence, verifyImportSource,
     });
@@ -5869,8 +5897,8 @@ export async function applyTodoRevisionSet(options = {}) {
     }
     await protocolStage(options, 'revision_set_marker_durable');
 
-    const verifyEvidence = evidenceVerifier(store.manifest, repoRoot, false);
-    const verifyImportSource = importSourceVerifier(repoRoot, false);
+    const verifyEvidence = structuralEvidenceVerifier(store.manifest);
+    const verifyImportSource = structuralImportSourceVerifier;
     for (const entry of prepared) {
       const { revision, genesis } = entry;
       const tasks = replay(revision.desired_plan, [genesis], {
