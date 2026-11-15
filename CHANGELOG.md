@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.102.1 — 2026-11-15
+
+工程の申し送りの束を直した版。ホストへの変更：無し（JSON の形・拒否は変わらない）。
+
+- 計画全体への申し送りが512件を超えた計画では、どの工程でも`todo note --task`・`todo note list --task`・`todo show --task`が`NOTE_PROJECTION_INVALID`/`note_context_invalid`で止まり、`todo start`の`note_context`も読めなくなっていた（BellTeam の`bellteam-dev-added`、2026-11-15 14:55 JST、546件）。束は文字量の予算でしか削らず、検査は件数を512で切っていたためだ。束を作る時に件数でも512で切り、溢れた分は`overflow_count`に数える。全部は今までどおり`full_history_command`で読める。
+- 計画全体への申し送りだけで512件に届く計画では、工程ごとの申し送りは束に入らず`overflow_count`に数えられる。
+- 実装：ルドミラ（PR #187）。
+
 ## 0.102.0 — 2026-11-15
 
 `lattice setup`の終了コードの版。ホストへの変更：有り（終了コードだけ。JSON の形は変わらない）。
