@@ -51,8 +51,10 @@ const connect = (from, to, extra = []) => ['todo', 'dependency', 'connect', ...e
   '--from-task', from[1], '--to-plan', to[0], '--to-task', to[1], '--reason', `${to[1]} uses ${from[1]}`];
 const edgeKeys = (store) => projectTodoCrossPlanDependencies(store.members)
   .map(({ from, to }) => `${from.project_id}/${from.plan_key}/${from.task_id}>${to.plan_key}/${to.task_id}`).sort();
-const blocking = (ok, task) => ok('beta', ['todo', 'show', '--plan', 'b', '--task', task, '--json'])
-  .prerequisites.blocking_tasks.map(({ project_id: p, plan_key: k, task_id: t }) => `${p ?? 'beta'}/${k}/${t}`).sort();
+const blockers = (ok, task) => {
+  const { blocking_tasks: tasks, connections } = ok('beta', ['todo', 'show', '--plan', 'b', '--task', task, '--json']).prerequisites;
+  return [...tasks.map(({ plan_key: k, task_id: t }) => `beta/${k}/${t}`), ...connections.filter(({ kind }) => kind === 'task').map(({ ref }) => ref)].sort();
+};
 
 test('todo add and plan revise keep the incoming edges of the waiting plan, mapped onto the successor', async (context) => {
   const { beta, ok } = await charts(context);
@@ -81,7 +83,7 @@ test('todo add and plan revise keep the incoming edges of the waiting plan, mapp
   // The connection keeps who connected it and when.
   assert.deepEqual(b.plan_scoped.events.map(({ actor, recorded_at: at }) => [actor, at]),
     connected.map(({ actor, recorded_at: at }) => [actor, at]));
-  assert.deepEqual(blocking(ok, 'R'), ['alpha/a/P', 'beta/b/T', 'beta/c/Q']);
+  assert.deepEqual(blockers(ok, 'R'), ['alpha/a/P', 'beta/b/T', 'beta/c/Q']);
 
   // plan revise retiring U drops only U's edge.
   const ref = (task_id) => ({ project_id: 'beta', plan_key: 'b', task_id });
@@ -98,8 +100,8 @@ test('todo add and plan revise keep the incoming edges of the waiting plan, mapp
   // A carried edge is an ordinary live edge: disconnect finds it, and R still waits on the rest.
   ok('beta', ['todo', 'dependency', 'disconnect', '--from-plan', 'c', '--from-task', 'Q', '--to-plan', 'b',
     '--to-task', 'R', '--reason', 'not needed']);
-  assert.deepEqual(blocking(ok, 'R'), ['alpha/a/P', 'beta/b/T']);
+  assert.deepEqual(blockers(ok, 'R'), ['alpha/a/P', 'beta/b/T']);
   ok('beta', ['todo', 'start', '--plan', 'b', '--task', 'T']);
   ok('beta', ['todo', 'done', '--plan', 'b', '--task', 'T', '--message', 'done']);
-  assert.deepEqual(blocking(ok, 'R'), ['alpha/a/P']);
+  assert.deepEqual(blockers(ok, 'R'), ['alpha/a/P']);
 });

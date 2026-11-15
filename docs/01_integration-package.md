@@ -36,7 +36,7 @@
   `todo_status_result`とは独立した加算の別面なので、statusの版に関わらず既存hostはそのまま動く。
 - TODO工程（0.103.0時点、コードの定数から確認）: 現行authoringは`lattice.plan_create_input.v5`
   （`plan create`／`plan revise --input`共通）、新規planは`lattice.todo_plan.v8`、`plan revise`の
-  Phase revisionは`lattice.phase_todo_revision.v5`、statusは`lattice.todo_status_result.v9`を使う。
+  Phase revisionは`lattice.phase_todo_revision.v5`、statusは`lattice.todo_status_result.v10`を使う。
   event・snapshotの版はstore内部の記録形式で、hostは直接読まない（表示はCLIのJSONかdashboardを使う）。
   版の正本はこの索引ではなく、CLIの`--schema --json`出力と各出力の`schema`欄である。
   seatが使う面は[seat contract](architecture/seat-contract.md)が正本。

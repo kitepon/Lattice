@@ -31,7 +31,8 @@ import {
  * plan単位noteは工程に属する義務で、taskへ着手した人のcontextには届くが、**まだ誰も
  * 着手していない工程の義務は、この欄が無いとどこにも出ない**。
  */
-export const TODO_STATUS_SCHEMA = 'lattice.todo_status_result.v9';
+export const TODO_STATUS_SCHEMA = 'lattice.todo_status_result.v10';
+/** v10: `active_set[].connections` and `connection_pending[]` carry the one `connections` list: open 他条件に接続 and 優先接続 entries. */
 /** v9 (u03 A77): `truncated: [{list, total, shown}]` records every cut of an output list. */
 /** v8: cross_plan_findingsは件数だけ全数、本文は先頭からこの件数まで（statusを止めない）。 */
 export const TODO_STATUS_FINDING_LIMIT = 32;
@@ -130,11 +131,31 @@ function taskRefEntry(value) {
     && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id);
 }
 
+function connectionEntry(value) {
+  if (exactRecord(value, ['kind', 'agent', 'since', 'reason'])) {
+    return value.kind === 'priority' && isTodoStatusBoundedText(value.agent, TODO_STATUS_LABEL_LIMIT)
+      && typeof value.since === 'string' && (value.reason === null || isTodoStatusBoundedText(value.reason, TODO_STATUS_REASON_LIMIT));
+  }
+  return (exactRecord(value, ['kind', 'ref', 'state', 'reason', 'since'])
+    || exactRecord(value, ['kind', 'ref', 'state', 'reason', 'since', 'state_reason']))
+    && ['task', 'schedule'].includes(value.kind) && value.state === 'open'
+    && isTodoStatusBoundedText(value.ref, TODO_STATUS_REASON_LIMIT)
+    && isTodoStatusBoundedText(value.reason, TODO_STATUS_REASON_LIMIT) && typeof value.since === 'string'
+    && (value.state_reason === undefined || isTodoStatusBoundedText(value.state_reason, TODO_STATUS_LABEL_LIMIT));
+}
+
 function activeTaskEntry(value) {
-  return exactRecord(value, ['plan_key', 'task_id', 'label', 'unmet_dependencies'])
+  return exactRecord(value, ['plan_key', 'task_id', 'label', 'unmet_dependencies', 'connections'])
     && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
     && isTodoStatusBoundedText(value.label, TODO_STATUS_LABEL_LIMIT)
-    && boundedList(value.unmet_dependencies, taskRefEntry);
+    && boundedList(value.unmet_dependencies, taskRefEntry) && boundedList(value.connections, connectionEntry);
+}
+
+function connectionPendingEntry(value) {
+  return exactRecord(value, ['plan_key', 'task_id', 'label', 'connections'])
+    && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
+    && isTodoStatusBoundedText(value.label, TODO_STATUS_LABEL_LIMIT)
+    && boundedList(value.connections, connectionEntry) && value.connections.length > 0;
 }
 
 function blockedEntry(value) {
@@ -356,13 +377,13 @@ export function validateTodoStatusResult(value) {
   try {
     return exactRecord(value, [
       'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
-      'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
+      'blocked', 'connection_pending', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
       'coordination', 'parallel_candidates', 'cross_plan_findings',
       'member_heads', 'truncated', 'result_digest',
     ]) && value.schema === TODO_STATUS_SCHEMA && isTodoIdentifier(value.project_id)
       && boundedList(value.active_set, activeTaskEntry) && boundedList(value.next_ready, taskEntry)
       && dispatchFrontierEntry(value.dispatch_frontier, value.project_id, value.next_ready)
-      && boundedList(value.blocked, blockedEntry) && boundedList(value.audit_pending, auditPendingEntry)
+      && boundedList(value.blocked, blockedEntry) && boundedList(value.connection_pending, connectionPendingEntry) && boundedList(value.audit_pending, auditPendingEntry)
       && boundedList(value.structure_finalization_pending, structureFinalizationPendingEntry)
       && boundedList(value.plan_notes, planNoteEntry)
       && boundedList(value.coordination, coordinationEntry)
@@ -625,8 +646,23 @@ export function projectTodoStatus(readModel, options = undefined) {
   const activeSet = [];
   const nextReady = [];
   const blocked = [];
+  const connectionPending = [];
+  // One `connections` list (the Owner's one place): open 他条件に接続 entries and 優先接続 entries. Settled ones are
+  // history that `todo show` lists.
+  const openConnections = (key) => graph.readiness.allConnections(key)
+    .filter((entry) => entry.kind === 'priority' || entry.state === 'open')
+    .map((entry) => entry.kind === 'priority'
+      ? { kind: 'priority', agent: displayText(entry.agent, 'unknown', TODO_STATUS_LABEL_LIMIT), since: entry.since,
+        reason: entry.reason === null ? null : displayText(entry.reason, 'priority', TODO_STATUS_REASON_LIMIT) }
+      : { kind: entry.kind, ref: entry.ref, state: 'open', reason: displayText(entry.reason, 'connection', TODO_STATUS_REASON_LIMIT),
+        since: entry.since,
+        ...(entry.state_reason === undefined ? {} : { state_reason: displayText(entry.state_reason, 'chart_not_read', TODO_STATUS_LABEL_LIMIT) }) });
   for (const node of nodes.values()) {
     const task = { plan_key: node.plan_key, task_id: node.task_id, label: node.label };
+    if (node.status === 'pending') {
+      const connections = openConnections(node.key);
+      if (connections.length > 0) connectionPending.push({ ...task, connections });
+    }
     if (node.status === 'in-progress') {
       const unmetDependencies = [...incoming.get(node.key)]
         .filter((key) => !nodes.get(key).finished)
@@ -641,7 +677,7 @@ export function projectTodoStatus(readModel, options = undefined) {
         const entry = truncated.get('active_set.unmet_dependencies');
         entry.total += unmetDependencies.length; entry.shown += shownDependencies.length;
       }
-      activeSet.push({ ...task, unmet_dependencies: shownDependencies });
+      activeSet.push({ ...task, unmet_dependencies: shownDependencies, connections: openConnections(node.key) });
     }
     if (isNodeReady(node, graph)) nextReady.push({ ...task, done_condition: node.done_condition });
     if (node.status === 'blocked') {
@@ -655,9 +691,11 @@ export function projectTodoStatus(readModel, options = undefined) {
   activeSet.sort(compareTaskEntries);
   nextReady.sort(compareTaskEntries);
   blocked.sort(compareTaskEntries);
+  connectionPending.sort(compareTaskEntries);
   memberHeads.sort((left, right) => left.plan_key < right.plan_key ? -1 : left.plan_key > right.plan_key ? 1 : 0);
   const lists = {
-    active_set: activeSet, next_ready: nextReady, blocked, audit_pending: auditPending,
+    active_set: activeSet, next_ready: nextReady, blocked, connection_pending: connectionPending,
+    audit_pending: auditPending,
     structure_finalization_pending: structureFinalizations, plan_notes: planNotes,
     coordination, parallel_candidates: parallelCandidates, member_heads: memberHeads,
   };
@@ -678,6 +716,7 @@ export function projectTodoStatus(readModel, options = undefined) {
       next_ready: lists.next_ready,
       dispatch_frontier: dispatchFrontier(readModel.project_id, lists.next_ready),
       blocked: lists.blocked,
+      connection_pending: lists.connection_pending,
       // 監査待ちは`member.phases`だけから作った別の列で、dispatch(next_ready/dispatch_frontier)へは
       // 影響しない。監査が進んでもfrontier_digestは動かない。
       audit_pending: lists.audit_pending,

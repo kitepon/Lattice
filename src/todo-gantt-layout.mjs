@@ -245,7 +245,7 @@ function normalizeInput(readModel) {
     }
   }
   for (const dependency of projectTodoCrossPlanDependencies(members)) {
-    // 他条件に接続 (a task on another chart) is never a tree edge: the 接続 area and the chip show it, not the diagram.
+    // A task on another chart is a 接続: it lives in the task's `connections`, never as a drawn edge.
     if (dependency.from.project_id !== dependency.to.project_id) continue;
     addEdge(dependency.from, dependency.to, 'cross_plan');
   }

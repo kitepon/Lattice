@@ -170,7 +170,7 @@ import {
 } from './seam-proposal-contracts.mjs';
 import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-proposal.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
-import { newTodoNotices, projectTodoNotices, waitInEffect } from './todo-notices.mjs';
+import { newTodoNotices, projectTodoNotices, waitInEffect, withTodoPriorityWaits } from './todo-notices.mjs';
 import {
   externalCycle, readTodoExternalChart, readTodoExternalTasks, withTodoExternalTasks,
 } from './todo-external.mjs';
@@ -1448,12 +1448,25 @@ async function displayRead(repoRoot, env) {
   const display = await readTodoStoreForDisplay({ repoRoot });
   const externalTasks = display.store ? (await readTodoExternalTasks(display.store, env)).external_tasks : [];
   return { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
-    trees: display.store ? projectTodoTrees(display.store) : [] };
+    trees: display.store ? projectTodoTrees(display.store) : [],
+    connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [] };
+}
+
+/** 接続: `[{plan_key, task_id, connections}]` for every task that has any (the one list: 他条件に接続 and 優先接続). */
+async function displayConnections(repoRoot, store) {
+  // The display reads unverified members too and must not stop: an unreadable store shows no 接続.
+  try {
+    const full = await withTodoPriorityWaits(store, { repoRoot });
+    const readiness = createTodoReadiness(full);
+    return full.members.flatMap(({ plan }) => (plan.tasks ?? []).map((task) => ({ plan_key: plan.plan_key, task_id: task.task_id,
+      connections: readiness.allConnections(readiness.key({ ...plan, task_id: task.task_id })) })))
+      .filter(({ connections }) => connections.length > 0);
+  } catch { return []; }
 }
 
 /** xchart: the Store plus its external predecessors' states; every readiness reader reads through this. */
 async function readTodoStoreForReadiness({ repoRoot, env = process.env }) {
-  return withTodoExternalTasks(await readTodoStore({ repoRoot }), env);
+  return withTodoPriorityWaits(await withTodoExternalTasks(await readTodoStore({ repoRoot }), env), { repoRoot });
 }
 
 async function startTask({
@@ -2967,7 +2980,8 @@ function taskPrerequisites(store, member, taskId) {
   const key = readiness.key({ ...member.plan, task_id: taskId });
   const { blocking } = readiness.prerequisites(key);
   return { ready: readiness.isReady(key), tasks: readiness.prerequisiteRefs(key).tasks,
-    blocking_tasks: blocking.blocking_tasks ?? [], blocking_phases: blocking.blocking_phases ?? [] };
+    blocking_tasks: blocking.blocking_tasks ?? [], blocking_phases: blocking.blocking_phases ?? [],
+    connections: readiness.allConnections(key) };
 }
 
 /**

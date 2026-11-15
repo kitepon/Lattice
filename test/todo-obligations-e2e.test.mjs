@@ -222,10 +222,10 @@ test('(e) v9契約: 上位キーexact 15・result_digestの自証・旧形の拒
   const root = await workspace(context);
   const status = json(root, ['todo', 'status', '--json']);
 
-  assert.equal(status.schema, 'lattice.todo_status_result.v9');
+  assert.equal(status.schema, 'lattice.todo_status_result.v10');
   assert.deepEqual(Object.keys(status), [
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
-    'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
+    'blocked', 'connection_pending', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
     'coordination', 'parallel_candidates', 'cross_plan_findings',
     'member_heads', 'truncated', 'result_digest',
   ]);

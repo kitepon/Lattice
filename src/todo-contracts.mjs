@@ -19,12 +19,19 @@ export const TODO_EVENT_KINDS = Object.freeze([
   // 誤って張った接続の除去（connectの対・2026-08-29オーナー裁定系）。対象eventのdigestを指す
   // tombstoneとして積み、projectionが両方を読んで線を消す。歴史は書き換えない。
   'cross_plan_dependency_removed',
+  // 接続(他条件に接続): a task waits on a BellTeam schedule outside its own chart. Plan-scoped like the
+  // dependency ledger; removed/resolved point at the connection_added digest and each add has at most one end.
+  'connection_added', 'connection_removed', 'connection_resolved',
 ]);
 
 /** planへ帰属し、taskにもPhaseにも属さないevent kind。 */
 export const TODO_PLAN_SCOPED_EVENT_KINDS = Object.freeze([
   'coordination_mode', 'cross_plan_dependency', 'cross_plan_dependency_removed',
+  'connection_added', 'connection_removed', 'connection_resolved',
 ]);
+
+/** The schedule id is opaque to Lattice: printable ASCII without spaces. */
+export const TODO_CONNECTION_SCHEDULE_ID = /^[!-~]{1,128}$/u;
 
 /** 調整方式。witness=独立性を宣言し検証して並列する／conversation=会話で調整する。 */
 // ADR 0200: `enforced` is witness coordination plus the gates that stop skipped steps.
@@ -594,6 +601,20 @@ function validPayload(event) {
     return exactRecord(payload, ['target_event_digest', 'reason'])
       && isTodoDigest(payload.target_event_digest)
       && nullableText(payload.reason) && payload.reason !== null;
+  }
+  if (event.kind === 'connection_added') {
+    return exactRecord(payload, ['task_id', 'to', 'reason']) && isTodoIdentifier(payload.task_id)
+      && exactRecord(payload.to, ['kind', 'id']) && payload.to.kind === 'schedule'
+      && typeof payload.to.id === 'string' && TODO_CONNECTION_SCHEDULE_ID.test(payload.to.id)
+      && nullableText(payload.reason) && payload.reason !== null;
+  }
+  if (event.kind === 'connection_removed') {
+    return exactRecord(payload, ['target_event_digest', 'reason']) && isTodoDigest(payload.target_event_digest)
+      && nullableText(payload.reason) && payload.reason !== null;
+  }
+  if (event.kind === 'connection_resolved') {
+    return exactRecord(payload, ['target_event_digest', 'evidence']) && isTodoDigest(payload.target_event_digest)
+      && nullableText(payload.evidence) && payload.evidence !== null;
   }
   // rebind: plan改訂でcarryされたin-progress ToDoへ、現plan_versionの明示的start束縛を積み直す
   // （runtime intakeはliteral startだけを束縛に使い、carryを推定しない。ADR 0191）

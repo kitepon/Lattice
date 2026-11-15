@@ -3,6 +3,7 @@ import {
   isPhaseTodoPlanSchema,
   isPhaselessTodoPlanSchema,
   projectTodoCrossPlanDependencies,
+  projectTodoScheduleConnections,
   normalizeCheckoutEol,
   isFinishedTodoTaskState,
   stepTodoReopenedPending,
@@ -2448,6 +2449,30 @@ function resolveCanonicalTaskId(plan, requestedTaskId) {
   return matches[0].task_id;
 }
 
+/**
+ * 接続: every write is idempotent so a retry after an unknown outcome replays to the same state. Returns
+ * `{unchanged: true, target_event_digest}` (nothing is appended) for: an add whose task + schedule is already open,
+ * a resolve of an entry already settled (the first evidence wins), a remove when the entry is not open. Anything
+ * else that cannot apply is refused.
+ */
+function validateConnectionTransition(member, event) {
+  if (!['connection_added', 'connection_removed', 'connection_resolved'].includes(event.kind)) return null;
+  const entries = projectTodoScheduleConnections(member.plan_scoped?.events ?? []);
+  if (event.kind === 'connection_added') {
+    const { task_id: taskId, to } = event.payload;
+    const open = entries.find((entry) => entry.state === 'open' && entry.task_id === taskId && entry.ref === to.id);
+    return open === undefined ? null : { unchanged: true, target_event_digest: open.event_digest };
+  }
+  const digest = event.payload.target_event_digest;
+  const entry = entries.find((candidate) => candidate.event_digest === digest);
+  if (entry === undefined) fail('DEPENDENCY_NOT_FOUND', 'connection_not_found', { target_event_digest: digest });
+  if (event.kind === 'connection_removed') {
+    return entry.state === 'open' ? null : { unchanged: true, target_event_digest: digest };
+  }
+  if (entry.ended === 'removed') fail('DEPENDENCY_INVALID', 'connection_already_removed', { target_event_digest: digest });
+  return entry.state === 'settled' ? { unchanged: true, target_event_digest: digest } : null;
+}
+
 export async function appendTodoEvent(options = {}) {
   requireWriter(options.writer, 'g5-authoring');
   if (typeof options.validateProspectiveEvent !== 'function') {
@@ -2482,9 +2507,15 @@ export async function appendTodoEvent(options = {}) {
           fail('DEPENDENCY_INVALID', 'cross_plan_dependency_already_removed', { target_event_digest: digest });
         }
       }
+      const event = options.event.kind === 'connection_added'
+        ? { ...options.event, payload: { ...options.event.payload,
+          task_id: resolveCanonicalTaskId(member.plan, options.event.payload.task_id) } }
+        : options.event;
+      const unchanged = validateConnectionTransition(member, event);
+      if (unchanged !== null) return { cross_plan_repairs: store.cross_plan_repairs, ...unchanged };
       return { cross_plan_repairs: store.cross_plan_repairs, ...await appendPlanScopedEvent({
         repoRoot, member, assertHeld,
-        input: { ...options.event, recorded_at: options.event.recorded_at ?? new Date().toISOString() },
+        input: { ...event, recorded_at: event.recorded_at ?? new Date().toISOString() },
       }) };
     }
     const input = resolveTargetedEvent({
@@ -2682,6 +2713,14 @@ function carriedPlanScopedChain(store, previous, plan, journalRef, taskMigration
       recorded_at: event.recorded_at, provenance: event.provenance,
       payload: { from, to, reason: event.payload.reason } });
     pushPlanScopedEvent(successor.plan_scoped, carried);
+  }
+  // 接続: only the schedule connections still open travel; a settled or removed one equals no connection.
+  for (const entry of projectTodoScheduleConnections(previous.plan_scoped?.events ?? [])) {
+    const taskId = ids.get(entry.task_id);
+    if (entry.state !== 'open' || taskId === undefined || taskId === 'removed') continue;
+    pushPlanScopedEvent(successor.plan_scoped, buildPlanScopedEvent(successor, { kind: 'connection_added',
+      actor: entry.actor, recorded_at: entry.since, provenance: entry.provenance,
+      payload: { task_id: taskId, to: { kind: 'schedule', id: entry.ref }, reason: entry.reason } }));
   }
   return successor.plan_scoped;
 }

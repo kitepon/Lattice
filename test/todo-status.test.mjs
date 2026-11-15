@@ -133,16 +133,16 @@ test('todo statusはactive/next-ready/blockedを混在投影しstore bytesを変
   const result = JSON.parse(execution.stdout);
   assertExactKeys(result, [
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
-    'blocked', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
+    'blocked', 'connection_pending', 'audit_pending', 'structure_finalization_pending', 'plan_notes',
     'coordination', 'parallel_candidates', 'cross_plan_findings',
     'member_heads', 'truncated', 'result_digest',
   ]);
-  assert.equal(result.schema, 'lattice.todo_status_result.v9');
+  assert.equal(result.schema, 'lattice.todo_status_result.v10');
   assert.deepEqual(result.truncated, []);
   // このstoreはまだ全taskがdoneではない(Phaseはactive)ので監査待ちは無い。
   assert.deepEqual(result.audit_pending, []);
   assert.deepEqual(result.active_set, [{
-    plan_key: 'main', task_id: 'A', label: 'Active work', unmet_dependencies: [],
+    plan_key: 'main', task_id: 'A', label: 'Active work', unmet_dependencies: [], connections: [],
   }]);
   assert.deepEqual(result.next_ready, [{ plan_key: 'main', task_id: 'C', label: 'Ready work', done_condition: null }]);
   assert.deepEqual(result.dispatch_frontier, {
@@ -191,10 +191,10 @@ test('依存未達のin-progressはactiveのまま未完predecessorを明示す�
   assert.equal(execution.status, 0, execution.stderr);
   const result = JSON.parse(execution.stdout);
   assert.deepEqual(result.active_set, [
-    { plan_key: 'main', task_id: 'A', label: 'Active work', unmet_dependencies: [] },
+    { plan_key: 'main', task_id: 'A', label: 'Active work', unmet_dependencies: [], connections: [] },
     {
       plan_key: 'main', task_id: 'D', label: 'Waiting work',
-      unmet_dependencies: [{ plan_key: 'main', task_id: 'A' }],
+      unmet_dependencies: [{ plan_key: 'main', task_id: 'A' }], connections: [],
     },
   ]);
   assert.equal(result.result_digest, todoSelfDigest(result, 'result_digest'));
@@ -273,10 +273,10 @@ function syntheticReadModel(activeCount) {
 
 function syntheticStatusResult(activeCount) {
   const result = {
-    schema: 'lattice.todo_status_result.v9',
+    schema: 'lattice.todo_status_result.v10',
     project_id: 'scale-project',
     active_set: Array.from({ length: activeCount }, (_, index) => ({
-      plan_key: 'main', task_id: `t${String(index).padStart(4, '0')}`, label: 'x', unmet_dependencies: [],
+      plan_key: 'main', task_id: `t${String(index).padStart(4, '0')}`, label: 'x', unmet_dependencies: [], connections: [],
     })),
     next_ready: [],
     dispatch_frontier: {
@@ -289,6 +289,7 @@ function syntheticStatusResult(activeCount) {
       }, 'frontier_digest'),
     },
     blocked: [],
+    connection_pending: [],
     audit_pending: [],
     structure_finalization_pending: [],
     plan_notes: [],
