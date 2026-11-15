@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.103.0 — 2026-11-15
+
+工程の申し送りの束に、人の引き継ぎが載るようにした版。ホストへの変更：有り（`note_context`の中身だけ。JSON の形・拒否は変わらない）。
+
+- 工程を始めた時や`todo show --task`で渡す申し送りの束は、その工程の申し送り、人が計画全体に宛てた申し送り、Lattice が自動で書いた変更の記録（`todo add`・`dependency connect|disconnect`・`plan revise`）のうちその工程の名前が出てくるものだけを載せる。ほかの工程についての自動の記録は束から外れ、`overflow_count`にも数えない。全部は今までどおり`note list --plan <key> --json`で読める。BellTeam の`bellteam-dev-added`では自動の記録546件が束を埋め、人の引き継ぎ961件が一件も載っていなかった。
+- `plan_note_head_digest`は、束に計画全体の申し送りが一件も無くても値を持つことがある（自動の記録を外したため）。
+- 既知の限界：自動の記録と同じ書き方で人が書いた計画全体の申し送りは、名前の出てくる工程の束にだけ載る。取り下げの記録は消えた工程を指すので、どの束にも載らない（一覧には残る）。
+- 実装：アリス（PR #189）、Store 側の確認：ルドミラ。
+- 計画全体の宣言の記録（plan-scoped）が 1MB に達すると、その計画への書き込み（`todo start`・`block`・`done`・付け直し）を全部`STORE_WRITE_REFUSED`/`plan_scoped_journal_segment_limit_exceeded`で断っていた。BellTeam の`bellteam-dev`で 2026-11-15 16:3x JST から書き込みが止まった。工程の記録と同じく、1MB で古い分を`journal/plan-scoped-sealed/`へ封じて新しいファイルへ移す。読む側は封じた分と今のファイルを順に読む。断るのは、一件で 1MB を超える記録（`plan_scoped_event_exceeds_segment`）と、取り込みの途中で封じが要る場合（`cross_plan_import_segment_full`、依存を外して取り込み後に`dependency connect`する）だけ。止まっていた付け直しは`todo start --rebind`で戻る。0.102 以前の CLI は封じた分を読めないので、その計画を読む席は 0.103.0 に上げる。実装：ルドミラ（PR #191）。
+
 ## 0.102.1 — 2026-11-15
 
 工程の申し送りの束を直した版。ホストへの変更：無し（JSON の形・拒否は変わらない）。
