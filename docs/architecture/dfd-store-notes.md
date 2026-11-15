@@ -22,6 +22,14 @@ retains superseded metadata, original identities and carry projection.
 | Store includeHistory=true | Same complete projections already computed → expose each task's history before context budget | Additional histories array; default/false remains byte-shape compatible. Superseded notes remain marked, retired/archived targets stay outside active task histories under existing migration policy. |
 | Plan workflow reader | One batch read with includeHistory:true → parse/filter typed workflow records by scope/task and superseded metadata | Latest relevant workflow facts survive later prose even when omitted from bounded context. Plan owns malformed/unknown body handling, result schema and surfaces; no second raw-chain read or duplicate migration implementation. |
 
+Context budget: the bounded context keeps entries in the order above (plan notes
+newest first, then task notes newest first) while they fit both the byte budget
+(`noteContextBytes`, an entry that does not fit is skipped) and the count cap
+(`tasksPerPlan`, the same cap `validateTodoNoteContext` checks; the walk stops once
+it is reached). Every entry left out counts into `overflow_count`; the full history
+and `full_history_command` still reach it. No refusal is added: a plan with more
+plan notes than the cap still projects a valid context for every task.
+
 Plan notes occur in every projected task history under existing semantics; callers
 must distinguish scope. Existing limits on chain files, note bodies and historical
 artifacts remain; no new unbounded read or publication path is introduced.

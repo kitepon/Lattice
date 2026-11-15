@@ -440,6 +440,8 @@ export function projectTodoNoteContext(options = {}) {
   const notes = [];
   let usedBytes = 0;
   for (const entry of current) {
+    // 件数もvalidatorと同じ上限で切る。byteに収まる短いnoteが溜まると、自分の出力が自分の検証で落ちる。
+    if (notes.length >= TODO_LIMITS.tasksPerPlan) break;
     const bytes = Buffer.byteLength(entry.body, 'utf8');
     if (usedBytes + bytes > TODO_LIMITS.noteContextBytes) continue;
     notes.push(entry);

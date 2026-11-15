@@ -13,6 +13,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { TODO_LIMITS } from '../src/todo-contracts.mjs';
+import { appendTodoNote } from '../src/todo-note-store.mjs';
 import { createTodoStoreWriter, initializeTodoStore } from '../src/todo-store.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -182,4 +184,27 @@ test('訂正はscopeを跨げない', async (t) => {
   const states = new Map(started.note_context.notes.map((note) => [note.body, note.correction_state]));
   assert.equal(states.get('plan宛'), 'superseded');
   assert.equal(states.get('plan宛（訂正後）'), 'current');
+});
+
+test('byteに収まってもplan noteが件数上限を超えたらcontextは上限で切りoverflowへ数える', async (t) => {
+  const root = await workspace(t);
+  const cap = TODO_LIMITS.tasksPerPlan;
+  const excess = 3;
+  // 本番の落ち方（546件・38KB）と同じ形: 1件ずつは短く、合計はbyte予算に余裕がある。
+  for (let i = 0; i < cap + excess; i += 1) {
+    await appendTodoNote({ repoRoot: root, projectId: 'project-1', planKey: 'main',
+      planVersion: 'v1', taskId: null, actor: ACTOR, recordedAt: NOW, body: `申し送り${i}`,
+      supersedes: null, eligibleSupersedes: [] });
+  }
+  const listed = run(root, ['todo', 'note', 'list', '--plan', 'main', '--task', 'T1', '--json']);
+  assert.equal(listed.status, 0, listed.stdout + listed.stderr);
+  const started = json(run(root, ['todo', 'start', '--plan', 'main', '--task', 'T1',
+    '--parallel-frontier']));
+  const context = started.note_context;
+  assert.equal(context.schema, 'lattice.todo_note_context.v2');
+  assert.equal(context.notes.length, cap);
+  assert.equal(context.overflow_count, excess);
+  // 新しい順に残し、古いものから溢れる。
+  assert.equal(context.notes[0].body, `申し送り${cap + excess - 1}`);
+  assert.equal(context.notes.at(-1).body, `申し送り${excess}`);
 });
