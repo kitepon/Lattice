@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.104.0 — 2026-11-15
+
+前工程と「他条件に接続」を分け、ブロックの言葉を改めた版。ホストへの変更：有り（コマンド名・`status`の形・新しい記録の種類）。
+
+- 前工程（同じ工程表の工程）は`todo predecessor add|remove --plan P --task T --after <plan>/<task> --reason`。同じ工程表の工程だけを受け付ける。他の工程表の工程や予定は`CONNECTION_INVALID`/`predecessor_target_not_same_chart`で断り、`todo connect condition add`を案内する。
+- 他条件に接続（他の工程表の工程、BellTeam の予定）は`todo connect condition add|remove --to task:<project>/<plan>/<task>|schedule:<id> --reason`と`todo connect condition resolve --to schedule:<id> --message`。同じ工程表の工程は`condition_target_same_chart`で断り、`todo predecessor add`を案内する。開いた接続のある工程は着手候補から外れ、`todo start`は`connection_open`と`blocking_connections`で断る。済ませ方：工程なら相手の工程が終わった時、予定なら予定の側が`resolve`した時。追加・済ませ・外しは繰り返しても変わらず、`unchanged: true`と exit 0 を返す。
+- 優先接続（着手できたらすぐ知らせてほしい印。旧`todo wait`）は`todo connect priority`。何も止めない。
+- `todo wait`と`dependency connect|disconnect`は次の版まで別名として動き、成功した時に新しい名前を stderr へ出す（`lattice.todo_command_retired.v1`）。
+- 工程ごとの接続は一つの一覧`connections`に入る（他条件に接続と優先接続）。`todo show`の`prerequisites.connections`、`status`/`session-context`（`lattice.todo_status_result.v10`：`active_set[].connections`・`connection_pending`）、`todo display read`。他の工程表の工程への接続は木の線に描かず、画面では工程の詳細の「接続」欄と工程の印だけに出す。
+- 言葉：止め→ブロック。待ちは使わない（前工程・他条件に接続・優先接続のどれかに置き換えた）。`todo block`の案内は、前工程か接続を先に使い、ブロックは最後の手段だと伝える。
+- 新しい記録の種類（`connection_added`/`connection_removed`/`connection_resolved`）は 0.103 以前では読めない。接続を書く前に、その工程表を読む席を 0.104.0 に上げる。
+- 計画の工程・つながり・合流・段の件数の上限（工程 512 件など）を外した。BellTeam の`bellteam-dev-added`は工程 512 件で`todo add`が`bounded_collection_violation`で断られていた。計画のファイルの大きさの上限は残る。終わった工程も消さないので履歴は失わない。
+- 開発の CI：同じ木を試験済みの緑の PR があれば、絞った試験でも main で試験し直さない（PR #192）。試験の絞り込みを、変えた関数の単位にした（PR #193）。MCP 起動の記録の試験を、2 秒の壁時計でなく順序で確かめるようにした（PR #194）。配布物には影響しない。
+- 実装：ルドミラ（PR #195 接続の記録と判定、PR #197 件数の上限）、アリス（PR #196 コマンド・言葉・画面、PR #192・#193）、ルドミラ（PR #194）。
+
 ## 0.103.0 — 2026-11-15
 
 工程の申し送りの束に、人の引き継ぎが載るようにした版。ホストへの変更：有り（`note_context`の中身だけ。JSON の形・拒否は変わらない）。
