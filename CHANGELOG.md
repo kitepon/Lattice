@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。
+- `phase accept` / `phase reject` は証拠も必須slotも求めず、任意の `--message` だけを取る（`--input` の判断記述子は廃止）。段の `required_evidence_slots` は plan と status の形に残るが、CLI は使わない（plan schema の版上げは別件）。`audit_pending` の次の一手は `accept [--message <text>]` と `reject --reason <text> [--message <text>]`。
+- 外したもの：`todo evidence promote`、`todo evidence anchor`、ADR 0200 の門4（enforced の計画で done に URL か HEAD のコミットを書かせるもの）、`todo verify` の証拠の読み直し（`uncommitted_evidence` はこの版では常に空配列）、phase の結果と `phase status` の `decision_evidence_state`、拒否文の `ENFORCED_DONE_MESSAGE`。旧 event の証拠記述子は読める（移行しない）。
+- 言葉：監査待ち→監査前（まだ監査していないPhase）。工程図の札、`todo status`などの案内文、文書の表記だけが変わる。JSON の欄名（`audit_pending`など）は変えない。
+
 ## 0.106.0 — 2026-11-15
 
 読み書きのたびに証拠と過去の記録を確かめ直すのをやめた版。ホストへの変更：有り（閉じる時の記録の形・確かめの有無）。
@@ -12,8 +17,6 @@
 - 測った値：証拠付きの完了 600 件の工程表で、`todo add`は 12.6 秒→0.56 秒、`status`は 0.53 秒→0.28 秒。
 - 0.105 以前の CLI は、新しい形の完了の記録を読めない。その工程表を読む席を 0.106.0 に上げる。
 - 実装：ルドミラ（PR #202、ADR 0203）。
-
-- 言葉：監査待ち→監査前（まだ監査していないPhase）。工程図の札、`todo status`などの案内文、文書の表記だけが変わる。JSON の欄名（`audit_pending`など）は変えない。
 
 ## 0.105.0 — 2026-11-15
 

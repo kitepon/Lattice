@@ -8,7 +8,6 @@ import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { todoSelfDigest } from '../src/todo-contracts.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../bin/lattice.mjs');
 const CREATE = 'lattice plan create --template --json';
@@ -34,18 +33,10 @@ const READS = [
   ['todo', 'start', '--plan', 'dev', '--task', 'P'],
 ];
 
-test('no Store yet: anchor is a no-op success and every other todo command says uninitialized', async (context) => {
+test('no Store yet: every todo command says uninitialized', async (context) => {
   const root = await gitRoot(context);
   for (const layout of ['absent', 'empty directory']) {
     if (layout === 'empty directory') await mkdir(path.join(root, '.lattice', 'todo'), { recursive: true });
-    const anchor = run(root, ['todo', 'evidence', 'anchor', '--json']);
-    assert.equal(anchor.status, 0, layout);
-    const result = JSON.parse(anchor.stdout);
-    assert.deepEqual({ ...result, result_digest: null }, {
-      schema: 'lattice.todo_evidence_anchor_uninitialized.v1', anchored: [], already: 0, missing: [],
-      next_actions: [CREATE, 'lattice plan create --input <file>'], result_digest: null,
-    }, layout);
-    assert.equal(result.result_digest, todoSelfDigest(result, 'result_digest'));
     for (const args of READS) {
       const refused = run(root, args);
       assert.notEqual(refused.status, 0, args.join(' '));
@@ -78,7 +69,7 @@ test('a Store that exists but lost its manifest stays STORE_INCONSISTENT/artifac
   }));
   assert.equal(run(root, ['plan', 'create', '--input', 'plan.json']).status, 0);
   await rm(path.join(root, '.lattice', 'todo', 'manifest.json'));
-  for (const args of [['todo', 'evidence', 'anchor', '--json'], ...READS]) {
+  for (const args of READS) {
     const refused = run(root, args);
     assert.notEqual(refused.status, 0, args.join(' '));
     assert.equal(refused.error.code, 'STORE_INCONSISTENT', args.join(' '));

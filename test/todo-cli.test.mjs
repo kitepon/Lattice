@@ -449,7 +449,7 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
     [['todo', 'start', '--plan', 'main', '--task', 'T1'], 'start', 'in-progress'],
     [['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'], 'block', 'blocked'],
     [['todo', 'unblock', '--plan', 'main', '--task', 'T1'], 'unblock', 'in-progress'],
-    [['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef], 'done', 'done'],
+    [['todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '閉じた'], 'done', 'done'],
     [['todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction'], 'reopen', 'pending'],
   ];
   let sequence = 0;
@@ -509,7 +509,7 @@ test('authoring CLIはtask IDのcase差をlock内でcanonical IDへ解決する'
   assert.equal(started.task_id, 'T1');
   assert.equal(started.status, 'in-progress');
   const done = successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 't1', '--evidence', descriptorRef,
+    'todo', 'done', '--plan', 'main', '--task', 't1', '--message', '閉じた',
   ]));
   assert.equal(done.task_id, 'T1');
   assert.equal(done.status, 'done');
@@ -575,7 +575,7 @@ test('authoring CLIはactor欠落をdefaultで通し、順序違反・blocked中
   assert.equal(await storeDigest(root), before);
   successJson(runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting']));
   const blockedBefore = await storeDigest(root);
-  const blockedDone = runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef]);
+  const blockedDone = runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '閉じた']);
   assert.equal(blockedDone.status, 1);
   assert.equal(JSON.parse(blockedDone.stderr).detail.reason, 'invalid_done_transition');
   assert.equal(await storeDigest(root), blockedBefore);
@@ -631,60 +631,9 @@ test('flag順と証拠本文・repo内絶対pathでstart/doneが通る', async (
   const bodyRef = path.join(root, 'body-evidence.md');
   await writeFile(bodyRef, '# 実装メモ\n');
   const byAbsolute = successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T2', '--evidence', bodyRef,
+    'todo', 'done', '--plan', 'main', '--task', 'T2', '--message', '閉じた',
   ]));
   assert.equal(byAbsolute.status, 'done');
-});
-
-test('CRLF evidenceはGit clean filter後のcommit blobへ束縛されhard verifyを通る', async (context) => {
-  const root = await workspace(context);
-  gitOutput(root, ['config', 'user.email', 'fixture@example.invalid']);
-  gitOutput(root, ['config', 'user.name', 'Fixture']);
-  await writeFile(path.join(root, '.gitattributes'), '*.md text eol=lf\n');
-  const bodyRef = 'crlf-evidence.md';
-  await writeFile(path.join(root, bodyRef), '# Evidence\r\n\r\nverified\r\n');
-
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', bodyRef,
-  ]));
-  gitOutput(root, ['add', '.']);
-  gitOutput(root, ['commit', '--quiet', '-m', 'commit normalized evidence']);
-
-  const committedOid = gitOutput(root, ['rev-parse', `HEAD:${bodyRef}`]);
-  const committedBody = spawnSync('git', ['cat-file', 'blob', committedOid], {
-    cwd: root, encoding: 'buffer',
-  });
-  assert.equal(committedBody.status, 0, committedBody.stderr?.toString('utf8'));
-  const member = (await readTodoStore({ repoRoot: root, forWrite: true })).members[0];
-  const descriptor = member.tasks.find(({ task_id: taskId }) => taskId === 'T1').evidence;
-  assert.equal(descriptor.git_blob_oid, committedOid);
-  assert.equal(descriptor.content_digest,
-    createHash('sha256').update(committedBody.stdout).digest('hex'));
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-});
-
-test('--messageはcontent-addressed evidence fileをstoreへ保存してcommit後verifyを通る', async (context) => {
-  const root = await workspace(context);
-  gitOutput(root, ['config', 'user.email', 'fixture@example.invalid']);
-  gitOutput(root, ['config', 'user.name', 'Fixture']);
-  gitOutput(root, ['add', '.']);
-  gitOutput(root, ['commit', '--quiet', '-m', 'commit initial store']);
-  successJson(runCli(root, [
-    'todo', 'start', '--plan', 'main', '--task', 'T1', '--commit-store',
-  ]));
-  const committed = successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '完了証拠', '--commit-store',
-  ]));
-
-  const member = (await readTodoStore({ repoRoot: root })).members[0];
-  const descriptor = member.tasks.find(({ task_id: taskId }) => taskId === 'T1').evidence;
-  assert.match(descriptor.path,
-    /^\.lattice\/todo\/evidence\/main\/T1\/[0-9a-f]{64}\.md$/u);
-  assert.equal((await readFile(path.join(root, descriptor.path), 'utf8')), '完了証拠');
-  assert.equal(committed.commit.paths.includes(descriptor.path), true);
-  assert.equal(gitOutput(root, ['rev-parse', `HEAD:${descriptor.path}`]), descriptor.git_blob_oid);
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
 });
 
 test('--parallel-frontierはreadyでないtargetでも用法誤りにならず、Storeの依存判定だけが残る（u03 B8）', async (context) => {
@@ -705,41 +654,7 @@ test('--parallel-frontierはreadyでないtargetでも用法誤りにならず�
   assert.equal(started.status, 'in-progress');
 });
 
-test('todo doneは--evidenceと--messageの両方・どちらも無しを受け、証拠の記録を残す（u03 A58）', async (context) => {
-  const root = await workspace(context);
-  const evidenceText = (descriptor) => readFile(path.join(root, descriptor.path), 'utf8');
-  const descriptorOf = async (taskId) => (await readTodoStore({ repoRoot: root })).members[0]
-    .tasks.find(({ task_id: id }) => id === taskId).evidence;
-
-  // 両方: 本文の後ろに、解決したファイルのrepo_id:path・blob oid・sha256を1行で足す。
-  const bodyRef = 'proof.md';
-  const bytes = Buffer.from('# 証明\n', 'utf8');
-  await writeFile(path.join(root, bodyRef), bytes);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  const both = successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', bodyRef, '--message', '手で確認した',
-  ]));
-  assert.equal(both.status, 'done');
-  const oid = gitOutput(root, ['hash-object', bodyRef]);
-  const digest = createHash('sha256').update(bytes).digest('hex');
-  const bothDescriptor = await descriptorOf('T1');
-  assert.equal(await evidenceText(bothDescriptor),
-    `手で確認した\n\nevidence: self:${bodyRef} (git blob ${oid}, sha256 ${digest})\n`);
-
-  // どちらも無し: 固定文を証拠として記録し、完了は通る。
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T2']));
-  const neither = successJson(runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T2']));
-  assert.equal(neither.status, 'done');
-  assert.equal(await evidenceText(await descriptorOf('T2')), '証拠の指定なしで完了した。\n');
-  // 証拠はcommit済みのblobへ束縛されるので、commit後にhard verifyを通す。
-  gitOutput(root, ['config', 'user.email', 'fixture@example.invalid']);
-  gitOutput(root, ['config', 'user.name', 'Fixture']);
-  gitOutput(root, ['add', '.']);
-  gitOutput(root, ['commit', '--quiet', '-m', 'commit evidence']);
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-});
-
-test('start/reopen overrideとdescriptor schema拒否をexact argvで処理する', async (context) => {
+test('start/reopen overrideをexact argvで処理する', async (context) => {
   const root = await workspace(context);
   const { descriptorRef } = await evidenceFixture(root);
   const overridden = successJson(runCli(root, [
@@ -747,18 +662,8 @@ test('start/reopen overrideとdescriptor schema拒否をexact argvで処理す�
   ]));
   assert.equal(overridden.status, 'in-progress');
 
-  const invalidRef = 'invalid-evidence.json';
-  await writeFile(path.join(root, invalidRef), '{"path":"evidence.txt"}\n');
-  const before = await storeDigest(root);
-  const invalid = runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T2', '--evidence', invalidRef]);
-  assert.equal(invalid.status, 1);
-  const invalidError = JSON.parse(invalid.stderr);
-  assert.equal(invalidError.code, 'INVALID_EVIDENCE');
-  assert.match(invalidError.detail.expected.shape, /git_blob_oid/u);
-  assert.equal(await storeDigest(root), before);
-
   successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef]));
+  successJson(runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '閉じた']));
   const withoutOverride = runCli(root, [
     'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
   ]);
@@ -818,225 +723,6 @@ test('直列化理由の文言は審査せず記録する', async (context) => {
     'todo', 'start', '--plan', 'main', '--task', 'T1', '--parallel-frontier',
   ]));
   assert.equal(acknowledgedSingleFrontier.status, 'in-progress');
-});
-
-test('evidence promote CLIはlock内でunknown historical doneを解決する', async (context) => {
-  const root = await workspace(context);
-  const imported = await importedUnknownDone(root);
-  const sourceDone = imported.events.find(({ kind, task_id: taskId }) => kind === 'done' && taskId === 'A2');
-  const { descriptorRef } = await evidenceFixture(root, 'promoted');
-  const output = successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'archive', '--task', 'A2', '--evidence', descriptorRef,
-  ]));
-  assert.equal(output.kind, 'done');
-  assert.equal(output.status, 'done');
-  const journal = (await readFile(path.join(root,
-    '.lattice/todo/plans/archive/v1/journal/active.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(journal.at(-1).payload.done_mode, 'evidence_promotion');
-  assert.equal(journal.at(-1).payload.target_done_digest, sourceDone.event_digest);
-});
-
-test('CRLF evidence promoteはcommit時のLF blobへ再束縛してhard verifyを通る', async (context) => {
-  const root = await workspace(context);
-  gitOutput(root, ['config', 'user.email', 'fixture@example.invalid']);
-  gitOutput(root, ['config', 'user.name', 'Fixture']);
-  await writeFile(path.join(root, '.gitattributes'), '*.md text eol=lf\n');
-  const original = await evidenceFixture(root, 'promotion-original', 'before\n');
-  gitOutput(root, ['add', 'promotion-original.txt']);
-  gitOutput(root, ['commit', '--quiet', '-m', 'commit original evidence']);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', original.descriptorRef,
-  ]));
-
-  const replacementRef = 'promotion-replacement.md';
-  await writeFile(path.join(root, replacementRef), '# Replacement\r\n\r\nverified\r\n');
-  successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
-    '--evidence', replacementRef,
-  ]));
-  gitOutput(root, ['add', '.']);
-  gitOutput(root, ['commit', '--quiet', '-m', 'commit promoted evidence']);
-
-  const descriptor = (await readTodoStore({ repoRoot: root, forWrite: true })).members[0]
-    .tasks.find(({ task_id: taskId }) => taskId === 'T1').evidence;
-  assert.equal(descriptor.git_blob_oid, gitOutput(root, ['rev-parse', `HEAD:${replacementRef}`]));
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-});
-
-test('authored doneの証拠更新は追記eventで再束縛し完了時刻を維持する', async (context) => {
-  const root = await workspace(context);
-  const original = await evidenceFixture(root, 'authored', 'before\n');
-  gitOutput(root, ['add', 'authored.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'original evidence',
-  ]);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', original.descriptorRef,
-  ]));
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-  const before = (await readTodoStore({ repoRoot: root })).members[0].tasks
-    .find(({ task_id: taskId }) => taskId === 'T1');
-
-  const replacement = await evidenceFixture(root, 'authored', 'after\n');
-  gitOutput(root, ['add', 'authored.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'updated evidence',
-  ]);
-  const oldObject = original.descriptor.git_blob_oid;
-  await unlink(path.join(root, '.git', 'objects', oldObject.slice(0, 2), oldObject.slice(2)));
-  const unverified = runCli(root, ['todo', 'verify', '--plan', 'main', '--json']);
-  assert.equal(unverified.status, 1);
-  assert.equal(JSON.parse(unverified.stderr).detail.reason, 'evidence_unverified');
-
-  const promoted = successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
-    '--evidence', replacement.descriptorRef,
-  ]));
-  assert.equal(promoted.status, 'done');
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-
-  const firstMember = (await readTodoStore({ repoRoot: root })).members[0];
-  const after = firstMember.tasks.find(({ task_id: taskId }) => taskId === 'T1');
-  assert.equal(after.done_at, before.done_at);
-  assert.equal(after.imported, false);
-  assert.equal(after.evidence.content_digest, replacement.descriptor.content_digest);
-  assert.equal(firstMember.journal.events.at(-1).payload.done_mode, 'evidence_promotion');
-  assert.equal(firstMember.journal.events.at(-1).payload.imported, false);
-  // promotionはそのappendだけの一時免除ではない。旧blob不達のままでも、次の通常
-  // mutationが読むhard-verify storeを再びbrickさせない。
-  await readTodoStore({ repoRoot: root, forWrite: true });
-
-  const firstPromotionDigest = firstMember.journal.events.at(-1).event_digest;
-  const final = await evidenceFixture(root, 'authored', 'final\n');
-  gitOutput(root, ['add', 'authored.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'final evidence',
-  ]);
-  const replacementObject = replacement.descriptor.git_blob_oid;
-  await unlink(path.join(root, '.git', 'objects', replacementObject.slice(0, 2), replacementObject.slice(2)));
-  successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
-    '--evidence', final.descriptorRef,
-  ]));
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-  const finalMember = (await readTodoStore({ repoRoot: root })).members[0];
-  const finalState = finalMember.tasks.find(({ task_id: taskId }) => taskId === 'T1');
-  assert.equal(finalState.done_at, before.done_at);
-  assert.equal(finalState.imported, false);
-  assert.equal(finalMember.journal.events.at(-1).payload.target_done_digest, firstPromotionDigest);
-  await readTodoStore({ repoRoot: root, forWrite: true });
-});
-
-test('reopen前後の全旧done証拠は最新promotion後のhard readを再停止させない', async (context) => {
-  const root = await workspace(context);
-  const first = await evidenceFixture(root, 'reopen-chain', 'first\n');
-  gitOutput(root, ['add', 'reopen-chain.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'first completion evidence',
-  ]);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', first.descriptorRef,
-  ]));
-  successJson(runCli(root, [
-    'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
-  ]));
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-
-  const second = await evidenceFixture(root, 'reopen-chain', 'second\n');
-  gitOutput(root, ['add', 'reopen-chain.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'second completion evidence',
-  ]);
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', second.descriptorRef,
-  ]));
-
-  const final = await evidenceFixture(root, 'reopen-chain', 'final\n');
-  gitOutput(root, ['add', 'reopen-chain.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'final completion evidence',
-  ]);
-  for (const descriptor of [first.descriptor, second.descriptor]) {
-    await unlink(path.join(root, '.git', 'objects', descriptor.git_blob_oid.slice(0, 2),
-      descriptor.git_blob_oid.slice(2)));
-  }
-  successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
-    '--evidence', final.descriptorRef,
-  ]));
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
-  const task1 = (await readTodoStore({ repoRoot: root, forWrite: true })).members[0].tasks
-    .find(({ task_id: taskId }) => taskId === 'T1');
-  assert.equal(task1.evidence.content_digest, final.descriptor.content_digest);
-});
-
-test('evidence promoteは別taskの不達を残して順に修復できる', async (context) => {
-  const root = await workspace(context);
-  const first = await evidenceFixture(root, 'first-task', 'first\n');
-  gitOutput(root, ['add', 'first-task.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'first task evidence',
-  ]);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', first.descriptorRef,
-  ]));
-
-  const second = await evidenceFixture(root, 'second-task', 'second\n');
-  gitOutput(root, ['add', 'second-task.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'second task evidence',
-  ]);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T2']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T2', '--evidence', second.descriptorRef,
-  ]));
-
-  const firstReplacement = await evidenceFixture(root, 'first-task', 'first replacement\n');
-  gitOutput(root, ['add', 'first-task.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'first task replacement',
-  ]);
-  for (const descriptor of [first.descriptor, second.descriptor]) {
-    const oid = descriptor.git_blob_oid;
-    await unlink(path.join(root, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
-  }
-
-  const firstResult = successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
-    '--evidence', firstReplacement.descriptorRef,
-  ]));
-  assert.equal(firstResult.status, 'done');
-  const stillUnverified = runCli(root, ['todo', 'verify', '--plan', 'main', '--json']);
-  assert.equal(stillUnverified.status, 1);
-  const failure = JSON.parse(stillUnverified.stderr);
-  assert.equal(failure.detail.reason, 'evidence_unverified');
-  assert.equal(failure.detail.task_id, 'T2');
-
-  const secondReplacement = await evidenceFixture(root, 'second-task', 'second replacement\n');
-  gitOutput(root, ['add', 'second-task.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'second task replacement',
-  ]);
-  const secondResult = successJson(runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T2',
-    '--evidence', secondReplacement.descriptorRef,
-  ]));
-  assert.equal(secondResult.status, 'done');
-  successJson(runCli(root, ['todo', 'verify', '--plan', 'main', '--json']));
 });
 
 const snapshotCases = [
@@ -1187,48 +873,6 @@ test('存在しないplanはtyped exit 1でstore bytes不変', async (context) =
     assert.equal(JSON.parse(result.stderr).code, 'PLAN_NOT_FOUND');
     assert.equal(await storeDigest(root), before);
   }
-});
-
-test('todo verifyはdone evidenceをhard検証し、解決不能ならtyped exit 1', async (context) => {
-  const root = await workspace(context);
-  const blob = Buffer.from('completion evidence\n');
-  const object = spawnSync('git', ['hash-object', '-w', '--stdin'], {
-    cwd: root,
-    input: blob,
-    encoding: 'utf8',
-  });
-  assert.equal(object.status, 0);
-  const oid = object.stdout.trim();
-  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
-  await appendTodoEvent({
-    repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: {
-      kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null },
-    },
-  });
-  await appendTodoEvent({
-    repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: {
-      kind: 'done', task_id: 'T1', actor: ACTOR, recorded_at: NOW,
-      payload: { evidence: {
-        evidence_id: 'evidence-1', repo_id: 'self', path: 'evidence.txt', git_blob_oid: oid,
-        content_digest: createHash('sha256').update(blob).digest('hex'),
-        media_type: 'text/plain', anchor_digest: null,
-      } },
-    },
-  });
-  await unlink(path.join(root, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
-  const before = await storeDigest(root);
-  const result = runCli(root, ['todo', 'verify']);
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, '');
-  const error = JSON.parse(result.stderr);
-  assert.equal(error.code, 'STORE_INCONSISTENT');
-  assert.equal(error.detail.reason, 'evidence_unverified');
-  assert.equal(error.detail.plan_key, 'main');
-  assert.equal(error.detail.task_id, 'T1');
-  assert.equal(await storeDigest(root), before);
 });
 
 test('start --rebindはcarryされたin-progressへ現版のstart束縛を積み、pendingを拒否する', async (context) => {

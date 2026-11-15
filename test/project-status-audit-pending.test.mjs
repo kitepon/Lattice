@@ -133,14 +133,7 @@ test('監査が着けばno_ready_taskへ戻る', async (context) => {
   const review = run(root, ['todo', 'phase', 'review', '--plan', 'main', '--phase', 'phase-1',
     '--reason', '終端監査'], ACTOR_ENV);
   assert.equal(review.status, 0, review.stderr);
-  const decision = {
-    schema: 'lattice.phase_accept_input.v1', review_event_digest: JSON.parse(review.stdout).event_digest,
-    decision_evidence: evidence, evidence_slots: [{ slot_id: 'heavy', evidence }], input_digest: '',
-  };
-  decision.input_digest = todoSelfDigest(decision, 'input_digest');
-  await writeFile(path.join(root, '.lattice', 'accept.json'), `${canonicalizeTodoArtifact(decision)}\n`);
-  const accepted = run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', 'phase-1',
-    '--input', '.lattice/accept.json'], ACTOR_ENV);
+  const accepted = run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', 'phase-1'], ACTOR_ENV);
   assert.equal(accepted.status, 0, accepted.stderr);
   // phase-1がacceptedになってもphase-2がまだ監査前なので、案内は消えない。
   assert.equal(discovery().next_action.reason, 'audit_pending');

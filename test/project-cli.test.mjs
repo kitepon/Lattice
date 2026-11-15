@@ -338,14 +338,7 @@ test('plan create v4は設計メモ付きPhaseとphase accept依存を作る', a
   const review = run(root, ['todo', 'phase', 'review', '--plan', 'main', '--phase', 'phase-1',
     '--reason', '重い検証'], actorEnv);
   assert.equal(review.status, 0, review.stderr);
-  const decision = {
-    schema: 'lattice.phase_accept_input.v1', review_event_digest: JSON.parse(review.stdout).event_digest,
-    decision_evidence: evidence, evidence_slots: [{ slot_id: 'heavy', evidence }], input_digest: '',
-  };
-  decision.input_digest = todoSelfDigest(decision, 'input_digest');
-  await writeFile(path.join(root, '.lattice', 'phase-accept.json'), `${canonicalizeTodoArtifact(decision)}\n`);
-  const accepted = run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', 'phase-1',
-    '--input', '.lattice/phase-accept.json'], actorEnv);
+  const accepted = run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', 'phase-1'], actorEnv);
   assert.equal(accepted.status, 0, accepted.stderr);
   assert.equal(JSON.parse(accepted.stdout).status, 'accepted');
   const after = JSON.parse(run(root, ['todo', 'status', '--json']).stdout);

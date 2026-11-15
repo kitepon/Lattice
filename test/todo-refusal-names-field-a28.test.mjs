@@ -63,17 +63,13 @@ test('reopen with a started successor names it and the --override-reason route',
     'pending');
 });
 
-test('phase accept/reject/reopen, evidence promote and independence compile name the missing flag', async (context) => {
+test('phase reject/reopen and independence compile name the missing flag', async (context) => {
   const root = await fixture(context);
   const cases = [
-    [['phase', 'accept', '--plan', 'work', '--phase', 'p'], '--evidence',
-      'lattice todo phase accept --plan work --phase p --evidence <file>'],
-    [['phase', 'reject', '--plan', 'work', '--phase', 'p', '--evidence', 'e.md'], '--reason',
-      'lattice todo phase reject --plan work --phase p --evidence e.md --reason <text>'],
+    [['phase', 'reject', '--plan', 'work', '--phase', 'p', '--message', 'no'], '--reason',
+      'lattice todo phase reject --plan work --phase p --message no --reason <text>'],
     [['phase', 'reopen', '--plan', 'work', '--phase', 'p'], '--reason',
       'lattice todo phase reopen --plan work --phase p --reason <text>'],
-    [['evidence', 'promote', '--plan', 'work', '--task', 'a'], '--evidence',
-      'lattice todo evidence promote --plan work --task a --evidence <file>'],
     [['independence', 'compile', '--plan', 'work'], '--input',
       'lattice todo independence compile --plan work --input <file>'],
   ];

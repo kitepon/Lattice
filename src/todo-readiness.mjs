@@ -282,7 +282,6 @@ export function validateProspectiveEvent({ store, member, event }) {
       const definition = todoPhaseDefinitions(member.plan).find(({ phase_id: id }) => id === event.phase_id);
       return refused('phase_gate_not_ready', 'phase_state', {
         plan_key: member.plan.plan_key, phase_id: event.phase_id, phase_status: phase.status,
-        required_evidence_slots: [...(definition?.required_evidence_slots ?? [])],
       });
     }
   }

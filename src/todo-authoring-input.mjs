@@ -312,7 +312,7 @@ function looksLikeProse(value) {
 }
 
 function outsideRepoAction(canonicalRoot, inlineFlag) {
-  return 'この引数は証拠としてrepo内のpathとgit blobで記録し、他の席がそれを検証するので、repo内のfileだけ受理する。'
+  return 'この引数はrepo内のfileだけ受理する。'
     + `repo外(/tmp等)にあるならrepo内へ写してから渡す${inlineFlag ? `か、本文を ${inlineFlag} <text> で渡す` : ''}（repo_root: ${canonicalRoot}）`;
 }
 

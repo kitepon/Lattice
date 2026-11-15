@@ -361,14 +361,14 @@ test('todo doneのterminal_audit_required advisoryとtodo phase statusのguidanc
   assert.equal(advisory.guidance,
     '全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited --plan audited --phase terminal-audit --reason <text>'
     + '（監査するなら lattice todo phase review --plan audited --phase terminal-audit --reason <text>'
-    + ' → accept --plan audited --phase terminal-audit --evidence <file>）');
+    + ' → accept --plan audited --phase terminal-audit [--message <text>]）');
 
   const phaseStatusResult = JSON.parse(run(root, ['todo', 'phase', 'status', '--plan', 'audited']).stdout);
   const guidance = phaseStatusResult.phases[0].guidance;
   assert.equal(guidance,
     '全ToDoがdone。監査せず閉じるなら: lattice todo phase close-unaudited --plan audited --phase terminal-audit --reason <text>'
     + '（監査するなら lattice todo phase review --plan audited --phase terminal-audit --reason <text>'
-    + ' → accept --plan audited --phase terminal-audit --evidence <file>）');
+    + ' → accept --plan audited --phase terminal-audit [--message <text>]）');
 });
 
 test('CLI経由のtodo phase close-unauditedはclosed_unauditedを記録する', async (t) => {

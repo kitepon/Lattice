@@ -34,7 +34,7 @@ function refused(root, args, extra = seat('fixture')) {
 function follow(root, nextAction, pattern, extra) {
   const command = nextAction.match(pattern)?.[1];
   assert.ok(command, nextAction);
-  const args = command.replace(/^lattice /u, '').replace(/<file>/gu, 'audit.md').replace(/<text>/gu, 'a36').split(' ');
+  const args = command.replace(/^lattice /u, '').replace(/ \[[^\]]*\]/gu, '').replace(/<file>/gu, 'audit.md').replace(/<text>/gu, 'a36').split(' ');
   return success(root, args, extra);
 }
 async function fixture(context) {
@@ -80,14 +80,14 @@ test('phase review and close-unaudited outside gate_ready name the phase state a
   const late = refused(root, ['todo', 'phase', 'close-unaudited', '--plan', 'work', '--phase', 'p', '--reason', 'r']);
   assert.equal(late.code, 'TODO_TRANSITION_REFUSED');
   assert.equal(late.detail.phase_status, 'reviewing');
-  assert.match(late.detail.next_action, /phase accept --plan work --phase p --evidence <file>/u);
+  assert.match(late.detail.next_action, /phase accept --plan work --phase p [--message <text>]/u);
 
   const [phase] = success(root, ['todo', 'phase', 'status', '--plan', 'work']).phases;
-  assert.match(phase.guidance, /phase accept --plan work --phase p --evidence <file>/u);
+  assert.match(phase.guidance, /phase accept --plan work --phase p [--message <text>]/u);
   const [pending] = success(root, ['todo', 'status', '--json']).audit_pending;
   assert.deepEqual(pending.next_commands, [
-    'lattice todo phase accept --plan work --phase p --evidence <file>',
-    'lattice todo phase reject --plan work --phase p --reason <text> --evidence <file>',
+    'lattice todo phase accept --plan work --phase p [--message <text>]',
+    'lattice todo phase reject --plan work --phase p --reason <text> [--message <text>]',
   ]);
   assert.equal(follow(root, late.detail.next_action, /`(lattice todo phase accept [^`]+)`/u).status, 'accepted');
 });

@@ -89,10 +89,10 @@ test('a repeated block, retire or done names only content that differs from the 
 
   await writeFile(path.join(root, 'proof.md'), 'proof\n');
   success(root, ['todo', 'start', ...task('c')]);
-  success(root, ['todo', 'done', ...task('c'), '--message', 'ok', '--evidence', 'proof.md']);
-  assert.equal(success(root, ['todo', 'done', ...task('c'), '--message', 'ok', '--evidence', 'proof.md']).not_recorded, undefined);
-  assert.deepEqual(success(root, ['todo', 'done', ...task('c'), '--message', 'ok!', '--evidence', 'proof.md']).not_recorded,
-    ['--message', '--evidence']);
+  success(root, ['todo', 'done', ...task('c'), '--message', 'ok']);
+  assert.equal(success(root, ['todo', 'done', ...task('c'), '--message', 'ok']).not_recorded, undefined);
+  assert.deepEqual(success(root, ['todo', 'done', ...task('c'), '--message', 'ok!']).not_recorded,
+    ['--message']);
 
   success(root, ['todo', 'retire', ...task('b'), '--reason', 'gone']);
   assert.equal(success(root, ['todo', 'retire', ...task('b'), '--reason', 'gone']).not_recorded, undefined);
@@ -130,7 +130,7 @@ test('note and test-result read a file outside the repo; evidence outside it say
   success(root, ['todo', 'start', ...task('a')]);
   const evidence = refused(root, ['todo', 'done', ...task('a'), '--evidence', path.join(outside, 'note.md')]);
   assert.equal(evidence.detail.reason, 'input_path_outside_repo');
-  assert.match(evidence.detail.next_action, /git blob.*repo内へ写してから渡すか、本文を --message <text> で渡す/u);
+  assert.match(evidence.detail.next_action, /repo内へ写してから渡すか、本文を --message <text> で渡す/u);
 
   await writeFile(path.join(outside, 'result.md'), '# tests\n\n3 pass\n');
   success(root, ['todo', 'start', ...task('c')]);

@@ -106,15 +106,8 @@ async function workspace(context) {
   };
   const status = () => JSON.parse(ok(run(root, ['todo', 'status', '--json'])).stdout);
   const discovery = () => JSON.parse(ok(run(root, ['status', '--json'])).stdout);
-  const accept = (planKey, phaseId, reviewDigest) => {
-    const evidence = evidenceFor(root, `${planKey}-accept`);
-    const decision = { schema: 'lattice.phase_accept_input.v1', review_event_digest: reviewDigest,
-      decision_evidence: evidence, evidence_slots: [{ slot_id: TERMINAL_AUDIT, evidence }], input_digest: '' };
-    decision.input_digest = todoSelfDigest(decision, 'input_digest');
-    return writeFile(path.join(root, '.lattice', 'accept.json'), `${canonicalizeTodoArtifact(decision)}\n`)
-      .then(() => ok(run(root, ['todo', 'phase', 'accept', '--plan', planKey, '--phase', phaseId,
-        '--input', '.lattice/accept.json'], ACTOR_ENV)));
-  };
+  const accept = (planKey, phaseId) => ok(run(root, ['todo', 'phase', 'accept', '--plan', planKey, '--phase', phaseId],
+    ACTOR_ENV));
   return { root, finish, status, discovery, accept };
 }
 
@@ -190,18 +183,12 @@ test('(b) 監査前の3状態はそれぞれ実行できる遷移だけを案内
   const review = ok(run(root, ['todo', 'phase', 'review', '--plan', 'audited',
     '--phase', TERMINAL_AUDIT, '--reason', '終端監査を開始'], ACTOR_ENV));
   assert.deepEqual(commandsOf(), [
-    `lattice todo phase accept --plan audited --phase ${TERMINAL_AUDIT} --evidence <file>`,
-    `lattice todo phase reject --plan audited --phase ${TERMINAL_AUDIT} --reason <text> --evidence <file>`,
+    `lattice todo phase accept --plan audited --phase ${TERMINAL_AUDIT} [--message <text>]`,
+    `lattice todo phase reject --plan audited --phase ${TERMINAL_AUDIT} --reason <text> [--message <text>]`,
   ]);
 
-  const evidence = evidenceFor(root, 'reject');
-  const rejection = { schema: 'lattice.phase_reject_input.v1',
-    review_event_digest: JSON.parse(review.stdout).event_digest,
-    decision_evidence: evidence, reason: '証跡が足りない', input_digest: '' };
-  rejection.input_digest = todoSelfDigest(rejection, 'input_digest');
-  await writeFile(path.join(root, '.lattice', 'reject.json'), `${canonicalizeTodoArtifact(rejection)}\n`);
   ok(run(root, ['todo', 'phase', 'reject', '--plan', 'audited', '--phase', TERMINAL_AUDIT,
-    '--input', '.lattice/reject.json'], ACTOR_ENV));
+    '--reason', '証跡が足りない'], ACTOR_ENV));
   // rejectedは「判断が着いた」ではなく「差し戻して待っている」なので監査前のまま残る。
   assert.equal(auditPendingOf(status(), 'audited')[0].phase_status, 'rejected');
   assert.deepEqual(commandsOf(), [
@@ -214,7 +201,7 @@ test('(b) 監査前の3状態はそれぞれ実行できる遷移だけを案内
 
   const reviewed = ok(run(root, ['todo', 'phase', 'review', '--plan', 'audited',
     '--phase', TERMINAL_AUDIT, '--reason', '再監査'], ACTOR_ENV));
-  await accept('audited', TERMINAL_AUDIT, JSON.parse(reviewed.stdout).event_digest);
+  accept('audited', TERMINAL_AUDIT);
   assert.deepEqual(auditPendingOf(status(), 'audited'), []);
 });
 
@@ -239,7 +226,7 @@ test('(c) 混在: 監査前のplanがあってもdispatchはacceptedにした場
   await settled.finish('audited', 'B');
   const reviewed = ok(run(settled.root, ['todo', 'phase', 'review', '--plan', 'audited',
     '--phase', TERMINAL_AUDIT, '--reason', '終端監査'], ACTOR_ENV));
-  await settled.accept('audited', TERMINAL_AUDIT, JSON.parse(reviewed.stdout).event_digest);
+  settled.accept('audited', TERMINAL_AUDIT);
 
   const pendingStatus = pending.status();
   const settledStatus = settled.status();
@@ -291,14 +278,8 @@ async function phasePlanWorkspace(context) {
       '--evidence', '.lattice/evidence.json'], ACTOR_ENV));
   };
   const status = () => JSON.parse(ok(run(root, ['todo', 'status', '--json'])).stdout);
-  const accept = (phaseId, reviewDigest) => {
-    const decision = { schema: 'lattice.phase_accept_input.v1', review_event_digest: reviewDigest,
-      decision_evidence: evidence, evidence_slots: [{ slot_id: 'heavy', evidence }], input_digest: '' };
-    decision.input_digest = todoSelfDigest(decision, 'input_digest');
-    return writeFile(path.join(root, '.lattice', 'accept.json'), `${canonicalizeTodoArtifact(decision)}\n`)
-      .then(() => ok(run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', phaseId,
-        '--input', '.lattice/accept.json'], ACTOR_ENV)));
-  };
+  const accept = (phaseId) => ok(run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', phaseId],
+    ACTOR_ENV));
   return { root, finish, status, accept };
 }
 
@@ -328,7 +309,7 @@ test('(d) 宣言Phase planはimplicit=falseでplan由来のslotsを出し、lock
   // 「いま判断を待っている面」だけを指し、まだ到達していないPhaseを先出ししない。
   const reviewed = ok(run(root, ['todo', 'phase', 'review', '--plan', 'main', '--phase', 'phase-1',
     '--reason', '監査開始'], ACTOR_ENV));
-  await accept('phase-1', JSON.parse(reviewed.stdout).event_digest);
+  accept('phase-1');
   assert.deepEqual(status().audit_pending.map(({ phase_id, phase_status }) => [phase_id, phase_status]),
     [['phase-2', 'gate_ready']]);
 });
