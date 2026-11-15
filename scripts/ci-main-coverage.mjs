@@ -5,9 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 /*
  * Main-push coverage (gate owner Shiratsuru, 2026-11-08). A push to main skips its full test
- * gate only when the merged PR's latest CI run tested exactly the pushed tree with the full
- * (unscoped) gate and every gate OS concluded success. Anything missing, ambiguous or
- * unreadable runs the full gate; the lookup never fails the push.
+ * gate when the merged PR's latest CI run tested exactly the pushed tree and every gate OS
+ * concluded success, whether that run was scoped (ci-scope.mjs) or full: rerunning the same tree
+ * is a duplicate verification (2026-11-15: it delayed the 0.103.0 outage release ~40 min).
+ * Anything missing, ambiguous or unreadable runs the full gate; the lookup never fails the push.
  *   record: on a PR, print the tested merge sha, tree and scope as step outputs.
  *   decide: on a main push, print covered=true|false and write the reason to the job summary.
  */
@@ -24,14 +25,13 @@ export function decideCoverage({ pushedTree, pr, run, jobs }) {
   if (!tested) return { covered: false, reason: `PR #${pr} run ${run.id} recorded no tested tree` };
   const [, mergeSha, tree, scope] = tested;
   if (tree !== pushedTree) return { covered: false, reason: `PR #${pr} run ${run.id} tested tree ${tree}, pushed ${pushedTree}` };
-  if (scope !== 'full') return { covered: false, reason: `PR #${pr} run ${run.id} ran the scoped gate` };
   for (const os of GATE_OSES) {
     const job = jobs.find((candidate) => candidate.name === `full / full (${os})`);
     if (job?.conclusion !== 'success') {
       return { covered: false, reason: `PR #${pr} run ${run.id} ${os}: ${job?.conclusion ?? 'missing'}` };
     }
   }
-  return { covered: true, reason: `covered by PR #${pr} run ${run.id} (merge ${mergeSha}, tree ${tree})` };
+  return { covered: true, reason: `covered by PR #${pr} run ${run.id} (merge ${mergeSha}, tree ${tree}, ${scope} gate)` };
 }
 
 function git(...args) {

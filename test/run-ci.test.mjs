@@ -54,7 +54,7 @@ test('a version-only package bump is told apart from a dependency change', async
   assert.notEqual(withoutVersion(lock('0.82.0', '1.0.0')), withoutVersion(lock('0.83.0', '1.0.1')));
 });
 
-test('a main push skips its full gate only when a full, three-OS green PR run tested the same tree', async () => {
+test('a main push skips its full gate only when a three-OS green PR run (scoped or full) tested the same tree', async () => {
   const { decideCoverage } = await import('../scripts/ci-main-coverage.mjs');
   const tree = 'a'.repeat(40);
   const jobsFor = ({ scope = 'full', testedTree = tree, macos = 'success' } = {}) => [
@@ -65,9 +65,12 @@ test('a main push skips its full gate only when a full, three-OS green PR run te
   ];
   const decide = (jobs, extra = {}) => decideCoverage({ pushedTree: tree, pr: 77, run: { id: 1 }, jobs, ...extra });
   assert.equal(decide(jobsFor()).covered, true);
-  assert.match(decide(jobsFor()).reason, /^covered by PR #77 run 1 \(merge b{40}, tree a{40}\)$/u);
-  assert.equal(decide(jobsFor({ scope: 'scoped' })).covered, false);
+  assert.match(decide(jobsFor()).reason, /^covered by PR #77 run 1 \(merge b{40}, tree a{40}, full gate\)$/u);
+  assert.equal(decide(jobsFor({ scope: 'scoped' })).covered, true);
+  assert.match(decide(jobsFor({ scope: 'scoped' })).reason, /scoped gate\)$/u);
   assert.equal(decide(jobsFor({ testedTree: 'c'.repeat(40) })).covered, false);
+  assert.equal(decide(jobsFor({ scope: 'scoped', testedTree: 'c'.repeat(40) })).covered, false);
+  assert.equal(decide(jobsFor({ scope: 'scoped', macos: 'failure' })).covered, false);
   assert.equal(decide(jobsFor({ macos: 'failure' })).covered, false);
   assert.equal(decide(jobsFor({ macos: null })).covered, false);
   assert.equal(decide(jobsFor().filter((job) => !job.name.includes('windows'))).covered, false);
