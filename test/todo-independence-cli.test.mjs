@@ -844,7 +844,7 @@ test('進行中との競合では案内が切断可能性まで述べる', async
   const advisory = parse(start('T2').stdout).advisory;
   assert.equal(advisory.guidance.code, 'independence_conflict_with_active');
   assert.equal(advisory.guidance.next_action,
-    'lattice todo dependency connect --from-plan main --from-task <id> --to-plan main --to-task <id> --reason <text>');
+    'lattice todo predecessor add --plan main --task <id> --after <plan>/<task> --reason <text>');
   // pathの衝突なので、分割で並列化しうることまで述べる。
   assert.match(advisory.guidance.message, /refactorで並列化しうる/u);
 });

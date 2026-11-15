@@ -244,7 +244,7 @@ lattice todo start --plan <key> --task <id>
 
 ### What a task waits for: four words, four commands
 
-Each word names one thing; none stands in for another ([connect flow](docs/architecture/dfd-connect.md)).
+Each word names one thing; none stands in for another (`docs/architecture/dfd-connect.md` in the repository).
 
 | Word | Means | Command |
 |---|---|---|

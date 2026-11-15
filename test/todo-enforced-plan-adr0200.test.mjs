@@ -74,7 +74,7 @@ test('gate 2: a conflict with in-progress work stops start unless a reason is re
   success(root, start('P'));
   const refused = refusal(root, start('Q'));
   assert.equal(refused.message, 'enforced_conflict_with_active');
-  assert.match(refused.detail.next_action, /dependency connect --from-plan dev --from-task P/u);
+  assert.match(refused.detail.next_action, /predecessor add --plan dev --task Q --after dev\/P/u);
   success(root, start('Q', '--override-reason', 'pairing on a.js with P'));
 });
 
