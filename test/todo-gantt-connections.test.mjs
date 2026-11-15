@@ -51,3 +51,21 @@ test('a 接続 to a task on another chart is not a tree edge; a 前工程 inside
   assert.deepEqual(layout.edges.map(({ from, to }) => [from.plan_key, to.plan_key]), [['b', 'c']]);
   assert.equal((layout.notices ?? []).filter(({ code }) => code === 'TODO_LAYOUT_INVALID_INPUT').length, 0);
 });
+
+test('the page carries one 接続 area in the task detail and a chip in the task index', async () => {
+  const { renderTodoGanttHtml } = await import('../src/todo-gantt-html.mjs');
+  const read = { schema: 'lattice.todo_store_read.v1', project_id: 'beta', members: [{
+    plan: { schema: 'lattice.todo_plan.v3', project_id: 'beta', plan_key: 'b',
+      tasks: [{ task_id: 'R', title: 'R', lane: 'main' }], hard_dependencies: [], joins: [] },
+    tasks: [{ task_id: 'R', status: 'pending', blocked_reason: null }],
+    plan_scoped: { events: [] },
+  }] };
+  const entries = [{ project_id: 'beta', plan_key: 'b', task_id: 'R', connections: [connections[0], connections[3]] }];
+  const { html } = renderTodoGanttHtml({ readModel: read, layout: layoutTodoGantt(read, { scope: 'all' }), connections: entries });
+  assert.equal(html.match(/<section class="connections"/gu).length, 1);
+  assert.match(html, /<h2>接続<\/h2><ul><li class="connection connection-task"[^>]*><strong>他条件に接続<\/strong>/u);
+  assert.match(html, /<strong>優先接続<\/strong> bot-b/u);
+  assert.match(html, /class="connection-chip">他条件に接続 1<\/span><span class="connection-chip">優先接続<\/span>/u);
+  const plain = renderTodoGanttHtml({ readModel: read, layout: layoutTodoGantt(read, { scope: 'all' }) }).html;
+  assert.doesNotMatch(plain, /class="connections"/u);
+});
