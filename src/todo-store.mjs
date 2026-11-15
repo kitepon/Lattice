@@ -1438,7 +1438,7 @@ function materializeImportedNarrativeAnchors(repoRoot, planInput, sources, cache
   if (sources === undefined) return planInput;
   if (!['lattice.todo_plan.v2', 'lattice.todo_plan.v6'].includes(planInput?.schema)
     || !Array.isArray(sources)
-    || sources.length > TODO_LIMITS.tasksPerPlan || !sources.every(narrativeAnchorSource)) {
+    || !sources.every(narrativeAnchorSource)) {
     throw new TypeError('imported narrative anchor sources are invalid');
   }
   const byTask = new Map(sources.map((source) => [source.task_id, source]));
@@ -2949,7 +2949,7 @@ function buildHistoricalStart(plan, previous, input, genesis) {
 function historicalImportInputs(value, timestampKey) {
   const required = ['task_id', timestampKey, 'evidence'];
   const allowed = new Set([...required, 'actor', 'recorded_at', 'provenance']);
-  return Array.isArray(value) && value.length <= TODO_LIMITS.tasksPerPlan
+  return Array.isArray(value)
     && value.every((entry) => entry !== null && typeof entry === 'object' && !Array.isArray(entry)
       && Object.getPrototypeOf(entry) === Object.prototype
       && required.every((key) => Object.hasOwn(entry, key))

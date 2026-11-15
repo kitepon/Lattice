@@ -147,7 +147,7 @@ Ganttが読むcanonical directed graphは**todo storeのhard dependency＋join**
 - **snapshot serialization契約**: 単一canonical JSON value＋LF・self-digest規則・collectionの
   並び順はfieldごとにschemaで規定する（監査#4-4後半）。
 - **todo族のper-schema上限**（既存`canonicalizeArtifact`系の256 item/1 MiB既定を無変更再利用せず
-  自前裁定。監査#1-7）: 1planあたりtask 512・edge 2,048・join 128。journal segmentは1 MiB到達で
+  自前裁定。監査#1-7）: 1planあたりtask 512・edge 2,048・join 128（**ADR 0201で件数上限は撤廃**、大きさはbyte上限が守る）。journal segmentは1 MiB到達で
   rotation。snapshotは8 MiB。散文1節は256 KiB。超過はfail closed。
 - **compactionはseal/rotationのみ**: 過去segmentは開始/終了sequence・前segment head digest・
   segment digestを持つimmutable fileとして残す。prefix破棄・真正な履歴削除はv1で禁止

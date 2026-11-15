@@ -139,7 +139,7 @@ function validSourceCutoverBatch(value, revision) {
   if (!exactRecord(value, ['batch_id', 'archive_ref', 'operations', 'batch_digest'])
     || !isTodoIdentifier(value.batch_id) || !isTodoRef(value.archive_ref)
     || !value.archive_ref.endsWith('.md') || parseTodoSourceRef(value.archive_ref) !== null
-    || !Array.isArray(value.operations) || value.operations.length < 1 || value.operations.length > 512
+    || !Array.isArray(value.operations) || value.operations.length < 1
     || !isTodoDigest(value.batch_digest)
     || value.batch_digest !== todoSelfDigest(value, 'batch_digest')) return false;
   const sourceRefs = new Set();
@@ -183,7 +183,7 @@ function validTaskMigration(value) {
   const activeTargets = Array.isArray(value)
     ? value.filter(({ to_task_id }) => to_task_id !== 'removed').map(({ to_task_id }) => to_task_id)
     : [];
-  return Array.isArray(value) && value.length > 0 && value.length <= 512
+  return Array.isArray(value) && value.length > 0
     && value.every((entry) => exactRecord(entry, [
       'from_task_id', 'to_task_id', 'state_policy',
     ]) && isTodoIdentifier(entry.from_task_id)
@@ -198,7 +198,7 @@ function validTaskMigration(value) {
 }
 
 function validPhaseMigration(value, desiredPlan) {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 512
+  if (!Array.isArray(value) || value.length === 0
     || !value.every((entry) => exactRecord(entry, [
       'from_phase_id', 'to_phase_id', 'state_policy',
     ]) && (entry.from_phase_id === null || isTodoIdentifier(entry.from_phase_id))
@@ -227,7 +227,7 @@ export function todoTaskMigrationDigest(taskMigration) {
 function validRuntimeTaskMigration(value) {
   if (!exactRecord(value, ['schema', 'entries', 'migration_digest'])
     || value.schema !== 'lattice.runtime_task_migration.v1'
-    || !Array.isArray(value.entries) || value.entries.length < 1 || value.entries.length > 512
+    || !Array.isArray(value.entries) || value.entries.length < 1
     || !isTodoDigest(value.migration_digest)
     || value.migration_digest !== todoSelfDigest(value, 'migration_digest')) return false;
   const targets = [];
@@ -238,7 +238,7 @@ function validRuntimeTaskMigration(value) {
       'predecessor_task_id', 'disposition', 'successor_task_ids', 'reason', 'evidence_digests',
     ]) || !isTodoIdentifier(entry.predecessor_task_id)
       || !['carry', 'stay', 'replace', 'split', 'retire'].includes(entry.disposition)
-      || !Array.isArray(entry.successor_task_ids) || entry.successor_task_ids.length > 512
+      || !Array.isArray(entry.successor_task_ids)
       || !entry.successor_task_ids.every(isTodoIdentifier)
       || new Set(entry.successor_task_ids).size !== entry.successor_task_ids.length
       || successorTail.some((id, targetIndex) => targetIndex > 0
@@ -374,7 +374,6 @@ export function validatePhaseTodoRevision(value) {
 function validSourceInventory(value, desiredPlan, { requireNarrativeRef = false } = {}) {
   if (!exactRecord(value, ['active', 'excluded_tombstones'])
     || !Array.isArray(value.active) || !Array.isArray(value.excluded_tombstones)
-    || value.active.length > 512 || value.excluded_tombstones.length > 2_048
     || !value.active.every((entry) => exactRecord(entry, ['task_id', 'source_ref', 'source_digest'])
       && isTodoIdentifier(entry.task_id) && parseTodoSourceRef(entry.source_ref) !== null
       && isTodoDigest(entry.source_digest))
@@ -476,7 +475,7 @@ function explainPredecessor(value, at = '/predecessor') {
  * 可否を変えずに1件ずつ言い当てる。
  */
 function explainTaskMigration(value, at = '/task_migration') {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 512) {
+  if (!Array.isArray(value) || value.length === 0) {
     return reject('bounded_collection_violation', at);
   }
   for (const [index, entry] of value.entries()) {
@@ -509,7 +508,7 @@ function explainTaskMigration(value, at = '/task_migration') {
 }
 
 function explainPhaseMigration(value, desiredPlan, at = '/phase_migration') {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 512) {
+  if (!Array.isArray(value) || value.length === 0) {
     return reject('bounded_collection_violation', at);
   }
   for (const [index, entry] of value.entries()) {
@@ -554,7 +553,7 @@ function explainRuntimeTaskMigration(value, taskMigration, desiredPlan, at = '/r
   const keyCheck = explainKeys(value, ['schema', 'entries', 'migration_digest'], at);
   if (!keyCheck.valid) return keyCheck;
   if (value.schema !== 'lattice.runtime_task_migration.v1') return reject('schema_mismatch', `${at}/schema`);
-  if (!Array.isArray(value.entries) || value.entries.length === 0 || value.entries.length > 512) {
+  if (!Array.isArray(value.entries) || value.entries.length === 0) {
     return reject('bounded_collection_violation', `${at}/entries`);
   }
   const targets = [];
@@ -569,7 +568,7 @@ function explainRuntimeTaskMigration(value, taskMigration, desiredPlan, at = '/r
     if (!['carry', 'stay', 'replace', 'split', 'retire'].includes(entry.disposition)) {
       return reject('invalid_disposition', `${entryAt}/disposition`);
     }
-    if (!Array.isArray(entry.successor_task_ids) || entry.successor_task_ids.length > 512
+    if (!Array.isArray(entry.successor_task_ids)
       || !entry.successor_task_ids.every(isTodoIdentifier)) {
       return reject('invalid_successor_task_ids', `${entryAt}/successor_task_ids`);
     }
@@ -631,10 +630,10 @@ function explainRuntimeTaskMigration(value, taskMigration, desiredPlan, at = '/r
 function explainSourceInventory(value, desiredPlan, { requireNarrativeRef = false } = {}, at = '/source_inventory') {
   const keyCheck = explainKeys(value, ['active', 'excluded_tombstones'], at);
   if (!keyCheck.valid) return keyCheck;
-  if (!Array.isArray(value.active) || value.active.length > 512) {
+  if (!Array.isArray(value.active)) {
     return reject('bounded_collection_violation', `${at}/active`);
   }
-  if (!Array.isArray(value.excluded_tombstones) || value.excluded_tombstones.length > 2_048) {
+  if (!Array.isArray(value.excluded_tombstones)) {
     return reject('bounded_collection_violation', `${at}/excluded_tombstones`);
   }
   for (const [index, entry] of value.active.entries()) {
@@ -693,7 +692,7 @@ function explainSourceCutoverBatch(value, revision, at = '/source_cutover_batch'
     || parseTodoSourceRef(value.archive_ref) !== null) {
     return reject('invalid_archive_ref', `${at}/archive_ref`);
   }
-  if (!Array.isArray(value.operations) || value.operations.length === 0 || value.operations.length > 512) {
+  if (!Array.isArray(value.operations) || value.operations.length === 0) {
     return reject('bounded_collection_violation', `${at}/operations`);
   }
   const sourceRefs = new Set();

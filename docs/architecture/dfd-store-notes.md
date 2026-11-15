@@ -36,7 +36,7 @@ shown (`validateTodoNoteContext` checks only that a shown plan note has a head).
 Context budget: the bounded context keeps entries in the order above (plan notes
 newest first, then task notes newest first) while they fit both the byte budget
 (`noteContextBytes`, an entry that does not fit is skipped) and the count cap
-(`tasksPerPlan`, the same cap `validateTodoNoteContext` checks; the walk stops once
+(`noteContextEntries`, the same cap `validateTodoNoteContext` checks; the walk stops once
 it is reached). Every entry left out counts into `overflow_count`; the full history
 and `full_history_command` still reach it. No refusal is added: a plan with more
 plan notes than the cap still projects a valid context for every task.

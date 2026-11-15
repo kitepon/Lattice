@@ -59,9 +59,9 @@ export const TODO_CHART_META_SCHEMA = 'lattice.chart_meta.v1';
  */
 export const TODO_NOTE_CONTEXT_SCHEMA = 'lattice.todo_note_context.v2';
 export const TODO_LIMITS = Object.freeze({
-  tasksPerPlan: 512,
-  edgesPerPlan: 2_048,
-  joinsPerPlan: 128,
+  // ADR 0201: no count caps on a plan's tasks, edges, joins or phases; its size is bounded by bytes (snapshotBytes).
+  // The note context keeps its own entry count next to noteContextBytes.
+  noteContextEntries: 512,
   journalSegmentBytes: 1_048_576,
   snapshotBytes: 8_388_608,
   narrativeSectionBytes: 262_144,
@@ -217,7 +217,7 @@ export function validateTodoNoteContext(value) {
     ]) || value.schema !== TODO_NOTE_CONTEXT_SCHEMA
       || !isTodoIdentifier(value.project_id) || !isTodoIdentifier(value.plan_key)
       || !isTodoIdentifier(value.task_id) || !Array.isArray(value.notes)
-      || value.notes.length > TODO_LIMITS.tasksPerPlan || !value.notes.every(noteContextEntry)
+      || value.notes.length > TODO_LIMITS.noteContextEntries || !value.notes.every(noteContextEntry)
       || !(value.note_head_digest === null || isTodoDigest(value.note_head_digest))
       || !(value.plan_note_head_digest === null || isTodoDigest(value.plan_note_head_digest))
       || !isNonNegativeSafeInteger(value.overflow_count)
@@ -486,25 +486,24 @@ export function explainTodoPlan(value) {
       if (!isTodoIdentifier(value[field])) return reject('identifier_invalid', `/${field}`);
     }
     if (!nullableDigest(value.predecessor_plan_digest)) return reject('digest_invalid', '/predecessor_plan_digest');
-    if (!Array.isArray(value.tasks) || value.tasks.length === 0
-      || value.tasks.length > TODO_LIMITS.tasksPerPlan) return reject('bounded_collection_violation', '/tasks');
+    if (!Array.isArray(value.tasks) || value.tasks.length === 0) return reject('bounded_collection_violation', '/tasks');
     const invalidTask = value.tasks.findIndex((task) => !taskValidator(task));
     if (invalidTask >= 0) return reject('task_shape_invalid', `/tasks/${invalidTask}`);
     if (new Set(value.tasks.map(({ task_id }) => task_id)).size !== value.tasks.length) {
       return reject('duplicate_task_id', '/tasks');
     }
-    if (!Array.isArray(value.hard_dependencies) || value.hard_dependencies.length > TODO_LIMITS.edgesPerPlan) {
+    if (!Array.isArray(value.hard_dependencies)) {
       return reject('bounded_collection_violation', '/hard_dependencies');
     }
     const invalidEdge = value.hard_dependencies.findIndex((edge) => !exactRecord(edge, ['from', 'to'])
       || !nodeRef(edge.from) || !nodeRef(edge.to));
     if (invalidEdge >= 0) return reject('edge_shape_invalid', `/hard_dependencies/${invalidEdge}`);
-    if (!Array.isArray(value.joins) || value.joins.length > TODO_LIMITS.joinsPerPlan) {
+    if (!Array.isArray(value.joins)) {
       return reject('bounded_collection_violation', '/joins');
     }
     const invalidJoin = value.joins.findIndex((join) => !exactRecord(join, ['id', 'after', 'before'])
       || !isTodoIdentifier(join.id) || !Array.isArray(join.after) || join.after.length === 0
-      || join.after.length > TODO_LIMITS.tasksPerPlan || !join.after.every(nodeRef) || !nodeRef(join.before));
+      || !join.after.every(nodeRef) || !nodeRef(join.before));
     if (invalidJoin >= 0) return reject('join_shape_invalid', `/joins/${invalidJoin}`);
     for (const field of ['topology_digest', 'plan_digest']) {
       if (!isTodoDigest(value[field])) return reject('digest_invalid', `/${field}`);
@@ -513,8 +512,7 @@ export function explainTodoPlan(value) {
       'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(value.schema)
       && !validParentGraph(value.tasks)) return reject('parent_graph_invalid', '/tasks');
     if (phased) {
-      if (!Array.isArray(value.phases) || value.phases.length === 0
-        || value.phases.length > TODO_LIMITS.tasksPerPlan) return reject('bounded_collection_violation', '/phases');
+      if (!Array.isArray(value.phases) || value.phases.length === 0) return reject('bounded_collection_violation', '/phases');
       const invalidPhase = value.phases.findIndex((phase) => !phaseV1(phase));
       if (invalidPhase >= 0) return reject('phase_shape_invalid', `/phases/${invalidPhase}`);
       const order = explainTodoOrder(value.phases, (phase) => phase.phase_id, '/phases');
@@ -524,8 +522,7 @@ export function explainTodoPlan(value) {
       if (!validPhaseGraph(value.phases)) return reject('phase_graph_invalid', '/phases');
     }
     if (decoupled) {
-      if (!Array.isArray(value.phase_accept_dependencies)
-        || value.phase_accept_dependencies.length > TODO_LIMITS.edgesPerPlan) {
+      if (!Array.isArray(value.phase_accept_dependencies)) {
         return reject('bounded_collection_violation', '/phase_accept_dependencies');
       }
       const invalid = value.phase_accept_dependencies.findIndex((edge) => !exactRecord(edge, ['from', 'to'])
@@ -574,7 +571,6 @@ function validPayload(event) {
   ])) && (payload.historical_import === undefined || payload.historical_import === true)
     && isTodoDigest(payload.plan_digest) && isTodoDigest(payload.topology_digest)
     && nullableDigest(payload.predecessor_plan_digest) && Array.isArray(payload.task_migration)
-    && payload.task_migration.length <= TODO_LIMITS.tasksPerPlan
     && payload.task_migration.every((entry) => exactRecord(entry, ['from_task_id', 'to_task_id'])
       && isTodoIdentifier(entry.from_task_id) && (entry.to_task_id === 'removed' || isTodoIdentifier(entry.to_task_id)));
   if (event.kind === 'start' && payload?.start_mode === 'historical_import') {
@@ -720,7 +716,7 @@ function validCarriedState(value) {
 }
 
 function validStateMigration(value) {
-  return Array.isArray(value) && value.length <= TODO_LIMITS.tasksPerPlan
+  return Array.isArray(value)
     && value.every((entry) => exactRecord(entry, [
       'from_task_id', 'to_task_id', 'state_policy', 'state',
     ]) && isTodoIdentifier(entry.from_task_id)
@@ -736,7 +732,7 @@ function validStateMigration(value) {
 }
 
 function validPhaseStateMigration(value) {
-  return Array.isArray(value) && value.length <= TODO_LIMITS.tasksPerPlan
+  return Array.isArray(value)
     && value.every((entry) => exactRecord(entry, ['phase_id', 'state_policy', 'state'])
       && isTodoIdentifier(entry.phase_id) && ['carry', 'reset'].includes(entry.state_policy)
       && (entry.state_policy === 'reset' ? entry.state === null
@@ -845,7 +841,7 @@ export function validateTodoSnapshot(value) {
       && value.projection_version === (v1 ? 1 : v2 ? 2 : v3 ? 3 : 4)
       && isNonNegativeSafeInteger(value.through_sequence)
       && isTodoDigest(value.journal_head_digest) && Array.isArray(value.tasks)
-      && value.tasks.length > 0 && value.tasks.length <= TODO_LIMITS.tasksPerPlan
+      && value.tasks.length > 0
       && value.tasks.every((entry) => exactRecord(entry, [
         'task_id', 'status', 'started_at', 'done_at', 'blocked_reason', 'evidence', 'evidence_unverified', 'imported',
         ...(resultAware ? ['test_result'] : []),
