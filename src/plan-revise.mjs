@@ -12,6 +12,7 @@ import {
   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter, readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
 import { appendTodoNote } from './todo-note-store.mjs';
+import { planReviseNoteBody } from './todo-revision-note.mjs';
 import { phaseTodoRevisionPlanVersion, validatePhaseTodoRevision } from './todo-revision.mjs';
 
 export { validateBindingCarry } from './plan-binding-carry.mjs';
@@ -85,20 +86,20 @@ function authoredSurface(plan, taskId) {
  * 取り除いたtaskごとにplan note1件。本文は `plan revise <from>→<to> <task_id>: <reason>`。
  */
 export function planRevisionHistoryNotes({ previousPlan, successorPlan, continuity }) {
-  const prefix = (taskId) => `plan revise ${previousPlan.plan_version}→${successorPlan.plan_version} ${taskId}:`;
+  const body = (taskId, reason) => planReviseNoteBody(previousPlan.plan_version, successorPlan.plan_version, taskId, reason);
   const notes = [];
   const ordered = [...continuity].sort((left, right) => (
     left.task_id < right.task_id ? -1 : left.task_id > right.task_id ? 1 : 0));
   for (const { task_id: taskId, policy, reason } of ordered) {
     if (policy === 'retire') {
-      notes.push({ scope: 'plan', task_id: taskId, body: `${prefix(taskId)} ${reason}` });
+      notes.push({ scope: 'plan', task_id: taskId, body: body(taskId, reason) });
     } else if (policy === 'carry') {
       const before = authoredSurface(previousPlan, taskId);
       const after = authoredSurface(successorPlan, taskId);
       const changed = Object.keys(before).filter((field) => before[field] !== after[field]);
       if (changed.length > 0) {
         notes.push({ scope: 'task', task_id: taskId,
-          body: `${prefix(taskId)} ${reason}\nchanged: ${changed.join(', ')}` });
+          body: `${body(taskId, reason)}\nchanged: ${changed.join(', ')}` });
       }
     }
   }

@@ -15,6 +15,7 @@ import test from 'node:test';
 
 import { TODO_LIMITS } from '../src/todo-contracts.mjs';
 import { appendTodoNote } from '../src/todo-note-store.mjs';
+import { dependencyNoteBody, todoAddNoteBody } from '../src/todo-revision-note.mjs';
 import { createTodoStoreWriter, initializeTodoStore } from '../src/todo-store.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -207,4 +208,30 @@ test('byteに収まってもplan noteが件数上限を超えたらcontextは上
   // 新しい順に残し、古いものから溢れる。
   assert.equal(context.notes[0].body, `申し送り${cap + excess - 1}`);
   assert.equal(context.notes.at(-1).body, `申し送り${excess}`);
+});
+
+test('上限を超えるLattice自身の改訂記録があっても、taskの申し送りと人のplan noteは届く(n3)', async (t) => {
+  const root = await workspace(t);
+  const append = (taskId, body) => appendTodoNote({ repoRoot: root, projectId: 'project-1',
+    planKey: 'main', planVersion: 'v1', taskId, actor: ACTOR, recordedAt: NOW, body,
+    supersedes: null, eligibleSupersedes: [] });
+  await append('T1', 'T1の引き継ぎ');
+  await append(null, '人が書いた工程の義務');
+  await append(null, todoAddNoteBody('T1', 'T1を足した理由'));
+  // 他のchartの側がどう書かれても、自分のidが片側に在れば自分の記録。
+  await append(null, dependencyNoteBody('connect', 'bellteam/plan-x/a151', 'T1', '外の\n待ち'));
+  for (let i = 0; i < TODO_LIMITS.tasksPerPlan + 3; i += 1) {
+    await append(null, i % 2 === 0 ? todoAddNoteBody(`other-${i}`, null)
+      : dependencyNoteBody('disconnect', `other-${i}`, 'T2', `理由${i}`));
+  }
+  const started = json(run(root, ['todo', 'start', '--plan', 'main', '--task', 'T1',
+    '--parallel-frontier']));
+  const context = started.note_context;
+  assert.deepEqual(context.notes.map(({ body }) => body), [
+    dependencyNoteBody('connect', 'bellteam/plan-x/a151', 'T1', '外の\n待ち'),
+    todoAddNoteBody('T1', 'T1を足した理由'), '人が書いた工程の義務', 'T1の引き継ぎ']);
+  assert.equal(context.overflow_count, 0);
+  // 外した記録は全履歴に残る。
+  const listed = json(run(root, ['todo', 'note', 'list', '--plan', 'main', '--json']));
+  assert.ok(JSON.stringify(listed).includes(todoAddNoteBody('other-0', null)));
 });
