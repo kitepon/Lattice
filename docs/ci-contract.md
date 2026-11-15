@@ -42,6 +42,6 @@ macOSで工場のスクリプトが失敗すると、そのjobだけが失敗す
 そのcommitの木をそのまま公開する（公開物の木＝試験済みの木）。PR由来・失敗・他branchの`CI` runでは
 特権jobを起動しない。registryに未公開で`latest`より新しい版だけを公開し、それ以外は
 `skipped: <理由>`で緑のまま終える。`main`の先頭にCIが成功済みなら、手動の`workflow_dispatch`でも
-同じ規則で再試行できる。`main`のCIは「PRの試験済みmerge木と同一」の省略（`scripts/ci-main-coverage.mjs`）で
+同じ規則で再試行できる。`main`のCIは「PRの試験済みmerge木と同一」（絞った試験でも全部の試験でも、3つのOSが緑ならよい）の省略（`scripts/ci-main-coverage.mjs`）で
 成功してよく、木の同一性は満たされる。流れと状態遷移は
 [release publication flow](architecture/dfd-release-publish.md)が正本である。
