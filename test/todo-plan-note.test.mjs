@@ -189,7 +189,7 @@ test('訂正はscopeを跨げない', async (t) => {
 
 test('byteに収まってもplan noteが件数上限を超えたらcontextは上限で切りoverflowへ数える', async (t) => {
   const root = await workspace(t);
-  const cap = TODO_LIMITS.tasksPerPlan;
+  const cap = TODO_LIMITS.noteContextEntries;
   const excess = 3;
   // 本番の落ち方（546件・38KB）と同じ形: 1件ずつは短く、合計はbyte予算に余裕がある。
   for (let i = 0; i < cap + excess; i += 1) {
@@ -220,7 +220,7 @@ test('上限を超えるLattice自身の改訂記録があっても、taskの申
   await append(null, todoAddNoteBody('T1', 'T1を足した理由'));
   // 他のchartの側がどう書かれても、自分のidが片側に在れば自分の記録。
   await append(null, dependencyNoteBody('connect', 'bellteam/plan-x/a151', 'T1', '外の\n待ち'));
-  for (let i = 0; i < TODO_LIMITS.tasksPerPlan + 3; i += 1) {
+  for (let i = 0; i < TODO_LIMITS.noteContextEntries + 3; i += 1) {
     await append(null, i % 2 === 0 ? todoAddNoteBody(`other-${i}`, null)
       : dependencyNoteBody('disconnect', `other-${i}`, 'T2', `理由${i}`));
   }

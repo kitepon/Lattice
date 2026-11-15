@@ -124,7 +124,7 @@ function isCrossPlanEdge(edge) {
 }
 
 function validateEdges(value, schema) {
-  return Array.isArray(value) && value.length <= TODO_LIMITS.edgesPerPlan
+  return Array.isArray(value)
     && value.every((edge) => {
       const basic = exactRecord(edge, ['from', 'to']);
       const refsValid = nodeRef(edge?.from) && nodeRef(edge?.to);
@@ -139,10 +139,10 @@ function validateEdges(value, schema) {
 }
 
 function validateJoins(value) {
-  return Array.isArray(value) && value.length <= TODO_LIMITS.joinsPerPlan
+  return Array.isArray(value)
     && value.every((join) => exactRecord(join, ['id', 'after', 'before'])
       && isTodoIdentifier(join.id) && Array.isArray(join.after) && join.after.length > 0
-      && join.after.length <= TODO_LIMITS.tasksPerPlan && join.after.every(nodeRef)
+      && join.after.every(nodeRef)
       && sortedStrictly(join.after, refKey) && nodeRef(join.before))
     && sortedStrictly(value, (join) => join.id);
 }
@@ -230,8 +230,7 @@ export function explainTodoExtraction(value) {
     if (!isTodoIdentifier(value.plan_version)) return reject('invalid_identifier', '/plan_version');
     if (!actor(value.actor)) return reject('invalid_actor', '/actor');
     if (!isStrictTodoTimestamp(value.recorded_at)) return reject('invalid_timestamp', '/recorded_at');
-    if (!Array.isArray(value.tasks) || value.tasks.length > TODO_LIMITS.tasksPerPlan
-      || (value.tasks.length === 0 && !v4)) {
+    if (!Array.isArray(value.tasks) || (value.tasks.length === 0 && !v4)) {
       return reject('bounded_collection_violation', '/tasks');
     }
     const taskKeys = v2
@@ -387,7 +386,7 @@ export function validateTodoExtraction(value) {
       || !isTodoIdentifier(value.project_id)
       || !isTodoIdentifier(value.plan_key) || !isTodoIdentifier(value.plan_version)
       || !actor(value.actor) || !isStrictTodoTimestamp(value.recorded_at)
-      || !Array.isArray(value.tasks) || value.tasks.length > TODO_LIMITS.tasksPerPlan
+      || !Array.isArray(value.tasks)
       || (value.tasks.length === 0 && schema !== TODO_EXTRACTION_SCHEMA_V4)
       || !value.tasks.every((task) => extractionTask(task, schema))
       || !sortedStrictly(value.tasks, (task) => task.task_id)
