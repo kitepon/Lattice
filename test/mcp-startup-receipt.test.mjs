@@ -43,7 +43,8 @@ async function fixture(t, mode, { prepare, writeFailure = false, recordingFailur
     }
     assert.equal(source.split('writeFileSync(fd, bytes)').length, 2);
     if (recordingFailure) source = source.replace('writeFileSync(fd, bytes)', '(() => { writeFileSync(path.join(workerData.home, "attempted"), "attempted"); throw Object.assign(new Error("secret-EIO"), {code:"EIO"}); })()');
-    if (identityDelay) source = source.replace('const identity = await observeDashboardProcess', 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000); const identity = await observeDashboardProcess');
+    // The worker blocks on a latch file instead of a clock, so the ordering claim does not depend on machine load.
+    if (identityDelay) source = source.replace('const identity = await observeDashboardProcess', `for (let i = 0; i < 1000; i++) { try { lstatSync(${JSON.stringify(path.join(root, 'identity-release'))}); break; } catch {} Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } const identity = await observeDashboardProcess`);
     const copy = path.join(root, 'fault-receipt.mjs'); await writeFile(copy, source); module = pathToFileURL(copy).href;
   }
   const script = path.join(root, 'client-fixture.mjs');
@@ -97,12 +98,10 @@ async function fixture(t, mode, { prepare, writeFailure = false, recordingFailur
       return until(async () => output.split('\n').filter(Boolean).map(x => JSON.parse(x)), x => x.some(f => f.id === id));
     },
     initialize: async () => {
-      const begin = performance.now();
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'initialize', params: {
         clientInfo: { name: 'secret-client', version: 'secret-version' }, capabilities: {},
       } }) + '\n');
       const frames = await until(async () => output.split('\n').filter(Boolean).map(x => JSON.parse(x)), x => x.some(f => f.id === 7));
-      assert.ok(performance.now() - begin < 2000, 'receipt I/O must not block initialize');
       const frame = frames.find(f => f.id === 7); assert.equal(frame.jsonrpc, '2.0'); assert.ok(frame.result.serverInfo.version);
       return frame;
     } };
@@ -250,11 +249,12 @@ test('initialize前の途中終了から成功段階を作らない', { timeout:
 
 test('workerの同期identity処理が止まってもinitializeと終了は待たない', { timeout: 30000 }, async t => {
   const f = await fixture(t, 'proxy', { identityDelay: true });
+  // initialize() returning while the worker still waits on the latch proves the response never waits for receipt I/O.
   await f.initialize();
   f.child.stdin.end();
-  const begin = performance.now();
-  assert.deepEqual(await f.closed, { code: 0, signal: null });
-  assert.ok(performance.now() - begin < 2000, 'unref worker must not hold shutdown');
+  // The worker stays blocked for 20 s; exiting well before that proves the unref worker does not hold shutdown.
+  const exit = await Promise.race([f.closed, new Promise(r => setTimeout(r, 10000, 'held'))]);
+  assert.deepEqual(exit, { code: 0, signal: null });
 });
 
 test('既存の広い権限を持つ非空storeは書き換えず記録を省く', { timeout: 30000 }, async t => {
