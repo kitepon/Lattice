@@ -449,7 +449,7 @@ test('authoring CLIはclosed遷移をappendしmutation resultをdigest束縛す�
     [['todo', 'start', '--plan', 'main', '--task', 'T1'], 'start', 'in-progress'],
     [['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting'], 'block', 'blocked'],
     [['todo', 'unblock', '--plan', 'main', '--task', 'T1'], 'unblock', 'in-progress'],
-    [['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef], 'done', 'done'],
+    [['todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '閉じた'], 'done', 'done'],
     [['todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction'], 'reopen', 'pending'],
   ];
   let sequence = 0;
@@ -509,7 +509,7 @@ test('authoring CLIはtask IDのcase差をlock内でcanonical IDへ解決する'
   assert.equal(started.task_id, 'T1');
   assert.equal(started.status, 'in-progress');
   const done = successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 't1', '--evidence', descriptorRef,
+    'todo', 'done', '--plan', 'main', '--task', 't1', '--message', '閉じた',
   ]));
   assert.equal(done.task_id, 'T1');
   assert.equal(done.status, 'done');
@@ -575,7 +575,7 @@ test('authoring CLIはactor欠落をdefaultで通し、順序違反・blocked中
   assert.equal(await storeDigest(root), before);
   successJson(runCli(root, ['todo', 'block', '--plan', 'main', '--task', 'T1', '--reason', 'waiting']));
   const blockedBefore = await storeDigest(root);
-  const blockedDone = runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef]);
+  const blockedDone = runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '閉じた']);
   assert.equal(blockedDone.status, 1);
   assert.equal(JSON.parse(blockedDone.stderr).detail.reason, 'invalid_done_transition');
   assert.equal(await storeDigest(root), blockedBefore);
@@ -631,7 +631,7 @@ test('flag順と証拠本文・repo内絶対pathでstart/doneが通る', async (
   const bodyRef = path.join(root, 'body-evidence.md');
   await writeFile(bodyRef, '# 実装メモ\n');
   const byAbsolute = successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T2', '--evidence', bodyRef,
+    'todo', 'done', '--plan', 'main', '--task', 'T2', '--message', '閉じた',
   ]));
   assert.equal(byAbsolute.status, 'done');
 });
@@ -663,7 +663,7 @@ test('start/reopen overrideをexact argvで処理する', async (context) => {
   assert.equal(overridden.status, 'in-progress');
 
   successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', descriptorRef]));
+  successJson(runCli(root, ['todo', 'done', '--plan', 'main', '--task', 'T1', '--message', '閉じた']));
   const withoutOverride = runCli(root, [
     'todo', 'reopen', '--plan', 'main', '--task', 'T1', '--reason', 'correction',
   ]);

@@ -34,7 +34,7 @@ function refused(root, args, extra = seat('fixture')) {
 function follow(root, nextAction, pattern, extra) {
   const command = nextAction.match(pattern)?.[1];
   assert.ok(command, nextAction);
-  const args = command.replace(/^lattice /u, '').replace(/<file>/gu, 'audit.md').replace(/<text>/gu, 'a36').split(' ');
+  const args = command.replace(/^lattice /u, '').replace(/ \[[^\]]*\]/gu, '').replace(/<file>/gu, 'audit.md').replace(/<text>/gu, 'a36').split(' ');
   return success(root, args, extra);
 }
 async function fixture(context) {

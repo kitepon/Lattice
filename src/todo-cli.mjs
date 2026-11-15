@@ -723,7 +723,7 @@ async function readRevisionInput(repoRoot, inputRef, {
  * One-version alias: `--evidence <file>` stands for `--message <text>` with the file's text. No blob is written
  * and no descriptor is built; the text is the record.
  */
-async function readEvidenceText(repoRoot, evidenceRef, { inlineFlag = null } = {}) {
+async function readEvidenceText(repoRoot, evidenceRef, { inlineFlag = '--message' } = {}) {
   const located = await resolveAuthoringInputPath(repoRoot, evidenceRef, { inlineFlag });
   const bytes = await readFile(located.absolute);
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
@@ -886,7 +886,8 @@ async function mutate({
   const testResult = testResultRef === null ? null : await readTestResultInput(repoRoot, testResultRef);
   let eventPayload = payload;
   if (kind === 'done' && payload === 'authored') {
-    eventPayload = { message, ...(testResult === null ? {} : { test_result: testResult }) };
+    // The store canonicalizes only the legacy {evidence} input, so the CLI sends the recorded shape itself.
+    eventPayload = { done_mode: 'authored', imported: false, message, ...(testResult === null ? {} : { test_result: testResult }) };
   }
   const { event, snapshot, plan, phases } = await appendTodoEvent({
     validateProspectiveEvent: validator,
