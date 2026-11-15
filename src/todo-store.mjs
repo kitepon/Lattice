@@ -17,10 +17,14 @@ export {
   todoTaskCarrySemantics,
 } from './todo-store-view.mjs';
 import { randomBytes } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
 import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
 import { memoByFileIdentity } from './todo-version-memo.mjs';
+import {
+  TODO_VERSION_COMPACT_FILE, buildVersionCompact, packVersionCompact, readVersionCompact, reconstructPlan, reconstructRevision,
+} from './todo-version-compact.mjs';
 import {
   lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir,
 } from 'node:fs/promises';
@@ -328,9 +332,15 @@ async function readSealedSegments(repoRoot, journalRef, directoryName) {
 }
 
 async function readJournal(repoRoot, journalRef) {
-  const state = await pathState(repoRoot, journalRef, 'STORE_CORRUPT');
+  // b10: a retained version's active segment may be kept gzip-packed as `active.jsonl.gz` (same bytes once unpacked).
+  const state = await pathState(repoRoot, journalRef, 'STORE_CORRUPT', { missing: true });
+  const packed = state === null ? await pathState(repoRoot, `${journalRef}.gz`, 'STORE_CORRUPT') : null;
   const segments = await readSealedSegments(repoRoot, journalRef, 'sealed');
-  const activeBytes = normalizeCheckoutEol(await readFile(state.absolute));
+  let activeBytes;
+  try {
+    activeBytes = state === null ? gunzipSync(await readFile(packed.absolute), { maxOutputLength: TODO_LIMITS.journalSegmentBytes })
+      : normalizeCheckoutEol(await readFile(state.absolute));
+  } catch { fail('STORE_CORRUPT', 'journal_gzip_invalid', { ref: `${journalRef}.gz` }); }
   const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
   if (!duplicateActive) {
     segments.push({ ref: journalRef, bytes: activeBytes, events: parseJournalSegment(activeBytes, journalRef) });
@@ -1706,6 +1716,11 @@ async function readTodoStoreView(options = {}) {
  * unreadable. perf-store: validated once per process per unchanged plan.json (todo-version-memo).
  */
 async function retainedPlanVersion(repoRoot, base, version) {
+  const compact = await readCompactRecord(repoRoot, base, version).catch(() => null);
+  if (compact !== null) {
+    return { plan: { plan_digest: compact.plan_digest, predecessor_plan_digest: compact.predecessor_plan_digest,
+      topology_digest: compact.topology_digest }, journalRef: `${base}/${version}/journal/active.jsonl` };
+  }
   const ref = `${base}/${version}/plan.json`;
   const plan = await memoByFileIdentity([path.resolve(repoRoot, ref)], async () => {
     const value = await readArtifact(repoRoot, ref, {
@@ -1715,6 +1730,110 @@ async function retainedPlanVersion(repoRoot, base, version) {
       predecessor_plan_digest: value.predecessor_plan_digest, topology_digest: value.topology_digest };
   });
   return plan === null ? null : { plan, journalRef: `${base}/${version}/journal/active.jsonl` };
+}
+
+/** b10: a retained version's compact record (see todo-version-compact), or null while it still holds its own files. */
+async function readCompactRecord(repoRoot, base, version) {
+  const directory = path.resolve(repoRoot, base, version);
+  return memoByFileIdentity([path.join(directory, TODO_VERSION_COMPACT_FILE)], () => readVersionCompact(directory)
+    .catch(() => fail('STORE_INCONSISTENT', 'compact_record_invalid', { ref: `${base}/${version}/${TODO_VERSION_COMPACT_FILE}` })));
+}
+
+/** b10: one retained version's full `{plan, revision}` (revision null for a genesis version): its own files or its compact record. */
+export async function readRetainedVersion(repoRoot, base, version, active, cache = new Map()) {
+  if (version === active.plan_version) return { plan: active, revision: null };
+  if (cache.has(version)) return cache.get(version);
+  const plan = await readArtifact(repoRoot, `${base}/${version}/plan.json`, {
+    code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan, missing: true,
+  });
+  let result = null;
+  if (plan !== null) {
+    const revision = await readArtifact(repoRoot, `${base}/${version}/revision.json`, {
+      code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, missing: true,
+      validate: (value) => validateTodoRevision(value) || validatePhaseTodoRevision(value),
+    }).catch(() => null);
+    result = { plan, revision };
+  } else {
+    const record = await readCompactRecord(repoRoot, base, version);
+    if (record !== null) {
+      const anchor = await readRetainedVersion(repoRoot, base, record.anchor_plan_version, active, cache);
+      if (anchor === null) fail('STORE_INCONSISTENT', 'compact_anchor_missing', { version });
+      let rebuilt;
+      try { rebuilt = reconstructPlan(record, anchor.plan); } catch { fail('STORE_INCONSISTENT', 'compact_plan_mismatch', { version }); }
+      if (!validateTodoPlan(rebuilt)) fail('STORE_INCONSISTENT', 'compact_plan_invalid', { version });
+      result = { plan: rebuilt, revision: reconstructRevision(record, rebuilt) };
+    }
+  }
+  cache.set(version, result);
+  return result;
+}
+
+/** b10: keep a retained version's active journal segment as gzip (`active.jsonl.gz`); it is read back byte for byte. */
+async function packRetainedJournal(plain) {
+  const bytes = await exactFileOrNull(plain);
+  if (bytes === null) return;
+  await atomicWrite(`${plain}.gz`, gzipSync(bytes, { level: 9 }));
+  await rm(plain);
+  await fsyncDirectory(path.dirname(plain));
+}
+
+/**
+ * b10: replace the plan.json, revision.json and snapshot.json of the versions a member's active version superseded with one
+ * compact.json each (reverse patch to its successor; the journal segment is gzip-packed). `hook` compacts only the direct predecessor (after every successor write);
+ * `sweep` walks the whole predecessor chain, also finishing a half-done compaction. Lock held by the caller. Returns the versions
+ * compacted and, when the walk could not continue, why. History stays: the three digests, the revision and the exact plan rebuild.
+ */
+async function compactSupersededVersions(repoRoot, member, { sweep = false, limit = Infinity } = {}) {
+  const base = `${STORE_ROOT_REF}/plans/${member.plan.plan_key}`;
+  const compacted = [];
+  let anchor = member.plan;
+  let version = member.revision?.predecessor?.plan_version ?? null;
+  while (version !== null) {
+    const directory = path.resolve(repoRoot, base, version);
+    const originals = ['plan.json', 'revision.json', 'snapshot.json'].map((name) => path.join(directory, name));
+    const removeOriginals = async () => {
+      for (const file of originals) await rm(file, { force: true });
+      await packRetainedJournal(path.join(directory, 'journal', 'active.jsonl'));
+      await fsyncDirectory(directory);
+    };
+    const record = await readCompactRecord(repoRoot, base, version);
+    if (record !== null) {
+      if (await exactFileOrNull(originals[0]) !== null) await removeOriginals(); // a compaction cut short after compact.json.gz
+      else if (!sweep) break;
+      try { anchor = reconstructPlan(record, anchor); } catch { return { compacted, stopped: 'compact_anchor_mismatch', version }; }
+      version = record.predecessor_plan_version;
+    } else {
+      const retained = await readRetainedVersion(repoRoot, base, version, member.plan).catch(() => null);
+      if (retained === null) return { compacted, stopped: 'version_unreadable', version };
+      const built = buildVersionCompact({ retained: retained.plan, anchor, revision: retained.revision });
+      if (built === null) return { compacted, stopped: 'round_trip_mismatch', version };
+      await atomicWrite(path.join(directory, TODO_VERSION_COMPACT_FILE), packVersionCompact(built));
+      await removeOriginals();
+      compacted.push(version);
+      anchor = retained.plan;
+      version = built.predecessor_plan_version;
+    }
+    if (!sweep) break;
+    if (compacted.length >= limit && version !== null) return { compacted, stopped: 'limit', version };
+  }
+  return { compacted, stopped: null, version: null };
+}
+
+/** b10: `lattice todo compact`: compact the retained versions of every member (or `planKey`), at most `limit` per call. */
+export async function compactTodoVersions(options = {}) {
+  requireWriter(options.writer, 'g5-authoring');
+  const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+  return withLock(repoRoot, async () => {
+    const store = await readTodoStoreLocked({ repoRoot, forWrite: true, now: options.now });
+    const plans = [];
+    for (const member of store.members) {
+      if (options.planKey !== undefined && member.plan.plan_key !== options.planKey) continue;
+      const result = await compactSupersededVersions(repoRoot, member, { sweep: true, limit: options.limit });
+      plans.push({ plan_key: member.plan.plan_key, compacted: result.compacted.length, stopped: result.stopped,
+        next_version: result.version });
+    }
+    return { schema: 'lattice.todo_compact_result.v1', project_id: store.project_id, plans };
+  }, { lockCapability: options[STORE_LOCK_HELD] });
 }
 
 async function retainedVersionNames(repoRoot, base, activePlan) {
@@ -2264,7 +2383,10 @@ async function withLock(repoRoot, callback, {
     const result = await callback(assertHeld);
     // The successor is already published: a failed repair leaves findings for the next locked write.
     try {
-      const repairs = await repairCrossPlanBindings(repoRoot, await readTodoStoreView({ repoRoot }),
+      const view = await readTodoStoreView({ repoRoot });
+      // b10: the version this write superseded keeps only its difference; a failure leaves the full files, retried next write.
+      for (const member of view.members) await compactSupersededVersions(repoRoot, member).catch(() => {});
+      const repairs = await repairCrossPlanBindings(repoRoot, view,
         { assertHeld, actor: repairAfter.actor, recordedAt: repairAfter.recordedAt ?? new Date().toISOString() });
       // Results stay digest-bound; the caller learns the repairs through its own callback.
       if (repairs.length > 0 && typeof repairAfter.onRepairs === 'function') await repairAfter.onRepairs(repairs);
@@ -2764,10 +2886,9 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
     ))) fail('DEPENDENCY_INVALID', 'dependency_rebind_original_mismatch');
     const predecessorBinding = source.revision?.predecessor;
     if (!predecessorBinding) fail('DEPENDENCY_INVALID', 'dependency_rebind_predecessor_missing');
-    const predecessor = await readArtifact(repoRoot,
-      `${STORE_ROOT_REF}/plans/${source.plan.plan_key}/${predecessorBinding.plan_version}/plan.json`, {
-        code: 'STORE_INCONSISTENT', maxBytes: TODO_LIMITS.snapshotBytes, validate: validateTodoPlan,
-      });
+    const predecessor = (await readRetainedVersion(repoRoot, `${STORE_ROOT_REF}/plans/${source.plan.plan_key}`,
+      predecessorBinding.plan_version, source.plan))?.plan;
+    if (!predecessor) fail('STORE_INCONSISTENT', 'artifact_missing');
     if (predecessor.project_id !== source.plan.project_id || predecessor.plan_key !== source.plan.plan_key
       || predecessor.plan_version !== predecessorBinding.plan_version
       || predecessor.plan_digest !== predecessorBinding.plan_digest) {
@@ -4949,39 +5070,18 @@ async function cleanupPhaseV3Staging(transaction, staged) {
 
 export async function predecessorSourceInventory(repoRoot, previous) {
   if (previous.revision?.source_inventory !== undefined) return previous.revision.source_inventory;
-  const versionsRoot = path.join(repoRoot, STORE_ROOT_REF, 'plans', previous.plan.plan_key);
-  const plansByDigest = new Map();
-  for (const entry of await readdir(versionsRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const planBytes = await exactFileOrNull(path.join(versionsRoot, entry.name, 'plan.json'));
-    if (planBytes === null) continue;
-    let plan;
-    try { plan = JSON.parse(decodeUtf8(planBytes, 'STORE_INCONSISTENT', 'plan_invalid')); }
-    catch { continue; }
-    if (!planBytes.equals(canonicalLine(plan)) || !validateTodoPlan(plan)
-      || plan.plan_key !== previous.plan.plan_key) continue;
-    plansByDigest.set(plan.plan_digest, { plan, directory: path.join(versionsRoot, entry.name) });
-  }
-  const visited = new Set();
-  let digest = previous.plan.predecessor_plan_digest;
-  while (digest !== null && !visited.has(digest) && visited.size < 512) {
-    visited.add(digest);
-    const candidate = plansByDigest.get(digest);
-    if (candidate === undefined) break;
-    const revisionBytes = await exactFileOrNull(path.join(candidate.directory, 'revision.json'));
-    if (revisionBytes !== null) {
-      let revision;
-      try { revision = JSON.parse(decodeUtf8(revisionBytes,
-        'STORE_INCONSISTENT', 'revision_invalid')); } catch { revision = null; }
-      if (revision !== null && revisionBytes.equals(canonicalLine(revision))
-        && (validateTodoRevision(revision) || validatePhaseTodoRevision(revision))
-        && revision.project_id === candidate.plan.project_id
-        && revision.plan_key === candidate.plan.plan_key
-        && canonicalizeTodoArtifact(revision.desired_plan)
-          === canonicalizeTodoArtifact(candidate.plan)
-        && revision.source_inventory !== undefined) return revision.source_inventory;
-    }
-    digest = candidate.plan.predecessor_plan_digest;
+  // b10: walk the revision bindings (no scan of every retained version); a compacted version is rebuilt exactly.
+  const base = `${STORE_ROOT_REF}/plans/${previous.plan.plan_key}`;
+  const cache = new Map(); const visited = new Set();
+  for (let version = previous.revision?.predecessor?.plan_version ?? null; version !== null && !visited.has(version);) {
+    visited.add(version);
+    const candidate = await readRetainedVersion(repoRoot, base, version, previous.plan, cache).catch(() => null);
+    const { plan, revision } = candidate ?? {};
+    if (!plan || plan.plan_key !== previous.plan.plan_key) break;
+    if (revision && revision.project_id === plan.project_id && revision.plan_key === plan.plan_key
+      && canonicalizeTodoArtifact(revision.desired_plan) === canonicalizeTodoArtifact(plan)
+      && revision.source_inventory !== undefined) return revision.source_inventory;
+    version = revision?.predecessor?.plan_version ?? null;
   }
   return { active: [], excluded_tombstones: [] };
 }

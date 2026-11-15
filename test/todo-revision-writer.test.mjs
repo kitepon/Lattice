@@ -5,6 +5,7 @@ import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, write
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { gunzipSync } from 'node:zlib';
 
 import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
 import {
@@ -367,7 +368,8 @@ test('revision writerはv2 genesisからcarry/reset/source-seeded stateを投影
     ['T1', 'pending'], ['T2', 'pending'], ['T3', 'pending'], ['T4', 'pending'],
     ['T5', 'pending'], ['T6', 'pending'],
   ]);
-  assert.deepEqual(await readFile(path.join(root, '.lattice/todo/plans/main/v1/journal/active.jsonl')), oldJournal);
+  // b10: the superseded journal segment is kept gzip-packed, byte for byte
+  assert.deepEqual(gunzipSync(await readFile(path.join(root, '.lattice/todo/plans/main/v1/journal/active.jsonl.gz'))), oldJournal);
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T6', actor: ACTOR, recorded_at: NOW,
       payload: { override_reason: null } } });
@@ -559,7 +561,7 @@ test('removed taskはsuccessorから除外しpredecessor v1履歴とevidenceを�
     .find(({ from_task_id }) => from_task_id === 'T5'), {
     from_task_id: 'T5', to_task_id: 'removed', state_policy: 'removed', state: null,
   });
-  assert.deepEqual(await readFile(oldJournalRef), oldJournal);
+  assert.deepEqual(gunzipSync(await readFile(`${oldJournalRef}.gz`)), oldJournal);
   const predecessorEvents = oldJournal.toString('utf8').trimEnd().split('\n').map(JSON.parse);
   assert.deepEqual(predecessorEvents.slice(-2).map(({ kind }) => kind), ['start', 'done']);
   assert.deepEqual(predecessorEvents.at(-1).payload.evidence, evidence);

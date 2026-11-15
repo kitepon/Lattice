@@ -65,6 +65,7 @@ import {
   appendTodoStructureRealization,
   applyPhaseTodoRevision,
   applyTodoRevision,
+  compactTodoVersions,
   applyTodoRevisionSet,
   buildTodoPlan,
   createTodoStoreWriter,
@@ -314,7 +315,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'evidence', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers',
+  'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers', 'compact',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -384,6 +385,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   'notice list': Object.freeze({ known: ['lane', 'include-acked', 'json'], required: [], booleans: ['include-acked', 'json'] }),
   'notice ack': Object.freeze({ known: ['lane', 'notice', 'json'], required: ['lane', 'notice'], booleans: ['json'] }),
   blockers: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
+  compact: Object.freeze({ known: ['plan', 'limit', 'json'], required: [], booleans: ['json'] }),
   'connect priority': Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
   wait: Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
   'note list': Object.freeze({ known: ['plan', 'task', 'json'], required: ['plan'], booleans: ['json'] }),
@@ -5571,6 +5573,13 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const ids = typeof flags.notice === 'string' ? [...new Set(flags.notice.split(',').map((id) => id.trim()))] : [];
     if (isNoticeLane(flags.lane) && ids.length > 0 && ids.every((id) => /^[0-9a-f]{64}$/u.test(id))) {
       action = (repoRoot) => noticeAck({ repoRoot, env, lane: flags.lane, ids });
+    }
+  } else if (argv[0] === 'compact' && matchFlagCommand(argv, ['compact'], TODO_FLAG_SPECS.compact) !== null) {
+    // b10: retained versions keep only their difference from the successor; this finishes the ones written before.
+    const flags = matchFlagCommand(argv, ['compact'], TODO_FLAG_SPECS.compact);
+    if ((flags.plan === undefined || isTodoIdentifier(flags.plan)) && (flags.limit === undefined || /^[1-9]\d{0,5}$/u.test(flags.limit))) {
+      action = (repoRoot) => compactTodoVersions({ repoRoot, writer: createTodoStoreWriter({ caller: 'g5-authoring' }),
+        planKey: flags.plan, limit: flags.limit === undefined ? 40 : Number(flags.limit) });
     }
   } else if (argv[0] === 'blockers' && matchFlagCommand(argv, ['blockers'], TODO_FLAG_SPECS.blockers) !== null) {
     action = (repoRoot) => blockerList({ repoRoot });
