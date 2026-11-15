@@ -246,6 +246,9 @@ export function validateTodoNoteContext(value) {
 }
 
 const nullableDigest = (value) => value === null || isTodoDigest(value);
+/** k4: a done recorded as plain text. The task's `evidence` is `{message}` (carried across revisions like any evidence). */
+export const isTodoDoneMessage = (value) => exactRecord(value, ['message']) && typeof value.message === 'string'
+  && value.message.trim().length > 0 && Buffer.byteLength(value.message) <= TODO_LIMITS.noteBodyBytes;
 const nullableText = (value) => value === null || (typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 16_384);
 /** 設計メモの拒否理由を、本文をerrorへ複製せずAIが訂正できる形で返す。 */
 export function explainTodoDesignMemo(value) {
@@ -632,6 +635,14 @@ function validPayload(event) {
         && ['pending', 'blocked', 'in-progress', 'done'].includes(payload.prior_status)))
       && nullableText(payload.reason) && payload.reason !== null;
   }
+  if (event.kind === 'done' && payload?.done_mode === 'authored' && typeof payload.message === 'string') {
+    // k4: a new done record is plain text in the event (no blob, descriptor or digest). Legacy `evidence` records stay valid below.
+    return (exactRecord(payload, ['done_mode', 'imported', 'message'])
+      || exactRecord(payload, ['done_mode', 'imported', 'message', 'test_result']))
+      && payload.imported === false && payload.message.trim().length > 0
+      && Buffer.byteLength(payload.message) <= TODO_LIMITS.noteBodyBytes
+      && (payload.test_result === undefined || isTodoTestResult(payload.test_result));
+  }
   if (event.kind === 'done' && payload?.done_mode === 'authored') {
     return (exactRecord(payload, ['done_mode', 'imported', 'evidence'])
       || exactRecord(payload, ['done_mode', 'imported', 'evidence', 'test_result']))
@@ -656,6 +667,18 @@ function validPayload(event) {
     && nullableText(payload.override_reason);
   if (event.kind === 'phase_review') return exactRecord(payload, ['reason'])
     && nullableText(payload.reason) && payload.reason !== null;
+  // k4: a new accept/reject carries no evidence descriptor or slots; an optional plain-text `message` (same limits as done's).
+  const planMessage = (value) => typeof value === 'string' && value.trim().length > 0
+    && Buffer.byteLength(value) <= TODO_LIMITS.noteBodyBytes;
+  if (event.kind === 'phase_accept' && (exactRecord(payload, ['review_event_digest'])
+    || exactRecord(payload, ['review_event_digest', 'message']))) {
+    return isTodoDigest(payload.review_event_digest) && (payload.message === undefined || planMessage(payload.message));
+  }
+  if (event.kind === 'phase_reject' && (exactRecord(payload, ['review_event_digest', 'reason'])
+    || exactRecord(payload, ['review_event_digest', 'reason', 'message']))) {
+    return isTodoDigest(payload.review_event_digest) && nullableText(payload.reason) && payload.reason !== null
+      && (payload.message === undefined || planMessage(payload.message));
+  }
   if (event.kind === 'phase_accept') return exactRecord(payload, [
     'review_event_digest', 'decision_evidence', 'evidence_slots',
   ]) && isTodoDigest(payload.review_event_digest) && evidence(payload.decision_evidence)
@@ -712,7 +735,7 @@ function validCarriedState(value) {
     // imported doneの現在証拠はimport sourceまたは通常evidence descriptorのどちらも有効。
     && (value.imported
       ? validateTodoImportSource(value.evidence) || evidence(value.evidence)
-      : evidence(value.evidence));
+      : evidence(value.evidence) || isTodoDoneMessage(value.evidence));
 }
 
 function validStateMigration(value) {
@@ -848,7 +871,8 @@ export function validateTodoSnapshot(value) {
       ]) && isTodoIdentifier(entry.task_id) && ['pending', 'in-progress', 'blocked', 'retired', 'done'].includes(entry.status)
         && (entry.started_at === null || isStrictTodoTimestamp(entry.started_at))
         && (entry.done_at === null || isStrictTodoTimestamp(entry.done_at)) && nullableText(entry.blocked_reason)
-        && (entry.evidence === null || evidence(entry.evidence) || validateTodoImportSource(entry.evidence))
+        && (entry.evidence === null || evidence(entry.evidence) || validateTodoImportSource(entry.evidence)
+          || isTodoDoneMessage(entry.evidence))
         && typeof entry.evidence_unverified === 'boolean' && typeof entry.imported === 'boolean'
         && (!resultAware || (entry.status === 'done'
           ? entry.test_result === null || isTodoTestResult(entry.test_result)

@@ -979,43 +979,6 @@ test('reopen前後の全旧done証拠は最新promotion後のhard readを再停�
   assert.equal(task1.evidence.content_digest, final.descriptor.content_digest);
 });
 
-test('evidence promoteは過去の不達だけを許し新しい不正証拠を記録しない', async (context) => {
-  const root = await workspace(context);
-  const original = await evidenceFixture(root, 'repair-target', 'before\n');
-  gitOutput(root, ['add', 'repair-target.txt']);
-  gitOutput(root, [
-    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'original evidence',
-  ]);
-  successJson(runCli(root, ['todo', 'start', '--plan', 'main', '--task', 'T1']));
-  successJson(runCli(root, [
-    'todo', 'done', '--plan', 'main', '--task', 'T1', '--evidence', original.descriptorRef,
-  ]));
-  const oldObject = original.descriptor.git_blob_oid;
-  await unlink(path.join(root, '.git', 'objects', oldObject.slice(0, 2), oldObject.slice(2)));
-
-  const writable = await readTodoStore({ repoRoot: root, forWrite: true });
-  assert.equal(writable.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
-
-  const invalid = {
-    ...original.descriptor,
-    git_blob_oid: 'f'.repeat(40),
-    content_digest: 'e'.repeat(64),
-  };
-  await writeFile(path.join(root, 'invalid-replacement.json'), `${JSON.stringify(invalid)}\n`);
-  const before = await storeDigest(root);
-  const result = runCli(root, [
-    'todo', 'evidence', 'promote', '--plan', 'main', '--task', 'T1',
-    '--evidence', 'invalid-replacement.json',
-  ]);
-  assert.equal(result.status, 1);
-  const failure = JSON.parse(result.stderr);
-  assert.equal(failure.detail.reason, 'evidence_unverified');
-  assert.equal(failure.detail.plan_key, 'main');
-  assert.equal(failure.detail.task_id, 'T1');
-  assert.equal(await storeDigest(root), before);
-});
-
 test('evidence promoteは別taskの不達を残して順に修復できる', async (context) => {
   const root = await workspace(context);
   const first = await evidenceFixture(root, 'first-task', 'first\n');

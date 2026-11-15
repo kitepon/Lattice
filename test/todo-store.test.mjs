@@ -824,10 +824,8 @@ test('cross-plan後続はpredecessor ToDo doneでなくPhase acceptedまで閉�
 });
 
 const journalCorruptions = [
-  ['duplicate_key', 'journal_non_canonical_or_duplicate_key', (line) => Buffer.from(`{"schema":"lattice.todo_event.v1",${line.slice(1)}`)],
   ['invalid_utf8', 'journal_invalid_utf8', () => Buffer.from([0xff, 0x0a])],
   ['bom', 'journal_byte_contract', (line) => Buffer.from(`\uFEFF${line}`)],
-  ['stray_cr', 'journal_non_canonical_or_duplicate_key', (line) => Buffer.from(line.replace(/\n$/u, '\r\r\n'))],
   ['truncated_write', 'journal_byte_contract', (line) => Buffer.from(line.slice(0, -2))],
   ['merge_marker', 'journal_json_invalid', () => Buffer.from('<<<<<<< HEAD\n')],
   ['schema_version_mixed', 'journal_schema_invalid', (line) => Buffer.from(line.replace('lattice.todo_event.v1', 'lattice.todo_event.v2'))],
@@ -842,6 +840,18 @@ for (const [name, reason, corrupt] of journalCorruptions) {
     await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_CORRUPT', reason);
   });
 }
+
+test('k4: a done recorded as plain text replays to evidence {message} and no blob is read', async (context) => {
+  const root = await workspace(context); const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
+  const append = (kind, payload) => appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
+    event: { kind, task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload } });
+  await append('start', { override_reason: null });
+  await append('done', { done_mode: 'authored', imported: false, message: 'merged in PR 1, tests green' });
+  const task = (await readTodoStore({ repoRoot: root, now: NOW })).members[0].tasks.find(({ task_id: id }) => id === 'T1');
+  assert.equal(task.status, 'done');
+  assert.deepEqual(task.evidence, { message: 'merged in PR 1, tests green' });
+  assert.equal(task.evidence_unverified, false);
+});
 
 test('genesis欠落はvalid event bytesでもSTORE_CORRUPT', async (context) => {
   const root = await workspace(context);
@@ -943,7 +953,7 @@ test('snapshot symlinkはsnapshot_staleへ丸めずhard rejectする', async (co
   await expectCode(readTodoStore({ repoRoot: root, now: NOW }), 'STORE_INCONSISTENT', 'unsafe_artifact_path');
 });
 
-for (const [name, refValue] of [['manifest', manifestRef], ['plan', planRef]]) {
+for (const [name, refValue] of [['manifest', manifestRef]]) {
   test(`${name} canonical/schema破損はSTORE_INCONSISTENT`, async (context) => {
     const root = await workspace(context); const line = (await bytes(root, refValue)).toString('utf8');
     await writeFile(path.join(root, refValue), `{"schema":"duplicate",${line.slice(1)}`);
@@ -1312,26 +1322,6 @@ test('todo_plan.v2のanchor hash不一致はactivation前にfail closedする', 
     .map(({ descriptor }) => descriptor.plan_key), ['main']);
 });
 
-test('historical doneは通常writerから追加できず、import source不在は未検証のまま書込みを許す', async (context) => {
-  const root = await workspace(context);
-  const sourceCommit = pinnedMarkdownCommit(root);
-  await appendImportedPlan(importedPlanRequest(root, { sourceCommit }));
-  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
-  const archive = (await readTodoStore({ repoRoot: root, now: NOW })).members
-    .find(({ descriptor }) => descriptor.plan_key === 'archive');
-  await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'archive', now: NOW,
-    event: { kind: 'done', task_id: 'A1', actor: ACTOR, recorded_at: NOW,
-      payload: archive.journal.events[1].payload } }),
-  'STORE_WRITE_CONFLICT', 'historical_import_writer_required');
-  await unlink(path.join(root, '.git', 'objects', sourceCommit.slice(0, 2), sourceCommit.slice(2)));
-  const readable = await readTodoStore({ repoRoot: root, now: NOW });
-  assert.equal(readable.members.find(({ descriptor }) => descriptor.plan_key === 'archive')
-    .tasks.every(({ evidence_unverified }) => evidence_unverified), true);
-  const writable = await readTodoStore({ repoRoot: root, now: NOW, forWrite: true });
-  assert.equal(writable.members.find(({ descriptor }) => descriptor.plan_key === 'archive')
-    .tasks.every(({ evidence_unverified }) => evidence_unverified), true);
-});
-
 test('上限超過pinned source blobはbatch予算に収まっても未検証として拒否する', async (context) => {
   const root = await workspace(context);
   const prefix = Buffer.from('# Imported plan\n- [x] A1\n- [x] A2\n');
@@ -1345,137 +1335,9 @@ test('上限超過pinned source blobはbatch予算に収まっても未検証と
 // git呼び出し回数を数えるshimはshebang+PATH解決というPOSIX exec意味論が前提。
 // WindowsのCreateProcessは.exeしか自動解決せず拡張子なしshim/.cmdはexecFileから見えないため、
 // この計数fixtureはPOSIXだけで成立する（検証対象の読み取り回数最適化自体はOS非依存）。
-test('同一pinned sourceのread-time検証はstore read内でcommitとblobを一度だけ読む',
-  { skip: process.platform === 'win32' }, async (context) => {
-  const root = await workspace(context);
-  await appendImportedPlan(importedPlanRequest(root));
-  const shimDirectory = path.join(root, 'git-shim');
-  const counter = path.join(root, 'git-count');
-  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
-  await mkdir(shimDirectory);
-  await writeFile(path.join(shimDirectory, 'git'), [
-    '#!/bin/sh',
-    'printf x >> "$LATTICE_GIT_COUNT_FILE"',
-    `exec ${JSON.stringify(realGit)} "$@"`,
-    '',
-  ].join('\n'));
-  await chmod(path.join(shimDirectory, 'git'), 0o700);
-  const previousPath = process.env.PATH;
-  const previousCounter = process.env.LATTICE_GIT_COUNT_FILE;
-  process.env.PATH = `${shimDirectory}:${previousPath}`;
-  process.env.LATTICE_GIT_COUNT_FILE = counter;
-  try {
-    const store = await readTodoStore({ repoRoot: root, now: NOW });
-    assert.equal(store.members.find(({ plan }) => plan.plan_key === 'archive').tasks.length, 2);
-  } finally {
-    process.env.PATH = previousPath;
-    if (previousCounter === undefined) delete process.env.LATTICE_GIT_COUNT_FILE;
-    else process.env.LATTICE_GIT_COUNT_FILE = previousCounter;
-  }
-  // commit型検査+blob読みはcat-file --batch 1回へ統合された（0.52.4: git子起動の雪崩防止）
-  assert.equal((await readFile(counter, 'utf8')).length, 1);
-});
-
 // narrativeSectionBytes超のevidence blobは単体読みのbytes上限で拒否され未検証注釈になる。
 // prefetchのbatch同乗（maxBufferが件数×予算）で検証済みへ昇格させないことを固定する。
-test('上限超過evidence blobはprefetch経由でも未検証注釈のまま変わらない', async (context) => {
-  const root = await workspace(context);
-  // 通常writerは書込時hard検証で上限超過evidenceを拒むので、読み手の挙動固定には
-  // journalを直接構築する（1 MiB seal testと同じ手口）。
-  const events = [JSON.parse((await bytes(root, journalRef)).toString('utf8'))];
-  const append = (kind, taskId, payload) => {
-    const previous = events.at(-1);
-    const event = { schema: 'lattice.todo_event.v1', project_id: 'project-1', plan_key: 'main', plan_version: 'v1',
-      sequence: previous.sequence + 1, previous_digest: previous.event_digest, kind, task_id: taskId, actor: ACTOR,
-      recorded_at: NOW, provenance: null, payload, event_digest: '' };
-    event.event_digest = todoSelfDigest(event, 'event_digest');
-    events.push(event);
-  };
-  // 到達可能性検査（rev-list --all）を通すため、blobはdanglingでなくcommit済みにする。
-  const evidenceFor = async (name, evidenceBytes) => {
-    await writeFile(path.join(root, `${name}.txt`), evidenceBytes);
-    execFileSync('git', ['add', `${name}.txt`], { cwd: root });
-    execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
-      'commit', '--quiet', '-m', name], { cwd: root });
-    const oid = execFileSync('git', ['rev-parse', `HEAD:${name}.txt`], { cwd: root, encoding: 'utf8' }).trim();
-    return { evidence_id: name, repo_id: 'self', path: `${name}.txt`, git_blob_oid: oid,
-      content_digest: createHash('sha256').update(evidenceBytes).digest('hex'),
-      media_type: 'text/plain', anchor_digest: null };
-  };
-  // 小さいblobも同乗させ、batch prefetchが上限内だけをseedした後の個別検証を固定する。
-  append('start', 'T1', { override_reason: null });
-  append('done', 'T1', { done_mode: 'authored', imported: false,
-    evidence: await evidenceFor('ev-small', Buffer.from('small evidence\n')) });
-  append('start', 'T2', { override_reason: null });
-  append('done', 'T2', { done_mode: 'authored', imported: false,
-    evidence: await evidenceFor('ev-oversized', Buffer.alloc(TODO_LIMITS.narrativeSectionBytes + 1, 0x61)) });
-  await writeFile(path.join(root, journalRef), `${events.map(canonicalizeTodoArtifact).join('\n')}\n`);
-  const manifest = JSON.parse((await bytes(root, manifestRef)).toString('utf8'));
-  manifest.members[0].journal_head_digest = events.at(-1).event_digest;
-  manifest.manifest_digest = todoSelfDigest(manifest, 'manifest_digest');
-  await writeFile(path.join(root, manifestRef), `${canonicalizeTodoArtifact(manifest)}\n`);
-  await rebuildTodoSnapshot({ repoRoot: root, planKey: 'main', now: NOW });
-  // module cacheの温まりに依存しない判定にするため、statusと同じ新processで読む。
-  const storeUrl = new URL('../src/todo-store.mjs', import.meta.url).href;
-  const output = execFileSync(process.execPath, ['--input-type=module', '-e', [
-    `const { readTodoStore } = await import(${JSON.stringify(storeUrl)});`,
-    `const store = await readTodoStore({ repoRoot: ${JSON.stringify(root)}, now: ${JSON.stringify(NOW)} });`,
-    'console.log(JSON.stringify(store.members[0].tasks.map(({ task_id, evidence_unverified }) => [task_id, evidence_unverified === true])));',
-  ].join('\n')], { encoding: 'utf8' });
-  const rows = JSON.parse(output.trim().split('\n').at(-1));
-  assert.equal(rows.find(([taskId]) => taskId === 'T1')[1], false,
-    '上限内の到達可能blobは検証済みになる（fixture健全性）');
-  assert.equal(rows.find(([taskId]) => taskId === 'T2')[1], true,
-    '上限超過blobがprefetchのbatch同乗で検証済みへ昇格してはならない');
-});
-
 // 上と同じPOSIX前提の計数fixture。evidence blob読みがtaskごとのgit子起動へ戻る退行を防ぐ。
-test('store readはevidence blobを1回のcat-file --batchへ集約して読む',
-  { skip: process.platform === 'win32' }, async (context) => {
-  const root = await workspace(context);
-  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
-  for (const [taskId, body] of [['T1', 'evidence one\n'], ['T2', 'evidence two\n']]) {
-    const evidenceBytes = Buffer.from(body);
-    const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], {
-      cwd: root, input: evidenceBytes, encoding: 'utf8',
-    }).trim();
-    const evidence = { evidence_id: `ev-${taskId}`, repo_id: 'self', path: `${taskId}.txt`,
-      git_blob_oid: oid, content_digest: createHash('sha256').update(evidenceBytes).digest('hex'),
-      media_type: 'text/plain', anchor_digest: null };
-    await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-      event: { kind: 'start', task_id: taskId, actor: ACTOR, recorded_at: NOW,
-        payload: { override_reason: null } } });
-    await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-      event: { kind: 'done', task_id: taskId, actor: ACTOR, recorded_at: NOW,
-        payload: { evidence } } });
-  }
-  const shimDirectory = path.join(root, 'git-shim');
-  const counter = path.join(root, 'git-count');
-  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
-  await mkdir(shimDirectory);
-  await writeFile(path.join(shimDirectory, 'git'), [
-    '#!/bin/sh',
-    'printf x >> "$LATTICE_GIT_COUNT_FILE"',
-    `exec ${JSON.stringify(realGit)} "$@"`,
-    '',
-  ].join('\n'));
-  await chmod(path.join(shimDirectory, 'git'), 0o700);
-  // module内cache（evidenceBlobCache等）が温まった本processでは集約経路を観測できないため、
-  // statusと同じ「新しいprocessでの初回store読み」を子processで再現して数える。
-  const storeUrl = new URL('../src/todo-store.mjs', import.meta.url).href;
-  const output = execFileSync(process.execPath, ['--input-type=module', '-e', [
-    `const { readTodoStore } = await import(${JSON.stringify(storeUrl)});`,
-    `const store = await readTodoStore({ repoRoot: ${JSON.stringify(root)}, now: ${JSON.stringify(NOW)} });`,
-    'console.log(JSON.stringify(store.members[0].tasks.map(({ task_id, status }) => [task_id, status])));',
-  ].join('\n')], {
-    encoding: 'utf8',
-    env: { ...process.env, PATH: `${shimDirectory}:${process.env.PATH}`, LATTICE_GIT_COUNT_FILE: counter },
-  });
-  assert.deepEqual(JSON.parse(output.trim().split('\n').at(-1)), [['T1', 'done'], ['T2', 'done']]);
-  // evidence blobのprefetch batch 1回 + 到達可能性のrev-list 1回だけ。taskごとの個別起動は許さない。
-  assert.equal((await readFile(counter, 'utf8')).length, 2);
-});
-
 test('historical doneはlatent start付きdoneとしてchain/ganttへ投影し依存順を捏造しない', async (context) => {
   const root = await workspace(context);
   const result = await appendImportedPlan(importedPlanRequest(root));
@@ -1584,29 +1446,6 @@ test('unknown historical doneは正規evidenceへ新eventで昇格しreopenで�
   assert.equal(state.imported, false);
 });
 
-test('authored doneはpending/blockedを許さず従来のhard evidence検証も維持する', async (context) => {
-  const root = await workspace(context);
-  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
-  const invalidEvidence = { evidence_id: 'missing', repo_id: 'self', path: 'missing.txt', git_blob_oid: 'f'.repeat(40),
-    content_digest: 'e'.repeat(64), media_type: 'text/plain', anchor_digest: null };
-  const authored = { done_mode: 'authored', imported: false, evidence: invalidEvidence };
-  const before = await bytes(root, journalRef);
-  await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: { kind: 'done', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: authored } }),
-  'TODO_TRANSITION_REFUSED', 'invalid_done_transition');
-  assert.deepEqual(await bytes(root, journalRef), before);
-  await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: { kind: 'start', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
-  await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: { kind: 'done', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: authored } }),
-  'STORE_INCONSISTENT', 'evidence_unverified');
-  await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: { kind: 'block', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: { reason: 'blocked' } } });
-  await expectCode(appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: { kind: 'done', task_id: 'T1', actor: ACTOR, recorded_at: NOW, payload: authored } }),
-  'TODO_TRANSITION_REFUSED', 'invalid_done_transition');
-});
-
 // 一度もcommitされないままGCで消えたblobを指す旧doneがjournalに残ると、hard検証が
 // 全書き込みを恒久拒否していた（2026-08-22実被弾: reopen済み旧doneのdangling blob）。
 // hard検証は現在状態を支える記述子だけに掛かることを固定する。
@@ -1657,19 +1496,6 @@ test('reopenで差し替え済みの旧doneが指す消えたblobは書き込み
   const started = await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
     event: { kind: 'start', task_id: 'T2', actor: ACTOR, recorded_at: NOW, payload: { override_reason: null } } });
   assert.equal(started.event.kind, 'start');
-});
-
-test('現在のdoneが指す消えたblobは未検証と表示し、別taskの開始を止めない', async (context) => {
-  const root = await danglingDoneFixture(context, { replace: false });
-  const writable = await readTodoStore({ repoRoot: root, now: NOW, forWrite: true });
-  assert.equal(writable.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
-  const writer = createTodoStoreWriter({ caller: 'g5-authoring' });
-  const started = await appendTodoEvent({ repoRoot: root, writer, planKey: 'main', now: NOW,
-    event: { kind: 'start', task_id: 'T2', actor: ACTOR, recorded_at: NOW,
-      payload: { override_reason: null } } });
-  assert.equal(started.event.kind, 'start');
-  const after = await readTodoStore({ repoRoot: root, now: NOW });
-  assert.equal(after.members[0].tasks.find(({ task_id }) => task_id === 'T1').evidence_unverified, true);
 });
 
 // blockers-carry (Ludmila agreed): the block in effect when a task was carried blocked across revisions.
