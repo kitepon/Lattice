@@ -104,11 +104,11 @@ const CATALOG = Object.freeze({
   }),
   independence_conflict_with_active: Object.freeze({
     message: '作業中の工程と同じ資源を書く記録がある。並行すると衝突する。',
-    next_action: 'lattice todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+    next_action: 'lattice todo predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>',
   }),
   independence_conflict_between_ready: Object.freeze({
     message: '他のready工程と同じ資源を書く記録がある。同時に着手すると衝突する。',
-    next_action: 'lattice todo dependency connect --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+    next_action: 'lattice todo predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>',
   }),
   independence_verdicts_absent: Object.freeze({
     message: '判定が途中で止まっており、記録はどの組についてもverdictを持たない。自分にunknownが無いことは、他と干渉しない証拠にならない。',

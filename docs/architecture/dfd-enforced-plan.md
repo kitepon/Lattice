@@ -19,7 +19,7 @@ State and self-exit (guards rule):
 start refused (1) --witness declare--> declared --start--> in-progress
 start refused (1) on a Store root with no commit --witness declare (row recorded, not observed)--> declared_unobserved --start--> in-progress
 start refused (3) --witness declare (recompile)--> fresh --start--> in-progress
-start refused (2) --dependency connect--> waiting --active done--> ready --start--> in-progress
+start refused (2) --predecessor add--> not startable --active done--> ready --start--> in-progress
                   --start --override-reason--> in-progress (reason recorded)
 done refused (4)  --done --message "<URL|merged sha>"--> done
 close refused (5) --phase review--> review --phase accept (--evidence <file> | --message <text>)--> accepted

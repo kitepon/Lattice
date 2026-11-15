@@ -44,6 +44,35 @@ export function foldIndex(layout) {
   return new Set((layout?.folded ?? []).map((ref) => refKey(ref)));
 }
 
+// One 接続 area per task (Owner 2026-11-15): 他条件に接続 (task/schedule) and 優先接続 (priority) side by side, from the
+// single `connections` list; ブロック中 is drawn where it was.
+const CONNECTION_LABEL = Object.freeze({ task: '他条件に接続', schedule: '他条件に接続', priority: '優先接続' });
+const CONNECTION_TARGET = Object.freeze({ task: '工程', schedule: '予定' });
+
+function connectionLine(entry) {
+  const label = CONNECTION_LABEL[entry.kind] ?? '接続';
+  const settled = entry.state === 'settled';
+  const target = entry.kind === 'priority'
+    ? `${entry.agent}（着手できるようになったら知らせを受ける）`
+    : `${CONNECTION_TARGET[entry.kind] ?? ''} <code>${escapeHtmlText(entry.ref)}</code>`;
+  const state = entry.kind === 'priority' ? '' : settled ? ' — 成立' : entry.state_reason === 'chart_not_read' ? ' — 開いている（その工程表を読めません）' : ' — 開いている';
+  const note = [entry.reason, settled ? entry.evidence : null].filter((text) => typeof text === 'string' && text.length > 0).map(escapeHtmlText).join(' / ');
+  return `<li class="connection connection-${escapeHtmlAttribute(entry.kind)}" data-state="${escapeHtmlAttribute(entry.state ?? 'open')}"><strong>${label}</strong> ${target}${state}${note === '' ? '' : ` — ${note}`}${entry.since ? ` <time>${escapeHtmlText(entry.since)}</time>` : ''}</li>`;
+}
+
+/** The detail pane's 接続 area; empty when the task has no connections. */
+export function renderConnectionArea(connections = []) {
+  return connections.length === 0 ? ''
+    : `<section class="connections" aria-label="接続"><h2>接続</h2><ul>${connections.map(connectionLine).join('')}</ul></section>`;
+}
+
+/** The chip row: one chip per kind, counting the open 他条件に接続 and the 優先接続. */
+export function renderConnectionChips(connections = []) {
+  const open = connections.filter((entry) => entry.kind !== 'priority' && entry.state !== 'settled').length;
+  const priority = connections.filter((entry) => entry.kind === 'priority').length;
+  return `${open === 0 ? '' : `<span class="connection-chip">他条件に接続 ${open}</span>`}${priority === 0 ? '' : '<span class="connection-chip">優先接続</span>'}`;
+}
+
 export function renderTaskIndexEntry(section, lookup) {
   const key = refKey(section.ref);
   const status = DOCUMENT_STATUS[section.state.status] ?? { mark: '?', label: '状態不明' };
@@ -52,7 +81,7 @@ export function renderTaskIndexEntry(section, lookup) {
   // A ToDo the diagram does not draw keeps its row here — the index is the
   // complete list — and it selects its own detail, which exists either way.
   const selectKey = key;
-  return `<li><button type="button" data-select-node-key="${escapeHtmlAttribute(selectKey)}"><span class="task-index-status status-${escapeHtmlAttribute(section.state.status)}" role="img" aria-label="${escapeHtmlAttribute(status.label)}">${escapeHtmlText(status.mark)}</span><span class="task-index-reference">${escapeHtmlText(taskReference(section, lookup))}</span><strong>${escapeHtmlText(section.task.title)}</strong>${blockedReason}</button></li>`;
+  return `<li><button type="button" data-select-node-key="${escapeHtmlAttribute(selectKey)}"><span class="task-index-status status-${escapeHtmlAttribute(section.state.status)}" role="img" aria-label="${escapeHtmlAttribute(status.label)}">${escapeHtmlText(status.mark)}</span><span class="task-index-reference">${escapeHtmlText(taskReference(section, lookup))}</span><strong>${escapeHtmlText(section.task.title)}</strong>${blockedReason}${renderConnectionChips(section.connections)}</button></li>`;
 }
 
 /** plan_key -> 最終活動時刻。journalの末尾eventが、そのplanが最後に動いた時点。 */

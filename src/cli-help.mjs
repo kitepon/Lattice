@@ -94,7 +94,7 @@ Read commands:
   show --plan <key> --task <id> --json  # 個別ToDoと最新bounded note contextを追加操作なしで返す
   note list --plan <key> [--task <id>] --json  # note全履歴の診断面（通常read/startでは不要）
   notice list [--lane <lane>] [--include-acked] [--json]  # 着手できるようになった工程の知らせ（既定は未ackだけ。lane省略で全lane）
-  blockers [--json]  # 止めのある工程を全部返す（題・担当・理由の全文・止めた時刻と者・外すコマンド。読むだけ。外すのは誰でも todo unblock）
+  blockers [--json]  # ブロック中の工程を全部返す（題・担当・理由の全文・ブロックした時刻と者・外すコマンド。読むだけ。外すのは誰でも todo unblock）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
   display read [--json]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す
   display source [--json]  # 安い変更検知（lattice.todo_store_display_source.v1）。変わった時だけreadする
@@ -110,7 +110,6 @@ Read commands:
 
 Write commands:
   notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # 届けた知らせに印を付ける（閉じた知らせはclosedで返す）
-  wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 手を止めてこの工程を待つ印。着手できたら知らせにwaitingが載る（記録だけで、何も止めない）
   repair-eol --json  # Git checkoutでCRLF化された既存storeをcanonical LFへ戻し、EOL保護を追加する
   dashboard adopt --json  # 衝突したproject_idの配信元rootを現在repoへ明示的に移す
   dashboard ensure --json  # daemon生存保証の冪等入口（launchd等の周期実行向け）
@@ -130,6 +129,8 @@ Write commands:
         # 自分の席が記録したstartを取り消してpendingへ戻す。reopenやimportで開いた工程には
         # 取り消すstartが無いので、doneで閉じる
   block --plan <key> --task <id> --reason <text>
+        # ブロックは最後の手段。待っているものが自分の工程表の工程なら predecessor add（前工程）、
+        # それ以外で名指しや確認ができるもの（別の工程表の工程、予定表の確認）は connect condition add（他条件に接続）を使う
   unblock --plan <key> --task <id>
   retire --plan <key> --task <id> --reason <text>
         # 1件を閉じる。planは書き直さず、他のtaskの状態とjournalはそのまま
@@ -145,10 +146,26 @@ Write commands:
   evidence anchor [--json]  # 既存の証拠をgcから守る印(refs/lattice/evidence/<oid>)を付ける。commit済みにはならない
       # done状態と完了時刻を維持し、最新doneへ追記eventで証拠を再束縛する
   start --plan <key> --task <id> --rebind --reason <text>  # 改訂でcarryされたin-progressへ現版のstart束縛を積み直す（ADR 0191）
+  predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>
+  predecessor remove --plan <key> --task <id> --after <plan>/<task> --reason <text>
+      # 前工程: 自分の工程表の工程で、先に終わっていなければこの工程に着手できないもの。同じ工程表の工程だけを取る
+      # （別の工程表の工程や予定表は predecessor_target_not_same_chart で断り、connect condition を案内する）。
+      # 同一plan内の辺はplan本体を軽い改訂で書き換え（plan_versionが変わる）、plan跨ぎは台帳に積む。依存の自動推定は行わない
+  connect condition add --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>
+  connect condition remove --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>
+  connect condition resolve --plan <key> --task <id> --to schedule:<id> --message <evidence>
+  connect priority --plan <key> --task <id> [--reason <text>] | --cancel [--json]
+      # 接続は2つ。他条件に接続（condition）: 自分の工程表の外の条件が成り立つまで、この工程に着手できない。接続先は別の工程表の工程か、BellTeamの予定。
+      # 同じ工程表の工程は condition_target_same_chart で断り、predecessor add を案内する。
+      # task: は LATTICE_CHARTS_ROOT/<project_id>/.lattice を読むだけで書かない。その工程が done/retire で成立し、読めない間は接続は開いたまま。
+      # schedule: はBellTeamが成立させる（予定のcommandが0で終わったら resolve）。resolve は schedule: だけ。
+      # 優先接続（priority）: この工程に着手できるようになったら、いまの作業に割り込んででも知らせてほしい、という印（旧 todo wait）。
+      # 知らせにwaitingが載る。記録だけで、何も止めない（着手を止めるのは接続と前工程）
   dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
   dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>
-      # 開発中に発見した依存を明示接続する。同一plan内の辺はplan本体を軽い改訂で書き換え（plan_versionが変わる）、plan跨ぎは台帳に積む。依存の自動推定は行わない
-      # --from-project = 別の工程表(別プロジェクト)の工程を前工程にする。LATTICE_CHARTS_ROOT/<project_id>/.lattice を読むだけで書かない。読めない間は待ちのまま
+      # 廃止予定（次のminorまで別名）。実行のたびに、使う命令を stderr に出す:
+      # 同じ工程表なら predecessor add|remove、--from-project なら connect condition add|remove
+  wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 廃止予定（次のminorまで別名）: connect priority
   independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>
       # enforced = witness＋未宣言・古い宣言・衝突・参照なしdone・heavy段階の監査なし閉じを止める（ADR 0200）
       # このplanの調整方式（witness検証で並列するか、会話で調整するか）を記録する
@@ -315,7 +332,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo notice list': 'todo notice list [--lane <lane>] [--include-acked] [--json]  # lattice.todo_notice_list_result.v1',
   'todo notice ack': 'todo notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # lattice.todo_notice_ack_result.v1 {acked, already, closed}',
   'todo blockers': 'todo blockers [--json]  # lattice.todo_blockers_result.v1 {blockers: [{plan_key, task_id, title, lane, reason, blocked_at, blocked_by, unblock_action}]}',
-  'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # lattice.todo_wait_result.v1 {state: waiting|startable_now|not_pending|cancelled}',
+  'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 廃止予定の別名: todo connect priority',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
   'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
   charts: 'charts list [--json] | source [--project <id>]... [--json]  # LATTICE_CHARTS_ROOT配下の全工程表を1プロセスで読む',
@@ -356,7 +373,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo phase baseline': 'todo phase baseline --reason <text> [--except <plan_key>]...',
   'todo start': 'todo start --plan <key> --task <id> [--parallel-frontier|--override-reason <text>]',
   'todo retract': 'todo retract --plan <key> --task <id> --reason <text>',
-  'todo block': 'todo block --plan <key> --task <id> --reason <text>',
+  'todo block': 'todo block --plan <key> --task <id> --reason <text>'
+    + '  # ブロックは最後の手段。待っているものが自分の工程表の工程なら todo predecessor add（前工程）、それ以外で名指しや確認ができるものは todo connect condition add（他条件に接続）を使う',
   'todo unblock': 'todo unblock --plan <key> --task <id>',
   'todo retire': 'todo retire --plan <key> --task <id> --reason <text>',
   'todo add': 'todo add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>]'
@@ -366,12 +384,33 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo evidence': 'todo evidence promote --plan <key> --task <id> --evidence <file> | anchor [--json]',
   'todo evidence anchor': 'todo evidence anchor [--json]  # lattice.todo_evidence_anchor_result.v1 {anchored, already, missing}; no Store yet: lattice.todo_evidence_anchor_uninitialized.v1',
   'todo evidence promote': 'todo evidence promote --plan <key> --task <id> --evidence <file>',
+  'todo predecessor': [
+    'todo predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>',
+    'todo predecessor remove --plan <key> --task <id> --after <plan>/<task> --reason <text>',
+  ].join('\n       lattice '),
+  'todo predecessor add': 'todo predecessor add --plan <key> --task <id> --after <plan>/<task> --reason <text>  # 前工程（同じ工程表の工程だけ）',
+  'todo predecessor remove': 'todo predecessor remove --plan <key> --task <id> --after <plan>/<task> --reason <text>',
+  'todo connect': [
+    'todo connect condition add --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>',
+    'todo connect condition remove --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>',
+    'todo connect condition resolve --plan <key> --task <id> --to schedule:<id> --message <evidence>',
+    'todo connect priority --plan <key> --task <id> [--reason <text>] | --cancel [--json]',
+  ].join('\n       lattice '),
+  'todo connect condition': [
+    'todo connect condition add --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>',
+    'todo connect condition remove --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>',
+    'todo connect condition resolve --plan <key> --task <id> --to schedule:<id> --message <evidence>',
+  ].join('\n       lattice '),
+  'todo connect condition add': 'todo connect condition add --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>  # 他条件に接続（自分の工程表の外だけ）',
+  'todo connect condition remove': 'todo connect condition remove --plan <key> --task <id> --to task:<project>/<plan>/<task>|schedule:<id> --reason <text>',
+  'todo connect condition resolve': 'todo connect condition resolve --plan <key> --task <id> --to schedule:<id> --message <evidence>  # schedule: の接続だけ',
+  'todo connect priority': 'todo connect priority --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 優先接続（旧 todo wait）。lattice.todo_connect_priority_result.v1 {state: prioritized|startable_now|not_pending|cancelled}',
   'todo dependency': [
     'todo dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
     'todo dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
   ].join('\n       lattice '),
-  'todo dependency connect': 'todo dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
-  'todo dependency disconnect': 'todo dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>',
+  'todo dependency connect': 'todo dependency connect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>  # 廃止予定の別名: predecessor add / connect condition add',
+  'todo dependency disconnect': 'todo dependency disconnect [--from-project <id>] --from-plan <key> --from-task <id> --to-plan <key> --to-task <id> --reason <text>  # 廃止予定の別名: predecessor remove / connect condition remove',
   'todo split': 'todo split --plan <key> --input <file>',
   'todo revise': 'todo revise --plan <key> --input <file> | --schema --json',
   'todo revise-phase': 'todo revise-phase --plan <key> --input <file> | --schema --json',

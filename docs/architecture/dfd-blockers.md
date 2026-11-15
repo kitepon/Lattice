@@ -1,11 +1,11 @@
 # Data flow: blockers (blockers-list, 2026-11-12)
 
-Status: task `lattice-blockers-20261112/blockers-list`. The Owner's words are the whole spec (Quo 2026-11-12):
+Status: task `lattice-blockers-20261112/blockers-list`. The Owner's words are the whole spec (Quo 2026-11-12; his word 止め is now ブロック, see [connect flow](dfd-connect.md)):
 "ブロッカー（止め）一覧は作ってくれ。それを見て俺が解除する。AIも解除できる。"
 Owner: Plan/lifecycle (projection, CLI). Nothing is written. The screen and the Owner's unblock path are
 BellTeam's (Flora, task blockers-screen), which reads only the CLI JSON below.
 Canonical ownership in [function-map](function-map.md). It extends the `blocked` list of `todo status`
-(plan_key, task_id, truncated reason) with the full reason, who stopped it and when.
+(plan_key, task_id, truncated reason) with the full reason, who blocked it and when.
 
 Boundary: Lattice reads and shows. `todo unblock` stays open to any seat (no actor check), as before.
 
