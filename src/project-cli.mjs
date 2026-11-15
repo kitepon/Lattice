@@ -1,4 +1,5 @@
 import { withTodoExternalTasks } from './todo-external.mjs';
+import { withTodoPriorityWaits } from './todo-notices.mjs';
 import { gitSync } from './git-process.mjs';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
@@ -292,7 +293,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
   }
   try {
     // xchart: predecessors on other charts count for next_ready here too.
-    const store = await withTodoExternalTasks(await readTodoStore({ repoRoot }), env);
+    const store = await withTodoPriorityWaits(await withTodoExternalTasks(await readTodoStore({ repoRoot }), env), { repoRoot });
     if (diagnoseStructureArtifacts) {
       const diagnostics = await readTodoStructureArtifactDiagnostics({ repoRoot, store });
       if (diagnostics.length > 0) {

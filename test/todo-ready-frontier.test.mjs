@@ -84,9 +84,9 @@ async function workspace(context) {
 }
 
 // 切り出し前のprojectTodoStatusが出していたバイト列。挙動不変の錨。
-const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v9","project_id":"project-1",'
+const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v10","project_id":"project-1",'
   + '"active_set":[{"plan_key":"main","task_id":"A","label":"Active work",'
-  + '"unmet_dependencies":[]}],'
+  + '"unmet_dependencies":[],"connections":[]}],'
   // u12: ready entryは作成者が書いた終了条件を足して載せる（欄なしplanはnull）。
   + '"next_ready":[{"plan_key":"main","task_id":"C","label":"Ready work","done_condition":null},'
   + '{"plan_key":"main","task_id":"F","label":"Second ready work","done_condition":null}],'
@@ -96,6 +96,7 @@ const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v9","project_id":"p
   + '"parallel_start_flag":"--parallel-frontier",'
   + '"frontier_digest":"__FRONTIER__"},'
   + '"blocked":[{"plan_key":"main","task_id":"B","reason":"waiting on review"}],'
+  + '"connection_pending":[],'
   // 全taskがdoneではない(Phaseはactive)ので監査待ちは空。v5で足した欄はblockedとmember_headsの間。
   + '"audit_pending":[],'
   // v7で足した構造finalization待ち欄。未適用planでは空でdispatchを変えない。

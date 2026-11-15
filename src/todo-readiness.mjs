@@ -2,7 +2,9 @@ import {
   isDecoupledPhaseTodoPlanSchema,
   isFinishedTodoTaskState,
   isPhaseTodoPlanSchema,
+  projectTodoConnections,
   projectTodoCrossPlanDependencies,
+  projectTodoScheduleConnections,
   stepTodoReopenedPending,
 } from './todo-store-view.mjs';
 import { TodoStoreError, todoPhaseDefinitions } from './todo-store.mjs';
@@ -85,6 +87,19 @@ export function createTodoReadiness(store) {
     }
   }
   for (const edge of projectTodoCrossPlanDependencies(store.members)) connect(edge.from, edge.to);
+  // 接続: schedule targets and cross-chart task targets, per task; an open one keeps the task from starting.
+  const connectionsByTask = projectTodoConnections(store.members, store.external_tasks ?? []);
+  const connections = (key) => connectionsByTask.get(key) ?? [];
+  // 優先接続: the host-local `todo wait` mark (store.priority_waits, in-effect only). It gates nothing.
+  const priorityByTask = new Map();
+  for (const wait of store.priority_waits ?? []) {
+    const key = taskKey({ project_id: store.project_id, plan_key: wait.plan_key, task_id: wait.task_id });
+    priorityByTask.set(key, [...(priorityByTask.get(key) ?? []),
+      { kind: 'priority', agent: wait.agent, since: wait.since, reason: wait.reason ?? null }]);
+  }
+  /** The one read-contract list: 他条件に接続 entries (gating) then 優先接続 entries (never gating). */
+  const allConnections = (key) => [...connections(key),
+    ...(priorityByTask.get(key) ?? []).sort((left, right) => (left.agent < right.agent ? -1 : left.agent > right.agent ? 1 : 0))];
 
   function dependencyPhaseReady(predecessor, target) {
     if (predecessor === undefined) return false;
@@ -100,6 +115,8 @@ export function createTodoReadiness(store) {
     const predecessors = [...(incoming.get(key) ?? [])].map(predecessorNode)
       .filter((node) => node !== undefined);
     const unfinished = predecessors.filter((node) => node.finished !== true);
+    // 前工程 = same chart; a task on another chart is a 接続 and is named in blocking_connections instead.
+    const unfinishedHere = unfinished.filter((node) => node.project_id === undefined);
     const unreadyPhases = predecessors.filter((node) => !dependencyPhaseReady(node, nodes.get(key)));
     const predecessorsDone = unfinished.length === 0;
     const predecessorPhasesReady = unreadyPhases.length === 0;
@@ -107,21 +124,33 @@ export function createTodoReadiness(store) {
     const unacceptedEdges = [...(acceptanceIncoming.get(key) ?? [])]
       .map((source) => phases.get(source)).filter((phase) => phase !== undefined && phase.status !== 'accepted');
     const phaseAcceptReady = unacceptedEdges.length === 0;
+    const openConnections = connections(key).filter(({ state }) => state === 'open');
+    // Only a schedule 接続 is an extra gate; a task 接続 is today's cross-chart edge, already in `unfinished`.
+    const scheduleOpen = openConnections.some(({ kind }) => kind === 'schedule');
+    const connectionsOpen = scheduleOpen || unfinished.some((node) => node.project_id !== undefined);
     const cause = !phaseAcceptReady ? 'acceptance_edge'
-      : !predecessorsDone ? 'predecessor_unfinished'
-        : !predecessorPhasesReady ? 'acceptance_edge' : null;
+      : unfinishedHere.length > 0 ? 'predecessor_unfinished'
+        : connectionsOpen ? 'connection_open'
+          : !predecessorsDone ? 'predecessor_unfinished'
+            : !predecessorPhasesReady ? 'acceptance_edge' : null;
     const blockingPhases = !phaseAcceptReady ? unacceptedEdges
       : unreadyPhases.map((node) => ({ plan_key: node.plan_key, phase_id: node.phase_id, status: node.phase_status }));
+    const blockingConnections = openConnections.map(blockingConnection);
     return {
       taskDependenciesDone,
       phaseAcceptReady,
       dependenciesDone: taskDependenciesDone && phaseAcceptReady,
+      // start only: a schedule 接続 never gates done, and an in-progress task keeps its state when one is added.
+      startReady: taskDependenciesDone && phaseAcceptReady && !scheduleOpen,
+      scheduleOpen,
       cause,
       // a12: a refusal names what blocks, not only why.
       blocking: cause === 'predecessor_unfinished'
-        ? { blocking_tasks: unfinished.map(blockingTask).sort(byRef) }
-        : cause === 'acceptance_edge'
-          ? { blocking_phases: uniqueRefs(blockingPhases).map((phase) => ({ ...phase })).sort(byRef) } : {},
+        ? { blocking_tasks: unfinishedHere.map(blockingTask).sort(byRef),
+          ...(blockingConnections.length === 0 ? {} : { blocking_connections: blockingConnections }) }
+        : cause === 'connection_open' ? { blocking_connections: blockingConnections }
+          : cause === 'acceptance_edge'
+            ? { blocking_phases: uniqueRefs(blockingPhases).map((phase) => ({ ...phase })).sort(byRef) } : {},
     };
   }
 
@@ -168,8 +197,10 @@ export function createTodoReadiness(store) {
     prerequisiteRefs,
     ownPhaseReady,
     ownPhaseStatus,
+    connections,
+    allConnections,
     isReady: (key) => nodes.get(key)?.status === 'pending'
-      && ownPhaseReady(key) && prerequisites(key).dependenciesDone,
+      && ownPhaseReady(key) && prerequisites(key).startReady,
     startedSuccessor,
     startedSuccessors,
     phaseHasStartedSuccessor: (member, phaseId) => member.plan.schema === 'lattice.todo_plan.v4'
@@ -193,6 +224,21 @@ function blockingTask({ project_id: projectId, plan_key, task_id, status, reason
   return projectId === undefined ? { plan_key, task_id, status }
     : { project_id: projectId, plan_key, task_id, status, reason: reason ?? null };
 }
+/** The refusal entry for an open 接続: what it connects to, why, and since when (+ why a task target is unread). */
+function blockingConnection({ kind, ref, reason, since, state_reason: stateReason }) {
+  return { kind, ref, reason, since, ...(stateReason === undefined ? {} : { state_reason: stateReason }) };
+}
+/** The read-contract `connections` of one task (他条件に接続 open and settled, plus 優先接続 when `store.priority_waits` is loaded), for `todo show` and the CLI (call withTodoExternalTasks first). */
+export function listTodoConnections(store, planKey, taskId, { includeRemoved = false } = {}) {
+  const member = store.members.find(({ plan }) => plan.plan_key === planKey);
+  if (member === undefined) return [];
+  const listed = createTodoReadiness(store).allConnections(`${member.plan.project_id}\0${planKey}\0${taskId}`);
+  if (!includeRemoved) return listed;
+  // A removed entry is history; a retry of remove needs it to answer `unchanged` rather than not-found.
+  const removed = projectTodoScheduleConnections(member.plan_scoped?.events).filter((entry) => entry.state === 'removed'
+    && entry.task_id === taskId).map(({ task_id: _task, actor: _actor, provenance: _provenance, ended: _ended, ...shown }) => shown);
+  return [...listed, ...removed];
+}
 function byRef(left, right) {
   return refId(left) < refId(right) ? -1 : refId(left) > refId(right) ? 1 : 0;
 }
@@ -213,7 +259,7 @@ export function validateProspectiveEvent({ store, member, event }) {
   const authoredStart = event.kind === 'start' && event.payload.start_mode !== 'historical_import'
     && event.payload.start_mode !== 'rebind';
   if (authoredStart && (!prerequisites.phaseAcceptReady
-    || (!prerequisites.taskDependenciesDone && event.payload.override_reason === null))) {
+    || ((!prerequisites.taskDependenciesDone || prerequisites.scheduleOpen) && event.payload.override_reason === null))) {
     return refused('invalid_start_transition', prerequisites.cause, prerequisites.blocking);
   }
   if (event.kind === 'done' && event.payload.done_mode === 'authored' && !prerequisites.dependenciesDone) {

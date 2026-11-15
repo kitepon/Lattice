@@ -108,7 +108,7 @@ test('着手後に発見したconsumerは履歴を保ち、unmetで席数入力�
   const waiting = await status();
   assert.deepEqual(waiting.active_set, [{
     plan_key: 'consumer', task_id: 'C', label: 'C',
-    unmet_dependencies: [{ plan_key: 'producer', task_id: 'P' }],
+    unmet_dependencies: [{ plan_key: 'producer', task_id: 'P' }], connections: [],
   }]);
   assert.equal(waiting.active_set.filter(({ unmet_dependencies: unmet }) => unmet.length === 0).length, 0,
     'active実装席数は待機consumerを数えない');

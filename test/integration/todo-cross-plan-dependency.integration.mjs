@@ -119,7 +119,7 @@ test('consumer着手後の発見を接続し、待機・Gantt・producer完了�
     `${planKey}/${taskId}`), ['producer/P']);
   assert.deepEqual(waiting.active_set, [{
     plan_key: 'consumer', task_id: 'C', label: '入力を使う',
-    unmet_dependencies: [{ plan_key: 'producer', task_id: 'P' }],
+    unmet_dependencies: [{ plan_key: 'producer', task_id: 'P' }], connections: [],
   }]);
   assert.equal(waiting.active_set.filter(({ unmet_dependencies: unmet }) => unmet.length === 0).length, 0);
   assert.equal(waiting.dispatch_frontier.recommended_parallelism, 1);
@@ -153,7 +153,7 @@ test('consumer着手後の発見を接続し、待機・Gantt・producer完了�
   ]);
   const released = cli(root, ['todo', 'status']);
   assert.deepEqual(released.active_set, [{
-    plan_key: 'consumer', task_id: 'C', label: '入力を使う', unmet_dependencies: [],
+    plan_key: 'consumer', task_id: 'C', label: '入力を使う', unmet_dependencies: [], connections: [],
   }]);
   assert.equal(released.active_set.filter(({ unmet_dependencies: unmet }) => unmet.length === 0).length, 1);
   assert.deepEqual(released.next_ready, []);
