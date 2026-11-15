@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { gunzipSync } from 'node:zlib';
 import path from 'node:path';
 import test from 'node:test';
 import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
@@ -14,6 +15,7 @@ import {
 } from '../src/todo-store.mjs';
 import { todoTaskCarrySemantics as pureCarrySemantics } from '../src/todo-store-view.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
+import { readRetainedVersion } from '../src/todo-store.mjs';
 
 const actor = { host: 'fixture', session: 'fixture', agent: 'fixture' };
 const recordedAt = '2026-11-07T00:00:00.000Z';
@@ -126,7 +128,10 @@ test('v5 generic apply reopens, carries and resets state while preserving predec
   assert.equal(reopened.journal.events[0].revision_digest, revision.revision_digest);
   assert.equal(reopened.tasks.find(({ task_id }) => task_id === 'a').status, 'in-progress');
   assert.equal(reopened.tasks.find(({ task_id }) => task_id === 'b').status, 'pending');
-  assert.deepEqual(await Promise.all(refs.map((ref) => readFile(path.join(root, ref)))), bytes);
+  // b10: the superseded version keeps a compact record; its plan and journal come back byte for byte, the snapshot is derived.
+  const retained = await readRetainedVersion(root, '.lattice/todo/plans/main', member.plan.plan_version, reopened.plan);
+  assert.deepEqual(Buffer.from(`${canonicalizeTodoArtifact(retained.plan)}\n`), bytes[0]);
+  assert.deepEqual(gunzipSync(await readFile(path.join(root, `${refs[1]}.gz`))), bytes[1]);
   const files = await readdir(path.dirname(path.join(root, reopened.descriptor.plan_ref)));
   assert.equal(files.includes('backchain.json'), false);
   assert.equal((await apply(root, revision)).recovered, true);

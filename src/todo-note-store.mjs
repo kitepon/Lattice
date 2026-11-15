@@ -8,6 +8,7 @@ import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
 import { syncPublishedFile } from './fs-publish.mjs';
 import { normalizeCheckoutEol } from './todo-store-view.mjs';
 import { memoByFileIdentity } from './todo-version-memo.mjs';
+import { TODO_VERSION_COMPACT_FILE, readVersionCompact } from './todo-version-compact.mjs';
 
 import {
   TODO_LIMITS,
@@ -514,8 +515,25 @@ async function readNoteMigrations(repoRoot, planKey, eventVersions) {
     const versionRoot = path.join(base, entry.name);
     const planPath = path.join(versionRoot, 'plan.json');
     const revisionPath = path.join(versionRoot, 'revision.json');
-    // perf-store: validated once per process while both files are unchanged (todo-version-memo).
-    const version = await memoByFileIdentity([planPath, revisionPath], async () => {
+    const compactPath = path.join(versionRoot, TODO_VERSION_COMPACT_FILE);
+    // perf-store: validated once per process while the files are unchanged (todo-version-memo).
+    const version = await memoByFileIdentity([planPath, revisionPath, compactPath], async () => {
+      // b10: a superseded version keeps compact.json.gz (its revision, minus the plan it repeats) instead of plan.json/revision.json.
+      const compact = await readVersionCompact(versionRoot).catch(() => fail('NOTE_PROJECTION_INVALID',
+        'note_historical_plan_invalid', { plan_version: entry.name }));
+      if (compact !== null) {
+        if (compact.plan_key !== planKey || compact.plan_version !== entry.name) {
+          fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: entry.name });
+        }
+        const migration = compact.revision?.task_migration;
+        if (compact.revision === null) return { migration: null };
+        if (compact.predecessor_plan_version === null || !Array.isArray(migration)) {
+          fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: entry.name });
+        }
+        return { migration: { from_plan_version: compact.predecessor_plan_version, to_plan_version: entry.name,
+          task_migration: migration.map(({ from_task_id: fromTaskId, to_task_id: toTaskId }) => ({
+            from_task_id: fromTaskId, to_task_id: toTaskId })) } };
+      }
       // A revision directory is published before manifest activation.  A crash during
       // that window can leave an unreferenced directory containing only a journal
       // stub.  It is not a historical plan until its canonical plan artifact exists.

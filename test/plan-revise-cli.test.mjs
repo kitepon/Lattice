@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { runPlanRevise } from '../src/plan-revise.mjs';
-import { readTodoStore } from '../src/todo-store.mjs';
+import { readRetainedVersion, readTodoStore } from '../src/todo-store.mjs';
 import { projectTodoCrossPlanDependencies } from '../src/todo-store-view.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../bin/lattice.mjs');
@@ -63,7 +63,9 @@ test('light CLI revises ordinary v7 work, retains done evidence and rebinds in-p
   assert.deepEqual(newA.state.evidence, oldA.state.evidence);
   assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'b', '--json']).state.status, 'in-progress');
   assert.equal(success(root, ['todo', 'show', '--plan', 'work', '--task', 'd', '--json']).state.status, 'pending');
-  assert.equal(JSON.parse(await readFile(path.join(root, created.plan_ref), 'utf8')).plan_version, 'v1');
+  // b10: v1 is superseded and keeps a compact record; its plan rebuilds exactly.
+  const active = (await readTodoStore({ repoRoot: root })).members[0].plan;
+  assert.equal((await readRetainedVersion(root, '.lattice/todo/plans/work', 'v1', active)).plan.plan_version, 'v1');
   success(root, ['todo', 'done', '--plan', 'work', '--task', 'b', '--evidence', 'evidence.md']);
 });
 
