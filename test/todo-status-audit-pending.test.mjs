@@ -1,4 +1,4 @@
-// ap03: `todo_status_result`をv5へ上げ、監査待ちPhaseを`audit_pending`欄として表出する。
+// ap03: `todo_status_result`をv5へ上げ、監査前Phaseを`audit_pending`欄として表出する。
 //
 // 直そうとしている事故は「全taskがdoneになるとstatusが空を返し、AIが正しくそれを信じて
 // 完了報告する」である。したがって本testが固定するのは:
@@ -55,7 +55,7 @@ const phaselessPlan = {
   predecessor_plan_digest: null, tasks: [task('T1'), task('T2')], hard_dependencies: [], joins: [],
 };
 
-test('全taskがdoneでnext_readyが空になった時、audit_pendingが監査待ちと次コマンドを返す', async (context) => {
+test('全taskがdoneでnext_readyが空になった時、audit_pendingが監査前と次コマンドを返す', async (context) => {
   const { status, finish } = await storeWith(context, phaselessPlan);
 
   const before = await status();
@@ -67,7 +67,7 @@ test('全taskがdoneでnext_readyが空になった時、audit_pendingが監査�
   await finish('T2');
 
   const after = await status();
-  // ここが事故の現場である——「残作業なし」に見える状態で、監査待ちが残っている。
+  // ここが事故の現場である——「残作業なし」に見える状態で、監査前が残っている。
   assert.deepEqual(after.next_ready, []);
   assert.deepEqual(after.active_set, []);
   assert.deepEqual(after.audit_pending, [{
@@ -103,7 +103,7 @@ test('reviewingは次コマンドを持ったまま残り、acceptedとclosed_un
   assert.deepEqual((await status()).audit_pending, [], 'acceptedは待っていない');
 });
 
-test('closed_unauditedも監査待ちには出ない', async (context) => {
+test('closed_unauditedも監査前には出ない', async (context) => {
   const { append, status, finish } = await storeWith(context, phaselessPlan);
   await finish('T1');
   await finish('T2');
@@ -172,6 +172,6 @@ test('未doneのtaskが残る間もfrontierは監査欄の有無に影響され�
   await finish('T1');
   const partial = await status();
   assert.deepEqual(partial.next_ready.map(({ task_id: id }) => id), ['T2']);
-  assert.deepEqual(partial.audit_pending, [], 'pending taskが残る限りPhaseはactiveで監査待ちではない');
+  assert.deepEqual(partial.audit_pending, [], 'pending taskが残る限りPhaseはactiveで監査前ではない');
   assert.equal(partial.dispatch_frontier.recommended_parallelism, 1);
 });

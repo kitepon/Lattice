@@ -1,5 +1,5 @@
 // ADR 0147: 終端重監査gate。phase無しplan(todo_plan.v1/v2/v3)は、終端に暗黙のterminal-audit
-// Phaseを持つ——全task doneは「完走」ではなく「監査待ち」であり、監査(review→evidence束縛
+// Phaseを持つ——全task doneは「完走」ではなく「監査前」であり、監査(review→evidence束縛
 // accept)が記録されるまでplanは閉じない。この暗黙Phaseは既存のPhase gate機構(review/accept/
 // evidence slot/journal event)をそのまま再利用する(新しい状態機械を増やさない)。
 //
@@ -214,7 +214,7 @@ test('終端監査gateはToDoのdispatch(next_ready/active_set/dispatch_frontier
   // audited planのPhaseが進んでも、他planのdispatchは一切動かないことを確認する。
   const gateReadyStatus = projectTodoStatus(await readTodoStore({ repoRoot: root, now: NOW }), { parallelCandidates: [], planNotes: [] });
   const gateReady = workingSlice(gateReadyStatus);
-  // ap06: 「dispatchが動かない」ことだけを固定すると、監査待ちが**表出していない**状態でも
+  // ap06: 「dispatchが動かない」ことだけを固定すると、監査前が**表出していない**状態でも
   // このtestは緑のまま通る。表出と不変は片方ずつでは守れないので、同じ場所で両方を見る。
   assert.deepEqual(gateReadyStatus.audit_pending
     .map(({ plan_key, phase_status }) => [plan_key, phase_status]), [['audited', 'gate_ready']]);

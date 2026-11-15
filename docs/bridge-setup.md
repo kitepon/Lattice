@@ -205,8 +205,8 @@ hubへ繋いでいる端末では、`runtime.last_heartbeat`が最後にhubへ�
 | `null` | hub未設定、またはまだ1回も送っていない | — |
 
 名乗る集合はdaemonが実際に配信している集合そのもの（ADR 0165）。配信集合は
-`last_seen_at`が1週間以内、またはactive run、または監査待ちPhaseがあるprojectである。
-人がCLIを叩かなくても、その条件を満たす限り公開面に残る。1週間を超え、runも監査待ちも
+`last_seen_at`が1週間以内、またはactive run、または監査前Phaseがあるprojectである。
+人がCLIを叩かなくても、その条件を満たす限り公開面に残る。1週間を超え、runも監査前も
 無いprojectは配信から外れる。heartbeatの90秒TTLは、配信そのものが止まった時
 （daemon停止）にofflineへ落とすためのもので、鮮度窓ではない。
 

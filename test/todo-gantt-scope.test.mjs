@@ -120,7 +120,7 @@ test('projectTodoGanttScopeはfoldableが無ければ入力をそのまま返す
 test('ADR 0148: closed_unauditedはAUDIT_PENDING_PHASE_STATUSESに含まれず、gate_ready/reviewing/rejectedと違って通常どおり畳まれる', () => {
   // f1 -> s -> live という鎖。sはliveの直接前提(distance 1)なので残るが、f1はさらに
   // その先(distance 2)なので、foldDistance既定の1を超えて畳まれる対象になる
-  // ——ただしf1のphase_statusが監査待ち3状態のどれかなら、distance計算そのものを
+  // ——ただしf1のphase_statusが監査前3状態のどれかなら、distance計算そのものを
   // 迂回してdistance 0に固定され、畳まれない(ADR 0147の既存規律)。closed_unauditedは
   // この固定に入らない、というのが0.36.1で直した点である。
   const f1 = { project_id: 'project', plan_key: 'plan', task_id: 'f1' };
@@ -141,7 +141,7 @@ test('ADR 0148: closed_unauditedはAUDIT_PENDING_PHASE_STATUSESに含まれず�
   for (const phaseStatus of ['gate_ready', 'reviewing', 'rejected']) {
     const result = projectTodoGanttScope({ nodes: baseNodes(phaseStatus), edges, wave });
     assert.equal(result.foldedKeys.has('f1'), false,
-      `phase_status=${phaseStatus}は監査待ちのまま図から消えてはいけない`);
+      `phase_status=${phaseStatus}は監査前のまま図から消えてはいけない`);
   }
 
   for (const schema of ['lattice.todo_plan.v6', 'lattice.todo_plan.v7']) {
@@ -150,12 +150,12 @@ test('ADR 0148: closed_unauditedはAUDIT_PENDING_PHASE_STATUSESに含まれず�
     ));
     const result = projectTodoGanttScope({ nodes, edges, wave });
     assert.equal(result.foldedKeys.has('f1'), false,
-      `${schema}の暗黙終端監査待ちも図から消えてはいけない`);
+      `${schema}の暗黙終端監査前も図から消えてはいけない`);
   }
 
   const closedResult = projectTodoGanttScope({ nodes: baseNodes('closed_unaudited'), edges, wave });
   assert.equal(closedResult.foldedKeys.has('f1'), true,
-    'closed_unauditedは監査待ちではないので通常どおり畳まれる(ADR 0148裁定4)');
+    'closed_unauditedは監査前ではないので通常どおり畳まれる(ADR 0148裁定4)');
 
   // phase無しplanと違い、v4/v5(実Phaseを宣言したplan)は元からこの固定の対象外——
   // gate_ready等でもschemaがv4/v5ならdistance計算どおりに畳まれる(既存挙動・非目標)。

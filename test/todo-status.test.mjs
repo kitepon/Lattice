@@ -139,7 +139,7 @@ test('todo statusはactive/next-ready/blockedを混在投影しstore bytesを変
   ]);
   assert.equal(result.schema, 'lattice.todo_status_result.v10');
   assert.deepEqual(result.truncated, []);
-  // このstoreはまだ全taskがdoneではない(Phaseはactive)ので監査待ちは無い。
+  // このstoreはまだ全taskがdoneではない(Phaseはactive)ので監査前は無い。
   assert.deepEqual(result.audit_pending, []);
   assert.deepEqual(result.active_set, [{
     plan_key: 'main', task_id: 'A', label: 'Active work', unmet_dependencies: [], connections: [],

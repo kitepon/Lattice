@@ -165,11 +165,11 @@ function blockedEntry(value) {
 }
 
 /**
- * 監査待ちPhase 1件。
+ * 監査前Phase 1件。
  *
  * task entryと紛れないよう`status`ではなく`phase_status`にする。状態集合は
  * `todo-audit-pending.mjs`の定義をそのまま使う（ここで書き直さない）。
- * `next_commands`を非空必須にしたのは、監査待ちなのに次の一手が空なら次アクション面として
+ * `next_commands`を非空必須にしたのは、監査前なのに次の一手が空なら次アクション面として
  * 無意味だからである（状態集合が閉じている以上、空になる枝は無い）。
  */
 function auditPendingEntry(value) {
@@ -401,9 +401,9 @@ export function validateTodoStatusResult(value) {
 }
 
 /**
- * memberの監査待ちPhaseを`audit_pending` entryへ起こす。
+ * memberの監査前Phaseを`audit_pending` entryへ起こす。
  *
- * 「監査待ちか」の判定は`todo-audit-pending.mjs`、Phase定義（slots）は`todo-store.mjs`の
+ * 「監査前か」の判定は`todo-audit-pending.mjs`、Phase定義（slots）は`todo-store.mjs`の
  * `todoPhaseDefinitions`が正本である。`plan.phases`を直接読むとphase無しplan(v1/v2/v3)と
  * synthetic read modelで落ちるので読まない。
  *
@@ -717,7 +717,7 @@ export function projectTodoStatus(readModel, options = undefined) {
       dispatch_frontier: dispatchFrontier(readModel.project_id, lists.next_ready),
       blocked: lists.blocked,
       connection_pending: lists.connection_pending,
-      // 監査待ちは`member.phases`だけから作った別の列で、dispatch(next_ready/dispatch_frontier)へは
+      // 監査前は`member.phases`だけから作った別の列で、dispatch(next_ready/dispatch_frontier)へは
       // 影響しない。監査が進んでもfrontier_digestは動かない。
       audit_pending: lists.audit_pending,
       // 全task done後、構造finalizationが無い／古いplanだけを別列へ出す。監査状態と

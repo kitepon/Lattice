@@ -319,7 +319,7 @@ async function resolveProjectState({ cwd, cliVersion, diagnoseStructureArtifacts
         // 監査／構造finalization待ちが在る限り「残作業なし」と答えない。優先順位は
         // active_run > next_ready > structure finalization > audit_pending > なし。
         // ready frontierが在る間はADR 0063の並列開始コマンドが勝つ
-        // ——ここを監査で上書きするとdispatchが再直列化する。監査待ちはtodo statusの
+        // ——ここを監査で上書きするとdispatchが再直列化する。監査前はtodo statusの
         // audit_pending欄に常在するので、順位を下げても消えない。
         // gate_ready（全taskが終わり監査も未着手）は軽い出口close-unauditedを1行で示す（a22）。
         // 監査を始めた後（reviewing／rejected）は読み取り専用の`todo phase status`が両分岐を示す。

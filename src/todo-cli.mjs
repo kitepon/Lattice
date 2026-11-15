@@ -2340,7 +2340,7 @@ async function phaseStatus({ repoRoot, planKey }) {
   // 無いのでsnapshot.phasesは直接読まない)。ここでPHASE_UNAVAILABLEへ拒否せず、その暗黙Phase
   // をそのまま返す——`implicit`で機械可読に「宣言されたPhaseではない」ことを示す。
   const implicit = isPhaselessTodoPlanSchema(member.plan.schema);
-  // ADR 0148裁定8: gate_readyのPhaseには、なぜ監査待ちになったかと次の一歩をここでも言う
+  // ADR 0148裁定8: gate_readyのPhaseには、なぜ監査前になったかと次の一歩をここでも言う
   // (todo doneのadvisoryと同じ文言)。implicit(暗黙のterminal-audit Phase)に限らず、
   // v4/v5の実Phaseがgate_readyになった場合も同じ理由で同じ案内が要る。
   const phases = member.phases.map((phase) => ({
@@ -2537,7 +2537,7 @@ async function migrate({ repoRoot, inputRef }) {
       next_action: `lattice todo revise-phase --plan ${imported.plan.plan_key} --input <phase-revision.json>`,
     } : null,
     // ob03: 起票直後のplanは必ず調整方式が未宣言である。ここで案内しないと、選ぶ機会が
-    // 「誰も呼ぶ動機の無いdrilldown」にしか無くなる——前campaignの監査待ちと同じ形になる。
+    // 「誰も呼ぶ動機の無いdrilldown」にしか無くなる——前campaignの監査前と同じ形になる。
     coordination_guidance: imported.connectionOnly === true ? null : {
       mode: null,
       modes: [...TODO_COORDINATION_MODES],

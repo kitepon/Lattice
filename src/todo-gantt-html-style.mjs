@@ -20,7 +20,7 @@ body{display:grid;grid-template-rows:minmax(0,1fr);height:100vh;margin:0;backgro
 .gantt-pane{display:grid;grid-template-rows:auto auto minmax(0,1fr);min-width:0;min-height:0;overflow:hidden;background:var(--surface-1)}
 .pane-divider{width:8px;cursor:col-resize;background:rgba(217,216,212,.5);touch-action:none}
 .diagram-toolbar{z-index:3;display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--surface-2);color:var(--text-secondary)}
-/* 監査待ちの札が入って以降、ツールバーは幅の奪い合いになる。操作系は縮ませない——
+/* 監査前の札が入って以降、ツールバーは幅の奪い合いになる。操作系は縮ませない——
    縮むと「等倍」「全体表示」が2行に折れて、押せるが読みにくい形になる。削るのは札の側で、
    そちらはellipsisと件数の下限を持っている。 */
 .diagram-toolbar button{flex:0 0 auto;white-space:nowrap;min-height:32px;padding:0 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface-2);color:var(--text-primary);font:500 12px/1.6 system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif}

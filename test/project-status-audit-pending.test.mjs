@@ -1,10 +1,10 @@
 // ap04: `lattice status --json`が全task done時に`next_action: {"reason":"no_ready_task"}`を返す。
-// 機械が「残作業なし」と答える限り、AIは正しくそれを信じて完了報告する。監査待ちが在る限り
+// 機械が「残作業なし」と答える限り、AIは正しくそれを信じて完了報告する。監査前が在る限り
 // そう答えないようにする。
 //
 // 本testが固定するのは:
 // 1. 優先順位 active_run > next_ready > audit_pending > なし（ready frontierを監査で上書きしない）
-// 2. ready taskが尽きても監査待ちが在れば`reason: 'audit_pending'`で次コマンドまで案内する
+// 2. ready taskが尽きても監査前が在れば`reason: 'audit_pending'`で次コマンドまで案内する
 // 3. `state`は`ready`のまま（閉じたenumでhostが分岐に使う。信号はreasonが持つ）
 // 4. gate_readyなら案内は軽い出口close-unaudited 1行で、`<text>`を埋めればそのまま通る（a22）
 // 5. 監査が着けば`no_ready_task`へ戻る
@@ -79,12 +79,12 @@ async function workspace(context) {
   return { root, evidence, discovery, finish };
 }
 
-test('監査待ちが在ってもready frontierとactive_runが優先される', async (context) => {
+test('監査前が在ってもready frontierとactive_runが優先される', async (context) => {
   const { root, discovery, finish } = await workspace(context);
 
   assert.equal(discovery().next_action.reason, 'parallel_frontier_present');
 
-  // T1がdoneでphase-1はgate_ready。ここで監査待ちが生まれるが、T2がまだreadyである。
+  // T1がdoneでphase-1はgate_ready。ここで監査前が生まれるが、T2がまだreadyである。
   finish('T1');
   const phases = JSON.parse(run(root, ['todo', 'phase', 'status', '--plan', 'main']).stdout);
   // phase-2はphase-1がacceptedになるまでlockedである（Phaseの監査順とToDoの実行順は別物で、
@@ -102,7 +102,7 @@ test('監査待ちが在ってもready frontierとactive_runが優先される',
   assert.equal(withActive.next_action.reason, 'active_run_present');
 });
 
-test('ready taskが尽きても監査待ちが在れば残作業なしと答えない', async (context) => {
+test('ready taskが尽きても監査前が在れば残作業なしと答えない', async (context) => {
   const { root, discovery, finish } = await workspace(context);
   finish('T1');
   finish('T2');
@@ -142,7 +142,7 @@ test('監査が着けばno_ready_taskへ戻る', async (context) => {
   const accepted = run(root, ['todo', 'phase', 'accept', '--plan', 'main', '--phase', 'phase-1',
     '--input', '.lattice/accept.json'], ACTOR_ENV);
   assert.equal(accepted.status, 0, accepted.stderr);
-  // phase-1がacceptedになってもphase-2がまだ監査待ちなので、案内は消えない。
+  // phase-1がacceptedになってもphase-2がまだ監査前なので、案内は消えない。
   assert.equal(discovery().next_action.reason, 'audit_pending');
 
   const closed = run(root, ['todo', 'phase', 'close-unaudited', '--plan', 'main', '--phase', 'phase-2',

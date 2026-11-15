@@ -1,19 +1,19 @@
 /**
- * 監査待ちPhaseの定義（ADR 0147／0148）。
+ * 監査前Phaseの定義（ADR 0147／0148）。
  *
- * 「監査待ち」は同じ3状態の集合として、gantt scopeのfold判定・dashboardの表示判定へ
+ * 「監査前」は同じ3状態の集合として、gantt scopeのfold判定・dashboardの表示判定へ
  * 別々に書かれていた。status面にも同じ判定が要るので、定義をここへ一本化する——
  * 集合が三重になれば、片方だけ更新された時に「図には出るがstatusには出ない」形の
  * ずれが生まれる。ADR 0147が塞ごうとした事故と外形が同じになる。
  *
- * このmoduleが持つのは監査待ちの**定義**だけである。各消費者の方針
+ * このmoduleが持つのは監査前の**定義**だけである。各消費者の方針
  * （ganttのfold対象をどのplan世代へ限るか等）はここへ持ち込まない。
  */
 
 /**
  * 監査の判断がまだ着いていないPhase状態。
  *
- * - `gate_ready`: 所属ToDoが全てdoneで、監査待ち。
+ * - `gate_ready`: 所属ToDoが全てdoneで、監査前。
  * - `reviewing`: 監査中（reviewは出たが、acceptもrejectも出ていない）。
  * - `rejected`: 監査が通らず、要フォロー。
  *
@@ -23,19 +23,19 @@
  */
 export const AUDIT_PENDING_PHASE_STATUSES = new Set(['gate_ready', 'reviewing', 'rejected']);
 
-/** そのPhase状態が監査待ちか。null／undefined／未知の値はfalse。 */
+/** そのPhase状態が監査前か。null／undefined／未知の値はfalse。 */
 export function isAuditPendingPhaseStatus(status) {
   return AUDIT_PENDING_PHASE_STATUSES.has(status ?? null);
 }
 
 /**
- * その監査待ち状態から実際に打てるコマンド。
+ * その監査前状態から実際に打てるコマンド。
  *
  * `src/todo-store.mjs`の遷移guardと一致させる——gate_readyからいきなりacceptはできず
  * （`phase_gate_not_ready`）、reviewing以外からのrejectもできない（`phase_reject_binding_invalid`）。
  * 実行すれば必ず弾かれる遷移を「次の一歩」として案内しない。
  *
- * 監査待ちでない状態を渡すのは呼び出し側の誤りなので、空配列へ丸めずに投げる。
+ * 監査前でない状態を渡すのは呼び出し側の誤りなので、空配列へ丸めずに投げる。
  * 呼ぶ前に`isAuditPendingPhaseStatus`で絞ること。
  *
  * `slotCount`は必須evidence slotの数。1つなら`--evidence`で足り、複数なら`--input`が要る。
@@ -73,7 +73,7 @@ export function phaseAuditRequired(member, gatePolicy) {
 }
 
 /**
- * store read model(`lattice.todo_store_read.v1`)の中の監査待ちPhaseを列挙する。
+ * store read model(`lattice.todo_store_read.v1`)の中の監査前Phaseを列挙する。
  *
  * `member.phases`はstoreが常に埋める導出ビューで、phase無しplanの暗黙terminal-audit Phaseも
  * 同じ形で入っている(ADR 0147)。planの世代で分岐しないのはそのためである。

@@ -97,7 +97,7 @@ const GOLDEN_STATUS = '{"schema":"lattice.todo_status_result.v10","project_id":"
   + '"frontier_digest":"__FRONTIER__"},'
   + '"blocked":[{"plan_key":"main","task_id":"B","reason":"waiting on review"}],'
   + '"connection_pending":[],'
-  // 全taskがdoneではない(Phaseはactive)ので監査待ちは空。v5で足した欄はblockedとmember_headsの間。
+  // 全taskがdoneではない(Phaseはactive)ので監査前は空。v5で足した欄はblockedとmember_headsの間。
   + '"audit_pending":[],'
   // v7で足した構造finalization待ち欄。未適用planでは空でdispatchを変えない。
   + '"structure_finalization_pending":[],'

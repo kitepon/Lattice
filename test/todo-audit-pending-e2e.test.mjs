@@ -1,10 +1,10 @@
-// ap06: 監査待ち表出のE2E。既存の3 test（ap02の共有module unit・ap03のprojection・ap04の
+// ap06: 監査前表出のE2E。既存の3 test（ap02の共有module unit・ap03のprojection・ap04の
 // project status）はいずれもmodule境界の内側か`lattice status`だけを見ている。本testが埋めるのは
 // **`bin/lattice.mjs todo status --json`のstdoutそのもの**で、実CLIを起動して実storeを読ませ、
-// 監査待ちが表出することと、それがdispatchを1バイトも動かさないことを同じ場所で固定する。
+// 監査前が表出することと、それがdispatchを1バイトも動かさないことを同じ場所で固定する。
 //
 // この修正の値打ちは2つの両立にある。片方だけのtestでは守れない:
-// 1. 監査待ちがstatusへ出る（AIが「残作業なし」と読まなくなる）
+// 1. 監査前がstatusへ出る（AIが「残作業なし」と読まなくなる）
 // 2. dispatchが変わらない（ADR 0062・ADR 0147裁定5・ADR 0063の不変条件）
 //
 // 実storeでgate_readyを作る時の落とし穴が2つある。次に書く人が2往復払わないよう明記する:
@@ -126,7 +126,7 @@ const dispatchOf = (status) => ({
   blocked: status.blocked, dispatch_frontier: status.dispatch_frontier,
 });
 
-test('(a) 全taskがdoneになるとCLIのstdoutが監査待ちを名指しし、次の一手まで返す', async (context) => {
+test('(a) 全taskがdoneになるとCLIのstdoutが監査前を名指しし、次の一手まで返す', async (context) => {
   const { finish, status, discovery } = await workspace(context);
   await finish('audited', 'A');
   await finish('audited', 'B');
@@ -181,7 +181,7 @@ test('(a) 返された次の一手は、placeholderを埋めればそのまま�
   assert.equal(auditPendingOf(status(), 'audited')[0].phase_status, 'reviewing');
 });
 
-test('(b) 監査待ちの3状態はそれぞれ実行できる遷移だけを案内し、判断が着けば消える', async (context) => {
+test('(b) 監査前の3状態はそれぞれ実行できる遷移だけを案内し、判断が着けば消える', async (context) => {
   const { root, finish, status, accept } = await workspace(context);
   await finish('audited', 'A');
   await finish('audited', 'B');
@@ -202,7 +202,7 @@ test('(b) 監査待ちの3状態はそれぞれ実行できる遷移だけを案
   await writeFile(path.join(root, '.lattice', 'reject.json'), `${canonicalizeTodoArtifact(rejection)}\n`);
   ok(run(root, ['todo', 'phase', 'reject', '--plan', 'audited', '--phase', TERMINAL_AUDIT,
     '--input', '.lattice/reject.json'], ACTOR_ENV));
-  // rejectedは「判断が着いた」ではなく「差し戻して待っている」なので監査待ちのまま残る。
+  // rejectedは「判断が着いた」ではなく「差し戻して待っている」なので監査前のまま残る。
   assert.equal(auditPendingOf(status(), 'audited')[0].phase_status, 'rejected');
   assert.deepEqual(commandsOf(), [
     `lattice todo phase reopen --plan audited --phase ${TERMINAL_AUDIT} --reason <text>`,
@@ -218,7 +218,7 @@ test('(b) 監査待ちの3状態はそれぞれ実行できる遷移だけを案
   assert.deepEqual(auditPendingOf(status(), 'audited'), []);
 });
 
-test('(b) close-unauditedで閉じた工程も監査待ちには残らない', async (context) => {
+test('(b) close-unauditedで閉じた工程も監査前には残らない', async (context) => {
   const { root, finish, status } = await workspace(context);
   await finish('audited', 'A');
   await finish('audited', 'B');
@@ -228,7 +228,7 @@ test('(b) close-unauditedで閉じた工程も監査待ちには残らない', a
   assert.deepEqual(auditPendingOf(status(), 'audited'), []);
 });
 
-test('(c) 混在: 監査待ちのplanがあってもdispatchはacceptedにした場合とbyte等価である', async (context) => {
+test('(c) 混在: 監査前のplanがあってもdispatchはacceptedにした場合とbyte等価である', async (context) => {
   const pending = await workspace(context);
   await pending.finish('audited', 'A');
   await pending.finish('audited', 'B');
@@ -305,12 +305,12 @@ async function phasePlanWorkspace(context) {
 test('(d) 宣言Phase planはimplicit=falseでplan由来のslotsを出し、locked/activeは出ない', async (context) => {
   const { root, finish, status, accept } = await phasePlanWorkspace(context);
 
-  // T1だけdoneの時点ではphase-1はまだ監査待ちに入っていない（activeであってgate_readyではない）。
+  // T1だけdoneの時点ではphase-1はまだ監査前に入っていない（activeであってgate_readyではない）。
   finish('T1');
   finish('T2');
 
   // 後続Phaseは先行がacceptedになるまで`locked`で、gate_readyにはならない。全taskがdoneでも
-  // 監査待ちに出るのは先頭Phaseだけである——ここを取り違えると「2件出るはず」と読んで落ちる。
+  // 監査前に出るのは先頭Phaseだけである——ここを取り違えると「2件出るはず」と読んで落ちる。
   assert.deepEqual(status().audit_pending, [{
     plan_key: 'main', phase_id: 'phase-1', phase_status: 'gate_ready', implicit: false,
     required_evidence_slots: ['heavy'],
@@ -324,7 +324,7 @@ test('(d) 宣言Phase planはimplicit=falseでplan由来のslotsを出し、lock
   assert.deepEqual(phases.phases.map(({ phase_id, status: phaseStatus }) => [phase_id, phaseStatus]),
     [['phase-1', 'gate_ready'], ['phase-2', 'locked']]);
 
-  // phase-1をacceptで閉じるとphase-2がlockedから解けて監査待ちへ入れ替わる。監査待ちは
+  // phase-1をacceptで閉じるとphase-2がlockedから解けて監査前へ入れ替わる。監査前は
   // 「いま判断を待っている面」だけを指し、まだ到達していないPhaseを先出ししない。
   const reviewed = ok(run(root, ['todo', 'phase', 'review', '--plan', 'main', '--phase', 'phase-1',
     '--reason', '監査開始'], ACTOR_ENV));
@@ -333,7 +333,7 @@ test('(d) 宣言Phase planはimplicit=falseでplan由来のslotsを出し、lock
     [['phase-2', 'gate_ready']]);
 });
 
-test('(d) close-unauditedは後続Phaseを解かない——acceptだけが次の監査待ちを開く', async (context) => {
+test('(d) close-unauditedは後続Phaseを解かない——acceptだけが次の監査前を開く', async (context) => {
   const { root, finish, status } = await phasePlanWorkspace(context);
   finish('T1');
   finish('T2');
@@ -341,7 +341,7 @@ test('(d) close-unauditedは後続Phaseを解かない——acceptだけが次�
   // 実測した非対称。`accepted`は後続をlockedから解くが、`closed_unaudited`は解かない。
   // 「監査せず歴史として閉じる」は受入ではないので後続の前提を満たさない、という設計である。
   // 結果として、非終端Phaseをclose-unauditedで閉じたplanは後続がlockedのまま残り、
-  // 監査待ちは空になる。工程を畳むなら全Phaseを畳む（`todo phase baseline`）のが正しい使い方で、
+  // 監査前は空になる。工程を畳むなら全Phaseを畳む（`todo phase baseline`）のが正しい使い方で、
   // 途中の1つだけを閉じる操作ではない。ここを取り違えると「閉じたのに何も案内されない」に見える。
   ok(run(root, ['todo', 'phase', 'close-unaudited', '--plan', 'main', '--phase', 'phase-1',
     '--reason', '歴史として閉じる'], ACTOR_ENV));
@@ -361,8 +361,8 @@ test('(e) 上位キーはexactで、result_digestとvalidateTodoStatusResultが�
   assert.equal(validateTodoStatusResult(result), true);
   assert.equal(result.result_digest, todoSelfDigest(result, 'result_digest'));
 
-  // v4形（audit_pending欠落）は受理しない。欄の欠落は「監査待ちが無い」ではなく
-  // 「監査待ちを答えていない」であり、そこを空扱いにすると今回直している失念がそのまま戻る。
+  // v4形（audit_pending欠落）は受理しない。欄の欠落は「監査前が無い」ではなく
+  // 「監査前を答えていない」であり、そこを空扱いにすると今回直している失念がそのまま戻る。
   const withoutAuditPending = { ...result };
   delete withoutAuditPending.audit_pending;
   assert.equal(validateTodoStatusResult(withoutAuditPending), false);

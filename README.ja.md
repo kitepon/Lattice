@@ -323,7 +323,7 @@ required evidenceを束縛した`todo phase accept`で重監査の判断を記�
 
 **監査の既定は「有り」です。** phaseを持たないplanも終端に重監査が要ります（予約Phase
 `terminal-audit`を暗黙に1つ持ちます）。全taskがdoneになった状態は「完走」ではなく`gate_ready`＝
-**監査待ち**であり、工程図のlive scopeはそのplanのToDoを畳みません——完走扱いで図から消えることが
+**監査前**であり、工程図のlive scopeはそのplanのToDoを畳みません——完走扱いで図から消えることが
 「閉じた」の可視表現なので、監査の記録なしにそこへ行かせません。作成時に拒否はせず、
 `todo migrate`／`plan create`の結果と最後のdoneのadvisoryで`terminal_audit_required`を通知します。
 **終端監査はToDoのdispatch可否へ影響しません**（Phaseは重監査の順序だけを制御し、開始順はToDo DAGが決めます）。
@@ -341,14 +341,14 @@ lattice todo phase accept --plan <key> --phase terminal-audit --evidence <監査
 
 **過去の工程は監査できません。** 監査対象のコードが既に変化しているためです。そこで
 「監査なしで閉じた」という状態を別に持ちます——`accepted`（監査を通った）へは絶対に化けず、
-記録は永久に区別できます。工程図では畳まれるので監査待ちの札は外れます。
+記録は永久に区別できます。工程図では畳まれるので監査前の札は外れます。
 
 ```bash
 lattice todo phase close-unaudited --plan <key> --phase terminal-audit --reason <text>
 lattice todo phase baseline --reason <text> --except <監査したいplan_key>   # 一括
 ```
 
-一括の入口は、現在監査待ちで一度も監査に触れていないPhaseだけを対象にします。**自動では
+一括の入口は、現在監査前で一度も監査に触れていないPhaseだけを対象にします。**自動では
 実行しません**——どれを監査し、どれを歴史として畳むかは人が決め、Latticeは宣言を受け取って
 記録するだけです。`--except`は「最近の作業でコードも生きているので本当に監査したい」planを
 残すための口です。規約は
@@ -376,7 +376,7 @@ dashboardはmanifestのfile identityが変わらない間のstable store readを
 巨大工程図のrender中にhealth応答が遅れても、生存中dashboardを新daemonで置き換えず
 `DASHBOARD_DAEMON_UNRESPONSIVE`としてtyped拒否します。
 最近のsession activityが1週間を過ぎても、Lattice storeの`active_set`が非空なproject、
-または監査待ちPhaseがあるprojectは一覧へ残ります。
+または監査前Phaseがあるprojectは一覧へ残ります。
 長時間の外部処理中にCLI呼出しが途切れても進行中projectを休眠扱いしません。
 LANや外部reverse proxyから閲覧するoptional bridgeは既定で無効です。明示したIPにだけbindする初回設定、
 再設定、停止方法は[bridge setup](docs/bridge-setup.md)を参照してください。reverse proxy hostへsshで
