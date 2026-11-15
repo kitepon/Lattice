@@ -13,8 +13,8 @@ The [function map](function-map.md) is the canonical implementation map; this fi
 | 優先接続 | "tell me the moment this task can start"; gates nothing | host-local mark in the notices store; `todo connect priority` |
 | ブロック | last resort for an in-progress task nothing can be connected to | `block` / `unblock` events |
 
-止め and 待ち are retired from CLI help, refusal guidance, todo-cli strings, this directory and the dashboard. 監査待ち
-(a Phase waiting for audit) is a different concept and keeps its name. Machine names kept for compatibility: the notice
+止め and 待ち are retired from CLI help, refusal guidance, todo-cli strings, this directory and the dashboard. The Phase
+not yet audited is labelled 監査前; the JSON key `audit_pending` is unchanged. Machine names kept for compatibility: the notice
 field `waiting` and `waiting_digest` (persisted ack format), the revision-record grammar `dependency connect|disconnect`
 in `todo-revision-note.mjs` (history must still parse).
 

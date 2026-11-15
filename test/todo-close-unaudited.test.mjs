@@ -1,5 +1,5 @@
 // ADR 0148: 監査していない歴史は「監査なしで閉じた」として閉じる——監査済みに化けさせない。
-// 0.36.0で入れた終端監査gate(ADR 0147)は、過去に終わった工程まで「監査待ち」にしてしまう
+// 0.36.0で入れた終端監査gate(ADR 0147)は、過去に終わった工程まで「監査前」にしてしまう
 // 欠陥を持っていた。本testが固定するのは:
 //
 // 1. closed_unauditedはacceptedと機械的に区別され、phase_accept_dependenciesを解錠しない
@@ -7,7 +7,7 @@
 // 2. gate_readyでないPhaseへのclose-unauditedはtypedに拒否される(裁定3)
 // 3. 理由なしのclose-unauditedは拒否される(裁定1)
 // 4. phase_reopenはclosed_unauditedも初期状態へ戻す(裁定5)
-// 5. closed_unauditedのplanは工程図で畳まれる——監査待ちの札が外れる(裁定4)
+// 5. closed_unauditedのplanは工程図で畳まれる——監査前の札が外れる(裁定4)
 // 6. 終端監査gateと同じく、closed_unauditedもToDoのdispatch可否へ一切影響しない(ADR 0147裁定5)
 // 7. gate_readyのadvisory/phase statusには、次に打つコマンドが2択でtypedに載る(裁定8)
 import assert from 'node:assert/strict';

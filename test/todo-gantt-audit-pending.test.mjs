@@ -68,9 +68,9 @@ function chipTitle(html) {
   return html.slice(from, html.indexOf('"', from));
 }
 
-test('gate_readyのPhaseがあればヘッダに監査待ちが出る', () => {
+test('gate_readyのPhaseがあればヘッダに監査前が出る', () => {
   const html = render(readFixture([{ planKey: 'main', phases: [phase('terminal-audit', 'gate_ready')] }]));
-  assert.equal(chipText(html), '監査待ち 1件: main/terminal-audit (gate_ready)');
+  assert.equal(chipText(html), '監査前 1件: main/terminal-audit (gate_ready)');
 });
 
 test('判断の着いたPhaseしか無ければ札は出ない', () => {
@@ -83,23 +83,23 @@ test('判断の着いたPhaseしか無ければ札は出ない', () => {
 // 2026-08-08: 全件を並べていた時、札がツールバーを押し広げてズーム操作を画面外へ追い出した。
 // ツールバーはpane幅で制約されておらずCSSの`text-overflow`が発動しないので、出す文字列の側を
 // 有界にする。件数と先頭1件は常に本文、全件は`title`。
-test('監査待ちが複数あれば本文は件数と先頭1件まで、全件はtitleに残る', () => {
+test('監査前が複数あれば本文は件数と先頭1件まで、全件はtitleに残る', () => {
   const html = render(readFixture([
     { planKey: 'zeta', phases: [phase('terminal-audit', 'reviewing')] },
     { planKey: 'alpha', phases: [phase('p2', 'rejected'), phase('p1', 'gate_ready')] },
   ]));
-  assert.equal(chipText(html), '監査待ち 3件: alpha/p1 (gate_ready)');
+  assert.equal(chipText(html), '監査前 3件: alpha/p1 (gate_ready)');
   assert.equal(chipTitle(html),
-    '監査待ち 3件: alpha/p1 (gate_ready) · alpha/p2 (rejected) · zeta/terminal-audit (reviewing)');
+    '監査前 3件: alpha/p1 (gate_ready) · alpha/p2 (rejected) · zeta/terminal-audit (reviewing)');
 });
 
-test('監査待ちが多くても札の本文長はplan名1件分で頭打ちになる', () => {
+test('監査前が多くても札の本文長はplan名1件分で頭打ちになる', () => {
   const many = Array.from({ length: 20 }, (unused, index) => ({
     planKey: `plan-${String(index).padStart(2, '0')}`,
     phases: [phase('terminal-audit', 'gate_ready')],
   }));
   const text = chipText(render(readFixture(many)));
-  assert.equal(text, '監査待ち 20件: plan-00/terminal-audit (gate_ready)');
+  assert.equal(text, '監査前 20件: plan-00/terminal-audit (gate_ready)');
   // 1件だけの時との差は件数の桁だけ。plan数に比例して伸びない。
   const one = chipText(render(readFixture(many.slice(0, 1))));
   assert.ok(text.length - one.length <= 1, `${text.length} vs ${one.length}`);
@@ -150,10 +150,10 @@ async function auditedWorkspace(context) {
   return root;
 }
 
-test('実storeで全taskがdoneになると、ganttヘッダが監査待ちを名指しする', async (context) => {
+test('実storeで全taskがdoneになると、ganttヘッダが監査前を名指しする', async (context) => {
   const root = await auditedWorkspace(context);
   const { rendered } = await renderTodoGanttForProject({ repoRoot: root, scope: 'live' });
-  assert.equal(chipText(rendered.html), '監査待ち 1件: audited/terminal-audit (gate_ready)');
+  assert.equal(chipText(rendered.html), '監査前 1件: audited/terminal-audit (gate_ready)');
 });
 
 test('実storeで監査の判断が着けば札は消える', async (context) => {

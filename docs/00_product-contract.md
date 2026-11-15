@@ -365,7 +365,7 @@ flagなしで通る。`--parallel-frontier`と`--override-reason`は方針・理
 
 **監査の既定は「有り」であり、無しは表現できない**（ADR 0147）。phaseを持たないplan
 （`todo_plan.v1/v2/v3`）は予約Phase `terminal-audit`を暗黙に1つ持ち、所属taskはそのplanの全taskとする。
-状態機械は既存のPhase gateと同一で、全task doneは`gate_ready`＝監査待ちであって完走ではない。
+状態機械は既存のPhase gateと同一で、全task doneは`gate_ready`＝監査前であって完走ではない。
 予約id以外のphase eventは`event_phase_missing`で拒否する。工程図のlive scopeは監査未了
 （`gate_ready`／`reviewing`／`rejected`）のplanのToDoを畳まない——完走扱いで図から消えることが
 「閉じた」の可視表現であり、監査の記録なしにそこへ行かせない。作成は拒否せず通知に留め、
@@ -375,11 +375,11 @@ flagなしで通る。`--parallel-frontier`と`--override-reason`は方針・理
 「Phase監査順とToDo schedulingの分離」を継承し、`next_ready`／`active_set`／`dispatch_frontier`は
 暗黙Phaseの状態遷移で不変である。Latticeは監査の中身を採点せず、accept記録の存在だけを見る。
 
-**監査待ちが在る限り、次アクション面は「残作業なし」と答えない**（ADR 0159）。`todo status`は
-監査待ち（`gate_ready`／`reviewing`／`rejected`）のPhaseを`audit_pending`欄へ
+**監査前が在る限り、次アクション面は「残作業なし」と答えない**（ADR 0159）。`todo status`は
+監査前（`gate_ready`／`reviewing`／`rejected`）のPhaseを`audit_pending`欄へ
 `{plan_key, phase_id, phase_status, implicit, required_evidence_slots, next_commands}`として列挙し、
 `accepted`／`closed_unaudited`は出さない。`lattice status`は`state`を`ready`のまま変えず、
-`next_action.reason`を`no_ready_task`ではなく`audit_pending`とする。先頭の監査待ちが`gate_ready`なら
+`next_action.reason`を`no_ready_task`ではなく`audit_pending`とする。先頭の監査前が`gate_ready`なら
 軽い出口`todo phase close-unaudited --plan <key> --phase <id> --reason <text>`を、`reviewing`／`rejected`なら
 読み取り専用の`todo phase status --plan <key>`を案内する（a22）。`gate_ready`の案内文は、軽い出口と
 監査する道を1行で示す。優先順位は`active_run`＞`next_ready`＞`audit_pending`＞なしで、
@@ -391,11 +391,11 @@ dispatchも状態機械も変えない。
 監査を要求すれば誤検出か中身を見ない`accept`のどちらかを誘発する。`closed_unaudited`は専用event kind
 `phase_close_unaudited`で理由つきに記録し、前提は`gate_ready`とする。**`accepted`へ化けない**——
 `phase_accept_dependencies`は`accepted`の厳密一致だけで解錠し、`closed_unaudited`では解錠しない。
-工程図では畳むので監査待ちの札が外れ、`phase_reopen`でやり直せる。
+工程図では畳むので監査前の札が外れ、`phase_reopen`でやり直せる。
 一括入口`todo phase baseline --reason <text> [--except <plan_key>]...`は、現在`gate_ready`かつ
 phase eventを一度も持たないPhaseをまとめて宣言し、除外・対象外・失敗を区別して返す。
 **自動実行しない**——どれを監査しどれを歴史として畳むかは人／AIが決め、装置は宣言を受け取って
-記録するだけとする。「変化したか」の機械判定と時間ベースの推定は持たない。監査待ちを返す面は、
+記録するだけとする。「変化したか」の機械判定と時間ベースの推定は持たない。監査前を返す面は、
 何が起きたかと次に打つコマンドをtyped guidanceへ載せる。
 
 phase無しで作ったplanへ後からPhaseを被せる救済経路は、`revise-phase`の
@@ -488,8 +488,8 @@ live result v3は`project_id`、project scope、選択scope、起動時点で含
 動的表示であること、`/projects/<project_id>/`のproject固有URL、同じnamespace配下の`events_url`を返す。
 各projectのforeground sessionは独立portで同時起動でき、project間でHTML、SSE、store stateを共有しない。
 共有dashboardの配信判定は、登録簿の`last_seen_at`が`TODO_DASHBOARD_STALE_MS`（1週間）以内、
-またはstoreの非空`active_set`、または監査待ちPhase（`gate_ready`／`reviewing`／`rejected`）の
-いずれかがあることとする。期限切れかつactive runも監査待ちも無いprojectは一覧から外す。
+またはstoreの非空`active_set`、または監査前Phase（`gate_ready`／`reviewing`／`rejected`）の
+いずれかがあることとする。期限切れかつactive runも監査前も無いprojectは一覧から外す。
 heartbeatは配信集合を二次計算せず、dashboard daemonが実際に配信しているidをそのまま名乗る
 （[ADR 0165](adr/0165-terminals-advertise-exactly-what-they-serve.md)）。
 dashboard daemonは起動時に読み込んだ版数をhealthで名乗り、installされた版と食い違うdaemonは新版へ

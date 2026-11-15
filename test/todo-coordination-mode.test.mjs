@@ -204,7 +204,7 @@ test('statusのcoordination欄は宣言済みplanだけを列挙する', async (
     declared_at: NOW,
     reason: '円卓の会話で調整する',
   }]);
-  // 上位キーの並びは合意どおり（監査待ち→構造finalization待ち→note→coordination）。
+  // 上位キーの並びは合意どおり（監査前→構造finalization待ち→note→coordination）。
   assert.deepEqual(Object.keys(after), [
     'schema', 'project_id', 'active_set', 'next_ready', 'dispatch_frontier',
     'blocked', 'connection_pending', 'audit_pending', 'structure_finalization_pending', 'plan_notes',

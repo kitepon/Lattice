@@ -43,7 +43,7 @@ function compareText(left, right) {
 /**
  * ADR 0147: phase無しplan(v1/v2/v3)は終端の暗黙Phase(terminal-audit)がacceptedになるまで
  * 「閉じた」ことにならない。全taskがdoneでも監査未了なら、そのplanのToDoは生きた作業と同じ
- * 扱い(distance 0)にして畳ませない——畳んでしまうと監査待ちであることが図から消え、
+ * 扱い(distance 0)にして畳ませない——畳んでしまうと監査前であることが図から消え、
  * ADR 0147が塞ごうとした「一度も重監査を通らず完走した」事故と外形が同じになる。
  *
  * v4/v5(phaseを宣言したplan)はこの判定の対象外にする——既存のPhase gateが重監査を担って
@@ -52,11 +52,11 @@ function compareText(left, right) {
  * phase無しplanのtaskにはphase_idフィールド自体が無いため、そこでは暗黙Phaseの状態を
  * 埋める。フィールドが無い/nullの入力(既存test・素のnode)は従来どおり対象外(false)になる。
  *
- * 監査待ちの状態集合そのものは`todo-audit-pending.mjs`が持つ(gate_ready・reviewing・rejected)。
+ * 監査前の状態集合そのものは`todo-audit-pending.mjs`が持つ(gate_ready・reviewing・rejected)。
  * `active`(一部taskがまだpending)が入っていないことにここも依存している——ここまで
  * 広げると、完走していない枝の通常foldまで止めてしまい既存挙動を変える。
  *
- * 下のv4/v5除外は共有moduleへ移さない。あれは「監査待ちとは何か」の定義ではなく、
+ * 下のv4/v5除外は共有moduleへ移さない。あれは「監査前とは何か」の定義ではなく、
  * ganttがどこまでfoldを止めるかという本moduleの方針である。移すと、宣言Phase planの
  * fold挙動を他の消費者の都合で変えてしまう。
  */

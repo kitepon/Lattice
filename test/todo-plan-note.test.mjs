@@ -2,7 +2,7 @@
 // 一度しか取れない」——は特定のtaskに属さないので、task必須のnoteでは書けなかった。
 //
 // 固定するのは「書ける」だけではない。**書けるが届かない面を作らないこと**が要点で、前campaignが
-// 直した穴（監査待ちは呼ぶ動機の無いdrilldownには最初から出ていた）と同じ形になる。だから
+// 直した穴（監査前は呼ぶ動機の無いdrilldownには最初から出ていた）と同じ形になる。だから
 // `todo start`のnote_contextへ載ることまでを同じtestで見る。
 
 import assert from 'node:assert/strict';

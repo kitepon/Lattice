@@ -21,10 +21,10 @@ function projectDisplayName(readModel, metadata) {
 }
 
 /**
- * 監査待ちPhaseをヘッダへ出す(ADR 0147／0148)。
+ * 監査前Phaseをヘッダへ出す(ADR 0147／0148)。
  *
  * CLIのstdoutは1行のversioned JSONというADR 0049の公理があり、人が読むテキスト面が無い。
- * 人が実際に見るのはこの図とdashboard(同じHTMLを配信する)なので、監査待ちはここへ出す。
+ * 人が実際に見るのはこの図とdashboard(同じHTMLを配信する)なので、監査前はここへ出す。
  * 全taskがdoneでも監査が済んでいなければ工程は閉じていない——図が「全部緑」に見えるのに
  * ヘッダが無言なら、読み手は完了したと読む。
  *
@@ -33,8 +33,8 @@ function projectDisplayName(readModel, metadata) {
  * **出す文字列を有界にする。** ツールバーはpane幅で制約されていないので、長い札は縮まずに
  * 行を押し広げ、ズーム操作を画面外へ追い出す(2026-08-08に実測)。CSSの`text-overflow`は
  * ここでは発動しないため、頼れない。全plan名を並べる代わりに先頭1件＋残件数だけを出し、
- * 全文は`title`に残す。件数(`監査待ち N件`)は常に見える——省略するのは内訳であって、
- * 監査待ちの存在そのものではない。
+ * 全文は`title`に残す。件数(`監査前 N件`)は常に見える——省略するのは内訳であって、
+ * 監査前の存在そのものではない。
  */
 function renderAuditPendingChip(readModel) {
   const pending = auditPendingPhasesOf(readModel);
@@ -42,8 +42,8 @@ function renderAuditPendingChip(readModel) {
   const label = ({ plan_key: planKey, phase_id: phaseId, status }) => `${planKey}/${phaseId} (${status})`;
   // 残件数は書かない——先頭の`N件`が既に全体を数えており、「ほかM件」はその引き算でしかない。
   // 幅は有限なので、同じことを二度言う分だけplan名が削れる。
-  const text = `監査待ち ${pending.length}件: ${label(pending[0])}`;
-  const full = `監査待ち ${pending.length}件: ${pending.map(label).join(' · ')}`;
+  const text = `監査前 ${pending.length}件: ${label(pending[0])}`;
+  const full = `監査前 ${pending.length}件: ${pending.map(label).join(' · ')}`;
   return `<span class="audit-pending-chip" title="${escapeHtmlAttribute(full)}">${escapeHtmlText(text)}</span>`;
 }
 

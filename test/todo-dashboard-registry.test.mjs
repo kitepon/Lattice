@@ -29,7 +29,7 @@ test('公開配信の鮮度窓は1週間', () => {
   assert.equal(TODO_DASHBOARD_STALE_MS, 7 * 24 * 60 * 60 * 1_000);
 });
 
-test('監査判断待ちと棄却済みPhaseはactive taskが無くてもdashboardへ残す', () => {
+test('監査判断前と棄却済みPhaseはactive taskが無くてもdashboardへ残す', () => {
   for (const status of ['gate_ready', 'reviewing', 'rejected']) {
     assert.equal(todoDashboardMemberNeedsVisibility({ phases: [{ phase_id: 'audit', status }] }), true);
   }

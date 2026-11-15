@@ -12,12 +12,12 @@ const member = (planKey, phases) => ({
   ...(phases === undefined ? {} : { phases: phases.map(([phase_id, status]) => ({ phase_id, status })) }),
 });
 
-test('監査待ちはgate_ready・reviewing・rejectedの3状態だけ', () => {
+test('監査前はgate_ready・reviewing・rejectedの3状態だけ', () => {
   assert.deepEqual([...AUDIT_PENDING_PHASE_STATUSES].sort(),
     ['gate_ready', 'rejected', 'reviewing']);
 });
 
-test('判断が着いた終端状態と未到達の状態は監査待ちではない', () => {
+test('判断が着いた終端状態と未到達の状態は監査前ではない', () => {
   for (const status of ['gate_ready', 'reviewing', 'rejected']) {
     assert.equal(isAuditPendingPhaseStatus(status), true, status);
   }
@@ -27,7 +27,7 @@ test('判断が着いた終端状態と未到達の状態は監査待ちでは�
   }
 });
 
-test('状態を持たない入力は監査待ちに数えない', () => {
+test('状態を持たない入力は監査前に数えない', () => {
   assert.equal(isAuditPendingPhaseStatus(null), false);
   assert.equal(isAuditPendingPhaseStatus(undefined), false);
 });
@@ -49,12 +49,12 @@ test('次コマンドはstoreの遷移guardが受理するものだけを案内�
   ]);
 });
 
-test('監査待ちでない状態は空配列へ丸めず投げる', () => {
+test('監査前でない状態は空配列へ丸めず投げる', () => {
   assert.throws(() => auditPendingNextCommands('p', 'terminal-audit', 'accepted'),
     (error) => error.code === 'AUDIT_PENDING_STATUS_INVALID');
 });
 
-test('read modelからは監査待ちPhaseだけがplan_key→phase_id順で出る', () => {
+test('read modelからは監査前Phaseだけがplan_key→phase_id順で出る', () => {
   assert.deepEqual(auditPendingPhasesOf({
     schema: 'lattice.todo_store_read.v1',
     project_id: 'project-1',

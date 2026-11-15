@@ -1,10 +1,10 @@
-// 監査待ちは2つの面へ別々に出る——`lattice status`／`todo status`のJSON(ap03/ap04)と、
+// 監査前は2つの面へ別々に出る——`lattice status`／`todo status`のJSON(ap03/ap04)と、
 // dashboardが配信する工程図のヘッダ(ap05)である。どちらも同じ共有module
 // (`src/todo-audit-pending.mjs`)の状態集合を使うが、store read modelの歩き方は別実装になっている
 // (status側は自前で歩き、gantt側は`auditPendingPhasesOf`を使う)。
 //
 // 別実装が同じ答えを出すことは、どちらの面のtestも見ていない。片方だけがずれると、
-// 「図には監査待ちが出ているのにstatusは残作業なしと答える」という、この工程がまさに
+// 「図には監査前が出ているのにstatusは残作業なしと答える」という、この工程がまさに
 // 直している事故の形へ戻る。ここで両面を同じstoreに対して突き合わせて固定する。
 //
 // fixtureは2 planを実storeでgate_readyにするだけで、他のtestのfixtureとは共有しない
@@ -87,7 +87,7 @@ async function bothSurfaces(root) {
   return {
     fromStatus: status.audit_pending.map((entry) => (
       `${entry.plan_key}/${entry.phase_id} (${entry.phase_status})`)),
-    fromGantt: title === null ? [] : title.replace(/^監査待ち \d+件: /u, '').split(' · '),
+    fromGantt: title === null ? [] : title.replace(/^監査前 \d+件: /u, '').split(' · '),
     chipPresent: start !== -1,
     statusCount: status.audit_pending.length,
     title,
@@ -106,7 +106,7 @@ const closeUnaudited = (root, planKey) => appendTodoEvent({
     payload: { reason: '監査せず歴史として閉じる' } },
 });
 
-test('statusのaudit_pendingと工程図ヘッダは、同じstoreに対して同じ監査待ちを同じ順で指す', async (context) => {
+test('statusのaudit_pendingと工程図ヘッダは、同じstoreに対して同じ監査前を同じ順で指す', async (context) => {
   const root = await workspace(context);
   const { fromStatus, fromGantt, statusCount, title } = await bothSurfaces(root);
   assert.deepEqual(fromStatus, [
@@ -114,7 +114,7 @@ test('statusのaudit_pendingと工程図ヘッダは、同じstoreに対して�
   ]);
   assert.deepEqual(fromGantt, fromStatus);
   // 件数の表記も食い違わない。図が2件と言ってstatusが1件を返す、が起きない。
-  assert.equal(title.startsWith(`監査待ち ${statusCount}件: `), true, title);
+  assert.equal(title.startsWith(`監査前 ${statusCount}件: `), true, title);
 });
 
 test('片方のPhaseだけが監査中へ進んでも、両面はずれずに追従する', async (context) => {
