@@ -22,6 +22,17 @@ retains superseded metadata, original identities and carry projection.
 | Store includeHistory=true | Same complete projections already computed → expose each task's history before context budget | Additional histories array; default/false remains byte-shape compatible. Superseded notes remain marked, retired/archived targets stay outside active task histories under existing migration policy. |
 | Plan workflow reader | One batch read with includeHistory:true → parse/filter typed workflow records by scope/task and superseded metadata | Latest relevant workflow facts survive later prose even when omitted from bounded context. Plan owns malformed/unknown body handling, result schema and surfaces; no second raw-chain read or duplicate migration implementation. |
 
+Revision records (n3, 2026-11-15): a plan-scope note whose whole body is one of
+Lattice's own revision records (`todo add`, same-plan `dependency connect|disconnect`,
+`plan revise` retire; grammar in Plan's `todo-revision-note.mjs`, which has no
+imports) enters a task's bounded context only when it names that task. Other
+revision records stay in `history`, `includeHistory` and `note list`, and do not
+count into `overflow_count` (they are not cut by the cap, they are not this task's).
+Why: on bellteam-dev-added 546 such records filled the 512 cap and no human
+handoff note reached any start/show. Human plan notes and task notes are unchanged. `plan_note_head_digest` still names
+the plan chain head, so with `overflow_count` 0 it may stand while no plan note is
+shown (`validateTodoNoteContext` checks only that a shown plan note has a head).
+
 Context budget: the bounded context keeps entries in the order above (plan notes
 newest first, then task notes newest first) while they fit both the byte budget
 (`noteContextBytes`, an entry that does not fit is skipped) and the count cap

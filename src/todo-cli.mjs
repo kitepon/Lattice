@@ -202,6 +202,7 @@ import {
   readTodoNoteEvents,
   readTodoPlanNotesForStatus,
 } from './todo-note-store.mjs';
+import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -1832,7 +1833,7 @@ async function dependencyRevision({
     applied = await applyPlanRevision({
       repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
       notes: [{ task_id: fromTaskId,
-        body: `dependency ${operation} ${fromTaskId}→${toTaskId}: ${reason}` }],
+        body: dependencyNoteBody(operation, fromTaskId, toTaskId, reason) }],
     });
   } catch (error) {
     // a18: the new edge closes a cycle; nothing stored is inconsistent, so name the edge and the path.
@@ -1904,7 +1905,7 @@ async function addTask({ repoRoot, env, planKey, flags }) {
   const reason = typeof flags.reason === 'string' ? flags.reason : null;
   const applied = await applyPlanRevision({
     repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
-    notes: [{ task_id: taskId, body: `todo add ${taskId}${reason === null ? '' : `: ${reason}`}` }],
+    notes: [{ task_id: taskId, body: todoAddNoteBody(taskId, reason) }],
   });
   const result = {
     schema: 'lattice.todo_task_add_result.v1', project_id: store.project_id, plan_key: planKey,

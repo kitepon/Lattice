@@ -225,7 +225,9 @@ export function validateTodoNoteContext(value) {
     const scoped = (scope) => value.notes.some((note) => note.scope === scope);
     if (value.overflow_count === 0) {
       if (scoped('task') !== (value.note_head_digest !== null)) return false;
-      if (scoped('plan') !== (value.plan_note_head_digest !== null)) return false;
+      // n3: revision records about other tasks are left out by design, so a plan head may stand
+      // with no plan note shown; a shown plan note still needs its head.
+      if (scoped('plan') && value.plan_note_head_digest === null) return false;
     } else if (value.note_head_digest === null && value.plan_note_head_digest === null) {
       return false;
     }

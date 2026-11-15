@@ -24,6 +24,7 @@ import {
   validateTodoNoteEvent,
 } from './todo-contracts.mjs';
 import { validatePhaseTodoRevision, validateTodoRevision } from './todo-revision.mjs';
+import { revisionRecordTaskIds } from './todo-revision-note.mjs';
 
 const NOTE_ROOT_REF = '.lattice/todo/notes';
 const SEALED_NAME = /^(\d{12})-(\d{12})-([0-9a-f]{64})-([0-9a-f]{64})\.jsonl$/u;
@@ -436,10 +437,14 @@ export function projectTodoNoteContext(options = {}) {
   // task固有のものより文脈が広いので先に読ませる。
   const current = [...planCurrent, ...taskCurrent];
   archived.reverse();
+  // n3: Lattice's own revision records about other tasks would fill the cap and push out every
+  // human handoff (546 on bellteam-dev-added); they stay in history and note list.
+  const offered = current.filter((entry) => entry.scope !== 'plan'
+    || (revisionRecordTaskIds(entry.body)?.includes(options.currentTaskId) ?? true));
 
   const notes = [];
   let usedBytes = 0;
-  for (const entry of current) {
+  for (const entry of offered) {
     // 件数もvalidatorと同じ上限で切る。byteに収まる短いnoteが溜まると、自分の出力が自分の検証で落ちる。
     if (notes.length >= TODO_LIMITS.tasksPerPlan) break;
     const bytes = Buffer.byteLength(entry.body, 'utf8');
@@ -458,7 +463,7 @@ export function projectTodoNoteContext(options = {}) {
     note_head_digest: taskCurrent[0]?.event_digest ?? null,
     plan_note_head_digest: planCurrent[0]?.event_digest ?? null,
     // overflowはcontext全体の予算の話でchainの性質ではないので、ここは合成でよい。
-    overflow_count: current.length - notes.length,
+    overflow_count: offered.length - notes.length,
     // plan noteを載せる以上、案内はplan全体を返す形でなければ「full」ではない。
     full_history_command: `lattice todo note list --plan ${options.planKey} --json`,
     context_digest: '',
