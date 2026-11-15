@@ -84,7 +84,7 @@ jobs:
           printf 'product_change=%s\n' "$product_change" >> "$GITHUB_OUTPUT"
           printf 'CI classification: %s\n' "$reason"
       # Main-push coverage (scripts/ci-main-coverage.mjs): a PR records what its gate tested; a main
-      # push whose tree a full, three-OS green PR run already tested keeps green gate jobs without rerunning.
+      # push whose tree a three-OS green PR run (scoped or full) already tested keeps green gate jobs without rerunning.
       - name: record tested tree
         id: tested
         if: github.event_name == 'pull_request' && steps.changes.outputs.product_change == 'true'

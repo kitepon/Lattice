@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
  * test that reaches them through imports (the callers), plus changed tests. The Sensor role
  * (`sensor/`) has its own gate (`test:sensor`) and runs only when that role is touched.
  * Anything the graph cannot place (gate/workflow/package files, a source file no one imports)
- * runs the full gate. main pushes, tags and manual runs always run the full gate.
+ * runs the full gate. main pushes, tags and manual runs run the full gate, except that a main push
+ * whose tree a green PR run (scoped or full) already tested is covered (ci-main-coverage.mjs).
  */
 
 const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -110,7 +111,7 @@ export async function computeCiScope(base, { allTests }) {
   let changed = diff.stdout.split('\n').filter(Boolean);
   // A release bump changes only `version`: run what reads the package files, not the full gate.
   const bumped = changed.filter((file) => /^package(-lock)?\.json$/u.test(file) && versionOnly(base, file));
-  // shortcut: a bump runs only suites that read the package files themselves; main's full gate covers the rest.
+  // shortcut: a bump runs only suites that read the package files themselves; the bump changes no code, so the rest is unaffected, and this scoped run covers main's same tree.
   const graph = await referenceGraph((file, text) => {
     if (bumped.length > 0 && allTests.includes(file.slice('test/'.length)) && /package(-lock)?\.json/u.test(text)) changed.push(file);
   });
