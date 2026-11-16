@@ -87,6 +87,7 @@ import {
   writeTodoWitnessSet,
   readTodoStoreDisplaySource,
   readTodoStoreForDisplay,
+  readTodoChartMeta,
   readTodoStoreStable,
   rebuildTodoSnapshot,
   writeTodoIndependenceArtifact,
@@ -1347,7 +1348,7 @@ async function startTask({
   const advisory = await startAdvisory({
     repoRoot, store, projection, planKey, taskId: resolvedTaskId,
   });
-  if (member.coordination?.mode === 'enforced') {
+  if (member.coordination?.mode === 'enforced' && !(await noCodeTask({ repoRoot, member, taskId: resolvedTaskId }))) {
     enforcedStartGate({ advisory, planKey, taskId: resolvedTaskId, overrideReason });
   }
   const structureContext = await startStructureContext({
@@ -1388,6 +1389,16 @@ function headResolves(repoRoot) {
 
 const declareCommand = (planKey, taskId) => `lattice todo independence witness declare --plan ${planKey} --task ${taskId}`
   + ' --owns <path>[,<path>...] [--reads <path>,...] [--writes <path>,...]';
+
+/**
+ * g3: a task in a lane the host marked `no_code_lanes` (`chart set --no-code-lane`) touches no code, so gates 1–3 do not apply:
+ * it counts as declared with an empty boundary and can neither conflict nor go stale. Lattice names no lane itself.
+ * An unreadable chart meta means no lane is marked (the gates apply).
+ */
+async function noCodeTask({ repoRoot, member, taskId }) {
+  const lane = member.plan.tasks.find(({ task_id: id }) => id === taskId)?.lane;
+  return (await readTodoChartMeta({ repoRoot }).catch(() => null))?.no_code_lanes?.includes(lane) ?? false;
+}
 
 /** ADR 0200 gates 1–3: an enforced plan does not start undeclared, stale or conflicting work. Reads the advisory only. */
 function enforcedStartGate({ advisory, planKey, taskId, overrideReason }) {

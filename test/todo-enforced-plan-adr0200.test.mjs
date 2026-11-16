@@ -161,6 +161,17 @@ test('g4: a todo add keeps the record of unchanged tasks; only the new undeclare
   assert.equal(success(root, start('Q')).advisory.coverage, 'verified');
 });
 
+test('g3: a task in a no-code lane starts with no witness row; code tasks keep gate 1', async (context) => {
+  const { root } = await fixture(context);
+  success(root, ['todo', 'add', '--plan', 'dev', '--task', 'A', '--title', 'Owner approval', '--phase', 'p', '--lane', 'approval-box',
+    '--design-memo', 'NO_PLAN', '--reason', 'owner wait']);
+  assert.equal(refusal(root, start('A')).message, 'enforced_witness_undeclared');
+  assert.deepEqual(success(root, ['chart', 'set', '--no-code-lane', 'approval-box', '--json']).no_code_lanes, ['approval-box']);
+  assert.equal(success(root, start('A')).status, 'in-progress');
+  assert.equal(refusal(root, start('P')).message, 'enforced_witness_undeclared');
+  assert.deepEqual(success(root, ['chart', 'set', '--no-code-lane', '', '--json']).no_code_lanes, []);
+});
+
 test('witness and conversation plans keep warnings only', async (context) => {
   for (const mode of ['witness', 'conversation']) {
     const { root } = await fixture(context, mode);
