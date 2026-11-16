@@ -24,7 +24,9 @@ a3b declaration CLI, a4 Store relations, a5 judgment, a6 Touched). Roles: [funct
 
 `todo done` / `todo retire` end with one empty `transactTodoRelations` (only when the plan summary says `relation_count > 0`) so a finished task's open relations close; failure is ignored and the plan's next write closes them.
 
-Not done in a5: the independence compile still judges per file (a path with anchors is still a whole-file resource there) and `todo start`/the read surfaces do not show relations yet.
+Independence compile (a5b): `independenceCompile` resolves every declared function of the witness rows in one Resolve call (`resolveDeclaredRanges`; no anchors = no call; a failure = no ranges, so every declared function is read as a whole-file claim, as before) and passes the ranges to `compileTodoIndependence` (`functionRanges`). The runtime front-end then calls `refineResources` (`refineResourcesByFunction`, `src/todo-judgment.mjs`) on the resources it built: a shared path resource (`own-…` owned path, `rw-…` read x write, `predicted-ww-…` write overlap of one path) keeps a task pair only when both claim exactly that path and none of them declared functions in it, or `judgeTask` finds an overlap of the resource's own kind (`ww` both write, `rw` one reads). Other pairs and every other resource kind are untouched. `todo start`'s gates read that artifact, so an enforced plan no longer refuses two tasks on different functions of one file.
+
+Not done: `todo start`/the read surfaces do not show relations yet (a5c).
 
 ## State it owns
 

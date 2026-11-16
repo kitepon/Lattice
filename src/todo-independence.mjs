@@ -10,6 +10,7 @@ import {
 } from './todo-independence-contracts.mjs';
 import { compileRuntimePlanV1, evidenceFromCollectedOutcomes } from './runtime-front-end.mjs';
 import { collectSensorEvidence } from './sensor-adapter.mjs';
+import { refineResourcesByFunction } from './todo-judgment.mjs';
 
 export class TodoIndependenceError extends Error {
   constructor(code, reason, detail = {}) {
@@ -257,7 +258,7 @@ function scopeExpansionFrom({ taskIds, boundaries, previousArtifact, plan }) {
 }
 
 export function compileTodoIndependence(options = {}) {
-  const { witnessSet, plan, baseSha, compiledAt, sensorEvidence, previousArtifact = null } = options;
+  const { witnessSet, plan, baseSha, compiledAt, sensorEvidence, previousArtifact = null, functionRanges = null } = options;
   if (!validateTodoWitnessSet(witnessSet)) {
     fail('INDEPENDENCE_WITNESS_INVALID', 'witness_set_invalid');
   }
@@ -285,6 +286,8 @@ export function compileTodoIndependence(options = {}) {
     planEpoch: 0,
     predecessorRefs: [],
     omitWavesOverLimit: true,
+    // a5b: with resolved function ranges, a path declared with functions claims only those functions (ADR 0204 §6 container ruling).
+    ...(functionRanges === null ? {} : { refineResources: refineResourcesByFunction({ rows: witnessSet.manual_witness, ranges: functionRanges }) }),
   });
 
   if (compiled.outcome !== 'dispatchable'

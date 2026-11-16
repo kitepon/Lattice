@@ -434,9 +434,10 @@ export function evidenceFromCollectedOutcomes(options = {}) {
  * 入力shape違反はTypeErrorでfail closed。
  */
 export function compileRuntimePlanV1(options = {}) {
-  const { omitWavesOverLimit, ...required } = options;
+  const { omitWavesOverLimit, refineResources, ...required } = options;
   if (!exactRecord(required, ['request', 'sensorEvidence', 'planRef', 'planEpoch', 'predecessorRefs'])
-    || (omitWavesOverLimit !== undefined && typeof omitWavesOverLimit !== 'boolean')) {
+    || (omitWavesOverLimit !== undefined && typeof omitWavesOverLimit !== 'boolean')
+    || (refineResources !== undefined && typeof refineResources !== 'function')) {
     fail('compileRuntimePlanV1 optionsがexact shapeでない');
   }
   const { request, sensorEvidence, planRef, planEpoch, predecessorRefs } = required;
@@ -584,7 +585,7 @@ export function compileRuntimePlanV1(options = {}) {
   if (ambiguous.length > 0) return nonDispatchable('QUERY_DRIFT', { ambiguous_targets: ambiguous });
 
   // observation set resources。
-  const resources = [];
+  let resources = [];
   for (const [key, group] of [...ownGroups.entries()].sort((left, right) => compareText(left[0], right[0]))) {
     const coveringQueryId = coveringByTarget.get(key);
     if (coveringQueryId === undefined) continue; // 未束縛ownsは既にunknownへ落ちている
@@ -794,6 +795,10 @@ export function compileRuntimePlanV1(options = {}) {
       provenance: [manualProvenance(request)],
     });
   }
+
+  // ADR 0204 a5b: the caller may narrow a shared path resource to the task pairs that really overlap (function ranges).
+  // It only removes or splits resources and never adds a task to one; a pair it cannot compare stays in the resource.
+  if (refineResources !== undefined) resources = refineResources(resources);
 
   const observationSet = {
     schema_version: 'lattice.boundary_observation_set.v2',
