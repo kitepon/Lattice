@@ -160,3 +160,28 @@ test('b3: cutCost sizes the function for the worker; a missing source is an answ
   assert.deepEqual(missing, { profile: null, reasons: ['source_unreadable'] });
   assert.deepEqual((await cutCost({ repoRoot: root, target: {}, memberTaskIds: [] })).reasons, ['target_or_members_malformed']);
 });
+
+test('b3: a host clone that took in main only fetches the commit and the history it needs from origin', async (t) => {
+  const origin = await repo(t);
+  origin.git('config', 'uploadpack.allowAnySHA1InWant', 'true');
+  const commit = await origin.commitOn('cut', { 'src/lib.mjs': CUT });
+  // main moves on after the cut branched, so a depth-1 clone cannot see the common ancestor without deepening.
+  await origin.put('docs/one.md', '1'); origin.git('add', '-A'); origin.git('commit', '-q', '-m', 'main 2');
+  await origin.put('docs/two.md', '2'); origin.git('add', '-A'); origin.git('commit', '-q', '-m', 'main 3');
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-split-clone-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['clone', '-q', '--depth', '1', '--single-branch', '--branch', 'main', `file://${origin.root}`, root]);
+  const inClone = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  assert.throws(() => inClone('cat-file', '-e', `${commit}^{commit}`), 'the clone starts without the commit');
+  const headBefore = inClone('rev-parse', 'HEAD');
+  const refsBefore = inClone('for-each-ref');
+
+  const out = await verifyFunctionSplit({ repoRoot: root, commit, target, map });
+  assert.equal(out.error, undefined, JSON.stringify(out));
+  assert.deepEqual([out.behaviour.passed, out.tests.passed, out.fresh.passed], [true, true, true]);
+  assert.equal(inClone('rev-parse', 'HEAD'), headBefore);
+  assert.equal(inClone('for-each-ref'), refsBefore, 'objects only: no ref moved');
+
+  const missing = await verifyFunctionSplit({ repoRoot: root, commit: 'f'.repeat(40), target, map });
+  assert.equal(missing.error.code, 'commit_not_found', 'origin lacks it too: the worker pushes');
+});

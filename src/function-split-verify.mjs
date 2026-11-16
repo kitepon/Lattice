@@ -63,12 +63,39 @@ function validate({ target, map, anchors }) {
   }
 }
 
-async function revParse(repoRoot, ref, what) {
+/**
+ * A host's chart repository usually takes in main only, so the worker's cut is not there (ADR 0205 §4): fetch what is
+ * missing from `origin`, objects only (`--no-write-fetch-head`, no refspec: no ref moves). False when origin cannot give it.
+ */
+async function fetchFromOrigin(repoRoot, args) {
   try {
-    return (await git(repoRoot, ['rev-parse', '--verify', `${ref}^{commit}`])).trim();
-  } catch {
-    throw new InputError('commit_not_found', `${what} ${ref} is not in this repository: fetch or push the branch, then verify again`, { ref });
+    await git(repoRoot, ['fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', ...args]);
+    return true;
+  } catch { return false; }
+}
+
+async function revParse(repoRoot, ref, what) {
+  const parse = () => git(repoRoot, ['rev-parse', '--verify', `${ref}^{commit}`]).then((out) => out.trim(), () => null);
+  // only a full sha can be asked of origin; a branch name or abbreviation is the worker's to push.
+  const found = await parse() ?? (/^[0-9a-f]{40}$/iu.test(ref) && await fetchFromOrigin(repoRoot, ['origin', ref]) ? await parse() : null);
+  if (found === null) {
+    throw new InputError('commit_not_found', `${what} ${ref} is in neither this repository nor its origin: push the branch, then verify again`, { ref });
   }
+  return found;
+}
+
+/** merge-base(commit, HEAD); in a shallow clone, deepen and then unshallow until the two histories meet. */
+async function mergeBaseWithHead(repoRoot, commitSha) {
+  const attempt = () => git(repoRoot, ['merge-base', commitSha, 'HEAD']).then((out) => out.trim(), () => null);
+  let found = await attempt();
+  if (found !== null || (await git(repoRoot, ['rev-parse', '--is-shallow-repository'])).trim() !== 'true') return found;
+  // shortcut: `HEAD` names origin's HEAD, which is the chart's branch on a host; deepen both sides, then everything.
+  for (const depth of ['--deepen=200', '--unshallow']) {
+    if (!await fetchFromOrigin(repoRoot, [depth, 'origin', commitSha, 'HEAD'])) break;
+    found = await attempt();
+    if (found !== null) return found;
+  }
+  return null;
 }
 
 /** `git diff --name-status`: [{status: A|M|D|..., path}]. No rename detection: a rename is a delete plus an add. */
@@ -184,9 +211,9 @@ export async function verifyFunctionSplit({ repoRoot, commit, base, target, map 
     validate({ target, map, anchors });
     const commitSha = await revParse(repoRoot, commit, 'commit');
     const baseSha = base === undefined
-      ? await git(repoRoot, ['merge-base', commitSha, 'HEAD']).then((out) => out.trim(), () => {
-        throw new InputError('commit_not_found', 'commit shares no history with HEAD: pass --base', { ref: commit });
-      })
+      ? await mergeBaseWithHead(repoRoot, commitSha) ?? (() => {
+        throw new InputError('commit_not_found', 'commit shares no history with HEAD (origin has none either): pass --base', { ref: commit });
+      })()
       : await revParse(repoRoot, base, 'base');
     if (baseSha === commitSha) {
       throw new InputError('empty_diff', 'the commit is already on HEAD or equals base: pass --base <main sha before the merge>');
