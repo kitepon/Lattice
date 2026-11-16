@@ -115,8 +115,10 @@ the sensor index, the witness set or the full relation log, never recompute, and
 - Touched answers `{touched: [{path, symbol, start_line, end_line}], unattributed: [{path, reason, old_range, new_range}]}`;
   unattributed hunks (imports, top-level code, deleted or renamed functions, unindexed files) count as file-level, never as
   "touched nothing". The range end must be the indexed HEAD.
-- Observe keeps today's protection: a dirty tree is refused (it would make the judgment observe uncommitted state; self-exit:
-  commit or stash). A store-only chart (no code tree) is never observed; Judgment skips Resolve there.
+- Observe keeps today's protection (the judgment never observes uncommitted state) without a refusal: a clean tree at HEAD is
+  answered from its maintained index after an incremental sync; a dirty tree falls back to today's isolated worktree of HEAD
+  (slow, nothing refused; guards.stopping-is-not-safety). A store-only chart (no code tree) is never observed; Judgment skips
+  Resolve there. Measured (a2, Neve): 1.7 s clean, 12.2 s first use (one index build), 13.9 s dirty fallback.
 - Reads, measured today on a BellTeam copy: `session-context` with 6 plans takes 101 ms without records and 116 ms with records
   (about 3 ms per plan). Small now; the rule in §5 keeps it flat as records grow.
 - Order: g4 (#210) carries the record after every revision by running the full compile, which today builds a fresh index
