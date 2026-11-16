@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 独立の compile の観測が、維持されている索引を使うようにした（ADR 0204 の Observe、a2）。作業木が HEAD と同じ内容（`.lattice/` を除く）なら、その木の `.lattice/sensor` を増分 `sensor sync` して問い合わせる（索引が無い最初の1回だけ `sensor init`）。BellTeam 規模でこれまで毎回 約11秒かかった新規の全索引と使い捨て worktree が要らなくなる。未 commit の変更がある木は、これまでどおり HEAD の使い捨て worktree で新しく索引して観測し（拒否はしない）、未 commit の状態は観測しない。結果の形は変えない。ホストへの変更：無し。実装：ネヴェ。
+
 ## 0.108.0 — 2026-11-16
 
 工程が9つ以上の計画と、計画の改訂のあとでも、競合の判定の記録が消えずに残るようにした版。ホストへの変更：有り（`INDEPENDENCE_READY_UNDECLARED`の廃止、9件以上では`wave_plan`が null）。
