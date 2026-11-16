@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Store：関数を分ける工程の印と検証の記録（ADR 0205 b2、ルドミラ）。ホストへの変更：有り（新しい plan の版と記録の登録）。計画の工程に `function_split`（`lattice.todo_plan.v9`、無い時は `null`）を持てるようにし、`.lattice/todo/splits/<plan_key>/<task_id>.json` に検証の結果（`lattice.todo_split_record.v1`）を置く。`recordTodoSplit` / `readTodoSplit`（鍵は書く間だけ、読みは鍵なし）。最初の分割を書く改訂までは v8 のまま。古い席は v9 の計画を読むと `UNSUPPORTED_SCHEMA`（アップグレード案内）になり、**その Store の全ての計画が読めなくなる**（BellTeam の写しで確認）。分割を書く前に、全ての席を上げる。
+
 ## 0.109.0 — 2026-11-16
 
 工程を足すときに、その工程が変える関数を一度だけ書けるようにし、Lattice がその場で他の未完了の工程と関数単位で比べて競合を記録する版（ADR 0204、段階 A）。同じファイルでも関数が違えば衝突せず、enforced でも両方着手できる。ホストへの変更：有り（`path#function` を `--reads` に書いた計画だけ witness set が v6 になり、0.109.0 より古い席はその計画を読めない。新しい `.lattice/todo/relations/`）。

@@ -57,6 +57,10 @@ export const TODO_CHART_META_SCHEMA = 'lattice.chart_meta.v1';
 export const TODO_RELATION_EVENT_SCHEMA = 'lattice.todo_relation_event.v1';
 export const TODO_RELATION_SUMMARY_SCHEMA = 'lattice.todo_relation_summary.v1';
 export const TODO_RELATION_SUMMARY_OPEN = 20;
+/** ADR 0205 b2: the verify outcome of one split task, one file `.lattice/todo/splits/<plan_key>/<task_id>.json`; dfd-store-split. */
+export const TODO_SPLIT_RECORD_SCHEMA = 'lattice.todo_split_record.v1';
+export const TODO_SPLIT_CONDITIONS = Object.freeze(['behaviour', 'tests', 'fresh', 'overlap', 'parallel']);
+export const TODO_SPLIT_MAX_MEMBERS = 64;
 /**
  * v2でnoteの`scope`とplan noteを載せる。v1のままでは`task_id`が identifier 必須・
  * `full_history_command`が`--task <id>`込みの文字列と完全一致で、どちらもplan noteを表せない。
@@ -406,6 +410,25 @@ function taskV8(value) {
   ]) && taskV6(rest) && (doneCondition === null || isTodoDesignMemo(doneCondition));
 }
 
+const splitText = (value) => typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 1_024
+  && !CONTROL.test(value);
+
+/** ADR 0205 §2: the split mark. `members` are sorted unique task ids (start order is never stored); the range is a snapshot. */
+const functionSplit = (value) => exactRecord(value, ['path', 'symbol', 'start_line', 'end_line', 'members'])
+  && isTodoRef(value.path) && splitText(value.symbol)
+  && Number.isSafeInteger(value.start_line) && value.start_line >= 1
+  && Number.isSafeInteger(value.end_line) && value.end_line >= value.start_line
+  && Array.isArray(value.members) && value.members.length >= 2 && value.members.length <= TODO_SPLIT_MAX_MEMBERS
+  && value.members.every((id, index) => isTodoIdentifier(id) && (index === 0 || compareText(value.members[index - 1], id) < 0));
+
+function taskV9(value) {
+  const { function_split: split, ...rest } = value ?? {};
+  return exactRecord(value, [
+    'task_id', 'title', 'lane', 'design_memo', 'narrative_ref', 'narrative_anchor',
+    'compile_binding', 'parent_task_id', 'phase_id', 'done_condition', 'function_split',
+  ]) && taskV8(rest) && (split === null || functionSplit(split));
+}
+
 function phaseV1(value) {
   return exactRecord(value, [
     'phase_id', 'title', 'gate_policy', 'predecessor_phase_ids', 'required_evidence_slots',
@@ -476,14 +499,15 @@ export function explainTodoPlan(value) {
           : ['lattice.todo_plan.v4', 'lattice.todo_plan.v5'].includes(value?.schema) ? taskV4
             : value?.schema === 'lattice.todo_plan.v6' ? taskV5
               : value?.schema === 'lattice.todo_plan.v7' ? taskV6
-                : value?.schema === 'lattice.todo_plan.v8' ? taskV8 : null;
+                : value?.schema === 'lattice.todo_plan.v8' ? taskV8
+                  : value?.schema === 'lattice.todo_plan.v9' ? taskV9 : null;
     const planKeys = [
       'schema', 'project_id', 'plan_key', 'plan_version', 'predecessor_plan_digest',
       'tasks', 'hard_dependencies', 'joins', 'topology_digest', 'plan_digest',
     ];
     const phased = ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7',
-      'lattice.todo_plan.v8'].includes(value?.schema);
-    const decoupled = ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']
+      'lattice.todo_plan.v8', 'lattice.todo_plan.v9'].includes(value?.schema);
+    const decoupled = ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9']
       .includes(value?.schema);
     if (phased) planKeys.push('phases');
     if (decoupled) planKeys.push('phase_accept_dependencies');
@@ -498,6 +522,12 @@ export function explainTodoPlan(value) {
     if (invalidTask >= 0) return reject('task_shape_invalid', `/tasks/${invalidTask}`);
     if (new Set(value.tasks.map(({ task_id }) => task_id)).size !== value.tasks.length) {
       return reject('duplicate_task_id', '/tasks');
+    }
+    if (value.schema === 'lattice.todo_plan.v9') {
+      const ids = new Set(value.tasks.map(({ task_id: id }) => id));
+      const stray = value.tasks.findIndex(({ task_id: id, function_split: split }) => split !== null
+        && (split.members.includes(id) || !split.members.every((member) => ids.has(member))));
+      if (stray >= 0) return reject('function_split_members_invalid', `/tasks/${stray}/function_split/members`);
     }
     if (!Array.isArray(value.hard_dependencies)) {
       return reject('bounded_collection_violation', '/hard_dependencies');
@@ -516,7 +546,7 @@ export function explainTodoPlan(value) {
       if (!isTodoDigest(value[field])) return reject('digest_invalid', `/${field}`);
     }
     if (['lattice.todo_plan.v3', 'lattice.todo_plan.v4', 'lattice.todo_plan.v5',
-      'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(value.schema)
+      'lattice.todo_plan.v6', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9'].includes(value.schema)
       && !validParentGraph(value.tasks)) return reject('parent_graph_invalid', '/tasks');
     if (phased) {
       if (!Array.isArray(value.phases) || value.phases.length === 0) return reject('bounded_collection_violation', '/phases');
@@ -966,5 +996,27 @@ export function validateTodoRelationSummary(value) {
       && value.open_relations.length <= TODO_RELATION_SUMMARY_OPEN && value.open_relations.every(summaryRelation)
       && value.open_truncated === (value.relation_count > value.open_relations.length)
       && relationSha(value.head_sha) && isStrictTodoTimestamp(value.computed_at);
+  } catch { return false; }
+}
+
+const splitCondition = (value) => exactRecord(value, ['passed', 'detail']) && typeof value.passed === 'boolean'
+  && typeof value.detail === 'string' && Buffer.byteLength(value.detail, 'utf8') <= 2_048;
+const splitMapEntry = (value) => exactRecord(value, ['task_id', 'path', 'symbol'])
+  && isTodoIdentifier(value.task_id) && isTodoRef(value.path) && splitText(value.symbol);
+
+/** ADR 0205 §2: `accepted` only when all five conditions passed; the map has at most one entry per task, sorted by task_id. */
+export function validateTodoSplitRecord(value) {
+  try {
+    return exactRecord(value, ['schema', 'plan_key', 'task_id', 'attempt', 'map', 'commit', 'base', 'outcome',
+      'conditions', 'recorded_at', 'actor'])
+      && value.schema === TODO_SPLIT_RECORD_SCHEMA && isTodoIdentifier(value.plan_key) && isTodoIdentifier(value.task_id)
+      && Number.isSafeInteger(value.attempt) && value.attempt >= 1
+      && Array.isArray(value.map) && value.map.length <= TODO_SPLIT_MAX_MEMBERS && value.map.every(splitMapEntry)
+      && value.map.every((entry, index) => index === 0 || compareText(value.map[index - 1].task_id, entry.task_id) < 0)
+      && /^[0-9a-f]{40}$/u.test(value.commit) && /^[0-9a-f]{40}$/u.test(value.base)
+      && ['accepted', 'rejected'].includes(value.outcome)
+      && exactRecord(value.conditions, TODO_SPLIT_CONDITIONS) && TODO_SPLIT_CONDITIONS.every((key) => splitCondition(value.conditions[key]))
+      && (value.outcome === 'rejected' || TODO_SPLIT_CONDITIONS.every((key) => value.conditions[key].passed))
+      && isStrictTodoTimestamp(value.recorded_at) && actor(value.actor);
   } catch { return false; }
 }
