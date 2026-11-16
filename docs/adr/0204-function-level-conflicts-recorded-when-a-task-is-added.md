@@ -89,6 +89,40 @@ never a bare name. An anchor that does not resolve is an explicit unknown on tha
 the sensor index, the witness set or the full relation log, never recompute, and never run git per plan. The per-call
 `git diff base..HEAD` of today's status/session-context moves to the sync step (§3).
 
+### 6. Rulings from the role review (2026-11-16, Neve, Alice, Ludmila)
+
+- Syntax: `path#symbol` splits at the first `#` (Ruby `Foo#bar` stays in the symbol); the symbol is a dot-separated container
+  chain (`Bar.baz`) matched against the node's qualified name; paths are repo-relative with `/`. Matching is exact; a miss
+  answers `unresolved {nearest[]}`.
+- A path declared with anchors is a container, not a whole-file claim: no path-level resource is made for it. A path without
+  `#` keeps the whole file.
+- Results: `todo add` and `witness declare` exit 0 and carry `declaration: {written, unresolved: [{path, symbol, nearest[]}],
+  malformed: [...]}` (result schemas v2). A caller never re-adds because a declaration was refused.
+- `tasks[].touches` is read at create/revise time and written to the witness set only; it never enters the stored plan
+  (input schemas create v6 / revise likewise; plan digests unchanged).
+- Witness set v6 (`read_anchors`) is written only when some task has read anchors; otherwise v5 stays, so older readers keep
+  reading charts that do not use reads (as with `no_code_lanes`).
+- Placement: relations are per `plan_key`, not per plan version: `.lattice/todo/relations/<plan_key>/log.jsonl` +
+  `summary.json`, own lock like notes, never the lifecycle journal. Revisions copy nothing; Judgment appends `gone` for tasks
+  whose ranges changed or that left the plan. One relation per (task pair, path) carrying the overlapping symbols, so
+  whole-file declarations do not grow per symbol pair. Event ids are content digests; re-appending an open id is a no-op.
+- Atomicity: the task's witness row and its relations are written in one Store call under the relations lock, with the
+  comparison made against rows read under that lock (or a compare on `log_sequence` that refuses a stale write; Judgment
+  recomputes and retries). Two adds at once never miss each other.
+- Gate 3 (enforced, stale): `todo start` compares the summary's `head_sha` with `git rev-parse HEAD`; equal = fresh; different =
+  one `git diff --name-only` limited to that task's paths (start is a write). Self-exit: `chart repo sync` (re-resolves) or
+  re-declare.
+- Touched answers `{touched: [{path, symbol, start_line, end_line}], unattributed: [{path, reason, old_range, new_range}]}`;
+  unattributed hunks (imports, top-level code, deleted or renamed functions, unindexed files) count as file-level, never as
+  "touched nothing". The range end must be the indexed HEAD.
+- Observe keeps today's protection: a dirty tree is refused (it would make the judgment observe uncommitted state; self-exit:
+  commit or stash). A store-only chart (no code tree) is never observed; Judgment skips Resolve there.
+- Reads, measured today on a BellTeam copy: `session-context` with 6 plans takes 101 ms without records and 116 ms with records
+  (about 3 ms per plan). Small now; the rule in §5 keeps it flat as records grow.
+- Order: g4 (#210) carries the record after every revision by running the full compile, which today builds a fresh index
+  (+~11 s per `todo add` in a witness/enforced plan on a BellTeam-size chart). That breaks decision 4, so 0.108.0 (g4, g5)
+  ships only together with a2 (Observe on the maintained index). Neve does a2 first.
+
 ## Load budget (acceptance, on a BellTeam copy)
 
 - `todo add` with declarations: at most today's add + 2 s; Resolve + overlap for one task ≤ 1 s.
