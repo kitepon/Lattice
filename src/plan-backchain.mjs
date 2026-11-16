@@ -417,25 +417,36 @@ async function verifyExistingFeatureReferences(repoRoot, chain) {
 }
 
 const DONE_CONDITION_PLAN_SCHEMA = 'lattice.todo_plan.v8';
+const SPLIT_PLAN_SCHEMA = 'lattice.todo_plan.v9';
 
 /**
  * authoring（create入力またはplan本体）から後継planの種を作る。
- * 作る版: v5入力か先行planがv8ならv8（v8→v7へ戻さない）、それ以外はv7。
+ * 作る版: 先行planがv9、または splitMarks が分割を書くならv9（v8へ戻さない）。v5入力か先行planがv8ならv8、それ以外はv7。
  * v8でdone_conditionを書いていないtask（v4入力）は、先行planの同じtaskの値を引き継ぐ
  * （書き換えも消去もしていないので意味を変えない）。新規taskはnull。
+ * v9のfunction_splitは作成者が書けない（ADR 0205 §2）: 先行planの同じtaskの値を引き継ぎ、
+ * splitMarks（Map task_id → 印 | null、`todo start` の分割だけが渡す）が上書きする。
  */
-export function planSeed(authoring, predecessorPlanDigest, predecessorPlan = null) {
-  const v8 = authoring.schema === 'lattice.plan_create_input.v5'
+export function planSeed(authoring, predecessorPlanDigest, predecessorPlan = null, splitMarks = null) {
+  const marks = splitMarks ?? new Map();
+  const v9 = authoring.schema === SPLIT_PLAN_SCHEMA || predecessorPlan?.schema === SPLIT_PLAN_SCHEMA
+    || [...marks.values()].some((mark) => mark !== null);
+  const v8 = v9 || authoring.schema === 'lattice.plan_create_input.v5'
     || authoring.schema === DONE_CONDITION_PLAN_SCHEMA
     || predecessorPlan?.schema === DONE_CONDITION_PLAN_SCHEMA;
-  const inherited = new Map(predecessorPlan?.schema === DONE_CONDITION_PLAN_SCHEMA
-    ? predecessorPlan.tasks.map(({ task_id: id, done_condition: value }) => [id, value]) : []);
+  const carried = (field) => new Map(['lattice.todo_plan.v8', SPLIT_PLAN_SCHEMA].includes(predecessorPlan?.schema)
+    ? predecessorPlan.tasks.map((task) => [task.task_id, task[field] ?? null]) : []);
+  const inherited = carried('done_condition');
+  const split = carried('function_split');
   return {
-    schema: v8 ? DONE_CONDITION_PLAN_SCHEMA : 'lattice.todo_plan.v7', project_id: authoring.project_id,
+    schema: v9 ? SPLIT_PLAN_SCHEMA : v8 ? DONE_CONDITION_PLAN_SCHEMA : 'lattice.todo_plan.v7', project_id: authoring.project_id,
     plan_key: authoring.plan_key, predecessor_plan_digest: predecessorPlanDigest,
     tasks: v8 ? authoring.tasks.map((task) => ({ ...task,
       done_condition: Object.hasOwn(task, 'done_condition')
-        ? task.done_condition : inherited.get(task.task_id) ?? null })) : authoring.tasks,
+        ? task.done_condition : inherited.get(task.task_id) ?? null,
+      ...(v9 ? { function_split: marks.has(task.task_id) ? marks.get(task.task_id)
+        : Object.hasOwn(task, 'function_split') ? task.function_split : split.get(task.task_id) ?? null } : {}) }))
+      : authoring.tasks,
     phases: authoring.phases,
     hard_dependencies: authoring.hard_dependencies, joins: authoring.joins,
     phase_accept_dependencies: authoring.phase_accept_dependencies,

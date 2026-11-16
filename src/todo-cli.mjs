@@ -204,6 +204,8 @@ import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
 import { buildDeclarationRow, declaredPaths, proposeFromText, resolveDeclaredRanges } from './todo-declaration.mjs';
 import { anchorsOf, claimsOf, judgeTask, neededAnchors, rangeIndex, relationView } from './todo-judgment.mjs';
 import { readTodoRelationSummary, readTodoTaskRelations, transactTodoRelations } from './todo-relation-store.mjs';
+import { planSplitHold, splitGuide } from './todo-split-start.mjs';
+import { cutCost } from './function-split-verify.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -1351,8 +1353,14 @@ async function startTask({
   const startAdvice = await startAdvisory({
     repoRoot, store, projection, planKey, taskId: resolvedTaskId,
   });
-  const relations = await taskRelations({ repoRoot, planKey, taskId: resolvedTaskId });
+  const got = await readTaskRelations({ repoRoot, planKey, taskId: resolvedTaskId });
+  const relations = relationsFrom(resolvedTaskId, got);
   const advisory = relations === null ? startAdvice : { ...startAdvice, relations };
+  // ADR 0205 §1: a held task never reaches the gates; --override-reason (witness or enforced) starts it as today.
+  if (readyTask !== undefined) {
+    const held = await holdForSplit({ repoRoot, env, member, planKey, taskId: resolvedTaskId, read: got.read ?? null, overrideReason });
+    if (held !== null) return held;
+  }
   if (member.coordination?.mode === 'enforced' && !(await noCodeTask({ repoRoot, member, taskId: resolvedTaskId }))) {
     enforcedStartGate({ advisory, planKey, taskId: resolvedTaskId, overrideReason });
   }
@@ -1370,9 +1378,58 @@ async function startTask({
     process.emitWarning(`todo start: backchain not used (${error.detail?.reason ?? error.message}: ${error.detail?.pointer ?? ''})`,
       { code: 'LATTICE_START_BACKCHAIN_UNUSABLE' });
   }
-  return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
+  const started = await mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, advisory, noteContext,
     structureContext, featureContext, externalTasks: store.external_tasks ?? [] });
+  return withSplitGuide({ repoRoot, member, planKey, taskId: resolvedTaskId, started });
+}
+
+/**
+ * ADR 0205 §1 (b4): `todo start T` writes a function an in-progress task of another lane writes → add S (or join the open S on
+ * that function) in one revision and keep T pending. null = start as today: no such overlap, no lane, override, a conversation
+ * plan, or a plan a light revision cannot take (an unknown state is not dangerous: the warning names it, nothing is refused).
+ */
+async function holdForSplit({ repoRoot, env, member, planKey, taskId, read, overrideReason }) {
+  if (overrideReason !== null || member.coordination?.mode === 'conversation') return null;
+  const hold = planSplitHold({ member, taskId, read });
+  if (hold === null) return null;
+  const { applyPlanRevision, desiredFromPlan, lightRevisionExpresses } = await import('./plan-revise.mjs');
+  const unsupported = (reason) => { process.emitWarning(`todo start: split not used (${reason})`, { code: 'LATTICE_START_SPLIT_UNSUPPORTED' }); return null; };
+  if (!lightRevisionExpresses(member)) return unsupported('split_unsupported: the plan cannot take a light revision');
+  const desired = desiredFromPlan(member.plan, { env });
+  const ref = (id) => ({ project_id: member.plan.project_id, plan_key: planKey, task_id: id });
+  desired.tasks = [...desired.tasks, ...hold.tasks];
+  desired.hard_dependencies = [...desired.hard_dependencies, ...hold.edges.map(({ from, to }) => ({ from: ref(from), to: ref(to) }))];
+  let applied;
+  try {
+    applied = await applyPlanRevision({ repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
+      notes: hold.notes, splitMarks: hold.marks });
+  } catch (error) {
+    if (error?.detail?.reason === 'plan_revise_split_unsupported') {
+      return unsupported('split_unsupported: the plan is bound to a feature chain');
+    }
+    throw error;
+  }
+  const lanes = hold.splits.map(({ task_id: id }) => [...hold.tasks, ...member.plan.tasks].find(({ task_id: other }) => other === id)?.lane);
+  const result = { schema: 'lattice.todo_start_split_result.v1', project_id: member.plan.project_id, plan_key: planKey,
+    plan_version: applied.plan_version, task_id: taskId, status: 'pending', splits: hold.splits,
+    next_action: `wait: ${hold.splits.map(({ task_id: id }, index) => `${id} is in lane ${lanes[index]}`).join('; ')}; the chart offers ${taskId} again when every split it waits on is done or withdrawn.`,
+    result_digest: '' };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/** ADR 0205 §3: starting the split task S shows the worker its members, the size of the cut and what to do (no member rule exists). */
+async function withSplitGuide({ repoRoot, member, planKey, taskId, started }) {
+  const mark = member.plan.tasks.find(({ task_id: id }) => id === taskId)?.function_split ?? null;
+  if (mark === null || started.kind !== 'start') return started;
+  const cost = await cutCost({ repoRoot, target: { path: mark.path, symbol: mark.symbol }, memberTaskIds: mark.members })
+    .catch(() => ({ profile: null, reasons: ['cut_cost_failed'] }));
+  const { result_digest: _digest, ...rest } = started;
+  const result = { ...rest, function_split: { path: mark.path, symbol: mark.symbol, members: mark.members, cut_cost: cost,
+    guide: splitGuide({ planKey, taskId, mark }) }, result_digest: '' };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
 }
 
 /**
@@ -1382,14 +1439,23 @@ async function startTask({
  * head_sha}`; an unreadable record is named, never refused: an unknown state is not dangerous.
  */
 async function taskRelations({ repoRoot, planKey, taskId }) {
+  return relationsFrom(taskId, await readTaskRelations({ repoRoot, planKey, taskId }));
+}
+
+/** `{read}` (null = the plan has none) or `{unreadable}`: `todo start` keeps the raw read for the split check. */
+async function readTaskRelations({ repoRoot, planKey, taskId }) {
   try {
-    const read = await readTodoTaskRelations({ repoRoot, planKey, taskId });
-    if (read === null) return null;
-    return { open: read.open.map((relation) => relationView(taskId, relation)),
-      plan_relation_count: read.relation_count, unresolved_count: read.unresolved_count, head_sha: read.head_sha };
+    return { read: await readTodoTaskRelations({ repoRoot, planKey, taskId }) };
   } catch (error) {
     return { unreadable: error?.detail?.reason ?? error?.code ?? 'relations_unreadable' };
   }
+}
+
+function relationsFrom(taskId, { read = null, unreadable = null }) {
+  if (unreadable !== null) return { unreadable };
+  if (read === null) return null;
+  return { open: read.open.map((relation) => relationView(taskId, relation)),
+    plan_relation_count: read.relation_count, unresolved_count: read.unresolved_count, head_sha: read.head_sha };
 }
 
 /** declare-without-git: HEAD does not resolve (no commit) and the plan's witness set records this task's row. */
@@ -1418,7 +1484,9 @@ const declareCommand = (planKey, taskId) => `lattice todo independence witness d
  * An unreadable chart meta means no lane is marked (the gates apply).
  */
 async function noCodeTask({ repoRoot, member, taskId }) {
-  const lane = member.plan.tasks.find(({ task_id: id }) => id === taskId)?.lane;
+  const { lane, function_split: split } = member.plan.tasks.find(({ task_id: id }) => id === taskId) ?? {};
+  // ADR 0205 §3: a split task overlaps its own members by construction and carries no witness row.
+  if (split) return true;
   return (await readTodoChartMeta({ repoRoot }).catch(() => null))?.no_code_lanes?.includes(lane) ?? false;
 }
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 二つの担当が同じ関数を書くとき、あとから着手する側を止めて、関数を分ける工程を足す（ADR 0205、b4、アリス）。ホストへの変更：有り（最初の分割を書く改訂で計画が v9 になる。席を上げてから）。`todo start T` が、T の開いた関係に「T も書き、別の担当の着手中の工程 U も書く関数」を見つけると、U の担当の分割工程 S（`function_split` の印つき、S は U と T の前工程）を一回の改訂で足し、T は未着手のまま `lattice.todo_start_split_result.v1` を返す。その関数にすでに開いた S があれば T はそこに加わる。読み書き、同じ担当、`--override-reason`、conversation の計画は今までどおり。S の `todo start` は、メンバー、切り出しの大きさ（`cut_cost`）、やること（分割して verify、`[skip ci]` 付きの PR、または decline）を結果に載せる。S は enforced の関門 1〜3 を通らない。
 - Store：関数を分ける工程の印と検証の記録（ADR 0205 b2、ルドミラ）。ホストへの変更：有り（新しい plan の版と記録の登録）。計画の工程に `function_split`（`lattice.todo_plan.v9`、無い時は `null`）を持てるようにし、`.lattice/todo/splits/<plan_key>/<task_id>.json` に検証の結果（`lattice.todo_split_record.v1`）を置く。`recordTodoSplit` / `readTodoSplit`（鍵は書く間だけ、読みは鍵なし）。最初の分割を書く改訂までは v8 のまま。古い席は v9 の計画を読むと `UNSUPPORTED_SCHEMA`（アップグレード案内）になり、**その Store の全ての計画が読めなくなる**（BellTeam の写しで確認）。分割を書く前に、全ての席を上げる。
 
 ## 0.109.0 — 2026-11-16
