@@ -92,6 +92,11 @@ profile with every member owning F; best effort, null with the reason) and shows
 S, so the worker sees the size before deciding. `todo show S` shows the mark, members, the note and the verify record; it
 never runs the sensor.
 
+- The split task's design memo and the `todo start S` result also tell the worker: once verify accepts, open the PR with
+  `[skip ci]` in the commit message and merge it; verify already ran the checks for the cut (Owner, 2026-11-16: 「分割工程に
+  対してはCIを省略しろと、分割作業者に言えばいいだけ」). Only the split PR skips CI; the members' own work after the split
+  runs CI as usual (Owner: 「その後の予定通りの作業に対しては省略しない」). A repository whose branch protection requires checks needs an
+  exception for these PRs from its CI owner.
 - **Split**: the worker writes the cut on a branch from main (a code change by the worker: Lattice has no data-flow
   analysis to extract part of a function), then
   `lattice todo function-split verify --plan P --task S --commit <sha> [--base <sha>] --map <task>=<path#fn>[,...]`.
@@ -124,9 +129,15 @@ files; `existed_at_base` = resolved at base with the same range, recorded and sh
 and parallel and records the outcome. All five pass → `accepted`. Any fails → `rejected`, and Lattice reorganizes as not
 split (§6, D7), reason = the failed conditions. The verify takes as long as the tests; it runs only when the worker asks.
 
+A host's chart repository usually takes in main only (BellTeam's chart sync), so the worker's cut is not there. Verify
+therefore fetches what it needs from the repository's `origin` before it observes: the commit itself (`git fetch origin
+<sha>`, objects only, no ref is moved), the base when given, and, in a shallow clone, enough history for the merge-base
+(`git fetch --deepen`, then `--unshallow` if still missing). The worker only pushes the branch, which the PR needs anyway
+(Behemoth's finding, 2026-11-16, while writing BellTeam's rule).
+
 Input errors are not a rejection and reorganize nothing: verify answers `{error: {code, next_action}}` for `source_dirty`
-(the repoRoot has uncommitted changes; names them), `commit_not_found` (the worker fetches or pushes; Lattice never
-fetches), `empty_diff` (base == commit: pass `--base`), `target_untouched` (the target path is not in the diff),
+(the repoRoot has uncommitted changes; names them), `commit_not_found` (the commit is in neither the repository nor its
+`origin`: the worker pushes the branch), `empty_diff` (base == commit: pass `--base`), `target_untouched` (the target path is not in the diff),
 `map_entry_malformed`. repoRoot is the repository Resolve uses at todo add (a store-only chart has none: B does not arise
 there, since it has no relations).
 
