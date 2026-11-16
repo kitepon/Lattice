@@ -44,11 +44,11 @@ async function fixture(context) {
 }
 const declare = (taskId, ...flags) => ['todo', 'independence', 'witness', 'declare', '--plan', 'dev', '--task', taskId, ...flags];
 
-test('each member declares their own row; compile waits for every ready task, then runs', async (context) => {
+test('each member declares their own row; compile runs on the declared rows, waiting_for names the rest (g4)', async (context) => {
   const root = await fixture(context);
   const first = success(root, declare('P', '--owns', 'src/a.js', '--reads', 'src/c.js'));
   assert.equal(first.schema, 'lattice.todo_witness_declare_result.v1');
-  assert.deepEqual([first.compiled, first.waiting_for, first.compile], [false, ['Q'], null]);
+  assert.deepEqual([first.compiled, first.waiting_for, first.compile.task_count], [true, ['Q'], 1]);
   assert.deepEqual([first.owns, first.reads, first.writes], [['src/a.js'], ['src/c.js'], []]);
   const second = success(root, declare('Q', '--owns', 'src/b.js', '--json'));
   assert.deepEqual([second.compiled, second.waiting_for], [true, []]);

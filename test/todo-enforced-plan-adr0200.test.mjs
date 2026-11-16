@@ -146,6 +146,21 @@ test('gate 5 exit without evidence: phase accept|reject with an optional --messa
   assert.equal(rejected.status, 'rejected');
 });
 
+test('g4: a todo add keeps the record of unchanged tasks; only the new undeclared task is refused', async (context) => {
+  const { root } = await fixture(context);
+  for (const [id, file] of [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js']]) success(root, declare(id, '--owns', file));
+  success(root, ['todo', 'add', '--plan', 'dev', '--task', 'X', '--title', 'X', '--phase', 'p', '--design-memo', 'NO_PLAN',
+    '--reason', 'new work']);
+  assert.equal(success(root, start('P')).advisory.coverage, 'verified');
+  const refused = refusal(root, start('X'));
+  assert.deepEqual([refused.message, refused.detail.task_id], ['enforced_witness_undeclared', 'X']);
+  success(root, declare('X', '--owns', 'src/x.js'));
+  assert.equal(success(root, start('X')).advisory.coverage, 'verified');
+  // a retire drops nothing for the others either
+  success(root, ['todo', 'retire', '--plan', 'dev', '--task', 'L', '--reason', 'not needed']);
+  assert.equal(success(root, start('Q')).advisory.coverage, 'verified');
+});
+
 test('witness and conversation plans keep warnings only', async (context) => {
   for (const mode of ['witness', 'conversation']) {
     const { root } = await fixture(context, mode);

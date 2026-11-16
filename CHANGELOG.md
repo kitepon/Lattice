@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 計画を改訂（`todo add`、`predecessor`、`plan revise` など）しても、宣言済みで変わらない工程の独立の記録が残る。これまでは改訂のたびに新しい版の記録が無くなり、enforced の計画では全工程の着手が断られ、`independence compile` も「readyの未宣言」を理由に拒んでいた。改訂のあと宣言を新しい版へ写して、宣言済みの行だけで再計算する（失敗しても改訂は戻さず、警告1行）。新しく足した宣言前の工程は、その工程だけが未知で、その工程だけが断られる。それを含む組は、宣言するまで独立と判定しない（ADR 0127 決定6のまま）。`INDEPENDENCE_READY_UNDECLARED` は無くなり、`witness declare` は宣言済みの行でいつも compile する（`waiting_for` は残る）。
 - `lattice sensor init|sync`：git の作業木なら、先に `.lattice/` を `.git/info/exclude` へ足す。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
 - `lattice chart repo sync`：最初の取得だけ `--depth=1`、2回目からは深さを付けずに取る。これまでは毎回 `--depth=1` で、新しい先頭がそのたびに浅い根になり、前の先頭が祖先でなくなった。そのせいで enforced の門4が、マージ済みのコミットを「今の先頭でない」と断り、`todo structure input` は `baseline_not_ancestor` になっていた。fast-forward だけで動く点は変えない。
 - 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。

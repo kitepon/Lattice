@@ -3471,25 +3471,7 @@ async function independenceCompile({ repoRoot, planKey, inputRef }) {
       { task_ids: absentFromPlan },
     );
   }
-  const readyIds = projectTodoStatus(storeForReady, TODO_STATUS_DISPATCH_ONLY).next_ready
-    .filter((task) => task.plan_key === planKey)
-    .map((task) => task.task_id);
-  const declared = new Set(declaredIds);
-  const missingReady = readyIds.filter((taskId) => !declared.has(taskId)).sort();
-  if (missingReady.length > 0) {
-    throw new TodoStoreError(
-      'INDEPENDENCE_READY_UNDECLARED',
-      'ready_tasks_missing_from_witness',
-      undefined,
-      {
-        plan_key: planKey,
-        missing_task_ids: missingReady,
-        // a35: compiling the same set again cannot add them; the template keeps what is declared.
-        next_action: `Declare ${missingReady.join(', ')} in the witness set. ${witnessRoute(planKey)}`
-          + ' The template keeps the declarations already recorded, so only the new tasks need filling.',
-      },
-    );
-  }
+  // g4: a ready task nobody declared is `witness_missing` for itself only (projectIndependenceFrontier), so it no longer stops the compile.
   const observation = await collectTodoIndependenceAuthoritativeObservation({ repoRoot, witnessSet });
   const baseSha = observation.head_sha;
   const store = storeForReady;
@@ -3579,6 +3561,33 @@ async function independenceWitnessMigrate({ repoRoot, planKey }) {
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+/**
+ * g4: the independence artifact is keyed to the plan version, so a revision (todo add, predecessor, plan revise ...) leaves the
+ * new version without a record and an enforced plan refuses every start. After a revision, move the recorded declarations to the
+ * new version and recompile over them: unchanged tasks keep their verdicts, a new undeclared task is `witness_missing` for itself
+ * only. Best effort: the revision is already recorded, so a failure is one warning with the way out, never an error.
+ */
+export async function carryIndependenceAfterRevision({ cwd }) {
+  let planKey = null;
+  try {
+    const repoRoot = resolveRepoRoot(cwd);
+    const store = await readTodoStore({ repoRoot });
+    for (const member of store.members) {
+      planKey = member.plan.plan_key;
+      if (!['witness', 'enforced'].includes(member.coordination?.mode) || !headResolves(repoRoot)) continue;
+      const artifact = await readTodoIndependenceArtifact({ repoRoot, store, planKey });
+      if (artifact !== null && !isTodoIndependenceLegacyMarker(artifact)) continue;
+      if (await readTodoWitnessSet({ repoRoot, planKey }) === null) continue;
+      if (Array.isArray(member.revision?.task_migration)) await independenceWitnessMigrate({ repoRoot, planKey });
+      await independenceCompile({ repoRoot, planKey, inputRef: todoWitnessRef(planKey) });
+    }
+  } catch (error) {
+    process.emitWarning(`independence record not carried to the new plan version${planKey === null ? '' : ` of ${planKey}`}`
+      + ` (${error?.detail?.reason ?? error?.message ?? error}): declare a task again, or run \`lattice todo independence witness migrate --plan <key>\``
+      + ' and then compile', { code: 'LATTICE_INDEPENDENCE_NOT_CARRIED' });
+  }
 }
 
 async function independence({ repoRoot, requestedPlanKey }) {
@@ -3909,7 +3918,7 @@ function declaredStartHint(store, member, state) {
 
 /**
  * a40: one task's witness row, declared by its member. Rows nobody declared stay out (an empty row
- * would claim "touches nothing"); compile runs once every ready task is declared.
+ * would claim "touches nothing"); compile runs on the declared rows (g4), `waiting_for` names the ready tasks still undeclared.
  */
 async function witnessDeclare({ repoRoot, env, planKey, flags }) {
   const store = await readTodoStoreForReadiness({ repoRoot, env });
@@ -3944,7 +3953,7 @@ async function witnessDeclare({ repoRoot, env, planKey, flags }) {
     .map(({ task_id: id }) => id).sort();
   // declare-without-git: a Store root with no commit cannot be observed, so the row is recorded and not compiled.
   const observable = headResolves(repoRoot);
-  const compile = waitingFor.length === 0 && observable
+  const compile = observable
     ? await independenceCompile({ repoRoot, planKey, inputRef: scaffolded.witness_ref }) : null;
   const result = {
     schema: 'lattice.todo_witness_declare_result.v1', project_id: member.plan.project_id, plan_key: planKey,
@@ -4680,6 +4689,13 @@ function writesTodoStore(argv) {
       return true;
     default: return false;
   }
+}
+
+/** g4: the todo commands that write a new plan version (the plan revise command carries on its own in bin/lattice.mjs). */
+function revisesPlan(argv) {
+  return ['add', 'revise', 'revise-phase', 'revise-set', 'split', 'dependency', 'predecessor'].includes(argv[0])
+    && !(argv[0] === 'dependency' && !['connect', 'disconnect'].includes(argv[1]))
+    && !(argv[0] === 'predecessor' && !['add', 'remove'].includes(argv[1]));
 }
 
 /** notice-impl: the writes that can make a task startable carry `notices` ([startable notices](dfd-done-notice.md)). */
@@ -5608,6 +5624,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       : await action(repoRoot);
     const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before, env) : written;
     if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
+    if (!atomicCommit && revisesPlan(argv)) await carryIndependenceAfterRevision({ cwd });
     return 0;
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'
