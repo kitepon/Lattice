@@ -60,16 +60,23 @@ function runDiff(request, stdout, stderr) {
   }
 }
 
-/** g2: the index (`.lattice/`, ~143 MB) must not be committed by `git add -A` in a product clone; not a git work tree = nothing to do. */
+/**
+ * g2: the index (`.lattice/sensor/`, ~143 MB) must not be committed by `git add -A` in a product clone; not a git work tree = nothing to do.
+ * Only the index: `.lattice/todo` may be tracked or added in the same repo (ignoring all of `.lattice/` broke `git add .lattice/todo`).
+ */
 async function excludeSensorIndex(projectPath) {
   try {
     const { stdout } = await promisify(execFile)('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: projectPath });
     const exclude = path.resolve(projectPath, stdout.trim());
     const text = await readFile(exclude, 'utf8').catch(() => '');
-    if (text.split(/\r?\n/u).includes('.lattice/')) return;
+    if (text.split(/\r?\n/u).includes('.lattice/sensor/')) return;
     await mkdir(path.dirname(exclude), { recursive: true });
-    await appendFile(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}.lattice/\n`);
-  } catch { /* no git work tree */ }
+    await appendFile(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}.lattice/sensor/\n`);
+  } catch (error) {
+    // Not a git work tree (git exits 128) or no git on PATH: there is nothing `git add -A` could commit from here.
+    if (error?.code === 128 || error?.code === 'ENOENT') return;
+    process.emitWarning(`.lattice/sensor/ not added to .git/info/exclude: ${error?.message ?? error}`, { code: 'LATTICE_SENSOR_EXCLUDE_FAILED' });
+  }
 }
 
 function execute(command, projectPath) {
