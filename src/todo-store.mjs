@@ -161,7 +161,7 @@ function rejectUnsupportedRevisionSchema(value, { family, supportedSchemas }) {
 // Reader registration (newer-value-says-upgrade): the newest schema of each Store record family this
 // reader knows. Bump it in the same diff that teaches the validator a new version.
 export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 2, todo_notice_waits: 1, chart_meta: 1,
-  todo_relation_event: 1, todo_relation_summary: 1, todo_witness_set: 5 });
+  todo_relation_event: 1, todo_relation_summary: 1, todo_witness_set: 6 });
 const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest'],
   [validateTodoWitnessSet, 'todo_witness_set']]);
 const vocabularyWord = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);

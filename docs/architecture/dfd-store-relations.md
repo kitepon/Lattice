@@ -40,7 +40,7 @@ call leaves at most one extra open relation until the next call; Judgment ends t
 
 A damaged or oversize file: `STORE_INCONSISTENT/relation_summary_invalid` or `relation_log_invalid {ref}`; a higher `lattice.todo_relation_*.vN` or
 `lattice.todo_witness_set.vN`: `UNSUPPORTED_SCHEMA/newer_lattice_value` (registered in `NEWEST_KNOWN_TODO_SCHEMA`: `todo_relation_event`,
-`todo_relation_summary` 1, `todo_witness_set` 5, bumped to 6 with the v6 validator). Callers show "relations unreadable" instead of refusing the
+`todo_relation_summary` 1, `todo_witness_set` 6 (the v6 validator is on main)). Callers show "relations unreadable" instead of refusing the
 command (an unknown state is not dangerous).
 
 ## Guards
