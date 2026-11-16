@@ -114,7 +114,8 @@ the sensor index, the witness set or the full relation log, never recompute, and
   re-declare.
 - Touched answers `{touched: [{path, symbol, start_line, end_line}], unattributed: [{path, reason, old_range, new_range}]}`;
   unattributed hunks (imports, top-level code, deleted or renamed functions, unindexed files) count as file-level, never as
-  "touched nothing". The range end must be the indexed HEAD.
+  "touched nothing". A clean HEAD answers from the maintained index; any other range end (an older commit, a dirty tree)
+  answers from a disposable worktree of that commit with a fresh index (about 12 s, rare; nothing refused).
 - Observe keeps today's protection (the judgment never observes uncommitted state) without a refusal: a clean tree at HEAD is
   answered from its maintained index after an incremental sync; a dirty tree falls back to today's isolated worktree of HEAD
   (slow, nothing refused; guards.stopping-is-not-safety). A store-only chart (no code tree) is never observed; Judgment skips
