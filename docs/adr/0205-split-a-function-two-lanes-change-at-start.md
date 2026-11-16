@@ -94,7 +94,8 @@ never runs the sensor.
 
 - The split task's design memo and the `todo start S` result also tell the worker: once verify accepts, open the PR with
   `[skip ci]` in the commit message and merge it; verify already ran the checks for the cut (Owner, 2026-11-16: 「分割工程に
-  対してはCIを省略しろと、分割作業者に言えばいいだけ」). A repository whose branch protection requires checks needs an
+  対してはCIを省略しろと、分割作業者に言えばいいだけ」). Only the split PR skips CI; the members' own work after the split
+  runs CI as usual (Owner: 「その後の予定通りの作業に対しては省略しない」). A repository whose branch protection requires checks needs an
   exception for these PRs from its CI owner.
 - **Split**: the worker writes the cut on a branch from main (a code change by the worker: Lattice has no data-flow
   analysis to extract part of a function), then
