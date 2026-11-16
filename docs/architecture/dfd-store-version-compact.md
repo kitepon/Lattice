@@ -44,6 +44,17 @@ revision ids (the version directory name and `plan_version` stay; other records 
 | `readNoteMigrations` (`todo-note-store`) | `plan.json` + `revision.json` of each version | the record's `revision.task_migration` and `predecessor_plan_version` |
 | `readJournal` | `journal/active.jsonl` | also `active.jsonl.gz` when the plain file is absent |
 
+A read pays this per retained version, per process (`bellteam-dev-added`: 888 versions in a day, one `todo note` took 4.4 s, `status` 1.9 s, on a copy of the production Store).
+w1-store-write-slow follows the k4 rule (a read no longer re-verifies history; `todo verify` does) on the two history reads k4 had left:
+
+| Read | Before | Now |
+|---|---|---|
+| `readVersionCompact(dir, max, {verify})` | every read: gunzip, parse, canonical re-serialization, `compact_digest` self digest | `verify: false` (`retainedPlanVersion`, `readNoteMigrations`): gunzip, parse, shape check. Default `verify: true` (the compaction writers' `readRetainedVersion`): unchanged. The record is memoized per process by file identity and mode, so the store reader and the note reader share one read |
+| `readPlanScopedJournal(repoRoot, ref, {verify})` | every read: per-event canonical re-check and the whole hash chain | `verify: false` (the member's chain on a read, the inherited-coordination walk): sealed-segment digest, per-event schema and event self digest, kind check. `verifyHistory: true` (`todo verify`) restores the canonical re-check and the hash chain |
+| `readNoteMigrations` | one `structuredClone` of every version's task migration per call | the memoized migration is shared; `migrationIndex` only reads it |
+
+Still per retained version on every read: one `lstat` (memo identity), one gunzip + parse of `compact.json.gz`, and one entry of the note migration index. Nothing else walks history.
+
 Unchanged: the active version, `manifest.json`, `status`/`session-context`/`display read` shapes, every event schema.
 
 ## Failure and exit

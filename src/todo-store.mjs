@@ -414,12 +414,14 @@ function planScopedJournalRef(journalRef) {
  *
  * lifecycle journalと違いgenesisを持たない——planの存在はjournalが証明しており、この
  * chainはそこへ後から積まれる宣言だけを持つ。壊れている記録はnullや空へ丸めずtyped failにする。
+ * `verify: false`（通常の読み・k4）はlifecycle journalと同じく、eventごとのcanonical再確認とhash chain全検証を省く。
+ * `todo verify`（`verifyHistory`）だけが`verify: true`で全部を確かめる。
  */
-async function readPlanScopedJournal(repoRoot, journalRef) {
+async function readPlanScopedJournal(repoRoot, journalRef, { verify = true } = {}) {
   const ref = planScopedJournalRef(journalRef);
   const absolute = path.resolve(repoRoot, ref);
   // s1-seal: sealed segments first, then the active file (same rules as the lifecycle journal).
-  const segments = await readSealedSegments(repoRoot, journalRef, PLAN_SCOPED_SEALED_DIRECTORY);
+  const segments = await readSealedSegments(repoRoot, journalRef, PLAN_SCOPED_SEALED_DIRECTORY, { canonical: verify });
   let bytes = null;
   try {
     const state = await lstat(absolute);
@@ -433,11 +435,11 @@ async function readPlanScopedJournal(repoRoot, journalRef) {
   // A crash between sealing and the active replacement leaves an active equal to the newest sealed segment.
   const redundant = bytes === null || segments.at(-1)?.bytes.equals(bytes) === true;
   const events = [...segments.flatMap(({ events: entries }) => entries),
-    ...(redundant ? [] : parseJournalSegment(bytes, ref))];
+    ...(redundant ? [] : parseJournalSegment(bytes, ref, { canonical: verify }))];
   if (!events.every(({ kind }) => TODO_PLAN_SCOPED_EVENT_KINDS.includes(kind))) {
     fail('STORE_CORRUPT', 'plan_scoped_journal_kind_invalid');
   }
-  const failures = verifyLinearHashChain({
+  const failures = !verify ? new Set() : verifyLinearHashChain({
     entries: events,
     canonicalize: canonicalizeTodoArtifact,
     digestField: 'event_digest',
@@ -1732,7 +1734,7 @@ async function readTodoStoreView(options = {}) {
     const phases = projectPhaseStates(plan, journal.events, new Map(tasks.map((task) => [task.task_id, task])));
     // 調整方式の宣言(ob03)。lifecycle journalとは別chainから読む。phasesと同じく
     // snapshot artifactの形式には縛られない導出ビューで、未宣言はnull（「まだ選んでいない」）。
-    const planScoped = await readPlanScopedJournal(repoRoot, descriptor.journal_ref);
+    const planScoped = await readPlanScopedJournal(repoRoot, descriptor.journal_ref, { verify: verifyHistory });
     const coordination = projectTodoCoordination(planScoped.events)
       ?? await inheritedTodoCoordination(repoRoot, plan);
     loaded.push({ descriptor, plan, revision, journal, plan_scoped: planScoped,
@@ -1752,7 +1754,7 @@ async function readTodoStoreView(options = {}) {
  * unreadable. perf-store: validated once per process per unchanged plan.json (todo-version-memo).
  */
 async function retainedPlanVersion(repoRoot, base, version) {
-  const compact = await readCompactRecord(repoRoot, base, version).catch(() => null);
+  const compact = await readCompactRecord(repoRoot, base, version, { verify: false }).catch(() => null);
   if (compact !== null) {
     return { plan: { plan_digest: compact.plan_digest, predecessor_plan_digest: compact.predecessor_plan_digest,
       topology_digest: compact.topology_digest }, journalRef: `${base}/${version}/journal/active.jsonl` };
@@ -1769,10 +1771,10 @@ async function retainedPlanVersion(repoRoot, base, version) {
 }
 
 /** b10: a retained version's compact record (see todo-version-compact), or null while it still holds its own files. */
-async function readCompactRecord(repoRoot, base, version) {
+async function readCompactRecord(repoRoot, base, version, { verify = true } = {}) {
   const directory = path.resolve(repoRoot, base, version);
-  return memoByFileIdentity([path.join(directory, TODO_VERSION_COMPACT_FILE)], () => readVersionCompact(directory)
-    .catch(() => fail('STORE_INCONSISTENT', 'compact_record_invalid', { ref: `${base}/${version}/${TODO_VERSION_COMPACT_FILE}` })));
+  return readVersionCompact(directory, undefined, { verify })
+    .catch(() => fail('STORE_INCONSISTENT', 'compact_record_invalid', { ref: `${base}/${version}/${TODO_VERSION_COMPACT_FILE}` }));
 }
 
 /** b10: one retained version's full `{plan, revision}` (revision null for a genesis version): its own files or its compact record. */
@@ -1914,8 +1916,8 @@ async function inheritedTodoCoordination(repoRoot, plan) {
     const predecessor = await find(digest);
     if (predecessor === undefined) return null;
     const declared = await memoByFileIdentity([path.resolve(repoRoot, planScopedJournalRef(predecessor.journalRef))],
-      () => readPlanScopedJournal(repoRoot, predecessor.journalRef)
-        .then((chain) => projectTodoCoordination(chain.events), () => undefined));
+      () => readPlanScopedJournal(repoRoot, predecessor.journalRef, { verify: false })
+        .then((chain) => projectTodoCoordination(chain.events), () => undefined), 'read');
     if (declared === undefined) return null;
     if (declared !== null) return declared;
     digest = predecessor.plan.predecessor_plan_digest;

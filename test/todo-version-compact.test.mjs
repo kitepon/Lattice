@@ -2,16 +2,18 @@
 // its history is rebuilt exactly, and a store written before the change is compacted by `todo compact`.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 import { canonicalizeTodoArtifact } from '../src/todo-contracts.mjs';
 import { readRetainedVersion, readTodoStore } from '../src/todo-store.mjs';
-import { applyJsonPatch, buildVersionCompact, diffJson, reconstructPlan, validateVersionCompact } from '../src/todo-version-compact.mjs';
+import {
+  applyJsonPatch, buildVersionCompact, diffJson, readVersionCompact, reconstructPlan, validateVersionCompact,
+} from '../src/todo-version-compact.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../bin/lattice.mjs');
 
@@ -148,4 +150,34 @@ test('every revision after the first keeps only a compact record; history rebuil
   await writeFile(path.join(planDirectory, version, 'plan.json'), originals.get(version).files['plan.json']);
   assert.equal(run(['todo', 'compact', '--json']).plans[0].stopped, null);
   assert.deepEqual(await readdir(path.join(planDirectory, version)), ['compact.json.gz', 'journal']);
+});
+
+// w1-store-write-slow (ADR 0204 k4): a read of a retained version checks the record's shape only; writers and `todo verify` check all.
+test('readVersionCompact: a read skips the canonical and digest checks, the default keeps them', async (context) => {
+  const retained = { project_id: 'p', plan_key: 'k', plan_version: 'rev-a', plan_digest: 'a'.repeat(64),
+    predecessor_plan_digest: null, topology_digest: 'b'.repeat(64), tasks: [{ task_id: 't' }] };
+  const anchor = { ...retained, plan_version: 'rev-b', plan_digest: 'c'.repeat(64), predecessor_plan_digest: retained.plan_digest,
+    tasks: [{ task_id: 't' }, { task_id: 'u' }] };
+  const record = buildVersionCompact({ retained, anchor, revision: null });
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-compact-read-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const write = async (name, text) => {
+    await mkdir(path.join(root, name));
+    await writeFile(path.join(root, name, 'compact.json.gz'), gzipSync(Buffer.from(text, 'utf8')));
+    return path.join(root, name);
+  };
+  const canonical = await write('canonical', `${canonicalizeTodoArtifact(record)}\n`);
+  assert.deepEqual(await readVersionCompact(canonical), record);
+  assert.deepEqual(await readVersionCompact(canonical, undefined, { verify: false }), record);
+  // Same record, spaced JSON: not canonical.
+  const spaced = await write('spaced', `${JSON.stringify(record, null, 1)}\n`);
+  await assert.rejects(readVersionCompact(spaced), /compact_record_invalid/u);
+  assert.deepEqual(await readVersionCompact(spaced, undefined, { verify: false }), record);
+  // Wrong self digest: only the strict mode sees it. A wrong shape is refused in both.
+  const tampered = await write('tampered', `${canonicalizeTodoArtifact({ ...record, plan_digest: 'd'.repeat(64) })}\n`);
+  await assert.rejects(readVersionCompact(tampered), /compact_record_invalid/u);
+  assert.equal((await readVersionCompact(tampered, undefined, { verify: false })).plan_digest, 'd'.repeat(64));
+  const shapeless = await write('shapeless', `${canonicalizeTodoArtifact({ ...record, extra: 1 })}\n`);
+  await assert.rejects(readVersionCompact(shapeless, undefined, { verify: false }), /compact_record_invalid/u);
+  assert.equal(await readVersionCompact(path.join(root, 'absent')), null);
 });

@@ -10,6 +10,7 @@
 import { readFile } from 'node:fs/promises';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { canonicalizeTodoArtifact, isTodoDigest, isTodoIdentifier, todoSelfDigest } from './todo-contracts.mjs';
+import { memoByFileIdentity } from './todo-version-memo.mjs';
 
 export const TODO_VERSION_COMPACT_SCHEMA = 'lattice.todo_version_compact.v1';
 export const TODO_VERSION_COMPACT_FILE = 'compact.json.gz';
@@ -69,7 +70,8 @@ export function buildVersionCompact({ retained, anchor, revision }) {
   return record;
 }
 
-export function validateVersionCompact(value) {
+/** `verify: false` (a read) checks the record's shape only; the self digest is recomputed for `verify` (writers, `todo verify`). */
+export function validateVersionCompact(value, { verify = true } = {}) {
   const keys = ['schema', 'project_id', 'plan_key', 'plan_version', 'plan_digest', 'predecessor_plan_digest', 'predecessor_plan_version',
     'topology_digest', 'anchor_plan_version', 'anchor_plan_digest', 'plan_patch', 'revision', 'compact_digest'];
   return isObject(value) && Object.keys(value).length === keys.length && keys.every((key) => key in value)
@@ -79,7 +81,7 @@ export function validateVersionCompact(value) {
     && (value.predecessor_plan_digest === null || isTodoDigest(value.predecessor_plan_digest))
     && (value.predecessor_plan_version === null || isTodoIdentifier(value.predecessor_plan_version))
     && isObject(value.plan_patch) && (value.revision === null || isObject(value.revision))
-    && value.compact_digest === todoSelfDigest(value, 'compact_digest');
+    && (!verify || value.compact_digest === todoSelfDigest(value, 'compact_digest'));
 }
 
 /** The exact plan of `record`, from its anchor's full plan. Throws when the result does not match plan_digest's plan. */
@@ -96,15 +98,22 @@ export const reconstructRevision = (record, plan) => (record.revision === null ?
 /** The record as stored: canonical JSON line, gzip-packed (a revision's per-task migration is long and repetitive). */
 export const packVersionCompact = (record) => gzipSync(Buffer.from(`${canonicalizeTodoArtifact(record)}\n`, 'utf8'), { level: 9 });
 
-/** The compact record in `directory`, or null when there is none. Throws when the file is not a canonical, digest-true record. */
-export async function readVersionCompact(directory, maxBytes = 8 * 1024 * 1024) {
-  let packed;
-  try { packed = await readFile(`${directory}/${TODO_VERSION_COMPACT_FILE}`); } catch (error) {
-    if (error?.code === 'ENOENT') return null;
-    throw error;
-  }
-  const text = gunzipSync(packed, { maxOutputLength: maxBytes }).toString('utf8');
-  const value = JSON.parse(text);
-  if (text !== `${canonicalizeTodoArtifact(value)}\n` || !validateVersionCompact(value)) throw new Error('compact_record_invalid');
-  return value;
+/**
+ * The compact record in `directory`, or null when there is none. Throws when the file is not a canonical, digest-true record.
+ * `verify: false` (ADR 0204 k4, a retained version is immutable history) skips the canonical re-serialization and the self digest
+ * and keeps the shape check: one gunzip and one parse per version, which a read pays for every retained version of a plan.
+ */
+export async function readVersionCompact(directory, maxBytes = 8 * 1024 * 1024, { verify = true } = {}) {
+  // perf-store: a retained version is immutable, and the store reader and the note reader both ask for it in one process.
+  return memoByFileIdentity([`${directory}/${TODO_VERSION_COMPACT_FILE}`], async () => {
+    let packed;
+    try { packed = await readFile(`${directory}/${TODO_VERSION_COMPACT_FILE}`); } catch (error) {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    }
+    const text = gunzipSync(packed, { maxOutputLength: maxBytes }).toString('utf8');
+    const value = JSON.parse(text);
+    if ((verify && text !== `${canonicalizeTodoArtifact(value)}\n`) || !validateVersionCompact(value, { verify })) throw new Error('compact_record_invalid');
+    return value;
+  }, verify ? 'verify' : 'read');
 }

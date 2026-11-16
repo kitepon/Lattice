@@ -13,12 +13,12 @@
 // 5. 案内が方式で変わる: 未宣言→方式を選ぶ／conversation→督促しない／witness→未compileを督促
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { TODO_COORDINATION_MODES } from '../src/todo-contracts.mjs';
+import { TODO_COORDINATION_MODES, canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
 import {
    createTodoStoreWriter, initializeTodoStore, projectTodoCoordination, readTodoStore,
 } from '../src/todo-store.mjs';
@@ -248,4 +248,19 @@ test('conversationを宣言したplanにはparallel_candidatesの督促が出な
   assert.deepEqual(await candidates(), []);
   await declare('witness', 'witnessへ戻す');
   assert.deepEqual((await candidates()).map(({ plan_key: key }) => key), ['main']);
+});
+
+// w1-store-write-slow (ADR 0204 k4): a read no longer re-verifies the plan-scoped chain; only `todo verify` does.
+test('a plan-scoped chain with a broken link is read without the hash chain and refused by verifyHistory', async (context) => {
+  const { root, declare, read } = await workspace(context);
+  await declare('conversation', 'first');
+  await declare('witness', 'second');
+  const ref = path.join(root, '.lattice/todo/plans/main/v1/journal/plan-scoped.jsonl');
+  const [first, second] = (await readFile(ref, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  // Each event is canonical with its own valid digest; only the link between them is wrong.
+  const relinked = { ...second, previous_digest: 'f'.repeat(64) };
+  relinked.event_digest = todoSelfDigest(relinked, 'event_digest');
+  await writeFile(ref, `${canonicalizeTodoArtifact(first)}\n${canonicalizeTodoArtifact(relinked)}\n`);
+  assert.equal((await read()).members[0].coordination.mode, 'witness');
+  await assert.rejects(readTodoStore({ repoRoot: root, now: NOW, verifyHistory: true }), { code: 'STORE_CORRUPT' });
 });

@@ -20,8 +20,9 @@ async function fileIdentity(absolute) {
   }
 }
 
-export async function memoByFileIdentity(files, compute) {
-  const key = files.join('\0');
+/** `mode` separates values computed from the same files under different checks (a read's and a writer's). */
+export async function memoByFileIdentity(files, compute, mode = '') {
+  const key = `${files.join('\0')}\0#${mode}`;
   const identity = (await Promise.all(files.map(fileIdentity))).join('|');
   const hit = memo.get(key);
   if (hit !== undefined && hit.identity === identity) return hit.value;
