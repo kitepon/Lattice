@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,6 +40,21 @@ test('lattice sensor init/syncは同梱sensorだけでtyped resultを返す', as
       status: 'ok',
     });
   }
+});
+
+test('g2: sensor init keeps .lattice/ out of a git work tree\'s status', async (t) => {
+  const repo = await mkdtemp(path.join(tmpdir(), 'lattice-sensor-exclude-'));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet'], { cwd: repo });
+  await writeFile(path.join(repo, 'fixture.mjs'), 'export const fixture = 1;\n');
+  for (let round = 0; round < 2; round += 1) {
+    const result = run(['sensor', 'init', '.', '--json'], repo);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const status = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: repo, encoding: 'utf8' });
+  assert.equal(status.includes('.lattice'), false, status);
+  const exclude = await readFile(path.join(repo, '.git', 'info', 'exclude'), 'utf8');
+  assert.equal(exclude.split('\n').filter((line) => line === '.lattice/').length, 1);
 });
 
 test('lattice sensorは未知commandをtyped usage errorで拒否する', () => {
