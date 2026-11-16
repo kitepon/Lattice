@@ -20,8 +20,8 @@ b5 verify/decline/done, b6 labels). Roles: [function-map](function-map.md). Buil
 
 | Reader | Reads | Never reads |
 |---|---|---|
-| `todo show`, `todo status` (text), `session-context` (`labels`), display read (`labels`, the gantt draws them) | the plan: `function_split` marks → labels `分割待ち` / `関数分割` | splits records, sensor, relations beyond today's; `todo status --json` unchanged |
-| `todo show S` | + `splits/<plan>/<S>.json` and the cut-cost note | the sensor |
+| `todo show` (`labels`), `session-context` (`labels`), display read (`labels`); the gantt chip beside the status comes from the same marks | the plan: `function_split` marks → labels `分割待ち` / `関数分割` | splits records, sensor, relations beyond today's; `todo status --json` unchanged |
+| `todo show S` | + `splits/<plan>/<S>.json` (`split_record`: the record, null, or `{unreadable}`) | the sensor; `cut_cost` is only in the start result |
 
 ## State it owns
 

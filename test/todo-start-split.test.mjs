@@ -162,3 +162,24 @@ test('planSplitHold: a retired split of the same function gives the next id, and
   const both = planSplitHold({ member: states({ U: 'in-progress', R: 'in-progress', T: 'pending' }), taskId: 'T', read: { open: [overlap('U'), overlap('R')] } });
   assert.equal(both, null);
 });
+
+test('b6: 分割待ち on every member of an unfinished split (the one in progress too), 関数分割 on S; none once S is closed', async (context) => {
+  const root = await repo(context);
+  for (const id of ['U', 'T']) declare(root, id, '--owns', 'src/a.js#alpha');
+  start(root, 'U');
+  const [{ task_id: splitId }] = start(root, 'T').splits;
+  const labelOf = (id, list) => list.filter(({ task_id: taskId }) => taskId === id).map(({ label }) => label);
+  const context1 = success(root, ['session-context']);
+  assert.deepEqual(context1.labels.map(({ task_id: id, label }) => [id, label]).sort(), [['T', '分割待ち'], ['U', '分割待ち'], [splitId, '関数分割']].sort());
+  assert.equal(status(await member(root), 'U'), 'in-progress', 'the label never replaces the status');
+  assert.equal('labels' in context1.todo, false, 'the status projection keeps its shape');
+  assert.deepEqual(success(root, ['todo', 'show', '--plan', 'dev', '--task', 'T']).labels, ['分割待ち']);
+  assert.deepEqual(success(root, ['todo', 'show', '--plan', 'dev', '--task', 'U']).labels, ['分割待ち']);
+  const shownSplit = success(root, ['todo', 'show', '--plan', 'dev', '--task', splitId]);
+  assert.deepEqual([shownSplit.labels, shownSplit.split_record], [['関数分割'], null]);
+  assert.deepEqual(labelOf('T', success(root, ['todo', 'display', 'read']).labels), ['分割待ち']);
+  assert.equal('labels' in success(root, ['todo', 'status']), false);
+  success(root, ['todo', 'function-split', 'decline', '--plan', 'dev', '--task', splitId, '--reason', 'no cut']);
+  assert.equal('labels' in success(root, ['session-context']), false);
+  assert.equal('labels' in success(root, ['todo', 'show', '--plan', 'dev', '--task', 'T']), false);
+});

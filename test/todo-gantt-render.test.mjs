@@ -399,7 +399,7 @@ test('small real store E2E renders the dynamic self-contained gantt with exact b
     schema: 'lattice.project_identity.v1', project_id: 'project-1', display_name: 'Fixture Project',
   })}\n`);
   const result = await renderTodoGanttForProject({ repoRoot: root });
-  assert.equal(result.metadata.renderer_version, 'lattice.todo_gantt_renderer.v20');
+  assert.equal(result.metadata.renderer_version, 'lattice.todo_gantt_renderer.v21');
   assert.match(result.rendered.html, /<title>Lattice — Fixture Project 依存工程図<\/title>/u);
   const narrativeBytes = await readFile(path.join(root, 'narrative.md'));
   assert.equal(result.metadata.narrative_bindings_digest, digestTodoArtifact([{
@@ -561,7 +561,7 @@ test('real store smoke draws every edge and emits readable nodes plus named cate
     }],
   })}\n`);
   const result = await renderTodoGanttForProject({ repoRoot: root });
-  assert.equal(result.metadata.renderer_version, 'lattice.todo_gantt_renderer.v20');
+  assert.equal(result.metadata.renderer_version, 'lattice.todo_gantt_renderer.v21');
   const html = result.rendered.html;
   assert.equal((html.match(/<g class="dependency-edge(?: |")/gu) ?? []).length, 3);
   assert.equal((html.match(/data-node-key=/gu) ?? []).length, 4);

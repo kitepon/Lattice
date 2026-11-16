@@ -168,7 +168,7 @@ Derived from the plan already read; no file opened for them:
   member cannot close before the split either; its status still reads 作業中, the label is shown beside it);
 - S itself: label `関数分割`.
 Wire: a new additive top-level `labels: [{plan_key, task_id, label}]` in `session-context` and in the display read result
-(the gantt reads it), and the label in `todo show` and the text of `todo status`. Never on the status projection entries:
+(the gantt reads it), and the label in `todo show` (`labels`; `split_record` on S) and the gantt chip. `todo status` has no text form (its output is the status JSON), so the label is not shown there. Never on the status projection entries:
 `todo status --json` keeps its exact wire shape, and session-context embeds the same projection.
 
 ### 8. Rulings from the role review (2026-11-16, Alice, Ludmila, Neve)

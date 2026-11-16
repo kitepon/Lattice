@@ -207,6 +207,8 @@ import { readTodoRelationSummary, readTodoTaskRelations, transactTodoRelations }
 import { planSplitHold, splitGuide } from './todo-split-start.mjs';
 import { cutCost } from './function-split-verify.mjs';
 import { reorganizeNotSplit, splitDoneGate, verifySplit } from './todo-function-split.mjs';
+import { splitLabels, splitLabelsOf } from './todo-split-labels.mjs';
+import { readTodoSplit } from './todo-split-store.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -1283,6 +1285,7 @@ async function displayRead(repoRoot, env) {
   const externalTasks = display.store ? (await readTodoExternalTasks(display.store, env)).external_tasks : [];
   return { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
     trees: display.store ? projectTodoTrees(display.store) : [],
+    ...(display.store && splitLabels(display.store).length > 0 ? { labels: splitLabels(display.store) } : {}),
     connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [] };
 }
 
@@ -2827,6 +2830,10 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
     repoRoot, plan: member.plan, taskId: task.task_id,
   });
   const relations = await taskRelations({ repoRoot, planKey, taskId: task.task_id });
+  const labels = splitLabelsOf(member).filter(({ task_id: id }) => id === task.task_id).map(({ label }) => label);
+  // the verify record is read by `todo show S` only (ADR 0205 §2); an unreadable one is named, never a refusal
+  const splitRecord = task.function_split ? await readTodoSplit({ repoRoot, planKey, taskId: task.task_id })
+    .catch((error) => ({ unreadable: error?.detail?.reason ?? error?.code ?? 'split_record_unreadable' })) : undefined;
   const result = {
     schema: featureContext === null ? 'lattice.todo_detail_result.v3' : 'lattice.todo_detail_result.v4',
     project_id: store.project_id,
@@ -2839,6 +2846,8 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
     prerequisites: taskPrerequisites(store, member, task.task_id),
     note_context: context,
     ...(relations === null ? {} : { relations }),
+    ...(labels.length === 0 ? {} : { labels }),
+    ...(splitRecord === undefined ? {} : { split_record: splitRecord }),
     ...(featureContext === null ? {} : { feature_context: featureContext }),
     result_digest: '',
   };
