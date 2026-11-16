@@ -1709,7 +1709,8 @@ async function addTask({ repoRoot, env, planKey, flags }) {
  * Without seeds the title and design memo are searched for names that exist in the code graph; those are proposed, never recorded.
  */
 async function declareOnAdd({ repoRoot, planKey, taskId, flags }) {
-  if (typeof flags.owns !== 'string' && typeof flags.reads !== 'string') {
+  const seeded = (value) => typeof value === 'string' || Array.isArray(value);
+  if (!seeded(flags.owns) && !seeded(flags.reads)) {
     const proposed = await proposeFromText({ root: repoRoot, observable: headResolves(repoRoot), title: flags.title, memo: flags['design-memo'] });
     return { written: false, resolved: [], unresolved: [], malformed: [], proposed };
   }
@@ -1721,6 +1722,20 @@ async function declareOnAdd({ repoRoot, planKey, taskId, flags }) {
     return { written: false, resolved: [], unresolved: [], malformed: [],
       refused: { code: error.code, ...error.detail } };
   }
+}
+
+/**
+ * Plan create/revise input `tasks[].touches` (ADR 0204 §6): declared after the plan is written, one row per task through the same
+ * path as `todo add`. A task's failure comes back under its id and never undoes the plan. → `{task_id: declaration}`, or null.
+ * shortcut: one Resolve and one witness write per task; batch them when a plan routinely declares dozens of tasks.
+ */
+export async function declareTouches({ repoRoot, planKey, touches }) {
+  if (touches.length === 0) return null;
+  const declarations = {};
+  for (const { task_id: taskId, owns, reads } of touches) {
+    declarations[taskId] = await declareOnAdd({ repoRoot, planKey, taskId, flags: { owns, reads } });
+  }
+  return declarations;
 }
 
 const samePlanEdge = (member, fromTaskId, toTaskId) => member.plan.hard_dependencies.some((edge) => (

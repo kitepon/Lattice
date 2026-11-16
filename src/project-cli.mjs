@@ -44,6 +44,7 @@ import {
 import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
+import { splitTouches } from './todo-declaration.mjs';
 import { completeCreateInput, explainFlagCommand, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
@@ -827,7 +828,8 @@ export async function runPlanCreate({
       next_action: `Omit project_id (the machine fills "${projectId}") or set it to "${projectId}".`,
     });
   }
-  const input = completeCreateInput(given, { env, now: new Date(), projectId, planVersion: 'v1' });
+  const { input: authored, touches } = splitTouches(given);
+  const input = completeCreateInput(authored, { env, now: new Date(), projectId, planVersion: 'v1' });
   validatePlanCreateInput(input);
   // a27: 同じplanの中の無いtaskを指す辺と循環は、入力の誤りとして作業を名指して返す。
   // createだけで見る（revise・dependency connectは自分の辺を名指す拒否を持つ）。Storeの検査は最後の砦のまま。
@@ -876,6 +878,8 @@ export async function runPlanCreate({
       });
     });
   const member = store.members.find(({ plan }) => plan.plan_key === input.plan_key);
+  const declarations = touches.length === 0 ? null
+    : await (await import('./todo-cli.mjs')).declareTouches({ repoRoot, planKey: input.plan_key, touches });
   const result = {
     schema: CREATE_RESULT_SCHEMA, project_id: store.project_id,
     plan_key: member.plan.plan_key, plan_version: member.plan.plan_version,
@@ -891,6 +895,7 @@ export async function runPlanCreate({
     // ADR 0147裁定3: phase無し(v3)のplan createは拒否せず、終端監査が要ることを結果へ
     // 明示するに留める。phase入力(v4/v5)ならfalse——既存のPhase gateがそのまま重監査を担う。
     terminal_audit_required: isPhaselessTodoPlanSchema(member.plan.schema),
+    ...(declarations === null ? {} : { declarations }),
     result_digest: '',
   };
   result.result_digest = resultDigest(result);
@@ -908,8 +913,8 @@ export async function runPlanCreate({
  * 既に機械可読に持っている。壊さずに追加のkeyを足す理由が無いので足さない。
  */
 export async function runPlanCreateSchema({ stdout, version = 5 }) {
-  if (![1, 2, 3, 4, 5].includes(version)) throw new TypeError('unsupported plan create schema version');
-  const expected = version === 5 ? DONE_CONDITION_CREATE_INPUT_SCHEMA : version === 4 ? MEMO_PHASE_CREATE_INPUT_SCHEMA
+  if (![1, 2, 3, 4, 5, 6].includes(version)) throw new TypeError('unsupported plan create schema version');
+  const expected = version === 6 ? 'lattice.plan_create_input.v6' : version === 5 ? DONE_CONDITION_CREATE_INPUT_SCHEMA : version === 4 ? MEMO_PHASE_CREATE_INPUT_SCHEMA
     : version === 3 ? DECOUPLED_PHASE_CREATE_INPUT_SCHEMA
     : version === 2 ? PHASE_CREATE_INPUT_SCHEMA : CREATE_INPUT_SCHEMA;
   const schemaUrl = new URL(`../docs/schemas/lattice.plan_create_input.v${version}.schema.json`, import.meta.url);
