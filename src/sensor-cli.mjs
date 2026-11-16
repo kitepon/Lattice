@@ -72,7 +72,11 @@ async function excludeSensorIndex(projectPath) {
     if (text.split(/\r?\n/u).includes('.lattice/sensor/')) return;
     await mkdir(path.dirname(exclude), { recursive: true });
     await appendFile(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}.lattice/sensor/\n`);
-  } catch { /* no git work tree */ }
+  } catch (error) {
+    // Not a git work tree (git exits 128) or no git on PATH: there is nothing `git add -A` could commit from here.
+    if (error?.code === 128 || error?.code === 'ENOENT') return;
+    process.emitWarning(`.lattice/sensor/ not added to .git/info/exclude: ${error?.message ?? error}`, { code: 'LATTICE_SENSOR_EXCLUDE_FAILED' });
+  }
 }
 
 function execute(command, projectPath) {

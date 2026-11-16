@@ -9,13 +9,14 @@ import test from 'node:test';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'bin', 'lattice.mjs');
 
-function run(args, cwd) {
+// path: the bundled-sensor tests hide the host's tools; the g2 test needs the runner's git (on Windows it is not in /usr/bin).
+function run(args, cwd, pathValue = '/usr/bin:/bin') {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: 'utf8',
     env: {
       ...process.env,
-      PATH: '/usr/bin:/bin',
+      PATH: pathValue,
       LATTICE_SENSOR_ALLOW_UNSAFE_NODE: '1',
     },
   });
@@ -48,7 +49,7 @@ test('g2: sensor init keeps the index (.lattice/sensor/) out of a git work tree\
   execFileSync('git', ['init', '--quiet'], { cwd: repo });
   await writeFile(path.join(repo, 'fixture.mjs'), 'export const fixture = 1;\n');
   for (let round = 0; round < 2; round += 1) {
-    const result = run(['sensor', 'init', '.', '--json'], repo);
+    const result = run(['sensor', 'init', '.', '--json'], repo, process.env.PATH ?? process.env.Path);
     assert.equal(result.status, 0, result.stderr);
   }
   const status = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: repo, encoding: 'utf8' });
