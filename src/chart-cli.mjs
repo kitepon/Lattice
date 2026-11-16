@@ -244,7 +244,8 @@ async function runSensor(command, dir) {
 /**
  * K7 sync. Named protection: never reset, clean, force or repoint; tracked edits make it `dirty` and a HEAD that is
  * not the accepted baseline makes it `diverged` (nothing moves). Self-exit: a failed step is reported and the next
- * sync tries again. A depth-1 tip has no parent, so `--ff-only` cannot see the link: HEAD moves only from the baseline.
+ * sync tries again. HEAD moves only from the baseline. Only the first fetch is depth-1; later fetches keep the previous tip
+ * an ancestor of the new one (gate 4's merged-sha check and the structure adapter's `rev-list baseline..HEAD` need that).
  */
 async function chartRepoSync({ cwd, env }) {
   const dir = await repoRoot(cwd);
@@ -276,9 +277,9 @@ async function chartRepoSync({ cwd, env }) {
     }
     // Charts moved before 0.101.0 kept the baseline in refs/remotes/origin/<branch>.
     const accepted = meta.repo.accepted_tip ?? await optional(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]);
-    await git('fetch', ['fetch', '--quiet', '--depth=1', '--no-tags', url, branch]);
-    const tip = await git('fetch', ['rev-parse', 'FETCH_HEAD']);
     const head = await optional(['rev-parse', '--verify', '--quiet', 'HEAD']);
+    await git('fetch', ['fetch', '--quiet', ...(head === null ? ['--depth=1'] : []), '--no-tags', url, branch]);
+    const tip = await git('fetch', ['rev-parse', 'FETCH_HEAD']);
     if (head !== null && head !== tip && head !== accepted) return result('diverged', { tip, accepted_tip: accepted });
     if (head !== tip) await git('checkout', ['checkout', '--quiet', '-B', branch, tip]);
     if (meta.repo.accepted_tip !== tip) {
