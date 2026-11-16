@@ -201,6 +201,7 @@ import {
   readTodoPlanNotesForStatus,
 } from './todo-note-store.mjs';
 import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
+import { buildDeclarationRow, proposeFromText } from './todo-declaration.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -343,7 +344,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   reopen: Object.freeze({ known: ['plan', 'task', 'reason', 'override-reason'], required: ['plan', 'task', 'reason'] }),
   'dependency connect': DEPENDENCY_FLAG_SPEC,
   add: Object.freeze({
-    known: ['plan', 'task', 'title', 'phase', 'lane', 'done-condition', 'design-memo', 'after', 'before', 'reason'],
+    known: ['plan', 'task', 'title', 'phase', 'lane', 'done-condition', 'design-memo', 'after', 'before', 'reason', 'owns', 'reads'],
     required: ['plan', 'task', 'title'],
   }),
   'dependency disconnect': DEPENDENCY_FLAG_SPEC,
@@ -1691,14 +1692,35 @@ async function addTask({ repoRoot, env, planKey, flags }) {
     repoRoot, env, input: { schema: 'lattice.plan_revise_input.v1', desired },
     notes: [{ task_id: taskId, body: todoAddNoteBody(taskId, reason) }],
   });
+  const declaration = await declareOnAdd({ repoRoot, planKey, taskId, flags });
   const result = {
-    schema: 'lattice.todo_task_add_result.v1', project_id: store.project_id, plan_key: planKey,
-    task_id: taskId, after, before, reason, actor: desired.actor,
+    schema: 'lattice.todo_task_add_result.v2', project_id: store.project_id, plan_key: planKey,
+    task_id: taskId, after, before, reason, actor: desired.actor, declaration,
     plan_version: applied.plan_version, revision_digest: applied.revision?.revision_digest ?? null,
     rebound_task_ids: applied.rebound_task_ids, result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+/**
+ * ADR 0204: the functions the new task changes, written once now. The task is already added; nothing here can refuse the add,
+ * so a failure comes back as `declaration` (`written: false`) and the same flags are given again to `witness declare`.
+ * Without seeds the title and design memo are searched for names that exist in the code graph; those are proposed, never recorded.
+ */
+async function declareOnAdd({ repoRoot, planKey, taskId, flags }) {
+  if (typeof flags.owns !== 'string' && typeof flags.reads !== 'string') {
+    const proposed = await proposeFromText({ root: repoRoot, observable: headResolves(repoRoot), title: flags.title, memo: flags['design-memo'] });
+    return { written: false, resolved: [], unresolved: [], malformed: [], proposed };
+  }
+  try {
+    const declared = await declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot) });
+    return declared.declaration;
+  } catch (error) {
+    if (!(error instanceof TodoStoreError)) throw error;
+    return { written: false, resolved: [], unresolved: [], malformed: [],
+      refused: { code: error.code, ...error.detail } };
+  }
 }
 
 const samePlanEdge = (member, fromTaskId, toTaskId) => member.plan.hard_dependencies.some((edge) => (
@@ -3946,29 +3968,28 @@ async function witnessDeclare({ repoRoot, env, planKey, flags }) {
       next_action: `${planKey}/${taskId} is ${state.status}; only unfinished tasks are declared (see \`lattice todo status --json\`).`,
     });
   }
-  const recorded = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
-  const template = await witnessDraftTemplateFor({ repoRoot, planKey });
-  const keep = new Set([...Object.keys(recorded?.plan_key === planKey ? recorded.manual_witness : {}), taskId]);
-  const list = (value) => (typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : []);
-  const row = { owns: list(flags.owns), reads: list(flags.reads), writes: list(flags.writes) };
-  const draft = { ...template, tasks: Object.fromEntries(Object.entries(template.tasks)
-    .filter(([id]) => keep.has(id)).map(([id, task]) => [id, id === taskId ? row : task])) };
-  if (!validateWitnessDraft(draft)) {
-    const { valid: _valid, reason, path: at, ...keys } = explainWitnessDraft(draft);
-    throw new TodoStoreError('WITNESS_DRAFT_INVALID', reason, undefined, {
-      pointer: at, ...keys, next_action: witnessRoute(planKey) });
+  const observable = headResolves(repoRoot);
+  const declared = await declareTaskRow({ repoRoot, planKey, taskId, flags, observable });
+  const base = {
+    schema: 'lattice.todo_witness_declare_result.v2', project_id: member.plan.project_id, plan_key: planKey,
+    task_id: taskId, declaration: declared.declaration,
+  };
+  if (declared.scaffolded === null) {
+    // Names that do not resolve never fail the command (ADR 0204 §6): the row stays unwritten and the same declare retries.
+    const result = { ...base, witness_ref: null, witness_set_digest: null, compiled: false, waiting_for: [], compile: null,
+      next_action: declarationNextAction(planKey, taskId, declared.declaration), result_digest: '' };
+    result.result_digest = todoSelfDigest(result, 'result_digest');
+    return result;
   }
-  const scaffolded = await scaffoldWitnessDraft({ repoRoot, planKey, draft });
+  const { row, scaffolded, keep } = declared;
   const waitingFor = projectTodoStatus(await readTodoStoreForReadiness({ repoRoot, env }), TODO_STATUS_DISPATCH_ONLY).next_ready
     .filter((task) => task.plan_key === planKey && !keep.has(task.task_id))
     .map(({ task_id: id }) => id).sort();
   // declare-without-git: a Store root with no commit cannot be observed, so the row is recorded and not compiled.
-  const observable = headResolves(repoRoot);
   const compile = observable
     ? await independenceCompile({ repoRoot, planKey, inputRef: scaffolded.witness_ref }) : null;
   const result = {
-    schema: 'lattice.todo_witness_declare_result.v1', project_id: member.plan.project_id, plan_key: planKey,
-    task_id: taskId, ...row, witness_ref: scaffolded.witness_ref,
+    ...base, owns: row.owns, reads: row.reads, writes: row.writes, witness_ref: scaffolded.witness_ref,
     witness_set_digest: scaffolded.witness_set_digest, compiled: compile !== null, waiting_for: waitingFor,
     compile,
     ...(observable ? {} : {
@@ -3980,6 +4001,41 @@ async function witnessDeclare({ repoRoot, env, planKey, flags }) {
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+/** What to do when a declaration was not written: the names that failed, with the nearest ones. */
+function declarationNextAction(planKey, taskId, declaration) {
+  const parts = [];
+  for (const { text, reason } of declaration.malformed) parts.push(`${text} (${reason}; write path#function, e.g. src/a.mjs#foo or src/a.mjs#Klass.method)`);
+  for (const entry of declaration.unresolved) {
+    const near = entry.nearest.length > 0 ? ` nearest: ${entry.nearest.join(', ')}` : '';
+    const where = entry.elsewhere.length > 0 ? ` found elsewhere: ${entry.elsewhere.join(', ')}` : '';
+    parts.push(`${entry.path}#${entry.symbol} (${entry.reason});${near}${where}`.replace(/;$/u, ''));
+  }
+  return `${planKey}/${taskId}'s functions were not recorded: ${parts.join('; ')}. Correct the names and run the same declaration again;`
+    + ' the task itself is unchanged.';
+}
+
+/**
+ * One task's witness row from `--owns/--reads/--writes` (paths, or path#function): resolves the functions through the
+ * code graph and, when every name resolves, scaffolds the plan's witness set with the row. `scaffolded: null` = not written.
+ */
+async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) {
+  const { row, declaration } = await buildDeclarationRow({
+    root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes });
+  if (row === null) return { declaration, scaffolded: null };
+  const recorded = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
+  const template = await witnessDraftTemplateFor({ repoRoot, planKey });
+  const keep = new Set([...Object.keys(recorded?.plan_key === planKey ? recorded.manual_witness : {}), taskId]);
+  const draft = { ...template, tasks: Object.fromEntries(Object.entries(template.tasks)
+    .filter(([id]) => keep.has(id)).map(([id, task]) => [id, id === taskId ? row : task])) };
+  if (!validateWitnessDraft(draft)) {
+    const { valid: _valid, reason, path: at, ...keys } = explainWitnessDraft(draft);
+    throw new TodoStoreError('WITNESS_DRAFT_INVALID', reason, undefined, {
+      pointer: at, ...keys, next_action: witnessRoute(planKey) });
+  }
+  const scaffolded = await scaffoldWitnessDraft({ repoRoot, planKey, draft });
+  return { row, declaration, scaffolded, keep };
 }
 
 /**

@@ -17,6 +17,8 @@ import {
 import { TODO_INDEPENDENCE_GUIDANCE_CODES } from './todo-independence-guidance.mjs';
 
 export const TODO_WITNESS_SET_SCHEMA = 'lattice.todo_witness_set.v5';
+/** v5 plus `read_anchors` (ADR 0204 §6): written only when a task declares functions it reads, so v5 charts stay v5. */
+export const TODO_WITNESS_SET_READ_ANCHORS_SCHEMA = 'lattice.todo_witness_set.v6';
 /**
  * まだ受理する旧witness set契約。v3以前の厳密なcompile意味を変えず、
  * 既存宣言を書き換えさせないために読み口を残す。
@@ -28,18 +30,20 @@ export const TODO_WITNESS_SET_LEGACY_SCHEMAS = Object.freeze([
   'lattice.todo_witness_set.v1',
 ]);
 export const TODO_WITNESS_SET_SCHEMAS = Object.freeze([
+  TODO_WITNESS_SET_READ_ANCHORS_SCHEMA,
   TODO_WITNESS_SET_SCHEMA,
   ...TODO_WITNESS_SET_LEGACY_SCHEMAS,
 ]);
 /** 宣言できる欄はversionごとに違う。どの版から使えるかを1箇所で持つ。 */
 const CONCERN_ANCHOR_SCHEMAS = Object.freeze([
+  TODO_WITNESS_SET_READ_ANCHORS_SCHEMA,
   TODO_WITNESS_SET_SCHEMA,
   'lattice.todo_witness_set.v4',
   'lattice.todo_witness_set.v3',
   'lattice.todo_witness_set.v2',
 ]);
 const CREATES_SCHEMAS = Object.freeze([
-  TODO_WITNESS_SET_SCHEMA, 'lattice.todo_witness_set.v4', 'lattice.todo_witness_set.v3',
+  TODO_WITNESS_SET_READ_ANCHORS_SCHEMA, TODO_WITNESS_SET_SCHEMA, 'lattice.todo_witness_set.v4', 'lattice.todo_witness_set.v3',
 ]);
 
 /** 1 taskが宣言できるconcern anchorの資源数と、資源あたりのsymbol数の上限。 */
@@ -178,7 +182,7 @@ function boundedText(value, maximumBytes = 4_096) {
 export function synthesizeWitnessRunRequest(witnessSet, { baseSha, requestId }) {
   const taskIds = Object.keys(witnessSet.manual_witness).sort(compareText);
   const request = {
-    schema: witnessSet.schema === TODO_WITNESS_SET_SCHEMA
+    schema: witnessSet.schema === TODO_WITNESS_SET_SCHEMA || witnessSet.schema === TODO_WITNESS_SET_READ_ANCHORS_SCHEMA
       ? RUN_REQUEST_SCHEMA
       : witnessSet.schema === 'lattice.todo_witness_set.v4'
         ? RUN_REQUEST_PREDICTION_SCHEMA
@@ -188,7 +192,7 @@ export function synthesizeWitnessRunRequest(witnessSet, { baseSha, requestId }) 
     capacity: witnessSet.capacity,
     todos: taskIds.map((taskId) => ({ todo_id: taskId })),
     manual_witness: Object.fromEntries(taskIds.map((taskId) => {
-      const { concern_anchors: _concernAnchors, ...boundary } = witnessSet.manual_witness[taskId];
+      const { concern_anchors: _concernAnchors, read_anchors: _readAnchors, ...boundary } = witnessSet.manual_witness[taskId];
       return [taskId, boundary];
     })),
     sensor_query_set: witnessSet.sensor_query_set,
@@ -280,7 +284,7 @@ export function explainTodoWitnessSet(value) {
     for (const taskId of taskIds) {
       const witness = value.manual_witness[taskId];
       if (plain(witness) && Object.hasOwn(witness, 'lines')
-        && value.schema !== TODO_WITNESS_SET_SCHEMA) {
+        && value.schema !== TODO_WITNESS_SET_SCHEMA && value.schema !== TODO_WITNESS_SET_READ_ANCHORS_SCHEMA) {
         return reject('lines_require_witness_set_v5', `/manual_witness/${taskId}/lines`);
       }
     }
@@ -296,6 +300,15 @@ export function explainTodoWitnessSet(value) {
       if (!CREATES_SCHEMAS.includes(value.schema)
         && witness.owns.some((own) => Object.hasOwn(own, 'creates'))) {
         return reject('creates_require_witness_set_v3', `/manual_witness/${taskId}/owns`);
+      }
+      const readAt = `/manual_witness/${taskId}/read_anchors`;
+      if (Object.hasOwn(witness, 'read_anchors')) {
+        if (value.schema !== TODO_WITNESS_SET_READ_ANCHORS_SCHEMA) {
+          return reject('read_anchors_require_witness_set_v6', readAt);
+        }
+        // A read anchor sits inside a path the task reads (its own `reads` list), the way a write anchor sits inside an owned path.
+        const readAnchors = explainConcernAnchors(witness.read_anchors, [], witness.reads, readAt);
+        if (!readAnchors.valid) return reject(readAnchors.reason, readAnchors.path);
       }
       const at = `/manual_witness/${taskId}/concern_anchors`;
       if (!Object.hasOwn(witness, 'concern_anchors')) continue;

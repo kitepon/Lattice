@@ -1,0 +1,482 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.todo_witness_set.v6.schema.json",
+  "title": "lattice.todo_witness_set.v6",
+  "description": "Per-ToDo boundary declaration compiled into a recorded independence judgement (ADR 0127). v6 is v5 plus optional read_anchors: the functions a ToDo reads inside a file it lists under reads (ADR 0204). It is written only when a ToDo declares such functions, so plans that do not use reads stay v5.",
+  "$comment": "Runtime validation additionally enforces canonical JSON+LF bytes, the self-digest rule, unique line_id values per ToDo, and closed line anchor shapes. concern_anchors is stripped before run-request synthesis; lines is preserved because it participates in scheduling. v1-v4 declarations remain valid input without lines, and adding lines to an old schema is rejected rather than reinterpreted. read_anchors has the shape of concern_anchors but sits inside a path of the same ToDo's reads; like concern_anchors it is stripped before run-request synthesis, and an older schema cannot carry it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "plan_key",
+    "capacity",
+    "sensor_query_set",
+    "manual_witness",
+    "witness_set_digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lattice.todo_witness_set.v6"
+    },
+    "project_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "plan_key": {
+      "$ref": "#/$defs/identifier"
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executors"
+      ],
+      "properties": {
+        "executors": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sensor_query_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queries"
+      ],
+      "description": "Sensor queries backing the declarations. Exactly one query must have operation 'status'.",
+      "properties": {
+        "queries": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "operation"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "operation": {
+                "enum": [
+                  "status",
+                  "query",
+                  "callers",
+                  "callees",
+                  "impact",
+                  "affected"
+                ]
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "manual_witness": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 256,
+      "description": "Keyed by task_id of the plan. Keys must be a subset of the plan's tasks.",
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/witness"
+      }
+    },
+    "witness_set_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "repoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Repo-relative path. Absolute paths, backslashes and '..' traversal are rejected. A trailing '/' declares a directory prefix and is accepted only under 'writes'."
+    },
+    "lineAnchor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "path"
+            },
+            "path": {
+              "$ref": "#/$defs/repoRelativePath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "symbol"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "path": {
+              "$ref": "#/$defs/repoRelativePath"
+            }
+          }
+        }
+      ]
+    },
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "line_id",
+        "role",
+        "anchors"
+      ],
+      "properties": {
+        "line_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "role": {
+          "enum": [
+            "reads",
+            "writes"
+          ]
+        },
+        "anchors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/lineAnchor"
+          }
+        }
+      }
+    },
+    "witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owns",
+        "reads",
+        "writes",
+        "resources",
+        "state_effects",
+        "sensor_provenance",
+        "affected_tests",
+        "unknowns"
+      ],
+      "properties": {
+        "owns": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Symbols and paths this ToDo claims ownership of. Every entry needs a covering sensor query or it compiles to a sensor_unbound unknown. An entry may additionally declare creates: true for a path this ToDo will bring into existence.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "target"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "symbol",
+                  "path"
+                ]
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "creates": {
+                "const": true,
+                "description": "Optional. Declares that this path does not exist yet and that this ToDo creates it. Only valid when kind is path — existence is a filesystem fact and a symbol has none of its own. Only the value true is accepted: false would be a second spelling of an existing path. Omitted is the default."
+              }
+            }
+          }
+        },
+        "reads": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/repoRelativePath"
+          }
+        },
+        "writes": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/repoRelativePath"
+          }
+        },
+        "resources": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Shared resource ids. A resource with no matching state_effect entry is treated as a shared resource of unknown direction and becomes a conflict.",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "state_effects": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "resource_id",
+              "kind"
+            ],
+            "properties": {
+              "resource_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "kind": {
+                "enum": [
+                  "state",
+                  "schema",
+                  "invariant",
+                  "effect",
+                  "external_effect"
+                ]
+              }
+            }
+          }
+        },
+        "sensor_provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queries"
+          ],
+          "properties": {
+            "queries": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "query_id",
+                  "expect"
+                ],
+                "properties": {
+                  "query_id": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "expect": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "name",
+                          "path"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "symbol"
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "path": {
+                            "$ref": "#/$defs/repoRelativePath"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "path"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "path",
+                              "affected"
+                            ]
+                          },
+                          "path": {
+                            "$ref": "#/$defs/repoRelativePath"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "affected_tests": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Declared affected tests. Compared exactly against fresh sensor observation; any drift fails the compile rather than being narrowed.",
+          "items": {
+            "$ref": "#/$defs/repoRelativePath"
+          }
+        },
+        "unknowns": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Explicitly declared residual unknowns. Recorded, never rounded away.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "ref"
+            ],
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/identifier"
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Optional semantic lines read or written by this ToDo. line_id values must be unique within the ToDo.",
+          "items": {
+            "$ref": "#/$defs/line"
+          }
+        },
+        "concern_anchors": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Optional. Which named symbols inside an owned-but-contested resource are this ToDo's concern. Consumed only when binding seam candidates; it can never create, remove or alter a conflict, so a dishonest declaration degrades the proposal without touching the judgement. Declared symbols must resolve through the sensor with an exact name and path match, must live inside the declared resource, and must not overlap another ToDo's declaration for the same resource; any breach yields a typed unknown instead of a proposal.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "within",
+              "symbols"
+            ],
+            "properties": {
+              "within": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "target"
+                ],
+                "description": "The contested resource. Must be a resource this same ToDo claims under 'owns'.",
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "symbol",
+                      "path"
+                    ]
+                  },
+                  "target": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                }
+              },
+              "symbols": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 256,
+                "description": "Symbol names owned by this ToDo inside the resource. Strictly sorted and unique.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              }
+            }
+          }
+        },
+        "read_anchors": {
+          "type": "array",
+          "maxItems": 256,
+          "description": "Optional. Which named functions inside a file this ToDo reads (listed under reads) it depends on; ADR 0204. Stripped before run-request synthesis. Symbols strictly sorted and unique.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "within",
+              "symbols"
+            ],
+            "properties": {
+              "within": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "target"
+                ],
+                "description": "A path this same ToDo lists under 'reads'.",
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "symbol",
+                      "path"
+                    ]
+                  },
+                  "target": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                }
+              },
+              "symbols": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 256,
+                "description": "Symbol names owned by this ToDo inside the resource. Strictly sorted and unique.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
