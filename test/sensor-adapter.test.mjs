@@ -460,3 +460,41 @@ test('fails loud for stale, unresolved, and unsupported status', async () => {
     assert.equal(evidence.outcomes[0].outcome, expected);
   }
 });
+
+test('runs queries concurrently under a cap and keeps outcomes in query order', async () => {
+  const delays = [40, 5, 30, 1, 20, 10, 15, 2, 25, 3];
+  let running = 0;
+  let peak = 0;
+  const evidence = await collectSensorEvidence({
+    cwd: '/repo',
+    querySet: {
+      queries: delays.map((delay, index) => (
+        { id: `q${index}`, operation: 'affected', target: `f${index}.mjs`, delay }
+      )),
+    },
+    execute: async ({ target }) => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, delays[Number(target.slice(1, -4))]));
+      running -= 1;
+      // f3 fails; every other file has a dependent test named after itself.
+      return target === 'f3.mjs'
+        ? { code: 2, stdout: '', stderr: 'boom' }
+        : { code: 0, stdout: JSON.stringify({ affectedTests: [`t-${target}`] }), stderr: '' };
+    },
+    inspectAffectedPath: async () => 'file',
+  });
+
+  assert.ok(peak > 1 && peak <= 6, `peak concurrency ${peak}`);
+  assert.deepEqual(evidence.outcomes.map(({ id }) => id), delays.map((_, index) => `q${index}`));
+  evidence.outcomes.forEach((outcome, index) => {
+    assert.equal(outcome.targets[0].target, `f${index}.mjs`);
+    if (index === 3) {
+      assert.equal(outcome.targets[0].outcome, 'command_failure');
+      assert.equal(outcome.targets[0].exitCode, 2);
+    } else {
+      assert.equal(outcome.targets[0].outcome, 'ready');
+      assert.deepEqual(outcome.targets[0].data.affectedTests, [`t-f${index}.mjs`]);
+    }
+  });
+});

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSensorCli } from './sensor-runtime.mjs';
 
 const OPERATIONS = new Set(['status', 'query', 'callers', 'callees', 'impact', 'affected']);
+const SENSOR_QUERY_CONCURRENCY = 6;
 const ANSI_ESCAPE = /\u001B\[[0-?]*[ -/]*[@-~]/g;
 
 function stripAnsi(value) {
@@ -430,13 +431,19 @@ export async function collectSensorEvidence({
     return { cwd, outcomes: [{ outcome: 'unresolved', reason: 'invalid_path_inspector' }] };
   }
 
-  const outcomes = [];
-  for (const query of queries) {
-    if (!query || typeof query !== 'object') {
-      outcomes.push({ outcome: 'unresolved', reason: 'invalid_query' });
-      continue;
+  // Each affected query spawns one sensor process (250-400 ms); run a few at once.
+  // Workers claim the next index, so outcomes stay in query order and no outcome changes.
+  const outcomes = new Array(queries.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < queries.length) {
+      const index = next++;
+      const query = queries[index];
+      outcomes[index] = !query || typeof query !== 'object'
+        ? { outcome: 'unresolved', reason: 'invalid_query' }
+        : await collectOne({ cwd, query, execute, inspectAffectedPath });
     }
-    outcomes.push(await collectOne({ cwd, query, execute, inspectAffectedPath }));
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(SENSOR_QUERY_CONCURRENCY, queries.length) }, worker));
   return { cwd, outcomes };
 }
