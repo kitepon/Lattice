@@ -154,3 +154,12 @@ export function splitTouches(input, pointer = '') {
   });
   return { input: { ...input, schema: 'lattice.plan_create_input.v5', tasks }, touches };
 }
+
+/**
+ * The line ranges of every function the witness rows declare (`resolved` of one Resolve call), for the compile (a5b).
+ * No anchors → no call. Any failure → `[]`: the compile then reads every declared function as a whole-file claim, as before.
+ */
+export async function resolveDeclaredRanges({ root, anchors }) {
+  if (anchors.length === 0) return [];
+  try { return (await resolveOnce(root, anchors)).resolved; } catch { return []; }
+}
