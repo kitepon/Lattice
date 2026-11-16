@@ -1737,6 +1737,46 @@ program
   });
 
 /**
+ * lattice sensor resolve — `{path, symbol}` anchors → line spans (ADR 0204 Resolve, a3). JSON in on stdin, JSON out.
+ *
+ * stdin: {"anchors":[{"path","symbol"}],"names":["identifier"],"related":false} (all optional). The contract stays at this CLI boundary like `file-nodes`:
+ * Lattice never reads the index database itself. An anchor that does not resolve is an answer (`unresolved` with the
+ * nearest names), not a failure: exit 0.
+ */
+program
+  .command('resolve')
+  .description('Resolve path#symbol anchors to line spans (JSON on stdin and stdout)')
+  .option('-p, --path <path>', 'Project path')
+  .action(async (options: { path?: string }) => {
+    const projectPath = resolveProjectPath(options.path);
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`LatticeSensor not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+      const request = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { anchors?: unknown; names?: unknown; related?: unknown };
+      const anchors = request.anchors ?? [];
+      const names = request.names ?? [];
+      if (!Array.isArray(anchors) || !anchors.every((a) => a && typeof a.path === 'string' && typeof a.symbol === 'string')
+        || !Array.isArray(names) || !names.every((n) => typeof n === 'string')) {
+        error('resolve expects {"anchors"?:[{"path":string,"symbol":string}],"names"?:string[],"related"?:boolean} on stdin');
+        process.exit(2);
+      }
+      const { default: LatticeSensor } = await loadLatticeSensor();
+      const cg = await LatticeSensor.open(projectPath);
+      const { resolveAnchors, lookupNames } = await import('../graph/anchor-resolve');
+      const result = resolveAnchors(cg, anchors, { related: request.related === true });
+      console.log(JSON.stringify({ schema: 'lattice.sensor_resolve.v1', ...result, named: lookupNames(cg, names) }));
+      cg.destroy();
+    } catch (err) {
+      error(`resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * lattice sensor files [path]
  */
 program
