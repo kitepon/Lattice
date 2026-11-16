@@ -206,6 +206,7 @@ import { anchorsOf, claimsOf, judgeTask, neededAnchors, rangeIndex, relationView
 import { readTodoRelationSummary, readTodoTaskRelations, transactTodoRelations } from './todo-relation-store.mjs';
 import { planSplitHold, splitGuide } from './todo-split-start.mjs';
 import { cutCost } from './function-split-verify.mjs';
+import { reorganizeNotSplit, splitDoneGate, verifySplit } from './todo-function-split.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -307,7 +308,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers', 'compact',
+  'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers', 'compact', 'function-split',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -361,6 +362,8 @@ const TODO_FLAG_SPECS = Object.freeze({
   'phase review': PHASE_REASON_FLAG_SPEC,
   'phase close-unaudited': PHASE_REASON_FLAG_SPEC,
   split: Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
+  'function-split verify': Object.freeze({ known: ['plan', 'task', 'commit', 'base', 'map'], required: ['plan', 'task', 'commit', 'map'] }),
+  'function-split decline': REASON_FLAG_SPEC,
   note: NOTE_FLAG_SPEC,
   // a28: the rest of the writes, and the reads whose --json is optional (their output is JSON either way).
   'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message'], required: ['plan', 'phase'] }),
@@ -392,7 +395,7 @@ const TODO_SUBCOMMANDS = Object.freeze({
   connect: { names: ['condition', 'priority'], example: 'priority' },
   phase: { names: ['status', 'review', 'accept', 'reject', 'reopen', 'close-unaudited', 'baseline'], example: 'review' },
 });
-const GROUP_COMMANDS = ['dependency', 'predecessor', 'connect', 'phase', 'independence', 'note', 'structure'];
+const GROUP_COMMANDS = ['dependency', 'predecessor', 'connect', 'phase', 'independence', 'note', 'structure', 'function-split'];
 const IDENTIFIER_FLAGS = ['plan', 'task', 'phase', 'from-plan', 'from-task', 'to-plan', 'to-task'];
 // The shared table is FLAG_PLACEHOLDER (cli-refusal-guidance, a27).
 const placeholder = (name) => FLAG_PLACEHOLDER[name] ?? `<${name}>`;
@@ -565,7 +568,7 @@ function supportsAtomicStoreCommit(argv) {
   if (command === 'snapshot') return argv[1] === '--rebuild';
   if (command === 'migrate') return !argv.includes('--dry-run') && !argv.includes('--schema');
   if (['revise', 'split', 'revise-set', 'revise-phase', 'start', 'retract', 'block',
-    'unblock', 'retire', 'done', 'reopen', 'add'].includes(command)) return true;
+    'unblock', 'retire', 'done', 'reopen', 'add', 'function-split'].includes(command)) return true;
   if (command === 'phase') return argv[1] !== 'status';
   return false;
 }
@@ -1418,6 +1421,12 @@ async function holdForSplit({ repoRoot, env, member, planKey, taskId, read, over
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
 }
+
+/** What the function-split commands need from this module: retire a task, and declare a row again (resolved at HEAD). */
+const splitDeps = (repoRoot, planKey) => ({
+  retire: (options) => retireTask(options),
+  declareRow: ({ taskId, flags }) => declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot) }),
+});
 
 /** ADR 0205 §3: starting the split task S shows the worker its members, the size of the cut and what to do (no member rule exists). */
 async function withSplitGuide({ repoRoot, member, planKey, taskId, started }) {
@@ -4923,6 +4932,7 @@ function writesTodoStore(argv) {
     case 'phase': return second !== 'status';
     case 'start': case 'retract': case 'block': case 'unblock': case 'retire': case 'done':
     case 'reopen': case 'split': case 'revise': case 'revise-phase': case 'revise-set': case 'add':
+    case 'function-split':
       return true;
     default: return false;
   }
@@ -5685,6 +5695,21 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     if (flags !== null && isTodoIdentifier(flags.plan) && isAuthoringPathToken(flags.input)) {
       action = (repoRoot) => revise({ repoRoot, env, planKey: flags.plan, inputRef: flags.input });
     }
+  } else if (argv[0] === 'function-split' && argv[1] === 'verify') {
+    const flags = matchFlagCommand(argv, ['function-split', 'verify'], TODO_FLAG_SPECS['function-split verify']);
+    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
+      && ['commit', 'map'].every((name) => typeof flags[name] === 'string' && flags[name].length > 0)
+      && (flags.base === undefined || (typeof flags.base === 'string' && flags.base.length > 0))) {
+      action = (repoRoot) => verifySplit({ repoRoot, env, planKey: flags.plan, taskId: flags.task, commit: flags.commit,
+        base: flags.base, mapText: flags.map, deps: splitDeps(repoRoot, flags.plan) });
+    }
+  } else if (argv[0] === 'function-split' && argv[1] === 'decline') {
+    const flags = matchFlagCommand(argv, ['function-split', 'decline'], TODO_FLAG_SPECS['function-split decline']);
+    if (flags !== null && isTodoIdentifier(flags.plan) && isTodoIdentifier(flags.task)
+      && typeof flags.reason === 'string' && flags.reason.length > 0) {
+      action = (repoRoot) => reorganizeNotSplit({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
+        reason: flags.reason, deps: splitDeps(repoRoot, flags.plan) });
+    }
   } else if (argv[0] === 'split') {
     const flags = matchFlagCommand(argv, ['split'], TODO_FLAG_SPECS.split);
     if (flags !== null && isTodoIdentifier(flags.plan) && isAuthoringPathToken(flags.input)) {
@@ -5769,6 +5794,7 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
       action = (repoRoot) => mutateUnlessUnchanged({ repoRoot, env, planKey: flags.plan, taskId: flags.task,
         kind: 'done', dropped: (recorded) => doneDropped({ repoRoot, flags, recorded }),
         action: async () => {
+          await splitDoneGate({ repoRoot, planKey: flags.plan, taskId: flags.task, deps: splitDeps(repoRoot, flags.plan) });
           const result = await mutate({
             repoRoot, env, planKey: flags.plan, taskId: flags.task, kind: 'done', payload: 'authored',
             message: await doneMessage({ repoRoot, flags }),

@@ -136,7 +136,7 @@ therefore fetches what it needs from the repository's `origin` before it observe
 (`git fetch --deepen`, then `--unshallow` if still missing). The worker only pushes the branch, which the PR needs anyway
 (Behemoth's finding, 2026-11-16, while writing BellTeam's rule).
 
-Input errors are not a rejection and reorganize nothing: verify answers `{error: {code, next_action}}` for `source_dirty`
+Input errors are not a rejection and reorganize nothing: `function-split verify` refuses with `INPUT_INVALID/function_split_<code>` (and the same `next_action`) for `source_dirty`
 (the repoRoot has uncommitted changes; names them), `commit_not_found` (the commit is in neither the repository nor its
 `origin`: the worker pushes the branch), `empty_diff` (base == commit: pass `--base`), `target_untouched` (the target path is not in the diff),
 `map_entry_malformed`. repoRoot is the repository Resolve uses at todo add (a store-only chart has none: B does not arise

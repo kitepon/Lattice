@@ -4,9 +4,6 @@ import { gitSpawnSync } from './git-process.mjs';
 import { runSensorJson, SensorResolveError } from './sensor-resolve.mjs';
 import { withObservedTree } from './todo-independence-authoritative-observation.mjs';
 
-// shortcut: re-exported so the product gate reaches the split verifier until Alice's `function-split verify` imports it; delete this line then.
-export { cutCost, verifyFunctionSplit } from './function-split-verify.mjs';
-
 const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u;
 
 function gitText(repoRoot, args) {
