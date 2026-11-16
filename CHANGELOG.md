@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Store：関数単位の競合関係の記録（ADR 0204 a4、ルドミラ）。ホストへの変更：有り（新しい記録・witness の版の登録）。`.lattice/todo/relations/<plan_key>/{log.jsonl,summary.json}` に、機械が追記するだけの関係を持つ（工程の組とパスごとに開いた関係は一つ。同じ内容の再追記は何も起こさず、内容が変われば古い方を閉じて置き換える。完了・取り下げの工程の関係は Store が自分で閉じる）。版ごとではなく `plan_key` ごとなので、`todo add` の版が増えても写さない。`transactTodoRelations` が witness set・ログ・要約を一つの鍵の下で順に書くので、同時の二つの追加がお互いを見落とさない。status などが読むのは要約（開いている関係の数と新しい20件、未解決の数、`head_sha`）だけ。読み手の登録に `todo_relation_event`、`todo_relation_summary`、`todo_witness_set`（今は5）を足した：新しい版のファイルは `witness_set_invalid` ではなく「より新しい Lattice が要る」と断る。`relations/` は新しいディレクトリなので古い席は無視するが、witness set v6 は古い席が読めない。アリスの側が v6 を書くのは `read_anchors` を使う時だけ（別PR）。
 - `lattice sensor init|sync`：git の作業木なら、先に `.lattice/` を `.git/info/exclude` へ足す。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
 - `lattice chart repo sync`：最初の取得だけ `--depth=1`、2回目からは深さを付けずに取る。これまでは毎回 `--depth=1` で、新しい先頭がそのたびに浅い根になり、前の先頭が祖先でなくなった。そのせいで enforced の門4が、マージ済みのコミットを「今の先頭でない」と断り、`todo structure input` は `baseline_not_ancestor` になっていた。fast-forward だけで動く点は変えない。
 - 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。

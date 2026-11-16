@@ -53,6 +53,10 @@ export const TODO_NOTICE_ACKS_SCHEMA = 'lattice.todo_notice_acks.v2';
 export const TODO_NOTICE_WAITS_SCHEMA = 'lattice.todo_notice_waits.v1';
 /** a101 K4: chart identity `.lattice/chart.json` (dfd-charts-read). */
 export const TODO_CHART_META_SCHEMA = 'lattice.chart_meta.v1';
+/** ADR 0204 a4: function-level conflict relations, one open relation per (task_a, task_b, path); dfd-store-relations. */
+export const TODO_RELATION_EVENT_SCHEMA = 'lattice.todo_relation_event.v1';
+export const TODO_RELATION_SUMMARY_SCHEMA = 'lattice.todo_relation_summary.v1';
+export const TODO_RELATION_SUMMARY_OPEN = 20;
 /**
  * v2でnoteの`scope`とplan noteを載せる。v1のままでは`task_id`が identifier 必須・
  * `full_history_command`が`--task <id>`込みの文字列と完全一致で、どちらもplan noteを表せない。
@@ -901,4 +905,62 @@ export function validateTodoChartMeta(value) {
     && (value.created_at === null || isStrictTodoTimestamp(value.created_at))
     && (repo === null || (exactRecord(repo, ['url', 'branch', 'accepted_tip'])
       && word(repo.url) && word(repo.branch) && text(repo.accepted_tip)));
+}
+
+// ---- ADR 0204 a4 relations ------------------------------------------------------------------------------------
+const relationText = (field) => typeof field === 'string' && field.length > 0 && field.length <= 1024;
+const relationSha = (field) => field === null || relationText(field);
+const lineNumber = (field) => Number.isSafeInteger(field) && field >= 1;
+
+/** One side of an overlap. A whole-file claim has no symbol and no range (both null). */
+function relationEntry(entry) {
+  return exactRecord(entry, ['symbol', 'start_line', 'end_line', 'access'])
+    && ['read', 'write'].includes(entry.access)
+    && ((entry.symbol === null && entry.start_line === null && entry.end_line === null)
+      || (relationText(entry.symbol) && lineNumber(entry.start_line) && lineNumber(entry.end_line)
+        && entry.end_line >= entry.start_line));
+}
+
+/** The pair identity: task_a sorts before task_b, so a pair has one spelling. */
+const relationKey = (value) => isTodoIdentifier(value.task_a) && isTodoIdentifier(value.task_b)
+  && value.task_a < value.task_b && relationText(value.path);
+
+export const todoRelationOverlapsValid = (overlaps) => Array.isArray(overlaps) && overlaps.length > 0
+  && overlaps.every((overlap) => exactRecord(overlap, ['a', 'b']) && relationEntry(overlap.a) && relationEntry(overlap.b));
+
+/** Content identity of a relation (head and time excluded): the same overlap re-found is not a new relation. */
+export function todoRelationId(relation) {
+  return digestTodoArtifact({ task_a: relation.task_a, task_b: relation.task_b, path: relation.path,
+    overlaps: relation.overlaps });
+}
+
+export function validateTodoRelationEvent(value) {
+  try {
+    const common = value !== null && typeof value === 'object' && value.schema === TODO_RELATION_EVENT_SCHEMA
+      && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && isTodoDigest(value.relation_id)
+      && relationKey(value) && relationSha(value.head_sha) && isStrictTodoTimestamp(value.computed_at);
+    if (!common) return false;
+    if (value.kind === 'gone') {
+      return exactRecord(value, ['schema', 'kind', 'sequence', 'relation_id', 'task_a', 'task_b', 'path', 'head_sha', 'computed_at']);
+    }
+    return value.kind === 'relation'
+      && exactRecord(value, ['schema', 'kind', 'sequence', 'relation_id', 'task_a', 'task_b', 'path', 'overlaps', 'head_sha', 'computed_at'])
+      && todoRelationOverlapsValid(value.overlaps) && value.relation_id === todoRelationId(value);
+  } catch { return false; }
+}
+
+const summaryRelation = (entry) => exactRecord(entry, ['relation_id', 'task_a', 'task_b', 'path', 'overlaps'])
+  && isTodoDigest(entry.relation_id) && relationKey(entry) && todoRelationOverlapsValid(entry.overlaps);
+
+export function validateTodoRelationSummary(value) {
+  try {
+    return exactRecord(value, ['schema', 'plan_key', 'relation_count', 'open_relations', 'open_truncated',
+      'unresolved_count', 'head_sha', 'log_sequence', 'computed_at'])
+      && value.schema === TODO_RELATION_SUMMARY_SCHEMA && isTodoIdentifier(value.plan_key)
+      && isNonNegativeSafeInteger(value.relation_count) && isNonNegativeSafeInteger(value.unresolved_count)
+      && isNonNegativeSafeInteger(value.log_sequence) && Array.isArray(value.open_relations)
+      && value.open_relations.length <= TODO_RELATION_SUMMARY_OPEN && value.open_relations.every(summaryRelation)
+      && value.open_truncated === (value.relation_count > value.open_relations.length)
+      && relationSha(value.head_sha) && isStrictTodoTimestamp(value.computed_at);
+  } catch { return false; }
 }
