@@ -264,3 +264,23 @@ test('a plan-scoped chain with a broken link is read without the hash chain and 
   assert.equal((await read()).members[0].coordination.mode, 'witness');
   await assert.rejects(readTodoStore({ repoRoot: root, now: NOW, verifyHistory: true }), { code: 'STORE_CORRUPT' });
 });
+
+// w4: one process remembers the journal and artifact bytes it accepted, keyed by their sha256 — changed bytes are checked again.
+test('bytes accepted once are not re-validated, and changed bytes are validated again in the same process', async (context) => {
+  const { root, declare, read } = await workspace(context);
+  await declare('conversation', 'memo');
+  const chain = path.join(root, '.lattice/todo/plans/main/v1/journal/plan-scoped.jsonl');
+  const planRef = path.join(root, '.lattice/todo/plans/main/v1/plan.json');
+  const [goodChain, goodPlan] = [await readFile(chain), await readFile(planRef)];
+  assert.equal((await read()).members[0].coordination.mode, 'conversation');
+  assert.equal((await read()).members[0].coordination.mode, 'conversation', 'a repeat read accepts the same bytes');
+  const event = JSON.parse(goodChain.toString('utf8'));
+  await writeFile(chain, `${canonicalizeTodoArtifact({ ...event, kind: 'not_a_kind' })}\n`);
+  await assert.rejects(read(), { code: 'STORE_CORRUPT' });
+  await writeFile(chain, goodChain);
+  assert.equal((await read()).members[0].coordination.mode, 'conversation');
+  await writeFile(planRef, `${JSON.stringify({ ...JSON.parse(goodPlan.toString('utf8')), schema: 'x' })}\n`);
+  await assert.rejects(read());
+  await writeFile(planRef, goodPlan);
+  assert.equal((await read()).members[0].coordination.mode, 'conversation');
+});
