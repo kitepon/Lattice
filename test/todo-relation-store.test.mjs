@@ -1,14 +1,14 @@
 // ADR 0204 a4: per-plan relation record (Store). docs/architecture/dfd-store-relations.md
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { todoSelfDigest } from '../src/todo-contracts.mjs';
-import { readTodoRelations, readTodoRelationSummary, transactTodoRelations } from '../src/todo-relation-store.mjs';
+import { readTodoRelationSummary, readTodoTaskRelations, transactTodoRelations } from '../src/todo-relation-store.mjs';
 import { createTodoStoreWriter, initializeTodoStore, readTodoWitnessSet } from '../src/todo-store.mjs';
 
 const CLI = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), 'bin/lattice.mjs');
@@ -74,15 +74,16 @@ test('append, replace, identical no-op, gone by key; summary tracks the open set
   assert.deepEqual([replaced.appended, replaced.gone], [1, 1]);
   assert.equal(replaced.summary.relation_count, 2);
   assert.equal(replaced.summary.head_sha, 'sha2');
-  assert.equal((await readTodoRelations({ repoRoot: root, planKey: 'main', taskId: 'B' }))[0].overlaps[0].a.symbol, 'h');
+  assert.equal((await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'B' })).open[0].overlaps[0].a.symbol, 'h');
 
   const closed = await transact(root, () => ({ gone: [{ task_a: 'A', task_b: 'C', path: 'src/x.mjs' },
     { task_a: 'B', task_b: 'C', path: 'nope' }] }));
   assert.equal(closed.summary.relation_count, 1);
   assert.equal(closed.summary.head_sha, 'sha2');            // kept when the call gives none
   assert.equal(closed.summary.unresolved_count, 1);
-  const log = await readTodoRelations({ repoRoot: root, planKey: 'main', includeGone: true });
-  assert.deepEqual(log.map(({ sequence, kind }) => [sequence, kind]),
+  const history = (await readFile(path.join(root, '.lattice/todo/relations/main/log.jsonl'), 'utf8')).trim().split('\n')
+    .map((entry) => JSON.parse(entry));
+  assert.deepEqual(history.map(({ sequence, kind }) => [sequence, kind]),
     [[1, 'relation'], [2, 'relation'], [3, 'gone'], [4, 'relation'], [5, 'gone']]);
 });
 
@@ -165,11 +166,13 @@ test('bad input is refused; a damaged or newer file is typed, not silently read'
   await assert.rejects(readTodoRelationSummary({ repoRoot: root, planKey: 'main' }),
     { code: 'STORE_INCONSISTENT', detail: { reason: 'relation_summary_invalid', ref: '.lattice/todo/relations/main/summary.json' } });
   await writeFile(summaryPath, good);
-  await writeFile(path.join(root, '.lattice/todo/relations/main/log.jsonl'), '{"nope":1}\n');
-  await assert.rejects(readTodoRelations({ repoRoot: root, planKey: 'main' }), { code: 'STORE_INCONSISTENT' });
+  await writeFile(path.join(root, '.lattice/todo/relations/main/open/A.json'), '{"nope":1}\n');
+  await assert.rejects(readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'A' }),
+    { code: 'STORE_INCONSISTENT',
+      detail: { reason: 'relation_log_invalid', ref: '.lattice/todo/relations/main/open/A.json' } });
 });
 
-test('a crash between log and summary heals on the next write', async (t) => {
+test('a crash between the task files and the summary heals on the next write', async (t) => {
   const root = await workspace(t);
   await transact(root, () => ({ relations: [relation('A', 'B', 'f')], headSha: 'h' }));
   const summaryPath = path.join(root, '.lattice/todo/relations/main/summary.json');
@@ -179,4 +182,61 @@ test('a crash between log and summary heals on the next write', async (t) => {
   const healed = await transact(root, () => ({}));
   assert.equal(healed.summary.log_sequence, 1);
   assert.equal(healed.summary.relation_count, 1);
+});
+
+const relDir = (root) => path.join(root, '.lattice/todo/relations/main');
+
+test('a4c: the history is never read or rewritten, so it can never stop recording', async (t) => {
+  const root = await workspace(t);
+  await transact(root, () => ({ relations: [relation('A', 'B', 'f')], headSha: 'h' }));
+  // a history far past the old 64 MB stop, and a line that is not even JSON: neither a read nor a write opens it
+  const log = path.join(relDir(root), 'log.jsonl');
+  const before = await readFile(log, 'utf8');
+  await writeFile(log, `${'x'.repeat(70 * 1024 * 1024)}\n${before}`);
+  const next = await transact(root, () => ({ relations: [relation('A', 'C', 'g')], headSha: 'h' }));
+  assert.equal(next.appended, 1);
+  assert.equal(next.summary.relation_count, 2);
+  const read = await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'A' });
+  assert.deepEqual(read.open.map(({ task_b: other }) => other), ['B', 'C']);
+  // the oversize history was sealed whole, never read; the new line starts a fresh log
+  assert.equal((await stat(path.join(relDir(root), 'log-1.jsonl'))).size > 70 * 1024 * 1024, true);
+  assert.equal(JSON.parse(await readFile(log, 'utf8')).task_b, 'C');
+});
+
+test('a4c: a task reads its own open relations and the plan counts from two small files', async (t) => {
+  const root = await workspace(t);
+  assert.equal(await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'A' }), null);   // no record
+  await transact(root, () => ({ relations: [relation('A', 'B', 'f'), relation('B', 'C', 'g')], headSha: 'sha', unresolvedCount: 3 }));
+  assert.deepEqual(await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'B' }), {
+    relation_count: 2, unresolved_count: 3, head_sha: 'sha',
+    open: [relation('A', 'B', 'f'), relation('B', 'C', 'g')].map(({ task_a: a, task_b: b, path: where, overlaps }) => ({
+      task_a: a, task_b: b, path: where, overlaps })) });
+  const none = await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'D' });
+  assert.deepEqual([none.relation_count, none.open], [2, []]);
+  // another task's damaged file is never opened
+  await writeFile(path.join(relDir(root), 'open/C.json'), 'not json');
+  assert.equal((await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'A' })).open.length, 1);
+  await assert.rejects(readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'C' }), { code: 'STORE_INCONSISTENT' });
+  await assert.rejects(readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'a b' }), TypeError);
+  // a plan whose last relation closed reads as "none"
+  const root2 = await workspace(t);
+  await transact(root2, () => ({ relations: [relation('A', 'B', 'f')], headSha: 'h' }));
+  await transact(root2, () => ({ gone: [{ task_a: 'A', task_b: 'B', path: 'src/x.mjs' }] }));
+  assert.equal(await readTodoTaskRelations({ repoRoot: root2, planKey: 'main', taskId: 'A' }), null);
+  await assert.rejects(readFile(path.join(relDir(root2), 'open/A.json')), { code: 'ENOENT' });   // no empty file left
+});
+
+test('a4c: a relation written to one task only is completed, and a full history log is sealed', async (t) => {
+  const root = await workspace(t);
+  await transact(root, () => ({ relations: [relation('A', 'B', 'f')], headSha: 'h' }));
+  await rm(path.join(relDir(root), 'open/B.json'));                                  // the crash left only A's side
+  const healed = await transact(root, () => ({}));
+  assert.equal(healed.appended, 0);
+  assert.equal((await readTodoTaskRelations({ repoRoot: root, planKey: 'main', taskId: 'B' })).open.length, 1);
+
+  await writeFile(path.join(relDir(root), 'log.jsonl'), 'y'.repeat(4 * 1024 * 1024));
+  await transact(root, () => ({ relations: [relation('A', 'C', 'g')] }));
+  const sealed = (await readdir(relDir(root))).filter((name) => name.startsWith('log-'));
+  assert.deepEqual(sealed, ['log-1.jsonl']);
+  assert.equal((await readFile(path.join(relDir(root), 'log.jsonl'), 'utf8')).trim().split('\n').length, 1);
 });

@@ -102,8 +102,9 @@ the sensor index, the witness set or the full relation log, never recompute, and
   (input schemas create v6 / revise likewise; plan digests unchanged).
 - Witness set v6 (`read_anchors`) is written only when some task has read anchors; otherwise v5 stays, so older readers keep
   reading charts that do not use reads (as with `no_code_lanes`).
-- Placement: relations are per `plan_key`, not per plan version: `.lattice/todo/relations/<plan_key>/log.jsonl` +
-  `summary.json`, own lock like notes, never the lifecycle journal. Revisions copy nothing; Judgment appends `gone` for tasks
+- Placement: relations are per `plan_key`, not per plan version: `.lattice/todo/relations/<plan_key>/open/<task_id>.json`
+  (the open relations of one task: what a reader opens), `summary.json`, and `log.jsonl` (history, appended, never read; a4c:
+  the open set must not live in a file that grows with history), own lock like notes, never the lifecycle journal. Revisions copy nothing; Judgment appends `gone` for tasks
   whose ranges changed or that left the plan. One relation per (task pair, path) carrying the overlapping symbols, so
   whole-file declarations do not grow per symbol pair. Event ids are content digests; re-appending an open id is a no-op.
 - Atomicity: the task's witness row and its relations are written in one Store call under the relations lock, with the

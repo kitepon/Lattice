@@ -1,5 +1,5 @@
 // ADR 0204 a4: per-plan function-level conflict relations. docs/architecture/dfd-store-relations.md
-import { lstat, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, readFile, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
 import {
@@ -13,15 +13,17 @@ import {
 } from './todo-store.mjs';
 
 const ROOT_REF = '.lattice/todo/relations';
-const FILE_MAX_BYTES = 67_108_864;
+const TASK_FILE_MAX_BYTES = 4_194_304;
+const LOG_SEGMENT_BYTES = 4_194_304;
 const SUMMARY_MAX_BYTES = 65_536;
 const FINISHED = new Set(['done', 'retired']);
 
 const fail = (code, reason, detail) => { throw new TodoStoreError(code, reason, reason, detail); };
 const line = (value) => Buffer.from(`${canonicalizeTodoArtifact(value)}\n`, 'utf8');
 const keyOf = ({ task_a: a, task_b: b, path: p }) => `${a}\0${b}\0${p}`;
-const refs = (planKey) => ({ dir: `${ROOT_REF}/${planKey}`, log: `${ROOT_REF}/${planKey}/log.jsonl`,
-  summary: `${ROOT_REF}/${planKey}/summary.json` });
+const refs = (planKey) => ({ dir: `${ROOT_REF}/${planKey}`, open: `${ROOT_REF}/${planKey}/open`,
+  log: `${ROOT_REF}/${planKey}/log.jsonl`, summary: `${ROOT_REF}/${planKey}/summary.json`,
+  task: (taskId) => `${ROOT_REF}/${planKey}/open/${taskId}.json` });
 
 function planKeyOf(planKey) {
   if (!isTodoIdentifier(planKey)) throw new TypeError('planKey must be a todo identifier');
@@ -57,19 +59,12 @@ function parseLines(text, ref, validate, family) {
   });
 }
 
-/** Fold the log: the open relation per pair key, and the last sequence. */
-function foldLog(events) {
-  const open = new Map();
-  for (const event of events) {
-    if (event.kind === 'gone') open.delete(keyOf(event));
-    else open.set(keyOf(event), event);
-  }
-  return { open, sequence: events.at(-1)?.sequence ?? 0 };
-}
-
-async function readLog(repoRoot, planKey) {
-  const { log } = refs(planKey);
-  return parseLines(await readBounded(repoRoot, log, FILE_MAX_BYTES), log, validateTodoRelationEvent, 'todo_relation_event');
+/** The open relations of one task: its file, one `relation` event per line (missing file = none). */
+async function readTaskFile(repoRoot, planKey, taskId) {
+  const ref = refs(planKey).task(taskId);
+  const about = (event) => validateTodoRelationEvent(event) && event.kind === 'relation'
+    && (event.task_a === taskId || event.task_b === taskId);
+  return parseLines(await readBounded(repoRoot, ref, TASK_FILE_MAX_BYTES), ref, about, 'todo_relation_event');
 }
 
 /**
@@ -89,12 +84,35 @@ export async function readTodoRelationSummary({ repoRoot = process.cwd(), planKe
   return value;
 }
 
-/** Open relations of the plan (optionally of one task); `includeGone` returns the whole event log instead. */
-export async function readTodoRelations({ repoRoot = process.cwd(), planKey, taskId = null, includeGone = false } = {}) {
-  const events = await readLog(path.resolve(repoRoot), planKeyOf(planKey));
-  const about = (event) => taskId === null || event.task_a === taskId || event.task_b === taskId;
-  if (includeGone) return events.filter(about);
-  return [...foldLog(events).open.values()].filter(about);
+/**
+ * a4c: one task's open relations and the plan's counts, from two small bounded files (the summary and `open/<task>.json`);
+ * never the history. → null when the plan has no open relation, else
+ * `{relation_count, unresolved_count, head_sha, open: [{task_a, task_b, path, overlaps}]}` (this task's, by pair and path).
+ * Unreadable or damaged: STORE_INCONSISTENT, as the summary read.
+ */
+export async function readTodoTaskRelations({ repoRoot = process.cwd(), planKey, taskId } = {}) {
+  if (!isTodoIdentifier(taskId)) throw new TypeError('taskId must be a todo identifier');
+  const root = path.resolve(repoRoot);
+  const summary = await readTodoRelationSummary({ repoRoot: root, planKey });
+  if (summary === null || summary.relation_count === 0) return null;
+  const open = (await readTaskFile(root, planKey, taskId)).map(({ task_a: a, task_b: b, path: where, overlaps }) => ({
+    task_a: a, task_b: b, path: where, overlaps })).sort((left, right) => (keyOf(left) < keyOf(right) ? -1 : 1));
+  return { relation_count: summary.relation_count, unresolved_count: summary.unresolved_count, head_sha: summary.head_sha, open };
+}
+
+/** Every task file of the plan: `Map<taskId, Map<key, event>>` (the open set; names that are not task ids are ignored). */
+async function readOpenFiles(repoRoot, planKey) {
+  const names = await readdir(path.resolve(repoRoot, refs(planKey).open)).catch((error) => {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return [];
+    throw error;
+  });
+  const files = new Map();
+  for (const name of names) {
+    const taskId = name.endsWith('.json') ? name.slice(0, -5) : null;
+    if (!isTodoIdentifier(taskId)) continue;
+    files.set(taskId, new Map((await readTaskFile(repoRoot, planKey, taskId)).map((event) => [keyOf(event), event])));
+  }
+  return files;
 }
 
 async function ensureRelationDirectory(repoRoot, planKey) {
@@ -108,7 +126,7 @@ async function ensureRelationDirectory(repoRoot, planKey) {
     });
     if (state === null || state.isSymbolicLink() || (ref.endsWith('.json') ? !state.isFile() : !state.isDirectory())) stale();
   }
-  for (const ref of [ROOT_REF, refs(planKey).dir]) {
+  for (const ref of [ROOT_REF, refs(planKey).dir, refs(planKey).open]) {
     const absolute = path.resolve(repoRoot, ref);
     await mkdir(absolute).catch((error) => { if (error?.code !== 'EEXIST') throw error; });
     const state = await lstat(absolute);
@@ -142,6 +160,20 @@ function checkInput(result) {
   return { relations, gone };
 }
 
+/** The history log: appended, never read. At LOG_SEGMENT_BYTES the file is sealed under its last sequence and a new one starts. */
+async function appendHistory(repoRoot, logRef, lastSequence, events) {
+  const absolute = path.resolve(repoRoot, logRef);
+  const state = await lstat(absolute).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (state !== null && (state.isSymbolicLink() || !state.isFile())) fail('STORE_INCONSISTENT', 'relation_file_invalid', { ref: logRef });
+  if (state !== null && state.size >= LOG_SEGMENT_BYTES) {
+    await rename(absolute, path.resolve(path.dirname(absolute), `log-${lastSequence}.jsonl`));
+  }
+  await appendFile(absolute, Buffer.concat(events.map(line)), { mode: 0o644 });
+}
+
 /**
  * ADR 0204: one transaction over a plan's witness set and relation record, so two adds at once never miss each other.
  * Under `relations/<planKey>/.write.lock` Store reads the witness set, the open relations and the plan's unfinished task
@@ -166,10 +198,30 @@ export async function transactTodoRelations({ repoRoot = process.cwd(), planKey,
       const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
       if (member === undefined) throw new TypeError('planKey is not an active plan of this Store');
       const unfinished = new Set(member.tasks.filter(({ status }) => !FINISHED.has(status)).map(({ task_id: id }) => id));
-      const events = await readLog(root, planKey);
-      const { open, sequence: lastSequence } = foldLog(events);
+      const files = await readOpenFiles(root, planKey);
+      const dirty = new Set();
+      const open = new Map();
+      for (const entries of files.values()) {
+        for (const [key, event] of entries) if ((open.get(key)?.sequence ?? 0) < event.sequence) open.set(key, event);
+      }
+      // A relation lives in both its tasks' files; a crash between the two writes leaves one side: complete it.
+      const place = (event) => {
+        for (const id of [event.task_a, event.task_b]) {
+          if (!files.has(id)) files.set(id, new Map());
+          const held = files.get(id).get(keyOf(event));
+          if (held?.sequence !== event.sequence || held.relation_id !== event.relation_id) {
+            files.get(id).set(keyOf(event), event);
+            dirty.add(id);
+          }
+        }
+      };
+      const unplace = (event) => {
+        for (const id of [event.task_a, event.task_b]) if (files.get(id)?.delete(keyOf(event))) dirty.add(id);
+      };
+      for (const event of open.values()) place(event);
       const previous = await readTodoRelationSummary({ repoRoot: root, planKey });
       const witnessSet = await readTodoWitnessSet({ repoRoot: root, planKey });
+      const lastSequence = Math.max(previous?.log_sequence ?? 0, ...[...open.values()].map(({ sequence }) => sequence));
 
       const result = await update({ witnessSet, openRelations: [...open.values()].map((event) => structuredClone(event)),
         logSequence: lastSequence, unfinishedTaskIds: [...unfinished].sort() });
@@ -182,6 +234,7 @@ export async function transactTodoRelations({ repoRoot = process.cwd(), planKey,
       let sequence = lastSequence;
       const close = (event) => {
         open.delete(keyOf(event));
+        unplace(event);
         appended.push({ schema: TODO_RELATION_EVENT_SCHEMA, kind: 'gone', sequence: ++sequence,
           relation_id: event.relation_id, task_a: event.task_a, task_b: event.task_b, path: event.path,
           head_sha: headSha, computed_at: computedAt });
@@ -202,33 +255,35 @@ export async function transactTodoRelations({ repoRoot = process.cwd(), planKey,
           head_sha: headSha, computed_at: computedAt };
         if (!validateTodoRelationEvent(event)) throw new TypeError('relation update result invalid');
         open.set(keyOf(entry), event);
+        place(event);
         appended.push(event);
         added += 1;
       }
 
-      const openList = [...open.values()];
+      const openList = [...open.values()].sort((left, right) => right.sequence - left.sequence);
       const summary = { schema: TODO_RELATION_SUMMARY_SCHEMA, plan_key: planKey, relation_count: openList.length,
-        open_relations: openList.slice(-TODO_RELATION_SUMMARY_OPEN).reverse().map(({ relation_id: id, task_a: a, task_b: b,
+        open_relations: openList.slice(0, TODO_RELATION_SUMMARY_OPEN).map(({ relation_id: id, task_a: a, task_b: b,
           path: p, overlaps }) => ({ relation_id: id, task_a: a, task_b: b, path: p, overlaps })),
         open_truncated: openList.length > TODO_RELATION_SUMMARY_OPEN, unresolved_count: unresolvedCount,
         head_sha: headSha, log_sequence: sequence, computed_at: computedAt };
+      const stable = ({ computed_at: _at, ...rest }) => canonicalizeTodoArtifact(rest);
+      // The summary is recounted from the task files, so a crash that left it behind is healed by any later write.
       const summaryChanged = previous === null
-        ? appended.length > 0 || result?.headSha !== undefined || result?.unresolvedCount !== undefined
-        : appended.length > 0 || previous.head_sha !== headSha || previous.unresolved_count !== unresolvedCount
-          // A crash between log and summary left the summary behind the log: the next write heals it.
-          || previous.log_sequence !== sequence;
+        ? appended.length > 0 || openList.length > 0 || result?.headSha !== undefined || result?.unresolvedCount !== undefined
+        : stable(summary) !== stable(previous);
 
       await assertHeld();
       let writtenWitness = witnessSet;
       if (result?.witnessSet !== undefined && result.witnessSet !== null) {
         writtenWitness = (await writeTodoWitnessSet({ repoRoot: root, witnessSet: result.witnessSet })).witnessSet;
       }
-      if (appended.length > 0) {
-        const existing = await readBounded(root, logRef, FILE_MAX_BYTES) ?? '';
-        await atomicWrite(path.resolve(root, logRef), Buffer.concat([Buffer.from(existing, 'utf8'),
-          ...appended.map(line)]));
+      for (const id of [...dirty].sort()) {
+        const target = path.resolve(root, refs(planKey).task(id));
+        if (files.get(id).size === 0) await rm(target, { force: true });
+        else await atomicWrite(target, Buffer.concat([...files.get(id).values()].sort((l, r) => l.sequence - r.sequence).map(line)));
       }
       if (summaryChanged) await atomicWrite(path.resolve(root, summaryRef), line(summary));
+      if (appended.length > 0) await appendHistory(root, logRef, lastSequence, appended);
       return { witnessSet: writtenWitness, summary: summaryChanged ? summary : previous, appended: added,
         gone: appended.length - added };
     });

@@ -203,7 +203,7 @@ import {
 import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
 import { buildDeclarationRow, declaredPaths, proposeFromText, resolveDeclaredRanges } from './todo-declaration.mjs';
 import { anchorsOf, claimsOf, judgeTask, neededAnchors, rangeIndex, relationView } from './todo-judgment.mjs';
-import { readTodoRelations, readTodoRelationSummary, transactTodoRelations } from './todo-relation-store.mjs';
+import { readTodoRelationSummary, readTodoTaskRelations, transactTodoRelations } from './todo-relation-store.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -1376,17 +1376,17 @@ async function startTask({
 }
 
 /**
- * a5c: the open function-level relations of one task, for `todo start` and `todo show` (ADR 0204 §5). The plan's one summary
- * file says whether there are any (no verification, no sensor, no git, ADR 0203); only then is the log read for this task.
+ * a5c/a5d: the open function-level relations of one task, for `todo start` and `todo show` (ADR 0204 §5). One call reads the
+ * plan's summary and this task's own small file, never the history (ADR 0203, a4c).
  * → null when the plan has none (the field is then left out), else `{open: [relationView], plan_relation_count, unresolved_count,
  * head_sha}`; an unreadable record is named, never refused: an unknown state is not dangerous.
  */
 async function taskRelations({ repoRoot, planKey, taskId }) {
   try {
-    const summary = await readTodoRelationSummary({ repoRoot, planKey });
-    if (summary === null || summary.relation_count === 0) return null;
-    return { open: (await readTodoRelations({ repoRoot, planKey, taskId })).map((relation) => relationView(taskId, relation)),
-      plan_relation_count: summary.relation_count, unresolved_count: summary.unresolved_count, head_sha: summary.head_sha };
+    const read = await readTodoTaskRelations({ repoRoot, planKey, taskId });
+    if (read === null) return null;
+    return { open: read.open.map((relation) => relationView(taskId, relation)),
+      plan_relation_count: read.relation_count, unresolved_count: read.unresolved_count, head_sha: read.head_sha };
   } catch (error) {
     return { unreadable: error?.detail?.reason ?? error?.code ?? 'relations_unreadable' };
   }
