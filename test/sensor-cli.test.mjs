@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +42,7 @@ test('lattice sensor init/syncは同梱sensorだけでtyped resultを返す', as
   }
 });
 
-test('g2: sensor init keeps .lattice/ out of a git work tree\'s status', async (t) => {
+test('g2: sensor init keeps the index (.lattice/sensor/) out of a git work tree\'s status, not .lattice/todo', async (t) => {
   const repo = await mkdtemp(path.join(tmpdir(), 'lattice-sensor-exclude-'));
   t.after(() => rm(repo, { recursive: true, force: true }));
   execFileSync('git', ['init', '--quiet'], { cwd: repo });
@@ -52,9 +52,13 @@ test('g2: sensor init keeps .lattice/ out of a git work tree\'s status', async (
     assert.equal(result.status, 0, result.stderr);
   }
   const status = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: repo, encoding: 'utf8' });
-  assert.equal(status.includes('.lattice'), false, status);
+  assert.equal(status.includes('.lattice/sensor'), false, status);
   const exclude = await readFile(path.join(repo, '.git', 'info', 'exclude'), 'utf8');
-  assert.equal(exclude.split('\n').filter((line) => line === '.lattice/').length, 1);
+  assert.equal(exclude.split('\n').filter((line) => line === '.lattice/sensor/').length, 1);
+  // the rest of .lattice (the todo store) stays addable
+  await mkdir(path.join(repo, '.lattice', 'todo'), { recursive: true });
+  await writeFile(path.join(repo, '.lattice', 'todo', 'x.json'), '{}\n');
+  execFileSync('git', ['add', '.lattice/todo'], { cwd: repo });
 });
 
 test('lattice sensorは未知commandをtyped usage errorで拒否する', () => {
