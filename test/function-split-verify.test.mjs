@@ -75,6 +75,17 @@ test('b3: a clean cut passes behaviour, tests and fresh; ranges and existed_at_b
   assert.equal(out.base, (await verifyFunctionSplit({ repoRoot: root, commit, target, map })).base);
 });
 
+test('b3: ranges and unresolved anchors are never truncated (a lost row could hide an overlap)', async (t) => {
+  const { root, commitOn } = await repo(t);
+  const many = Array.from({ length: 70 }, (_, i) => `function f${i}() { return ${i}; }`).join('\n');
+  const commit = await commitOn('many', { 'src/lib.mjs': `${CUT}${many}\n` });
+  const names = Array.from({ length: 70 }, (_, i) => `f${i}`);
+  const anchors = [...names, ...names.map((name) => `${name}x`)].map((symbol) => ({ task_id: 'u', path: 'src/lib.mjs', symbol }));
+  const out = await verifyFunctionSplit({ repoRoot: root, commit, target, map, anchors });
+  assert.equal(out.ranges.filter(({ symbol }) => /^f\d+$/u.test(symbol)).length, 70);
+  assert.equal(out.anchors_unresolved.length, 70);
+});
+
 test('b3: lost export, missing map entry and a failing test each fail their own condition', async (t) => {
   const { root, commitOn } = await repo(t);
   const lost = await commitOn('lost', { 'src/lib.mjs': CUT.replace('export function work', 'function work') });

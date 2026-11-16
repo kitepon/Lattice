@@ -342,8 +342,9 @@ function report({ baseSha, commitSha, target, map, anchors, baseSeen, state, ver
     fresh: resolved === null
       ? { passed: false, unresolved: [], detail: `worktree_failed:${cause ?? 'not_observed'}` }
       : { passed: unresolved.length === 0, unresolved: cap(unresolved) },
-    ranges: cap(ranges),
-    anchors_unresolved: cap(anchorsUnresolved),
+    // never capped: Plan/lifecycle's overlap check reads every row, and a lost row could turn an overlap into a pass.
+    ranges,
+    anchors_unresolved: anchorsUnresolved,
     map: mapOut,
   };
 }
