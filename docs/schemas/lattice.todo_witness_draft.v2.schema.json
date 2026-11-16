@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kitepon/Lattice/blob/main/docs/schemas/lattice.todo_witness_draft.v2.schema.json",
   "title": "lattice.todo_witness_draft.v2",
-  "description": "What a seat writes to declare, per ToDo, which repo files it owns, reads and writes. `lattice todo independence witness scaffold --plan <key> --input <draft>` turns it into the witness set (lattice.todo_witness_set.v5) that `independence compile` reads, adding what a seat cannot write by hand: fresh affected-test observations, the sensor query wiring and the self-digest. Start from `lattice todo independence witness scaffold --template --plan <key>`.",
+  "description": "What a seat writes to declare, per ToDo, which repo files it owns, reads and writes. `lattice todo independence witness scaffold --plan <key> --input <draft>` turns it into the witness set (lattice.todo_witness_set.v5, or v6 when a task declares read_anchors) that `independence compile` reads, adding what a seat cannot write by hand: fresh affected-test observations, the sensor query wiring and the self-digest. Start from `lattice todo independence witness scaffold --template --plan <key>`.",
   "$comment": "v1 is still accepted; it allows only string `owns`. Include every task that is not done yet (ready, blocked and later ones), not only the current ready ones.",
   "type": "object",
   "required": ["schema", "project_id", "plan_key", "capacity", "tasks"],
@@ -70,7 +70,19 @@
         },
         "concern_anchors": {
           "type": "array",
-          "description": "Symbols this task touches inside a contested file it owns or writes; used only to bind seam proposals.",
+          "description": "Functions this task changes inside a file it owns or writes (ADR 0204: `--owns path#function`); also used to bind seam proposals.",
+          "items": {
+            "type": "object",
+            "required": ["within", "symbols"],
+            "properties": {
+              "within": { "$ref": "#/$defs/repoRelativePath" },
+              "symbols": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/identifier" } }
+            }
+          }
+        },
+        "read_anchors": {
+          "type": "array",
+          "description": "Functions this task reads inside a file it lists under reads (ADR 0204: `--reads path#function`); `within` must be one of the task's reads. A set that uses it is written as lattice.todo_witness_set.v6.",
           "items": {
             "type": "object",
             "required": ["within", "symbols"],

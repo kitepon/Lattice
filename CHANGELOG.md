@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 工程を足すときに、その工程が変える関数を一度だけ宣言できる（ADR 0204、a3b）。`todo add --owns src/a.mjs#foo,src/b.mjs --reads src/c.mjs#bar` と `todo independence witness declare` の同じフラグ。`path#関数` は最初の `#` で分け、ファイルは今までどおり所有・読みの対象に入り、関数は `owns` 側が `concern_anchors`、`reads` 側が新しい `read_anchors` に入る。名前はコードグラフの Resolve（a3）で全部まとめて引き、1つでも解決できなければその工程の行は書かず、近い名前を添えて返す。コマンドは失敗させず（終了コード0）、`todo add` は工程を足したままにする。結果は `lattice.todo_task_add_result.v2` / `lattice.todo_witness_declare_result.v2` で、`declaration: {written, resolved, unresolved, malformed}` を持つ。種の無い `todo add` は、タイトルと設計メモにある識別子のうちグラフにある名前を `declaration.proposed` で提案する（記録はしない）。`read_anchors` を使う計画だけ witness set が `lattice.todo_witness_set.v6` になり、使わない計画は v5 のまま。コミットの無い Store（コードの木が無い）では関数は確かめられないので書かない。関数同士の衝突の比較と記録は a5、計画入力（`tasks[].touches`）は別の工程。ホストへの変更：有り（`read_anchors` を使う計画だけ witness set が v6 になり、この版より古い席はそれを読めない。使わない計画は変わらない）。実装：アリス。
 - コードグラフの Resolve（ADR 0204、a3）：`{path, symbol}` から、その関数の行範囲を引く。`src/sensor-resolve.mjs`（`parseAnchor`、`resolveAnchors`、`proposeSymbols`）と、センサーの `lattice-sensor resolve`（標準入出力は JSON）。完全一致だけで、近い別の名前へは解決しない。外れたら `unresolved` に同じファイルの近い名前と、同名の別ファイルの定義を添える。同じファイルに複数の定義（オーバーロード、別のクラスの同名メソッド）があれば全ての範囲を返し、別の定義のときは `ambiguous` で知らせる。タイトルと設計メモのコードらしい識別子から、グラフにある名前を提案する（記録はしない）。5件で約0.2秒。呼ぶのはアリスの宣言とcompileで、まだ呼び出し元は無い。ホストへの変更：無し。実装：ネヴェ。
 
 ## 0.108.0 — 2026-11-16

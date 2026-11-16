@@ -43,7 +43,7 @@
 - 工程表の表示用読取（CLIのJSONだけを読むホスト向け、0.85.5）: `todo display read --json`が
   `lattice.todo_display_read_result.v1`、`todo display source --json`が`lattice.todo_store_display_source.v1`を返す。
   正本は[store display read](architecture/dfd-store-display-read.md)。
-- 1件の工程の追加（0.86.0）: `todo add --plan <key> --task <id> --title <text> …`が`lattice.todo_task_add_result.v1`を返す。
+- 1件の工程の追加（0.86.0）: `todo add --plan <key> --task <id> --title <text> …`が`lattice.todo_task_add_result.v2`を返す（v2は`declaration`を足した版）。
   閉じるのは`todo retire`。`plan show`の各taskに`design_memo`。正本は[plan revise](architecture/dfd-plan-revise.md)のa39。
   旧schemaは既存storeの読取・移行互換としてだけ維持する。
 
