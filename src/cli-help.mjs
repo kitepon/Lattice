@@ -191,6 +191,8 @@ Write commands:
   seam-proposal compile --plan <key>  # 並列可否記録と実sensorからseam提案を記録する
   seam-proposal apply --plan <key>  # 記録済み提案を隔離worktreeで適用し五条件で採否を決める
   seam-proposal land --plan <key> --names <file>  # 採用された変換を本ツリーへ着地させる
+  function-split verify --plan <key> --task <id> --commit <sha> [--base <sha>] --map <task>=<path#function>[,...]  # 関数分割工程S: 作業者の切り出しを五条件で検査して記録する
+  function-split decline --plan <key> --task <id> --reason <text>  # 分けない: Sを閉じ、先に着手した工程の後ろへ他をつなぐ
   split --plan <key> --input <file>  # in-progress ToDoを抽出群とpending残差へrevisionする
   revise --plan <key> --input <file>
   revise-phase --plan <key> --input <file>
@@ -364,6 +366,12 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo structure': 'todo structure --schema --json | [--plan <key>] --json | input --plan <key> --input <file> [--dry-run --json] | compile --plan <key> --input <file> | realize --plan <key> --task <id> (--planned|--realized <actual-structure.json>) [--commit <HEAD|sha>]... | realize --plan <key> --task <id> --input <full-realization.json> | finalize --plan <key> --json',
   'todo seam-profile': 'todo seam-profile --plan <key> --file <path> [--json]',
   'todo seam-proposal': 'todo seam-proposal [--plan <key>] [--json] | compile --plan <key>',
+  'todo function-split': [
+    'todo function-split verify --plan <key> --task <id> --commit <sha> [--base <sha>] --map <task>=<path#function>[,...]',
+    'todo function-split decline --plan <key> --task <id> --reason <text>',
+  ].join('\n       lattice '),
+  'todo function-split verify': 'todo function-split verify --plan <key> --task <id> --commit <sha> [--base <sha>] --map <task>=<path#function>[,...]  # ADR 0205: behaviour, tests, fresh, overlap, parallel on the commit',
+  'todo function-split decline': 'todo function-split decline --plan <key> --task <id> --reason <text>  # 分割しない（ADR 0205）',
   'todo verify': 'todo verify [--plan <key>] [--json]',
   'todo repair-eol': 'todo repair-eol --json',
   'todo snapshot': 'todo snapshot --rebuild --plan <key>',

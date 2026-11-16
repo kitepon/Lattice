@@ -40,6 +40,7 @@ const COMMANDS = [
   ['event', 'verify'],
   ['todo', 'status'], ['todo', 'bindings'], ['todo', 'independence'],
   ['todo', 'structure'],
+  ['todo', 'function-split'],
   ['todo', 'seam-proposal'], ['todo', 'seam-profile'], ['todo', 'verify'], ['todo', 'snapshot'],
   ['todo', 'gantt'], ['todo', 'gantt', 'serve'],
   ['todo', 'dashboard'], ['todo', 'dashboard', 'adopt'],

@@ -12,9 +12,6 @@ import {
   writeTodoWitnessSet,
 } from './todo-store.mjs';
 
-// shortcut: re-exported so the product gate reaches the split record until b5's CLI imports it; drop this line then.
-export { readTodoSplit, recordTodoSplit } from './todo-split-store.mjs';
-
 const ROOT_REF = '.lattice/todo/relations';
 const TASK_FILE_MAX_BYTES = 4_194_304;
 const LOG_SEGMENT_BYTES = 4_194_304;

@@ -16,6 +16,8 @@ export function splitGuide({ planKey, taskId, mark }) {
   const base = `lattice todo function-split`;
   return [
     `Tasks ${mark.members.join(', ')} all change ${target}. You decide whether to split it so each can change its own function.`,
+    'Before you cut: verify needs at least one node-runnable test that statically imports a file the cut changes (otherwise tests fails with no_test_reaches_function): check one exists, and add one in the cut commit if none does.'
+      + ' A cut whose changed code is not JS/TS fails behaviour (export_surface_unobserved): then decline without cutting.',
     `Split: write the cut on a branch from main (each member gets its own function), push the branch, then run`
       + ` \`${base} verify --plan ${planKey} --task ${taskId} --commit <sha> --map ${mark.members.map((id) => `${id}=<path#function>`).join(',')}\``
       + ' (map the members whose function changed; an unmapped member keeps its declaration).'

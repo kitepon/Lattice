@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 関数を分ける工程の検証・見送り・完了（ADR 0205、b5、アリス）。ホストへの変更：無し（新しい命令だけ）。`lattice todo function-split verify --plan <key> --task <S> --commit <sha> [--base <sha>] --map <task>=<path#function>,...` が、作業者の切り出しを五つの条件（振る舞い、テスト、新しい関数が引ける、同じ行を書く担当が残らない、並列の段数が減る）で調べ、結果を S に記録する。通れば PR（`[skip ci]` 付き）をマージして `todo done S`、通らなければ自動で「分けない」に再編する。`function-split decline --reason` も同じ再編：S を閉じ、先に着手していた工程を、まだ着手していない他の工程の前工程にし、各工程に理由を書く。`todo done S` は、検証が通った記録が無ければ断り、割り当てた各メンバーの宣言の関数を新しい関数に書き換えて衝突を判定し直す（新しい関数がまだ main に無ければ断る。マージして同期してからもう一度）。S の手順書に、検証の前提を二つ足した。
 - 二つの担当が同じ関数を書くとき、あとから着手する側を止めて、関数を分ける工程を足す（ADR 0205、b4、アリス）。ホストへの変更：有り（最初の分割を書く改訂で計画が v9 になる。席を上げてから）。`todo start T` が、T の開いた関係に「T も書き、別の担当の着手中の工程 U も書く関数」を見つけると、U の担当の分割工程 S（`function_split` の印つき、S は U と T の前工程）を一回の改訂で足し、T は未着手のまま `lattice.todo_start_split_result.v1` を返す。その関数にすでに開いた S があれば T はそこに加わる。読み書き、同じ担当、`--override-reason`、conversation の計画は今までどおり。S の `todo start` は、メンバー、切り出しの大きさ（`cut_cost`）、やること（分割して verify、`[skip ci]` 付きの PR、または decline）を結果に載せる。S は enforced の関門 1〜3 を通らない。
 - Store：関数を分ける工程の印と検証の記録（ADR 0205 b2、ルドミラ）。ホストへの変更：有り（新しい plan の版と記録の登録）。計画の工程に `function_split`（`lattice.todo_plan.v9`、無い時は `null`）を持てるようにし、`.lattice/todo/splits/<plan_key>/<task_id>.json` に検証の結果（`lattice.todo_split_record.v1`）を置く。`recordTodoSplit` / `readTodoSplit`（鍵は書く間だけ、読みは鍵なし）。最初の分割を書く改訂までは v8 のまま。古い席は v9 の計画を読むと `UNSUPPORTED_SCHEMA`（アップグレード案内）になり、**その Store の全ての計画が読めなくなる**（BellTeam の写しで確認）。分割を書く前に、全ての席を上げる。
 
