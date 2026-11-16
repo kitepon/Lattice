@@ -4,11 +4,34 @@
 
 - Store：関数単位の競合関係の記録（ADR 0204 a4、ルドミラ）。ホストへの変更：有り（新しい記録・witness の版の登録）。`.lattice/todo/relations/<plan_key>/{log.jsonl,summary.json}` に、機械が追記するだけの関係を持つ（工程の組とパスごとに開いた関係は一つ。同じ内容の再追記は何も起こさず、内容が変われば古い方を閉じて置き換える。完了・取り下げの工程の関係は Store が自分で閉じる）。版ごとではなく `plan_key` ごとなので、`todo add` の版が増えても写さない。`transactTodoRelations` が witness set・ログ・要約を一つの鍵の下で順に書くので、同時の二つの追加がお互いを見落とさない。status などが読むのは要約（開いている関係の数と新しい20件、未解決の数、`head_sha`）だけ。読み手の登録に `todo_relation_event`、`todo_relation_summary`、`todo_witness_set`（今は5）を足した：新しい版のファイルは `witness_set_invalid` ではなく「より新しい Lattice が要る」と断る。`relations/` は新しいディレクトリなので古い席は無視するが、witness set v6 は古い席が読めない。アリスの側が v6 を書くのは `read_anchors` を使う時だけ（別PR）。
 - `lattice sensor init|sync`：git の作業木なら、先に `.lattice/` を `.git/info/exclude` へ足す。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
+- 工程を足すときに、その工程が変える関数を一度だけ宣言できる（ADR 0204、a3b）。`todo add --owns src/a.mjs#foo,src/b.mjs --reads src/c.mjs#bar` と `todo independence witness declare` の同じフラグ。`path#関数` は最初の `#` で分け、ファイルは今までどおり所有・読みの対象に入り、関数は `owns` 側が `concern_anchors`、`reads` 側が新しい `read_anchors` に入る。名前はコードグラフの Resolve（a3）で全部まとめて引き、1つでも解決できなければその工程の行は書かず、近い名前を添えて返す。コマンドは失敗させず（終了コード0）、`todo add` は工程を足したままにする。結果は `lattice.todo_task_add_result.v2` / `lattice.todo_witness_declare_result.v2` で、`declaration: {written, resolved, unresolved, malformed}` を持つ。種の無い `todo add` は、タイトルと設計メモにある識別子のうちグラフにある名前を `declaration.proposed` で提案する（記録はしない）。`read_anchors` を使う計画だけ witness set が `lattice.todo_witness_set.v6` になり、使わない計画は v5 のまま。コミットの無い Store（コードの木が無い）では関数は確かめられないので書かない。関数同士の衝突の比較と記録は a5、計画入力（`tasks[].touches`）は別の工程。ホストへの変更：有り（`read_anchors` を使う計画だけ witness set が v6 になり、この版より古い席はそれを読めない。使わない計画は変わらない）。実装：アリス。
+- コードグラフの Touched（ADR 0204、a6）：コミットの範囲 `<from>..<to>` の差分のhunkを、変えた関数へ写す。`src/sensor-touched.mjs`（`touchedFunctions`）、センサーの `lattice-sensor touched`、公開の `lattice sensor touched <from> [<to>] --json`。hunkの新しい側の行が重なる、いちばん内側の関数を返す（`Bar.baz` の中の変更は `Bar` ではなく `Bar.baz`）。関数に入らない変更（import、トップ階層、消えた関数、改名、バイナリ、索引にないファイル）は捨てずに `unattributed` へ理由つきで返し、ファイル単位の変更として扱う。`<to>` がHEADで作業木がcleanなら維持された索引、そうでなければ `<to>` の使い捨てworktreeで新しく索引する（未commitの状態は見ない、拒否しない）。ホストへの変更：無し。実装：ネヴェ。
+
+- コードグラフの Resolve（ADR 0204、a3）：`{path, symbol}` から、その関数の行範囲を引く。`src/sensor-resolve.mjs`（`parseAnchor`、`resolveAnchors`、`proposeSymbols`）と、センサーの `lattice-sensor resolve`（標準入出力は JSON）。完全一致だけで、近い別の名前へは解決しない。外れたら `unresolved` に同じファイルの近い名前と、同名の別ファイルの定義を添える。同じファイルに複数の定義（オーバーロード、別のクラスの同名メソッド）があれば全ての範囲を返し、別の定義のときは `ambiguous` で知らせる。タイトルと設計メモのコードらしい識別子から、グラフにある名前を提案する（記録はしない）。5件で約0.2秒。呼ぶのはアリスの宣言とcompileで、まだ呼び出し元は無い。ホストへの変更：無し。実装：ネヴェ。
+
+## 0.108.0 — 2026-11-16
+
+工程が9つ以上の計画と、計画の改訂のあとでも、競合の判定の記録が消えずに残るようにした版。判定の観測は、毎回索引を作り直さずに維持されている索引を使う。ホストへの変更：有り（`INDEPENDENCE_READY_UNDECLARED`の廃止、9件以上では`wave_plan`が null）。
+
+- 宣言した工程が9つ以上でも `independence compile` / `witness declare` が通る。これまでは 9 つ目で `INDEPENDENCE_COMPILE_FAILED` / `NODE_LIMIT_EXCEEDED`（波の最小数を厳密に探す上限が 8）になり、記録が書かれず、enforced では全工程の着手が断られた。上限を超えたら波の計画（`wave_plan`）だけを省き（`outcome: compiled` で `wave_plan: null`）、衝突・先行・境界・判定は全て書く。衝突判定は変えない。実行系（`run start`）の上限 8 は変えない。
+- 計画を改訂（`todo add`、`predecessor`、`plan revise` など）しても、宣言済みで変わらない工程の独立の記録が残る。これまでは改訂のたびに新しい版の記録が無くなり、enforced の計画では全工程の着手が断られ、`independence compile` も「readyの未宣言」を理由に拒んでいた。改訂のあと宣言を新しい版へ写して、宣言済みの行だけで再計算する（失敗しても改訂は戻さず、警告1行）。新しく足した宣言前の工程は、その工程だけが未知で、その工程だけが断られる。それを含む組は、宣言するまで独立と判定しない（ADR 0127 決定6のまま）。`INDEPENDENCE_READY_UNDECLARED` は無くなり、`witness declare` は宣言済みの行でいつも compile する（`waiting_for` は残る）。
+- 独立の compile の観測が、維持されている索引を使うようにした（ADR 0204 の Observe、a2）。作業木が HEAD と同じ内容（`.lattice/` を除く）なら、その木の `.lattice/sensor` を増分 `sensor sync` して問い合わせる（索引が無い最初の1回だけ `sensor init`）。BellTeam 規模でこれまで毎回 約11秒かかった新規の全索引と使い捨て worktree が要らなくなる。未 commit の変更がある木は、これまでどおり HEAD の使い捨て worktree で新しく索引して観測し（拒否はしない）、未 commit の状態は観測しない。結果の形は変えない。ホストへの変更：無し。実装：ネヴェ。
+- 実装：アリス（PR #210 g4、#212 g5）、ネヴェ（PR #215 a2）。
+
+## 0.107.0 — 2026-11-16
+
+コードを触らない工程を強制で止めず、閉じる時の証拠を CLI からも外し、コードの工程表で履歴がつながるようにした版。ホストへの変更：有り（`chart set --no-code-lane`、`done --evidence`と`phase accept|reject --evidence`は別名、門4の削除、`sensor init`が`.git/info/exclude`へ`.lattice/sensor/`を書く）。
+
+- `lattice sensor init|sync`：git の作業木なら、先に `.lattice/sensor/`（索引）を `.git/info/exclude` へ足す。`.lattice/` 全体は除外しない（`.lattice/todo` を `git add` できなくなるため）。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
+- コードを触らない工程を enforced で止めない。ホストが `lattice chart set --no-code-lane <lane>[,<lane>...]`（空文字で解除）を工程表ごとに一度だけ設定すると、その lane の工程は着手の関門1〜3を受けない（宣言した空の境界として数え、衝突せず古くもならない）。コードの工程の関門は変わらない。Lattice は lane の名前を持たない。`chart set` の結果に `no_code_lanes` が加わる。
+- 工程表の設定 `.lattice/chart.json` に、省略できる `no_code_lanes`（コードに触れない lane の並び、昇順・重複なし、既定は空）を足した。ホストへの変更：有り（工程表の設定の形）。Store は `readTodoChartMeta` に常に `no_code_lanes` を返し（欠けた旧ファイルは `[]`）、`writeTodoChartMeta` の patch で一覧ごと置き換える。空にするとキーごと消すので、一度も設定しない工程表の `chart.json` は今までと同じ形のまま。**設定した工程表だけ**、この版より古い席は `chart_meta_invalid` で読めない。その工程表を読む席を先に上げる。設定する CLI（`chart set --no-code-lane`）と、enforced の門1〜3で飛ばす処理は別PR（g3、アリス）。
 - `lattice chart repo sync`：最初の取得だけ `--depth=1`、2回目からは深さを付けずに取る。これまでは毎回 `--depth=1` で、新しい先頭がそのたびに浅い根になり、前の先頭が祖先でなくなった。そのせいで enforced の門4が、マージ済みのコミットを「今の先頭でない」と断り、`todo structure input` は `baseline_not_ancestor` になっていた。fast-forward だけで動く点は変えない。
 - 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。
 - `phase accept` / `phase reject` は証拠も必須slotも求めず、任意の `--message` だけを取る（`--input` の判断記述子は廃止）。段の `required_evidence_slots` は plan と status の形に残るが、CLI は使わない（plan schema の版上げは別件）。`audit_pending` の次の一手は `accept [--message <text>]` と `reject --reason <text> [--message <text>]`。
 - 外したもの：`todo evidence promote`、`todo evidence anchor`、ADR 0200 の門4（enforced の計画で done に URL か HEAD のコミットを書かせるもの）、`todo verify` の証拠の読み直し（`uncommitted_evidence` はこの版では常に空配列）、phase の結果と `phase status` の `decision_evidence_state`、拒否文の `ENFORCED_DONE_MESSAGE`。旧 event の証拠記述子は読める（移行しない）。
-- 言葉：監査待ち→監査前（まだ監査していないPhase）。工程図の札、`todo status`などの案内文、文書の表記だけが変わる。JSON の欄名（`audit_pending`など）は変えない。
+- Windows：計画の覚え書きの書き込みが、ファイル名の差し替えで一時的な `EPERM`（他のプロセスが一瞬開いている時）に当たると失敗していた。工程の記録と同じく、差し替えを数回やり直す。
+- `sensor init|sync` の除外の行を書けなかった時、git が無い・git の作業木でない時を除いて、黙らずに `LATTICE_SENSOR_EXCLUDE_FAILED` の警告を一行出す。
+- 実装：アリス（PR #204 k4b、#205 g1、#206 と #209 と g6 g2、#211 g3）、ルドミラ（PR #208 g3s、n3w）。
 
 ## 0.106.0 — 2026-11-15
 
@@ -20,6 +43,7 @@
 - 測った値：証拠付きの完了 600 件の工程表で、`todo add`は 12.6 秒→0.56 秒、`status`は 0.53 秒→0.28 秒。
 - 0.105 以前の CLI は、新しい形の完了の記録を読めない。その工程表を読む席を 0.106.0 に上げる。
 - 実装：ルドミラ（PR #202、ADR 0203）。
+- 言葉：監査待ち→監査前（まだ監査していないPhase）。工程図の札、`todo status`などの案内文、文書の表記だけが変わる。JSON の欄名（`audit_pending`など）は変えない。
 
 ## 0.105.0 — 2026-11-15
 

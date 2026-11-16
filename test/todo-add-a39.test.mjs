@@ -55,7 +55,7 @@ test('todo add adds one task with edges and carries every other task state', asy
   const result = success(root, ['todo', 'add', '--plan', 'work', '--task', 'd', '--title', 'D',
     '--phase', 'p1', '--design-memo', 'memo d', '--done-condition', 'd ok',
     '--after', 'a,b', '--before', 'c', '--reason', 'found in review']);
-  assert.equal(result.schema, 'lattice.todo_task_add_result.v1');
+  assert.equal(result.schema, 'lattice.todo_task_add_result.v2');
   assert.deepEqual([result.task_id, result.after, result.before], ['d', ['a', 'b'], ['c']]);
   assert.deepEqual(result.rebound_task_ids, ['b']);
   const member = await readWork(root);

@@ -913,7 +913,7 @@ test('未知の引数はusage failureで終わる', async (context) => {
   }
 });
 
-test('next_ready が witness に無い compile は拒否する', async (context) => {
+test('next_ready が witness に無い compile は、宣言した行だけで通る（g4）', async (context) => {
   const root = await workspace(context);
   const witnessSet = {
     schema: TODO_WITNESS_SET_SCHEMA,
@@ -936,12 +936,9 @@ test('next_ready が witness に無い compile は拒否する', async (context)
   const compiled = runCli(root, [
     'independence', 'compile', '--plan', 'main', '--input', 'witness.json',
   ]);
-  assert.equal(compiled.status, 1, compiled.stderr);
-  const error = parse(compiled.stderr);
-  assert.equal(error.code, 'INDEPENDENCE_READY_UNDECLARED');
-  assert.deepEqual(error.detail.missing_task_ids, ['T2']);
-  // a35: compiling the same set again cannot add T2; the way on is the template route.
-  assert.match(error.detail.next_action, /^Declare T2 in the witness set\. .*scaffold --template --plan main/u);
+  // g4: a ready task nobody declared is unknown for itself only; it no longer stops the compile.
+  assert.equal(compiled.status, 0, compiled.stderr);
+  assert.equal(JSON.parse(compiled.stdout).task_count, 1);
 });
 
 // T1だけを宣言したcompiled記録をstoreへ書く（baseは現在のHEAD）。

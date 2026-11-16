@@ -97,11 +97,9 @@ test('after a revision adds U: mode kept, refusal points at the template, templa
   const status = success(root, ['todo', 'status', '--json']);
   assert.deepEqual(status.coordination.map(({ plan_key: key, mode }) => [key, mode]), [['cf', 'witness']]);
 
-  const refusal = run(root, ['todo', 'independence', 'compile', '--plan', 'cf', '--input', '.lattice/todo/witness/cf.json']);
-  assert.equal(refusal.status, 1, refusal.stdout);
-  const { code, detail } = JSON.parse(refusal.stderr);
-  assert.deepEqual([code, detail.missing_task_ids], ['INDEPENDENCE_READY_UNDECLARED', ['U']]);
-  assert.match(detail.next_action, /Declare U .*scaffold --template --plan cf/u);
+  // g4: the revision carried P and Q's record to the new version; only U is unknown.
+  assert.equal(projection.coverage, 'verified');
+  assert.deepEqual(projection.frontier.unknown.map(({ task_id: id }) => id), ['U']);
 
   const template = success(root, ['todo', 'independence', 'witness', 'scaffold', '--template', '--plan', 'cf']);
   assert.deepEqual(template.capacity, { executors: 2 });

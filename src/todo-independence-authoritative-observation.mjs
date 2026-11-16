@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,31 +41,45 @@ function memoryStream() {
   };
 }
 
-async function initializeSensor(observationRoot) {
+async function runSensor(command, observationRoot) {
   const stdout = memoryStream();
   const stderr = memoryStream();
   const status = await runSensorCli({
-    argv: ['init', observationRoot, '--json'],
+    argv: [command, observationRoot, '--json'],
     stdout: stdout.stream,
     stderr: stderr.stream,
   });
   if (status !== 0) {
     fail('INDEPENDENCE_OBSERVATION_SENSOR_INIT_FAILED', 'observation_sensor_init_failed', {
-      sensor_error: stderr.read(),
+      sensor_command: command, sensor_error: stderr.read(),
     });
   }
 }
 
-/** 共有repoのdirtyな状態を観測せず、current HEADのclean worktreeでsensorを実行する。 */
-export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot, witnessSet } = {}) {
-  if (typeof repoRoot !== 'string' || repoRoot.length === 0
-    || witnessSet === null || typeof witnessSet !== 'object') {
-    fail('INDEPENDENCE_OBSERVATION_INPUT_INVALID', 'observation_input_invalid');
-  }
+/**
+ * a2 (ADR 0204 Observe): 作業木がHEADと同じ内容か。`.lattice/`はsensor索引とstoreが書く場所で、
+ * 索引の対象外なので数えない（storeがtrackedな製品repoでは書込みのたびにdirtyになるため）。
+ */
+function isCleanAtHead(repoRoot, headSha) {
+  return git({ cwd: repoRoot, args: ['rev-parse', '--verify', 'HEAD^{commit}'], operation: 'resolve_head' }) === headSha
+    && git({
+      cwd: repoRoot, operation: 'status_clean_check',
+      args: ['status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).lattice'],
+    }) === '';
+}
 
-  const headSha = git({
-    cwd: repoRoot, args: ['rev-parse', '--verify', 'HEAD^{commit}'], operation: 'resolve_head',
-  });
+/**
+ * Observe (ADR 0204): `work(root)` を、`sha` の内容を持つ索引つきの木の上で実行する。
+ * HEADと同じ内容の作業木なら、維持されている索引を増分syncして使う（無ければ最初の1回だけinit）。同期の前後で
+ * cleanとHEADを確かめ、崩れていたら隔離worktreeへ落とす。`sha` がHEADでない、または作業木がdirtyなら、
+ * `sha` の使い捨てworktreeで新しく索引する。保護するもの: 未commitの状態を観測しないこと。落とす先が出口で、拒否はしない。
+ */
+export async function withObservedTree({ repoRoot, sha }, work) {
+  if (isCleanAtHead(repoRoot, sha)) {
+    await runSensor(existsSync(path.join(repoRoot, '.lattice/sensor/sensor.db')) ? 'sync' : 'init', repoRoot);
+    if (isCleanAtHead(repoRoot, sha)) return work(repoRoot);
+  }
+  const headSha = sha;
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'lattice-independence-observation-'));
   const observationRoot = path.join(temporaryRoot, 'worktree');
   let registered = false;
@@ -86,8 +101,8 @@ export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot
         expected_head_sha: headSha, actual_head_sha: observedHead,
       });
     }
-    await initializeSensor(observationRoot);
-    result = await collectWitnessSensorEvidence({ cwd: observationRoot, witnessSet });
+    await runSensor('init', observationRoot);
+    result = await work(observationRoot);
   } catch (error) {
     operationError = error;
   }
@@ -112,5 +127,20 @@ export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot
     });
   }
   if (operationError !== null) throw operationError;
-  return { head_sha: headSha, sensor_evidence: result };
+  return result;
+}
+
+/** 共有repoのdirtyな状態を観測せず、current HEADの索引（維持されたもの、無ければclean worktree）でsensorを実行する。 */
+export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot, witnessSet } = {}) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0
+    || witnessSet === null || typeof witnessSet !== 'object') {
+    fail('INDEPENDENCE_OBSERVATION_INPUT_INVALID', 'observation_input_invalid');
+  }
+
+  const headSha = git({
+    cwd: repoRoot, args: ['rev-parse', '--verify', 'HEAD^{commit}'], operation: 'resolve_head',
+  });
+  const sensorEvidence = await withObservedTree({ repoRoot, sha: headSha },
+    (root) => collectWitnessSensorEvidence({ cwd: root, witnessSet }));
+  return { head_sha: headSha, sensor_evidence: sensorEvidence };
 }

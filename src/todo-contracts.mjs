@@ -900,8 +900,12 @@ export function validateTodoChartMeta(value) {
   const text = (field) => field === null || (typeof field === 'string' && field.length > 0 && field.length <= 1024);
   const word = (field) => typeof field === 'string' && field.length > 0 && field.length <= 1024;
   const { repo } = value ?? {};
-  return exactRecord(value, ['schema', 'name', 'created_by', 'created_at', 'repo'])
-    && value.schema === TODO_CHART_META_SCHEMA && text(value.name) && text(value.created_by)
+  // no_code_lanes is optional: a file without it stays valid, and an empty list is never written (old readers keep working).
+  const lanes = value?.no_code_lanes;
+  const lanesOk = lanes === undefined || (Array.isArray(lanes) && lanes.every((lane, index) => isTodoIdentifier(lane)
+    && (index === 0 || lanes[index - 1] < lane)));
+  return exactRecord(value, ['schema', 'name', 'created_by', 'created_at', 'repo', ...(lanes === undefined ? [] : ['no_code_lanes'])])
+    && lanesOk && value.schema === TODO_CHART_META_SCHEMA && text(value.name) && text(value.created_by)
     && (value.created_at === null || isStrictTodoTimestamp(value.created_at))
     && (repo === null || (exactRecord(repo, ['url', 'branch', 'accepted_tip'])
       && word(repo.url) && word(repo.branch) && text(repo.accepted_tip)));

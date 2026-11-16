@@ -1,6 +1,6 @@
 {
   "name": "@quolu/lattice",
-  "version": "0.106.0",
+  "version": "0.108.0",
   "description": "Schedulability compiler for multi-agent development: observe real code boundaries, refactor the conflicting seam, recompile the plan for parallel execution",
   "author": {
     "name": "Quo / クオ at kitepon.dev",
@@ -30,6 +30,7 @@
     "docs/schemas/lattice.plan_create_input.v3.schema.json",
     "docs/schemas/lattice.plan_create_input.v4.schema.json",
     "docs/schemas/lattice.plan_create_input.v5.schema.json",
+    "docs/schemas/lattice.plan_create_input.v6.schema.json",
     "docs/schemas/lattice.plan_revise_input.v1.schema.json",
     "docs/schemas/lattice.plan_scope_review.v1.schema.json",
     "docs/schemas/lattice.plan_backchain.v1.schema.json",
@@ -42,6 +43,7 @@
     "docs/schemas/lattice.todo_structure_set.v1.schema.json",
     "docs/schemas/lattice.todo_witness_draft.v2.schema.json",
     "docs/schemas/lattice.todo_witness_set.v5.schema.json",
+    "docs/schemas/lattice.todo_witness_set.v6.schema.json",
     "docs/schemas/lattice.todo_structure_realization.v1.schema.json",
     "docs/schemas/lattice.todo_structure_binding.v1.schema.json",
     "docs/schemas/lattice.run_request.v1.schema.json",

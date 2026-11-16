@@ -3977,7 +3977,7 @@ async function withInitialStoreLocks(stage, currentRoot, callback) {
 /** G5-only initial authoring transaction. Store membership appears by one final directory rename. */
 const CHART_META_REF = '.lattice/chart.json';
 const CHART_META_MAX_BYTES = 65_536;
-const CHART_META_PATCH_KEYS = ['name', 'created_by', 'repo'];
+const CHART_META_PATCH_KEYS = ['name', 'created_by', 'repo', 'no_code_lanes'];
 
 /** The recorded chart identity, or null when `.lattice/chart.json` does not exist. */
 async function readChartMetaRecord(repoRoot) {
@@ -4003,7 +4003,7 @@ async function readChartMetaRecord(repoRoot) {
 }
 
 const chartMetaView = (record) => ({ name: record?.name ?? null, created_by: record?.created_by ?? null,
-  created_at: record?.created_at ?? null, repo: record?.repo ?? null });
+  created_at: record?.created_at ?? null, repo: record?.repo ?? null, no_code_lanes: record?.no_code_lanes ?? [] });
 
 /**
  * a101 K4: chart identity `.lattice/chart.json` (dfd-charts-read). Read only, no lock, no Store needed: a missing file
@@ -4014,7 +4014,7 @@ export async function readTodoChartMeta({ repoRoot = process.cwd() } = {}) {
 }
 
 /**
- * a101 K4: patch {name?, created_by?, repo?} (absent key = keep). `created_by` applies only while unrecorded and
+ * a101 K4: patch {name?, created_by?, repo?, no_code_lanes?} (absent key = keep; `no_code_lanes` replaces the list). `created_by` applies only while unrecorded and
  * `created_at` is stamped when the file is first created: the creator is never overwritten. Works before the first plan
  * (creates `.lattice/`). The read-modify-write holds `.lattice/.chart.write.lock` so two writers cannot both see an
  * unrecorded creator (identified lock, proven-dead recovery). Name rules are the CLI's.
@@ -4046,6 +4046,10 @@ export async function writeTodoChartMeta({ repoRoot = process.cwd(), patch = {} 
         created_at: current === null ? new Date().toISOString() : current.created_at,
         repo: 'repo' in patch ? patch.repo : current?.repo ?? null,
       };
+      // The list is stored only when non-empty; the patch value replaces it (sorted, unique).
+      const lanes = 'no_code_lanes' in patch ? patch.no_code_lanes : current?.no_code_lanes ?? [];
+      if (!Array.isArray(lanes)) throw new TypeError('chart meta patch invalid');
+      if (lanes.length > 0) next.no_code_lanes = 'no_code_lanes' in patch ? [...new Set(lanes)].sort() : lanes;
       if (!validateTodoChartMeta(next)) throw new TypeError('chart meta patch invalid');
       if (current !== null && canonicalizeTodoArtifact(next) === canonicalizeTodoArtifact(current)) {
         return { meta: chartMetaView(current), unchanged: true };
