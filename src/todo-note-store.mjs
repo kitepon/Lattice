@@ -519,7 +519,7 @@ async function readNoteMigrations(repoRoot, planKey, eventVersions) {
     // perf-store: validated once per process while the files are unchanged (todo-version-memo).
     const version = await memoByFileIdentity([planPath, revisionPath, compactPath], async () => {
       // b10: a superseded version keeps compact.json.gz (its revision, minus the plan it repeats) instead of plan.json/revision.json.
-      const compact = await readVersionCompact(versionRoot).catch(() => fail('NOTE_PROJECTION_INVALID',
+      const compact = await readVersionCompact(versionRoot, undefined, { verify: false }).catch(() => fail('NOTE_PROJECTION_INVALID',
         'note_historical_plan_invalid', { plan_version: entry.name }));
       if (compact !== null) {
         if (compact.plan_key !== planKey || compact.plan_version !== entry.name) {
@@ -561,7 +561,8 @@ async function readNoteMigrations(repoRoot, planKey, eventVersions) {
     });
     if (version === null) continue;
     versions.add(entry.name);
-    if (version.migration !== null) migrations.push(structuredClone(version.migration));
+    // The memoized migration is only read (migrationIndex copies it into its own Map), so it is shared, not cloned.
+    if (version.migration !== null) migrations.push(version.migration);
   }
   if ([...eventVersions].some((version) => !versions.has(version))) {
     fail('NOTE_PROJECTION_INVALID', 'note_origin_plan_version_unknown');
