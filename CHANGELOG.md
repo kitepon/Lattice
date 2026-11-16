@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.109.0 — 2026-11-16
+
+工程を足すときに、その工程が変える関数を一度だけ書けるようにし、Lattice がその場で他の未完了の工程と関数単位で比べて競合を記録する版（ADR 0204、段階 A）。同じファイルでも関数が違えば衝突せず、enforced でも両方着手できる。ホストへの変更：有り（`path#function` を `--reads` に書いた計画だけ witness set が v6 になり、0.109.0 より古い席はその計画を読めない。新しい `.lattice/todo/relations/`）。
+
 - 記録された関数単位の衝突を、工程を始める人・読む人に見せる（ADR 0204、a5c）。関係がある計画だけで、`todo start` の結果の `advisory.relations`、`todo show` の `relations`（`{open: [{with, path, overlaps: [{self, other}]}], plan_relation_count, unresolved_count, head_sha}`）、`session-context` の `independence[].function_conflicts`（`{relation_count, unresolved_count, head_sha}`）に出る。読むのは計画ごとの小さな要約ファイル一つで、あるときだけその工程の関係をログから読む。センサーも git も使わず、記録が読めなければ `unreadable` と名指して先へ進む（断らない）。関係の無い計画の結果は変わらない。`todo status --json` は、他の製品が厳密に読む形なので変えない。ホストへの変更：無し（追加の欄だけ）。
 - 関数を宣言した工程どうしは、同じファイルでも関数が違えば、独立性の判定で衝突にしない（ADR 0204、a5b）。`independence compile`（`witness declare` が毎回行うもの）は、宣言された関数の行範囲をコードグラフの Resolve で一度引き、所有パス・読み書き・書き込みの予測の資源を、関数が重なる（同じ関数、行範囲の重なり、片方が書き手）組だけに絞る。enforced の計画の `todo start` もこの結果を読むので、別の関数を触る二つの工程は両方着手できる。`path` だけの宣言はファイル全体を主張するので、これまでどおり衝突する。名前が引けないとき、Resolve が失敗したときは、これまでどおりファイル単位で判定する。ホストへの変更：無し。
 - 工程を宣言すると、その工程と他の未完了の工程が同じ関数を触るかを、その場で判定して関係に残す（ADR 0204、a5）。`todo add --owns/--reads` と `witness declare`（`plan create/revise` の `touches` も同じ経路）で、宣言した工程の組だけを比べる。同じファイルでも関数が違えば衝突せず、同じ関数・行範囲が重なれば衝突、片方が書き手で片方が読み手でも衝突、読み同士は衝突しない。関数を付けない（`path` だけの）宣言はファイル全体を主張するので、そのファイルを書く工程とは常に重なる。重なりは `.lattice/todo/relations/<plan_key>/` に Store の `transactTodoRelations` で、witness の行と同じ一回の書き込みとして残り、結果の `declaration.conflicts`（`[{with, path, overlaps: [{self, other}]}]`）に出る。宣言は衝突で断らない。他の工程の関数の行範囲は、宣言した工程の関数と同じ Resolve の一回で引く。引けない名前はファイル全体の主張として扱い、数を `unresolved_count` に残す。`todo done` / `todo retire` は、関係があるときだけ空の更新を一回行って、終わった工程の関係を閉じる。ホストへの変更：無し（`todo_witness_set` の既知の最新を 6 に上げただけ）。今回やらないこと：独立性 compile（`independence compile`）は、まだ関数を見ずファイル単位で判定する。
@@ -11,6 +15,7 @@
 - コードグラフの Touched（ADR 0204、a6）：コミットの範囲 `<from>..<to>` の差分のhunkを、変えた関数へ写す。`src/sensor-touched.mjs`（`touchedFunctions`）、センサーの `lattice-sensor touched`、公開の `lattice sensor touched <from> [<to>] --json`。hunkの新しい側の行が重なる、いちばん内側の関数を返す（`Bar.baz` の中の変更は `Bar` ではなく `Bar.baz`）。関数に入らない変更（import、トップ階層、消えた関数、改名、バイナリ、索引にないファイル）は捨てずに `unattributed` へ理由つきで返し、ファイル単位の変更として扱う。`<to>` がHEADで作業木がcleanなら維持された索引、そうでなければ `<to>` の使い捨てworktreeで新しく索引する（未commitの状態は見ない、拒否しない）。ホストへの変更：無し。実装：ネヴェ。
 
 - コードグラフの Resolve（ADR 0204、a3）：`{path, symbol}` から、その関数の行範囲を引く。`src/sensor-resolve.mjs`（`parseAnchor`、`resolveAnchors`、`proposeSymbols`）と、センサーの `lattice-sensor resolve`（標準入出力は JSON）。完全一致だけで、近い別の名前へは解決しない。外れたら `unresolved` に同じファイルの近い名前と、同名の別ファイルの定義を添える。同じファイルに複数の定義（オーバーロード、別のクラスの同名メソッド）があれば全ての範囲を返し、別の定義のときは `ambiguous` で知らせる。タイトルと設計メモのコードらしい識別子から、グラフにある名前を提案する（記録はしない）。5件で約0.2秒。呼ぶのはアリスの宣言とcompileで、まだ呼び出し元は無い。ホストへの変更：無し。実装：ネヴェ。
+- 実装：ネヴェ（#215 a2、#217 a3、#218 a6）、アリス（#219 a3b、#220 a3c、#221 a5、#222 a5b、#223 a5c）、ルドミラ（#216 a4、#224 a4c）。受け入れ：BellTeam の写しで `todo add` 1.9〜2.1 秒（関数あり）、判定 1.2 秒、読む側は計画ごとの要約と工程ごとの小さなファイルだけ。
 
 ## 0.108.0 — 2026-11-16
 
