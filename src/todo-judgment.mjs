@@ -133,3 +133,9 @@ export function refineResourcesByFunction({ rows, ranges }) {
       resource_id: `${resource.resource_id}-fn-${digestTodoArtifact({ first, second }).slice(0, 12)}`, todo_ids: [first, second] }));
   });
 }
+
+/** One relation as seen from `taskId`: `{with, path, overlaps: [{self, other}]}` (`self` is this task's side). */
+export function relationView(taskId, { task_a: a, task_b: b, path: where, overlaps }) {
+  return { with: a === taskId ? b : a, path: where,
+    overlaps: overlaps.map(({ a: first, b: second }) => (a === taskId ? { self: first, other: second } : { self: second, other: first })) };
+}

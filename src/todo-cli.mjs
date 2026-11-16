@@ -202,8 +202,8 @@ import {
 } from './todo-note-store.mjs';
 import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
 import { buildDeclarationRow, declaredPaths, proposeFromText, resolveDeclaredRanges } from './todo-declaration.mjs';
-import { anchorsOf, claimsOf, judgeTask, neededAnchors, rangeIndex } from './todo-judgment.mjs';
-import { readTodoRelationSummary, transactTodoRelations } from './todo-relation-store.mjs';
+import { anchorsOf, claimsOf, judgeTask, neededAnchors, rangeIndex, relationView } from './todo-judgment.mjs';
+import { readTodoRelations, readTodoRelationSummary, transactTodoRelations } from './todo-relation-store.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -1348,9 +1348,11 @@ async function startTask({
     };
   }
   // 助言はjournalへ書く前に確定させる。助言はstartを止めない（u03 B1–B6）。
-  const advisory = await startAdvisory({
+  const startAdvice = await startAdvisory({
     repoRoot, store, projection, planKey, taskId: resolvedTaskId,
   });
+  const relations = await taskRelations({ repoRoot, planKey, taskId: resolvedTaskId });
+  const advisory = relations === null ? startAdvice : { ...startAdvice, relations };
   if (member.coordination?.mode === 'enforced' && !(await noCodeTask({ repoRoot, member, taskId: resolvedTaskId }))) {
     enforcedStartGate({ advisory, planKey, taskId: resolvedTaskId, overrideReason });
   }
@@ -1371,6 +1373,23 @@ async function startTask({
   return mutate({ repoRoot, env, planKey, taskId: resolvedTaskId, kind: 'start',
     payload: { override_reason: overrideReason }, advisory, noteContext,
     structureContext, featureContext, externalTasks: store.external_tasks ?? [] });
+}
+
+/**
+ * a5c: the open function-level relations of one task, for `todo start` and `todo show` (ADR 0204 §5). The plan's one summary
+ * file says whether there are any (no verification, no sensor, no git, ADR 0203); only then is the log read for this task.
+ * → null when the plan has none (the field is then left out), else `{open: [relationView], plan_relation_count, unresolved_count,
+ * head_sha}`; an unreadable record is named, never refused: an unknown state is not dangerous.
+ */
+async function taskRelations({ repoRoot, planKey, taskId }) {
+  try {
+    const summary = await readTodoRelationSummary({ repoRoot, planKey });
+    if (summary === null || summary.relation_count === 0) return null;
+    return { open: (await readTodoRelations({ repoRoot, planKey, taskId })).map((relation) => relationView(taskId, relation)),
+      plan_relation_count: summary.relation_count, unresolved_count: summary.unresolved_count, head_sha: summary.head_sha };
+  } catch (error) {
+    return { unreadable: error?.detail?.reason ?? error?.code ?? 'relations_unreadable' };
+  }
 }
 
 /** declare-without-git: HEAD does not resolve (no commit) and the plan's witness set records this task's row. */
@@ -2730,6 +2749,7 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
   const featureContext = await readTaskBackchainContext({
     repoRoot, plan: member.plan, taskId: task.task_id,
   });
+  const relations = await taskRelations({ repoRoot, planKey, taskId: task.task_id });
   const result = {
     schema: featureContext === null ? 'lattice.todo_detail_result.v3' : 'lattice.todo_detail_result.v4',
     project_id: store.project_id,
@@ -2741,6 +2761,7 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
     state,
     prerequisites: taskPrerequisites(store, member, task.task_id),
     note_context: context,
+    ...(relations === null ? {} : { relations }),
     ...(featureContext === null ? {} : { feature_context: featureContext }),
     result_digest: '',
   };
@@ -4106,9 +4127,7 @@ async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) 
     } });
     if (outcome !== null) {
       const { witnessSet, judged, keep, paths } = outcome;
-      declaration.conflicts = judged.relations.map(({ task_a: a, task_b: b, path: where, overlaps }) => ({
-        with: a === taskId ? b : a, path: where, overlaps: overlaps.map(({ a: first, b: second }) => (a === taskId ? [first, second] : [second, first]))
-          .map(([self, other]) => ({ self, other })) }));
+      declaration.conflicts = judged.relations.map((relation) => relationView(taskId, relation));
       const ref = todoWitnessRef(planKey);
       return { row, declaration, keep, scaffolded: {
         schema: 'lattice.todo_witness_scaffold_result.v1', project_id: member.plan.project_id, plan_key: planKey, witness_ref: ref,

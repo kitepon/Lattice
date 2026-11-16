@@ -19,14 +19,16 @@ a3b declaration CLI, a4 Store relations, a5 judgment, a6 Touched). Roles: [funct
 | Reader | Reads | Never reads |
 |---|---|---|
 | `session-context`, `status`, `todo show`, display read, dashboard | per plan: summary `{relation_count, open_relations (bounded), unresolved_count, head_sha}` | sensor index, witness set, full relation log; no recompute; no git per plan |
-| `todo start` | the summary of its plan + its own open relations | the same |
+| `todo start` (a5c) | the summary of its plan; when it has relations, its own open relations from the log (`readTodoRelations({taskId})`) → `advisory.relations` | the same |
+| `todo show` (a5c) | the same → `relations` (`{open: [{with, path, overlaps: [{self, other}]}], plan_relation_count, unresolved_count, head_sha}`; `{unreadable}` when the record cannot be read) | the same |
+| `session-context` (a5c) | the summary → `independence[].function_conflicts {relation_count, unresolved_count, head_sha}` for a plan with ready tasks and relations | the same |
 | `todo independence` (explicit, diagnostic) | relation log, independence artifact | — |
 
 `todo done` / `todo retire` end with one empty `transactTodoRelations` (only when the plan summary says `relation_count > 0`) so a finished task's open relations close; failure is ignored and the plan's next write closes them.
 
 Independence compile (a5b): `independenceCompile` resolves every declared function of the witness rows in one Resolve call (`resolveDeclaredRanges`; no anchors = no call; a failure = no ranges, so every declared function is read as a whole-file claim, as before) and passes the ranges to `compileTodoIndependence` (`functionRanges`). The runtime front-end then calls `refineResources` (`refineResourcesByFunction`, `src/todo-judgment.mjs`) on the resources it built: a shared path resource (`own-…` owned path, `rw-…` read x write, `predicted-ww-…` write overlap of one path) keeps a task pair only when both claim exactly that path and none of them declared functions in it, or `judgeTask` finds an overlap of the resource's own kind (`ww` both write, `rw` one reads). Other pairs and every other resource kind are untouched. `todo start`'s gates read that artifact, so an enforced plan no longer refuses two tasks on different functions of one file.
 
-Not done: `todo start`/the read surfaces do not show relations yet (a5c).
+`todo status --json` is not changed: its wire shape is an exact record read by other products, so a new field there is a version change for a separate decision.
 
 ## State it owns
 
