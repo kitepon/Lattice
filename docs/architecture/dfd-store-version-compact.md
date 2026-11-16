@@ -53,6 +53,8 @@ w1-store-write-slow follows the k4 rule (a read no longer re-verifies history; `
 | `readPlanScopedJournal(repoRoot, ref, {verify})` | every read: per-event canonical re-check and the whole hash chain | `verify: false` (the member's chain on a read, the inherited-coordination walk): sealed-segment digest, per-event schema and event self digest, kind check. `verifyHistory: true` (`todo verify`) restores the canonical re-check and the hash chain |
 | `readNoteMigrations` | one `structuredClone` of every version's task migration per call | the memoized migration is shared; `migrationIndex` only reads it |
 
+w4 (same day): one command reads the Store about a dozen times (`todo add`: 16 `manifest.json` reads). `parseJournalSegment` and `parseCanonicalJsonLine` remember, per process, the bytes they accepted, keyed by sha256 of the bytes, the ref (artifacts) and the mode; a repeat read of the same bytes only runs `JSON.parse`, so callers still get fresh objects. Changed bytes miss the key and are validated again; a failure is never remembered; a strict (`verifyHistory`) read is not satisfied by a read-mode entry.
+
 Still per retained version on every read: one `lstat` (memo identity), one gunzip + parse of `compact.json.gz`, and one entry of the note migration index. Nothing else walks history.
 
 Unchanged: the active version, `manifest.json`, `status`/`session-context`/`display read` shapes, every event schema.

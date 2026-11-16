@@ -235,8 +235,15 @@ function decodeUtf8(bytes, code, reason) {
   catch { fail(code, reason); }
 }
 
+/** w4: artifact bytes this process already accepted at one ref and mode (see `acceptedSegments`); a repeat read only parses. */
+const acceptedArtifacts = new Set();
+
 function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref = null, canonical = true }) {
   const detail = ref === null ? undefined : { ref };
+  // `validate` is fixed by what lives at `ref`; without a ref there is nothing to key it by, so nothing is remembered.
+  const identity = ref === null ? null : `${ref}:${sha256Bytes(bytes)}`;
+  const key = identity === null ? null : `${canonical ? 'strict' : 'read'}:${identity}`;
+  const known = key !== null && (acceptedArtifacts.has(key) || (!canonical && acceptedArtifacts.has(`strict:${identity}`)));
   if (bytes.length === 0 || bytes.length > maxBytes) {
     fail(code, bytes.length > maxBytes ? 'size_limit_exceeded' : reason, detail);
   }
@@ -246,6 +253,7 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
   let value;
   try { value = JSON.parse(body); } catch { fail(code, reason, detail); }
   if (!text.endsWith('\n')) fail(code, reason, detail);
+  if (known) return value;
   if (canonical) {
     let expected;
     try { expected = `${canonicalizeTodoArtifact(value)}\n`; } catch { fail(code, reason, detail); }
@@ -256,6 +264,7 @@ function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref =
     if (newer !== null) failNewer(newer, ref);
     fail(code, 'schema_invalid', detail);
   }
+  if (key !== null) acceptedArtifacts.add(key);
   return value;
 }
 
@@ -278,6 +287,12 @@ async function readSnapshotArtifact(repoRoot, ref) {
   });
 }
 
+/**
+ * w4: segments this process has already accepted, by sha256 of their bytes and the mode. The canonical check and `validateTodoEvent`
+ * are pure functions of the bytes, so a repeat read of the same bytes (one command reads the Store about a dozen times) only parses.
+ */
+const acceptedSegments = new Set();
+
 function parseJournalSegment(bytes, ref = null, { canonical: checkCanonical = true } = {}) {
   const detail = ref === null ? undefined : { ref };
   if (bytes.length === 0 || bytes.length > TODO_LIMITS.journalSegmentBytes) {
@@ -288,9 +303,13 @@ function parseJournalSegment(bytes, ref = null, { canonical: checkCanonical = tr
   if (!text.endsWith('\n') || text.startsWith('\uFEFF')) fail('STORE_CORRUPT', 'journal_byte_contract', detail);
   const lines = text.slice(0, -1).split('\n');
   if (lines.some((line) => line.length === 0)) fail('STORE_CORRUPT', 'journal_truncated_or_empty_line');
-  return lines.map((line) => {
+  const digest = sha256Bytes(bytes);
+  const strictKey = `strict:${digest}`;
+  const known = acceptedSegments.has(strictKey) || (!checkCanonical && acceptedSegments.has(`read:${digest}`));
+  const events = lines.map((line) => {
     let event;
     try { event = JSON.parse(line); } catch { fail('STORE_CORRUPT', 'journal_json_invalid'); }
+    if (known) return event;
     let canonical;
     if (checkCanonical) try { canonical = canonicalizeTodoArtifact(event); } catch { fail('STORE_CORRUPT', 'journal_schema_invalid'); }
     if (checkCanonical && line !== canonical) fail('STORE_CORRUPT', 'journal_non_canonical_or_duplicate_key');
@@ -301,6 +320,8 @@ function parseJournalSegment(bytes, ref = null, { canonical: checkCanonical = tr
     }
     return event;
   });
+  acceptedSegments.add(checkCanonical ? strictKey : `read:${digest}`);
+  return events;
 }
 
 /** Sealed segments of one chain, in order, each checked for name, digest, range and link. */
