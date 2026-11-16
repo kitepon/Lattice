@@ -12,7 +12,7 @@ import {
   writeTodoChartMeta,
 } from '../src/todo-store.mjs';
 
-const EMPTY = { name: null, created_by: null, created_at: null, repo: null };
+const EMPTY = { name: null, created_by: null, created_at: null, repo: null, no_code_lanes: [] };
 
 async function chartDir(context) {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-chart-meta-'));
@@ -78,4 +78,27 @@ test('a malformed chart.json is chart_meta_invalid; a newer one asks for an upgr
   await assert.rejects(writeTodoChartMeta({ repoRoot: root, patch: { name: 'x' } }), { code: 'STORE_INCONSISTENT' });
   await writeFile(path.join(root, '.lattice/chart.json'), '{"schema":"lattice.chart_meta.v2"}\n');
   await assert.rejects(readTodoChartMeta({ repoRoot: root }), (error) => error.code === 'UNSUPPORTED_SCHEMA' && error.detail.reason === 'newer_lattice_value');
+});
+
+test('no_code_lanes: absent reads [], a patch replaces the sorted unique list, empty removes the key, bad values are refused', async (context) => {
+  const root = await chartDir(context);
+  const file = path.join(root, '.lattice/chart.json');
+  const set = (no_code_lanes) => writeTodoChartMeta({ repoRoot: root, patch: { no_code_lanes } });
+  await writeTodoChartMeta({ repoRoot: root, patch: { name: 'c' } });
+  assert.equal('no_code_lanes' in JSON.parse(await readFile(file, 'utf8')), false);
+  assert.deepEqual((await readTodoChartMeta({ repoRoot: root })).no_code_lanes, []);
+  assert.deepEqual((await set([])).unchanged, true);
+
+  assert.deepEqual((await set(['b', 'a', 'b'])).meta.no_code_lanes, ['a', 'b']);
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).no_code_lanes, ['a', 'b']);
+  await writeTodoChartMeta({ repoRoot: root, patch: { name: 'd' } });
+  assert.deepEqual((await readTodoChartMeta({ repoRoot: root })).no_code_lanes, ['a', 'b']);
+  assert.deepEqual((await set(['c'])).meta.no_code_lanes, ['c']);
+  assert.deepEqual((await set([])).meta.no_code_lanes, []);
+  assert.equal('no_code_lanes' in JSON.parse(await readFile(file, 'utf8')), false);
+
+  await assert.rejects(set('a'), TypeError);
+  await assert.rejects(set(['bad lane']), TypeError);
+  await writeFile(file, '{"schema":"lattice.chart_meta.v1","name":null,"created_by":null,"created_at":null,"repo":null,"no_code_lanes":["b","a"]}\n');
+  await assert.rejects(readTodoChartMeta({ repoRoot: root }), { code: 'STORE_INCONSISTENT' });
 });
