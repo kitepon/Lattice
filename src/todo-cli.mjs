@@ -201,7 +201,9 @@ import {
   readTodoPlanNotesForStatus,
 } from './todo-note-store.mjs';
 import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
-import { buildDeclarationRow, proposeFromText } from './todo-declaration.mjs';
+import { buildDeclarationRow, declaredPaths, proposeFromText } from './todo-declaration.mjs';
+import { judgeTask, neededAnchors, rangeIndex } from './todo-judgment.mjs';
+import { readTodoRelationSummary, transactTodoRelations } from './todo-relation-store.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
 import { repairTodoStoreWorktreeEol } from './todo-store-worktree-eol.mjs';
@@ -3902,8 +3904,8 @@ async function witnessScaffold({ repoRoot, planKey, inputRef }) {
   return scaffoldWitnessDraft({ repoRoot, planKey, draft });
 }
 
-/** The scaffold itself: fresh observation, wiring and digest for a checked draft, then the write. */
-async function scaffoldWitnessDraft({ repoRoot, planKey, draft }) {
+/** The fresh observation a witness set carries: the affected tests of every owned path. → `{paths, observationByPath}`. */
+async function observeWitnessDraft({ repoRoot, draft }) {
   const { queries, paths } = buildWitnessObservationQuerySet(draft);
   const collected = await collectSensorEvidence({ cwd: repoRoot, querySet: { queries } });
   const observationByPath = {};
@@ -3920,6 +3922,12 @@ async function scaffoldWitnessDraft({ repoRoot, planKey, draft }) {
       changedFiles: [...entry.data.changedFiles],
     };
   });
+  return { paths, observationByPath };
+}
+
+/** The scaffold itself: fresh observation, wiring and digest for a checked draft, then the write. */
+async function scaffoldWitnessDraft({ repoRoot, planKey, draft }) {
+  const { paths, observationByPath } = await observeWitnessDraft({ repoRoot, draft });
   const { witnessSet, reasons } = buildWitnessSet({ draft, observationByPath });
   if (witnessSet === null) {
     // 理由コードは具体的なのに次の一手が汎用だと、何をどう直すのかが伝わらない。
@@ -4033,24 +4041,79 @@ function declarationNextAction(planKey, taskId, declaration) {
 
 /**
  * One task's witness row from `--owns/--reads/--writes` (paths, or path#function): resolves the functions through the
- * code graph and, when every name resolves, scaffolds the plan's witness set with the row. `scaffolded: null` = not written.
+ * code graph and, when every name resolves, writes the plan's witness set with the row and the task's conflict relations
+ * in one `transactTodoRelations` call (ADR 0204 §3, a5). `scaffolded: null` = not written. Never refused for a conflict:
+ * `conflicts` lists the tasks this one overlaps, `[]` when none.
+ * Resolve and the fresh observation run before the Store lock; if another declaration changed the set meanwhile (a row or
+ * path this attempt did not resolve or observe), the call writes nothing and the attempt runs again (three at most).
  */
 async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) {
-  const { row, declaration } = await buildDeclarationRow({
-    root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes });
-  if (row === null) return { declaration, scaffolded: null };
-  const recorded = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
-  const template = await witnessDraftTemplateFor({ repoRoot, planKey });
-  const keep = new Set([...Object.keys(recorded?.plan_key === planKey ? recorded.manual_witness : {}), taskId]);
-  const draft = { ...template, tasks: Object.fromEntries(Object.entries(template.tasks)
-    .filter(([id]) => keep.has(id)).map(([id, task]) => [id, id === taskId ? row : task])) };
-  if (!validateWitnessDraft(draft)) {
-    const { valid: _valid, reason, path: at, ...keys } = explainWitnessDraft(draft);
-    throw new TodoStoreError('WITNESS_DRAFT_INVALID', reason, undefined, {
-      pointer: at, ...keys, next_action: witnessRoute(planKey) });
+  const store = await readTodoStore({ repoRoot });
+  const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
+  if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
+  const writer = createTodoStoreWriter({ caller: 'todo-relations' });
+  const mine = declaredPaths(flags);
+  const headSha = observable ? currentHeadSha(repoRoot) : null;
+  const peek = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
+  let alsoResolve = neededAnchors(peek?.plan_key === planKey ? peek.manual_witness : {}, taskId, mine);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const { row, declaration, ranges } = await buildDeclarationRow({
+      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve });
+    if (row === null) return { declaration, scaffolded: null };
+    const resolved = new Set([...alsoResolve, ...declaration.resolved].map(({ path: where, symbol }) => `${where}\0${symbol}`));
+    const draftFor = (witnessSet, unfinishedTaskIds) => {
+      const template = witnessDraftTemplate({ projectId: member.plan.project_id, planKey,
+        witnessSet: witnessSet?.plan_key === planKey ? witnessSet : null, taskIds: unfinishedTaskIds });
+      const keep = new Set([...Object.keys(witnessSet?.plan_key === planKey ? witnessSet.manual_witness : {}), taskId]);
+      const draft = { ...template, tasks: Object.fromEntries(Object.entries(template.tasks)
+        .filter(([id]) => keep.has(id)).map(([id, task]) => [id, id === taskId ? row : task])) };
+      if (!validateWitnessDraft(draft)) {
+        const { valid: _valid, reason, path: at, ...keys } = explainWitnessDraft(draft);
+        throw new TodoStoreError('WITNESS_DRAFT_INVALID', reason, undefined, {
+          pointer: at, ...keys, next_action: witnessRoute(planKey) });
+      }
+      return { draft, keep };
+    };
+    const unfinishedNow = member.tasks.filter(({ status }) => !['done', 'retired'].includes(status)).map(({ task_id: id }) => id);
+    const first = draftFor(peek, unfinishedNow);
+    const observed = await observeWitnessDraft({ repoRoot, draft: first.draft });
+    const known = new Set(observed.paths);
+    let outcome = null;
+    let stale = null;
+    await transactTodoRelations({ repoRoot, planKey, writer, update: ({ witnessSet, openRelations, unfinishedTaskIds }) => {
+      const { draft, keep } = draftFor(witnessSet, unfinishedTaskIds);
+      const missingPaths = buildWitnessObservationQuerySet(draft).paths.filter((target) => !known.has(target));
+      const needed = neededAnchors(witnessSet?.plan_key === planKey ? witnessSet.manual_witness : {}, taskId, mine);
+      if (missingPaths.length > 0 || needed.some(({ path: where, symbol }) => !resolved.has(`${where}\0${symbol}`))) {
+        stale = needed;
+        return {};
+      }
+      const built = buildWitnessSet({ draft, observationByPath: observed.observationByPath });
+      if (built.witnessSet === null) {
+        const guidance = selectWitnessScaffoldGuidance(built.reasons);
+        throw new TodoStoreError('WITNESS_SCAFFOLD_INCOMPLETE', 'witness_scaffold_incomplete', undefined, {
+          reasons: built.reasons, guidance, next_action: guidance.next_action });
+      }
+      const judged = judgeTask({ taskId, rows: built.witnessSet.manual_witness, ranges: rangeIndex(ranges), openRelations });
+      outcome = { witnessSet: built.witnessSet, judged, keep, paths: observed.paths };
+      return { witnessSet: built.witnessSet, relations: judged.relations, gone: judged.gone, headSha,
+        unresolvedCount: judged.unresolved };
+    } });
+    if (outcome !== null) {
+      const { witnessSet, judged, keep, paths } = outcome;
+      declaration.conflicts = judged.relations.map(({ task_a: a, task_b: b, path: where, overlaps }) => ({
+        with: a === taskId ? b : a, path: where, overlaps: overlaps.map(({ a: first, b: second }) => (a === taskId ? [first, second] : [second, first]))
+          .map(([self, other]) => ({ self, other })) }));
+      const ref = todoWitnessRef(planKey);
+      return { row, declaration, keep, scaffolded: {
+        schema: 'lattice.todo_witness_scaffold_result.v1', project_id: member.plan.project_id, plan_key: planKey, witness_ref: ref,
+        observed_paths: paths, task_count: Object.keys(witnessSet.manual_witness).length,
+        witness_set_digest: witnessSet.witness_set_digest, next_action: independenceCompileCommand(planKey, ref) } };
+    }
+    alsoResolve = stale;
   }
-  const scaffolded = await scaffoldWitnessDraft({ repoRoot, planKey, draft });
-  return { row, declaration, scaffolded, keep };
+  throw new TodoStoreError('STORE_WRITE_CONFLICT', 'witness_set_changing', undefined, {
+    next_action: `Other declarations on ${planKey} kept changing the witness set; run the same declaration again.` });
 }
 
 /**
@@ -4771,6 +4834,18 @@ function writesTodoStore(argv) {
       return true;
     default: return false;
   }
+}
+
+/**
+ * a5: `todo done` / `todo retire` do not take the relations lock, so a finished task can leave an open relation. One empty
+ * transaction closes it, and only when the plan has relations at all (one small read otherwise). Never fails the command:
+ * the next write of the plan closes it the same way.
+ */
+async function settleRelations({ repoRoot, planKey }) {
+  try {
+    if (((await readTodoRelationSummary({ repoRoot, planKey }))?.relation_count ?? 0) === 0) return;
+    await transactTodoRelations({ repoRoot, planKey, writer: createTodoStoreWriter({ caller: 'todo-relations' }), update: () => ({}) });
+  } catch { /* shortcut: relations left open until the plan's next write; no relation is ever worth failing a done */ }
 }
 
 /** g4: the todo commands that write a new plan version (the plan revise command carries on its own in bin/lattice.mjs). */
@@ -5707,6 +5782,9 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before, env) : written;
     if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     if (!atomicCommit && revisesPlan(argv)) await carryIndependenceAfterRevision({ cwd });
+    if (!atomicCommit && ['done', 'retire'].includes(argv[0]) && typeof result?.plan_key === 'string') {
+      await settleRelations({ repoRoot, planKey: result.plan_key });
+    }
     return 0;
   } catch (error) {
     if (error instanceof TodoStoreError || (typeof error?.code === 'string'

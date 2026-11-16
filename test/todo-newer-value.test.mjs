@@ -3,14 +3,14 @@
 // Damaged records stay STORE_CORRUPT. Diagram: docs/architecture/dfd-store-newer-value.md.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
 import {
-  NEWEST_KNOWN_TODO_SCHEMA, createTodoStoreWriter, initializeTodoStore, readTodoStore,
+  NEWEST_KNOWN_TODO_SCHEMA, createTodoStoreWriter, initializeTodoStore, readTodoStore, readTodoWitnessSet,
 } from '../src/todo-store.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
@@ -120,6 +120,18 @@ test('a higher plan or manifest schema asks for a newer Lattice; an unknown fami
   assertNewer(await refusal(root), '/schema', manifestSchema, manifestRef);
 });
 
+test('a higher witness set schema asks for a newer Lattice instead of reading as invalid', async (context) => {
+  const root = await workspace(context);
+  const ref = '.lattice/todo/witness/main.json';
+  await mkdir(path.join(root, '.lattice/todo/witness'), { recursive: true });
+  const schema = `lattice.todo_witness_set.v${NEWEST_KNOWN_TODO_SCHEMA.todo_witness_set + 1}`;
+  await writeFile(path.join(root, ref), `${canonicalizeTodoArtifact({ schema, plan_key: 'main' })}\n`);
+  await assert.rejects(readTodoWitnessSet({ repoRoot: root, planKey: 'main' }), (error) => {
+    assertNewer(error, '/schema', schema, ref);
+    return true;
+  });
+});
+
 test('the CLI keeps the Store upgrade next_action', async (context) => {
   const root = await workspace(context);
   const ref = `${BASE}/journal/plan-scoped.jsonl`;
@@ -136,7 +148,8 @@ test('the CLI keeps the Store upgrade next_action', async (context) => {
 
 // Registration guard: the newest version each validator accepts equals the reader table.
 test('NEWEST_KNOWN_TODO_SCHEMA matches the newest schema the validators know', async () => {
-  const contracts = await readFile(path.join(ROOT, 'src', 'todo-contracts.mjs'), 'utf8');
+  const contracts = (await Promise.all(['todo-contracts.mjs', 'todo-independence-contracts.mjs']
+    .map((name) => readFile(path.join(ROOT, 'src', name), 'utf8')))).join('\n');
   for (const [family, newest] of Object.entries(NEWEST_KNOWN_TODO_SCHEMA)) {
     const versions = [...contracts.matchAll(new RegExp(`lattice\\.${family}\\.v(\\d+)'`, 'gu'))].map(([, n]) => Number(n));
     assert.equal(Math.max(...versions), newest, family);

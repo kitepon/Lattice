@@ -93,7 +93,7 @@ const CROSS_PLAN_IMPORT_TRANSACTION_SCHEMA = 'lattice.todo_cross_plan_import_tra
 const SOURCE_CUTOVER_BARRIER_REF = `${STORE_ROOT_REF}/source-cutover-recovery.json`;
 const SOURCE_CUTOVER_RECOVERY_CAPABILITY = Symbol('lattice.todo.source-cutover-recovery');
 const STORE_LOCK_HELD = Symbol('lattice.todo.lock-held');
-const WRITER_CALLERS = new Set(['g4-migration', 'g5-authoring']);
+const WRITER_CALLERS = new Set(['g4-migration', 'g5-authoring', 'todo-relations']);
 const TODO_REVISION_SCHEMAS = Object.freeze([
   'lattice.todo_revision.v1', 'lattice.todo_revision.v2',
 ]);
@@ -114,7 +114,7 @@ export class TodoStoreError extends Error {
 
 export function createTodoStoreWriter(options = {}) {
   if (!exactRecord(options, ['caller']) || !WRITER_CALLERS.has(options.caller)) {
-    throw new TypeError('todo store writer caller must be g4-migration or g5-authoring');
+    throw new TypeError('todo store writer caller must be g4-migration, g5-authoring or todo-relations');
   }
   return Object.freeze({ schema: 'lattice.todo_store_writer.v1', caller: options.caller });
 }
@@ -160,8 +160,10 @@ function rejectUnsupportedRevisionSchema(value, { family, supportedSchemas }) {
 
 // Reader registration (newer-value-says-upgrade): the newest schema of each Store record family this
 // reader knows. Bump it in the same diff that teaches the validator a new version.
-export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 2, todo_notice_waits: 1, chart_meta: 1 });
-const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest']]);
+export const NEWEST_KNOWN_TODO_SCHEMA = Object.freeze({ todo_event: 4, todo_plan: 8, todo_manifest: 2, todo_notice_acks: 2, todo_notice_waits: 1, chart_meta: 1,
+  todo_relation_event: 1, todo_relation_summary: 1, todo_witness_set: 6 });
+const NEWER_SCHEMA_FAMILY = new Map([[validateTodoPlan, 'todo_plan'], [validateTodoManifest, 'todo_manifest'],
+  [validateTodoWitnessSet, 'todo_witness_set']]);
 const vocabularyWord = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
 
 function newerSchema(value, family) {
@@ -197,6 +199,8 @@ export function rejectNewerTodoSchema(value, family, ref) {
   const newer = newerSchema(value, family);
   if (newer !== null) failNewer(newer, ref);
 }
+
+export function requireTodoStoreWriter(writer, caller) { requireWriter(writer, caller); }
 
 function requireWriter(writer, caller) {
   if (!exactRecord(writer, ['schema', 'caller']) || writer.schema !== 'lattice.todo_store_writer.v1'
