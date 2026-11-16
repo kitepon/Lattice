@@ -227,6 +227,11 @@ todo startのadvisoryとtodo independenceの投影が、その状況と次の一
 `,
   sensor: `Usage: lattice sensor <init|sync> [path] [--json]
        lattice sensor diff <rootA> <rootB> [options] [--json]
+       lattice sensor resolve <path#symbol>... [--path <root>] [--related] [--json]
+
+resolve: path#symbolの関数の行範囲を、維持されている索引から引く（完全一致のみ）。symbolは区切りを.でつないだ
+  入れ子の名前（Bar.baz）で、pathとsymbolは最初の#で分ける。外れたらunresolvedに同じファイルの近い名前
+  （nearest）と他ファイルの同名（elsewhere）を返し、終了コードは0。--relatedで直接の呼び出し元と先も添える。
 
 diff options:
   --subtree-a <rel>     # A側をこの部分木だけに絞り、prefixを剥がしてから突き合わせる
@@ -414,6 +419,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo migrate': 'todo migrate --input <extraction.json> [--serialization-reviewed] [--json] | --input <extraction.json> --dry-run --json [--serialization-reviewed] | --schema --json',
   'sensor init': 'sensor init [path] [--json]',
   'sensor sync': 'sensor sync [path] [--json]',
+  'sensor resolve': 'sensor resolve <path#symbol>... [--path <root>] [--related] [--json]',
   'sensor diff': 'sensor diff <rootA> <rootB> [--subtree-a <rel>] [--subtree-b <rel>]'
     + ' [--map-a <from>=<to>] [--map-b <from>=<to>] [--limit <n>] [--json]',
   'runtime-errors snapshot': 'runtime-errors snapshot [--after-cursor <n>] [--limit <n>] --json',

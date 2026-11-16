@@ -329,7 +329,7 @@ function withImpliedJson(argv) {
   const implied = (bare && argv.length === 1 && (command === 'status' || command === 'session-context'))
     || (bare && argv.length === 3 && command === 'plan' && sub === 'show')
     || (bare && command === 'sensor' && (sub === 'init' || sub === 'sync') && argv.length <= 3)
-    || (command === 'sensor' && sub === 'diff')
+    || (command === 'sensor' && (sub === 'diff' || sub === 'resolve'))
     || (command === 'plan' && (sub === 'revise' || sub === 'backchain')
       && input > 1 && typeof argv[input + 1] === 'string' && !argv[input + 1].startsWith('-'));
   return implied ? [...argv, '--json'] : argv;
