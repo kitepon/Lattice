@@ -7,6 +7,7 @@ import sensorPackage from '../sensor/package.json' with { type: 'json' };
 import { compareSensorIndexes, parseSensorDiffArgs, SensorDiffError } from './sensor-diff.mjs';
 import { parseAnchor, resolveAnchors, SensorResolveError } from './sensor-resolve.mjs';
 import { spawnSensorCli } from './sensor-runtime.mjs';
+import { touchedFunctions } from './sensor-touched.mjs';
 
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 16 * 1024;
@@ -19,7 +20,8 @@ const USAGE = 'usage: lattice sensor <init|sync> [path] [--json]'
   + ' | lattice sensor diff <rootA> <rootB>'
   + ' [--subtree-a <rel>] [--subtree-b <rel>] [--map-a <from>=<to>] [--map-b <from>=<to>]'
   + ' [--limit <n>] [--json]'
-  + ' | lattice sensor resolve <path#symbol>... [--path <root>] [--related] [--json]';
+  + ' | lattice sensor resolve <path#symbol>... [--path <root>] [--related] [--json]'
+  + ' | lattice sensor touched <from> [<to>] [--path <root>] [--json]';
 
 function usage(stderr) {
   writeJson(stderr, { schema: 'lattice.cli_error.v2', code: 'USAGE', message: USAGE });
@@ -40,6 +42,16 @@ function parse(argv) {
       else anchors.push(words[i]);
     }
     return anchors.length === 0 ? null : { command: 'resolve', resolve: { anchors, root, related } };
+  }
+  if (words[0] === 'touched') {
+    const refs = [];
+    let root = '.';
+    for (let i = 1; i < words.length; i++) {
+      if (words[i] === '--path') { root = words[++i]; if (root === undefined) return null; }
+      else if (words[i].startsWith('-')) return null;
+      else refs.push(words[i]);
+    }
+    return refs.length < 1 || refs.length > 2 ? null : { command: 'touched', touched: { from: refs[0], to: refs[1] ?? 'HEAD', root } };
   }
   if (words[0] === 'diff') {
     const request = parseSensorDiffArgs(words.slice(1));
@@ -98,6 +110,30 @@ async function runResolve({ anchors, root, related }, stdout, stderr) {
       message: 'LatticeSensor resolve failed',
       detail: typed ? { ...error.detail, next_action: error.code === 'RESOLVE_INDEX_MISSING' ? `lattice sensor init ${root} --json` : null }
         : { cause: error?.message ?? 'unknown error' },
+    });
+    return 1;
+  }
+}
+
+/** a6 (ADR 0204 Touched): commit range -> changed symbols. A bad ref or git failure is typed; unattributed hunks are an answer. */
+async function runTouched({ from, to, root }, stdout, stderr) {
+  try {
+    writeJson(stdout, {
+      schema: 'lattice.sensor_touched_result.v1',
+      sensor_version: sensorPackage.version,
+      ...await touchedFunctions({ repoRoot: path.resolve(root), from, to }),
+    });
+    return 0;
+  } catch (error) {
+    const notInitialized = error?.code === 'RESOLVE_INDEX_MISSING';
+    writeJson(stderr, {
+      schema: 'lattice.cli_error.v2',
+      code: notInitialized ? 'LATTICE_SENSOR_NOT_INITIALIZED'
+        : error?.code === 'LATTICE_SENSOR_UNAVAILABLE' ? error.code
+          : error?.code === 'TOUCHED_GIT_FAILED' ? 'LATTICE_SENSOR_TOUCHED_GIT_FAILED' : 'LATTICE_SENSOR_COMMAND_FAILED',
+      message: 'LatticeSensor touched failed',
+      detail: { ...(error?.detail ?? { cause: error?.message ?? 'unknown error' }),
+        next_action: notInitialized ? `lattice sensor init ${root} --json` : null },
     });
     return 1;
   }
@@ -166,6 +202,7 @@ export async function runSensorCli({ argv, stdout, stderr }) {
   if (!request) return usage(stderr);
   if (request.command === 'diff') return runDiff(request.diff, stdout, stderr);
   if (request.command === 'resolve') return runResolve(request.resolve, stdout, stderr);
+  if (request.command === 'touched') return runTouched(request.touched, stdout, stderr);
   if (!existsSync(request.path)) {
     writeJson(stderr, { schema: 'lattice.cli_error.v2', code: 'LATTICE_SENSOR_PATH_MISSING',
       message: `no such project path: ${request.path}`,

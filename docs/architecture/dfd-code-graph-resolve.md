@@ -1,4 +1,4 @@
-# Data flow: Resolve, the code graph's anchor interface (ADR 0204 §4, a3, 2026-11-16)
+# Data flow: Resolve and Touched, the code graph's public interfaces (ADR 0204 §4, a3 and a6, 2026-11-16)
 
 Status: implemented by `src/sensor-resolve.mjs`, `sensor/src/graph/anchor-resolve.ts`, the sensor command `lattice-sensor resolve` (JSON on stdin) and the public `lattice sensor resolve <path#symbol>... [--path <root>] [--related] --json` (`sensor-cli.mjs`; unresolved anchors exit 0, malformed text is listed in `malformed`, no index → `LATTICE_SENSOR_NOT_INITIALIZED` with `next_action: lattice sensor init <root> --json`).
 Owner: Code graph role (Neve). Callers: Plan/lifecycle (declaration, add-time judgment, `chart repo sync` re-resolve).
@@ -15,3 +15,17 @@ Contract and the other interfaces (Observe, Touched): `dfd-function-conflict` (A
 
 State it owns: none. The index (`.lattice/sensor/`) is read through the sensor CLI only; Plan/lifecycle never opens it.
 Cost: one process, about 0.2 s for five anchors on a 1,100-file index (budget: Resolve + overlap for one task ≤ 1 s).
+
+## Touched (a6)
+
+Implemented by `src/sensor-touched.mjs` (`touchedFunctions`, `parseUnifiedZeroDiff`), `sensor/src/graph/touched-symbols.ts`, the sensor
+command `lattice-sensor touched` (JSON on stdin) and the public `lattice sensor touched <from> [<to>] [--path <root>] --json`
+(`lattice.sensor_touched_result.v1`; bad ref → `LATTICE_SENSOR_TOUCHED_GIT_FAILED`). Plan/lifecycle records the answer on the task.
+
+| Owner / step | Input / read | Output / decision | Failure / recovery |
+|---|---|---|---|
+| Code graph: `touchedFunctions({repoRoot, from, to = HEAD})` | `git diff --unified=0 --find-renames <from> <to>` (commits only; never the working tree's uncommitted state) | Hunks `{old_start, old_count, new_start, new_count}` per file with status (modified, added, deleted, renamed, binary) | A ref that does not resolve or a git failure: `SensorResolveError TOUCHED_GIT_FAILED`; an empty diff answers empty |
+| Code graph: Observe for the range end (`withObservedTree`, shared with the independence compile) | `to` sha | `to` is HEAD and the tree is clean (outside `.lattice/`) → incremental `sensor sync` of the maintained index; otherwise a disposable worktree of `to` with a fresh index (removed afterwards). No refusal | Same fallback as the compile observation; the worktree path costs a full index (about 12 s on 1,100 files) and is the rare case |
+| Code graph: attribution (`touchedSymbols`) | Each hunk's NEW-side lines and the index of `to` | The innermost indexed symbols the lines overlap (a hunk inside `Bar.baz` is `Bar.baz`, not `Bar`; a one-line class and method resolve to the method): `touched[] {path, symbol, kind, start_line, end_line}` | Nothing is dropped: `unattributed[] {path, reason, old_range, new_range}` with reason `outside_any_symbol` (imports, top-level code), `partly_outside_any_symbol`, `deleted_outside_any_symbol` (a whole function removed between symbols; `old_range` names the lines), `file_not_indexed` (non-code or unindexed), `file_deleted`, `renamed`, `binary`. Plan/lifecycle reads unattributed as file-level, never as "touched nothing" |
+
+Not decided here: what Plan/lifecycle does with `unattributed` beyond treating it as file-level (a5/C).
