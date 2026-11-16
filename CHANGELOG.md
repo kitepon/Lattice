@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `lattice sensor init|sync`：git の作業木なら、先に `.lattice/` を `.git/info/exclude` へ足す。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
+- `lattice chart repo sync`：最初の取得だけ `--depth=1`、2回目からは深さを付けずに取る。これまでは毎回 `--depth=1` で、新しい先頭がそのたびに浅い根になり、前の先頭が祖先でなくなった。そのせいで enforced の門4が、マージ済みのコミットを「今の先頭でない」と断り、`todo structure input` は `baseline_not_ancestor` になっていた。fast-forward だけで動く点は変えない。
 - 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。
 - `phase accept` / `phase reject` は証拠も必須slotも求めず、任意の `--message` だけを取る（`--input` の判断記述子は廃止）。段の `required_evidence_slots` は plan と status の形に残るが、CLI は使わない（plan schema の版上げは別件）。`audit_pending` の次の一手は `accept [--message <text>]` と `reject --reason <text> [--message <text>]`。
 - 外したもの：`todo evidence promote`、`todo evidence anchor`、ADR 0200 の門4（enforced の計画で done に URL か HEAD のコミットを書かせるもの）、`todo verify` の証拠の読み直し（`uncommitted_evidence` はこの版では常に空配列）、phase の結果と `phase status` の `decision_evidence_state`、拒否文の `ENFORCED_DONE_MESSAGE`。旧 event の証拠記述子は読める（移行しない）。

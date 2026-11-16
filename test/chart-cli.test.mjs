@@ -120,6 +120,31 @@ test('K7: chart repo bind/sync moves only from the accepted tip and never over l
   assert.notEqual(git(chart, 'rev-parse', 'HEAD'), diverged.tip);
 });
 
+test('g1: a later chart repo sync keeps the previous tip an ancestor of the new one', async (context) => {
+  const { base, root, ok } = await workspace(context);
+  const code = { LATTICE_PROJECT_ID: 'code' };
+  const upstream = path.join(base, 'upstream');
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const commit = (message) => {
+    writeFileSync(path.join(upstream, 'a.txt'), message);
+    git(upstream, 'add', 'a.txt');
+    git(upstream, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', message);
+    return git(upstream, 'rev-parse', 'HEAD');
+  };
+  execFileSync('git', ['init', '--quiet', '--initial-branch=main', upstream]);
+  const first = commit('one');
+  ok(['plan', 'create', '--input', 'plan.json'], code);
+  ok(['chart', 'repo', 'bind', '--url', pathToFileURL(upstream).href, '--branch', 'main', '--json'], code);
+  ok(['chart', 'repo', 'sync', '--json'], code);
+  const second = commit('two');
+  commit('three');
+  const synced = ok(['chart', 'repo', 'sync', '--json'], code);
+  const chart = path.join(root, 'code');
+  assert.equal(synced.status, 'synced');
+  git(chart, 'merge-base', '--is-ancestor', first, 'HEAD'); // throws unless ancestor
+  git(chart, 'merge-base', '--is-ancestor', second, 'HEAD');
+});
+
 function writeFileSync(target, text) {
   execFileSync(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(target)}, ${JSON.stringify(text)})`]);
 }
