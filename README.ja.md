@@ -304,7 +304,7 @@ lattice todo start --plan <key> --task <id> --override-reason <reason>
 ```
 
 記録があるのに対象工程が未宣言・失効でも`todo start`は止まらず、`advisory.guidance`で知らせます。
-`independence compile`は`next_ready`がwitnessに無いとき`INDEPENDENCE_READY_UNDECLARED`で拒否します。
+`independence compile`は宣言済みの行だけでcompileします。witnessに無いreadyの工程は、その工程だけが未知になります。
 remainingのA工程は同じwitnessへ含めます。競合の同時起動は助言のままです。
 
 `--serial-confirmed`と`--serialization-reviewed`は古い手順の互換として受理しますが、

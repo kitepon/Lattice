@@ -235,8 +235,8 @@ parallel set. Starting one of them does not require `--parallel-frontier` or
 `--override-reason`. Those flags record intent; they are not gates.
 `--serial-confirmed` and `--serialization-reviewed` are accepted only for compatibility.
 If an independence record exists but the task is undeclared or stale, `todo start`
-still starts and reports it in `advisory.guidance`. `independence compile` fails with
-`INDEPENDENCE_READY_UNDECLARED` when `next_ready` is missing from the witness.
+still starts and reports it in `advisory.guidance`. `independence compile` compiles the declared
+rows; a ready task missing from the witness is unknown for itself only.
 
 ```bash
 lattice todo start --plan <key> --task <id>

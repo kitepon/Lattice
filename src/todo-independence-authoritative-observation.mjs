@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,22 +41,46 @@ function memoryStream() {
   };
 }
 
-async function initializeSensor(observationRoot) {
+async function runSensor(command, observationRoot) {
   const stdout = memoryStream();
   const stderr = memoryStream();
   const status = await runSensorCli({
-    argv: ['init', observationRoot, '--json'],
+    argv: [command, observationRoot, '--json'],
     stdout: stdout.stream,
     stderr: stderr.stream,
   });
   if (status !== 0) {
     fail('INDEPENDENCE_OBSERVATION_SENSOR_INIT_FAILED', 'observation_sensor_init_failed', {
-      sensor_error: stderr.read(),
+      sensor_command: command, sensor_error: stderr.read(),
     });
   }
 }
 
-/** 共有repoのdirtyな状態を観測せず、current HEADのclean worktreeでsensorを実行する。 */
+/**
+ * a2 (ADR 0204 Observe): 作業木がHEADと同じ内容か。`.lattice/`はsensor索引とstoreが書く場所で、
+ * 索引の対象外なので数えない（storeがtrackedな製品repoでは書込みのたびにdirtyになるため）。
+ */
+function isCleanAtHead(repoRoot, headSha) {
+  return git({ cwd: repoRoot, args: ['rev-parse', '--verify', 'HEAD^{commit}'], operation: 'resolve_head' }) === headSha
+    && git({
+      cwd: repoRoot, operation: 'status_clean_check',
+      args: ['status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).lattice'],
+    }) === '';
+}
+
+/**
+ * HEADと同じ内容の作業木では、維持されている索引を増分syncして使う（無ければ最初の1回だけinit）。
+ * 同期の前後でcleanとHEADを確かめ、崩れていたらnull＝隔離worktreeの経路へ落とす。
+ * 保護するもの: 未commitの状態を判定が観測しないこと。落とす先が出口で、拒否はしない。
+ */
+async function observeMaintainedIndex({ repoRoot, headSha, witnessSet }) {
+  if (!isCleanAtHead(repoRoot, headSha)) return null;
+  await runSensor(existsSync(path.join(repoRoot, '.lattice/sensor/sensor.db')) ? 'sync' : 'init', repoRoot);
+  if (!isCleanAtHead(repoRoot, headSha)) return null;
+  return { head_sha: headSha, sensor_evidence: await collectWitnessSensorEvidence({ cwd: repoRoot, witnessSet }) };
+}
+
+/** 共有repoのdirtyな状態を観測せず、current HEADの索引（維持されたもの、無ければclean worktree）でsensorを実行する。 */
 export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot, witnessSet } = {}) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0
     || witnessSet === null || typeof witnessSet !== 'object') {
@@ -65,6 +90,8 @@ export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot
   const headSha = git({
     cwd: repoRoot, args: ['rev-parse', '--verify', 'HEAD^{commit}'], operation: 'resolve_head',
   });
+  const maintained = await observeMaintainedIndex({ repoRoot, headSha, witnessSet });
+  if (maintained !== null) return maintained;
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'lattice-independence-observation-'));
   const observationRoot = path.join(temporaryRoot, 'worktree');
   let registered = false;
@@ -86,7 +113,7 @@ export async function collectTodoIndependenceAuthoritativeObservation({ repoRoot
         expected_head_sha: headSha, actual_head_sha: observedHead,
       });
     }
-    await initializeSensor(observationRoot);
+    await runSensor('init', observationRoot);
     result = await collectWitnessSensorEvidence({ cwd: observationRoot, witnessSet });
   } catch (error) {
     operationError = error;

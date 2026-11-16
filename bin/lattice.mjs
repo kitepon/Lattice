@@ -176,6 +176,9 @@ if (help !== null) {
     try {
       process.exitCode = await runPlanRevise({ cwd: process.cwd(), inputRef: flags.input, planKey: flags.plan,
         dryRun: flags['dry-run'] === true, stdout: process.stdout, env: process.env });
+      if (process.exitCode === 0 && flags['dry-run'] !== true) {
+        await (await import('../src/todo-cli.mjs')).carryIndependenceAfterRevision({ cwd: process.cwd() });
+      }
     } catch (error) {
       process.exitCode = projectCliFailure(process.stderr, error, { command: 'revise', flags });
     }

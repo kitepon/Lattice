@@ -146,6 +146,37 @@ test('gate 5 exit without evidence: phase accept|reject with an optional --messa
   assert.equal(rejected.status, 'rejected');
 });
 
+test('g5: more than 8 declared tasks compile; the record keeps every verdict and omits only the wave plan', async (context) => {
+  const { root } = await fixture(context);
+  for (let n = 0; n < 7; n += 1) {
+    await writeFile(path.join(root, 'src', `t${n}.js`), `export const t${n} = 1;\n`);
+    success(root, ['todo', 'add', '--plan', 'dev', '--task', `T${n}`, '--title', `T${n}`, '--phase', 'p', '--design-memo', 'NO_PLAN', '--reason', 'many']);
+  }
+  execFileSync('git', ['add', '.'], { cwd: root, stdio: 'pipe' });
+  execFileSync('git', ['-c', 'user.name=f', '-c', 'user.email=f@f', 'commit', '--quiet', '-m', 'more files'], { cwd: root, stdio: 'pipe' });
+  const rows = [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js'], ...Array.from({ length: 7 }, (_, n) => [`T${n}`, `src/t${n}.js`])];
+  const results = rows.map(([id, file]) => success(root, declare(id, '--owns', file)));
+  const last = results.at(-1);
+  assert.equal(last.compile.outcome, 'compiled');
+  assert.equal(last.compile.task_count, 10);
+  assert.equal(success(root, start('T6')).advisory.coverage, 'verified');
+});
+
+test('g4: a todo add keeps the record of unchanged tasks; only the new undeclared task is refused', async (context) => {
+  const { root } = await fixture(context);
+  for (const [id, file] of [['P', 'src/a.js'], ['Q', 'src/b.js'], ['L', 'src/c.js']]) success(root, declare(id, '--owns', file));
+  success(root, ['todo', 'add', '--plan', 'dev', '--task', 'X', '--title', 'X', '--phase', 'p', '--design-memo', 'NO_PLAN',
+    '--reason', 'new work']);
+  assert.equal(success(root, start('P')).advisory.coverage, 'verified');
+  const refused = refusal(root, start('X'));
+  assert.deepEqual([refused.message, refused.detail.task_id], ['enforced_witness_undeclared', 'X']);
+  success(root, declare('X', '--owns', 'src/x.js'));
+  assert.equal(success(root, start('X')).advisory.coverage, 'verified');
+  // a retire drops nothing for the others either
+  success(root, ['todo', 'retire', '--plan', 'dev', '--task', 'L', '--reason', 'not needed']);
+  assert.equal(success(root, start('Q')).advisory.coverage, 'verified');
+});
+
 test('g3: a task in a no-code lane starts with no witness row; code tasks keep gate 1', async (context) => {
   const { root } = await fixture(context);
   success(root, ['todo', 'add', '--plan', 'dev', '--task', 'A', '--title', 'Owner approval', '--phase', 'p', '--lane', 'approval-box',

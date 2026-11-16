@@ -174,7 +174,7 @@ Write commands:
   independence witness scaffold --schema --json  # 下書き（lattice.todo_witness_draft.v2）のJSON Schema
   independence witness scaffold --plan <key> --input <draft>  # 下書きとfresh観測から宣言を書き出す
   independence witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]
-      # 1件のtaskの行だけを宣言する（a40）。readyが全部宣言済みならcompileまで行い、未宣言はwaiting_forに返す
+      # 1件のtaskの行だけを宣言する（a40）。宣言済みの行でcompileまで行い、未宣言のreadyはwaiting_forに返す
   structure input --plan <key> --input <file> --dry-run --json
       # plan identity・topology・unfinished task coverage・baseline祖先を無変更で検査する
   structure input --plan <key> --input <file>
