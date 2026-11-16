@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- コードグラフの Touched（ADR 0204、a6）：コミットの範囲 `<from>..<to>` の差分のhunkを、変えた関数へ写す。`src/sensor-touched.mjs`（`touchedFunctions`）、センサーの `lattice-sensor touched`、公開の `lattice sensor touched <from> [<to>] --json`。hunkの新しい側の行が重なる、いちばん内側の関数を返す（`Bar.baz` の中の変更は `Bar` ではなく `Bar.baz`）。関数に入らない変更（import、トップ階層、消えた関数、改名、バイナリ、索引にないファイル）は捨てずに `unattributed` へ理由つきで返し、ファイル単位の変更として扱う。`<to>` がHEADで作業木がcleanなら維持された索引、そうでなければ `<to>` の使い捨てworktreeで新しく索引する（未commitの状態は見ない、拒否しない）。ホストへの変更：無し。実装：ネヴェ。
+
 - コードグラフの Resolve（ADR 0204、a3）：`{path, symbol}` から、その関数の行範囲を引く。`src/sensor-resolve.mjs`（`parseAnchor`、`resolveAnchors`、`proposeSymbols`）と、センサーの `lattice-sensor resolve`（標準入出力は JSON）。完全一致だけで、近い別の名前へは解決しない。外れたら `unresolved` に同じファイルの近い名前と、同名の別ファイルの定義を添える。同じファイルに複数の定義（オーバーロード、別のクラスの同名メソッド）があれば全ての範囲を返し、別の定義のときは `ambiguous` で知らせる。タイトルと設計メモのコードらしい識別子から、グラフにある名前を提案する（記録はしない）。5件で約0.2秒。呼ぶのはアリスの宣言とcompileで、まだ呼び出し元は無い。ホストへの変更：無し。実装：ネヴェ。
 
 ## 0.108.0 — 2026-11-16

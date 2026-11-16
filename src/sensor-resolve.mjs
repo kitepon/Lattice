@@ -42,8 +42,9 @@ export function identifiersFromText(...texts) {
   return [...names];
 }
 
-function runResolve({ root, request }) {
-  const invocation = sensorCliInvocation(['resolve', '--path', root]);
+/** One sensor process, JSON on stdin and stdout; shared by Resolve and Touched. */
+export function runSensorJson({ command, root, request }) {
+  const invocation = sensorCliInvocation([command, '--path', root]);
   return new Promise((resolve, reject) => {
     const child = spawn(invocation.command, invocation.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false,
@@ -59,12 +60,12 @@ function runResolve({ root, request }) {
       if (code !== 0) {
         reject(new SensorResolveError(
           /not initialized/u.test(stderr) ? 'RESOLVE_INDEX_MISSING' : 'RESOLVE_SENSOR_FAILED',
-          'sensor resolve failed', { exit_code: code, stderr },
+          `sensor ${command} failed`, { exit_code: code, stderr },
         ));
         return;
       }
       try { resolve(JSON.parse(Buffer.concat(out).toString('utf8'))); } catch (error) {
-        reject(new SensorResolveError('RESOLVE_OUTPUT_INVALID', 'sensor resolve returned invalid JSON', { cause: error.message }));
+        reject(new SensorResolveError('RESOLVE_OUTPUT_INVALID', `sensor ${command} returned invalid JSON`, { cause: error.message }));
       }
     });
     child.stdin.end(JSON.stringify(request));
@@ -81,7 +82,7 @@ const snake = ({ startLine, endLine, qualified, ...rest }) => ({ ...rest, qualif
  * `ambiguous` names the case when they are different definitions. `unresolved` is an answer, not an error.
  */
 export async function resolveAnchors({ root, anchors, related = false }) {
-  const result = await runResolve({ root, request: { anchors, related } });
+  const result = await runSensorJson({ command: 'resolve', root, request: { anchors, related } });
   const moveRelated = (node) => (node.related === undefined ? node : {
     ...node,
     related: Object.fromEntries(Object.entries(node.related).map(([key, value]) => [key,
@@ -105,7 +106,7 @@ export async function resolveAnchors({ root, anchors, related = false }) {
 export async function proposeSymbols({ root, title, memo }) {
   const names = identifiersFromText(title, memo);
   if (names.length === 0) return { proposed: [], too_common: [], not_found: [] };
-  const { named } = await runResolve({ root, request: { names } });
+  const { named } = await runSensorJson({ command: 'resolve', root, request: { names } });
   return {
     proposed: named.filter((n) => n.definitions.length > 0)
       .map((n) => ({ name: n.name, definitions: n.definitions.map(snake) })),
