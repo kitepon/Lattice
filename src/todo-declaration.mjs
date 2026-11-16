@@ -14,6 +14,13 @@ const items = (value) => (Array.isArray(value) ? value : typeof value === 'strin
   .map((item) => item.trim()).filter(Boolean);
 const sortedUnique = (values) => [...new Set(values)].sort();
 
+/** Every path a declaration names, anchored or not (`owns`, `reads`, `writes` flags): a Set. */
+export function declaredPaths({ owns, reads, writes }) {
+  const { paths: ownPaths, anchors: ownAnchors } = parseDeclarationList(owns);
+  const { paths: readPaths, anchors: readAnchors } = parseDeclarationList(reads);
+  return new Set([...ownPaths, ...readPaths, ...items(writes), ...[...ownAnchors, ...readAnchors].map(({ path: where }) => where)]);
+}
+
 /** `a.mjs,b.mjs#foo` → bare paths, anchors, and entries that cannot be stored (with why). */
 export function parseDeclarationList(value) {
   const paths = [];
@@ -56,34 +63,47 @@ const unresolvedEntry = (anchor, reason, nearest = [], elsewhere = []) => ({
  * (a task's row is not written until every name resolves, so the next declare retries from scratch).
  * `observable` false = the Store root has no code tree: functions cannot be checked, never recorded as a guess.
  */
-export async function buildDeclarationRow({ root, observable, owns, reads, writes }) {
+export async function buildDeclarationRow({ root, observable, owns, reads, writes, alsoResolve = [] }) {
   const own = parseDeclarationList(owns);
   const read = parseDeclarationList(reads);
   const malformed = [...own.malformed, ...read.malformed];
-  const wanted = [...new Map([...own.anchors, ...read.anchors].map((anchor) => [`${anchor.path}\0${anchor.symbol}`, anchor])).values()];
+  const keyOf = (anchor) => `${anchor.path}\0${anchor.symbol}`;
+  const wanted = [...new Map([...own.anchors, ...read.anchors].map((anchor) => [keyOf(anchor), anchor])).values()];
   const declaration = { written: false, resolved: [], unresolved: [], malformed };
   if (malformed.length > 0) return { row: null, declaration };
-  if (wanted.length > 0) {
-    if (!observable) {
-      declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'no_code_tree'));
-      return { row: null, declaration };
-    }
+  // `alsoResolve`: other tasks' anchors, answered by the same Resolve call (a5 compares ranges); a miss there is not this task's refusal.
+  const wantedKeys = new Set(wanted.map(keyOf));
+  const extra = [...new Map(alsoResolve.filter((anchor) => !wantedKeys.has(keyOf(anchor))).map((anchor) => [keyOf(anchor), anchor])).values()];
+  let ranges = [];
+  if (wanted.length > 0 && !observable) {
+    declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'no_code_tree'));
+    return { row: null, declaration };
+  }
+  if (wanted.length + extra.length > 0 && observable) {
     let answer;
-    try { answer = await resolveOnce(root, wanted); } catch (error) {
+    try { answer = await resolveOnce(root, [...wanted, ...extra]); } catch (error) {
+      if (wanted.length === 0) return buildRow({ own, read, writes, declaration, ranges });
       declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'resolve_unavailable'));
       declaration.resolve_error = error?.code ?? error?.message ?? 'resolve_failed';
       return { row: null, declaration };
     }
-    declaration.unresolved = answer.unresolved.map((anchor) => unresolvedEntry(
+    const mine = answer.unresolved.filter((anchor) => wantedKeys.has(keyOf(anchor)));
+    declaration.unresolved = mine.map((anchor) => unresolvedEntry(
       anchor, anchor.reason,
       anchor.nearest.map(({ qualified }) => qualified),
       anchor.elsewhere.map(({ path: where, qualified }) => `${where}#${qualified}`),
     ));
-    declaration.resolved = answer.resolved.map(({ path: where, symbol, kind, start_line: start, end_line: end }) => ({
-      path: where, symbol, kind, start_line: start, end_line: end,
-    }));
+    ranges = answer.resolved;
+    declaration.resolved = answer.resolved.filter(({ path: where, symbol }) => wantedKeys.has(`${where}\0${symbol}`))
+      .map(({ path: where, symbol, kind, start_line: start, end_line: end }) => ({
+        path: where, symbol, kind, start_line: start, end_line: end,
+      }));
     if (declaration.unresolved.length > 0) return { row: null, declaration };
   }
+  return buildRow({ own, read, writes, declaration, ranges });
+}
+
+function buildRow({ own, read, writes, declaration, ranges }) {
   const concern = byWithin(own.anchors);
   const readAnchors = byWithin(read.anchors);
   const row = {
@@ -94,7 +114,7 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
     ...(readAnchors.length > 0 ? { read_anchors: readAnchors } : {}),
   };
   declaration.written = true;
-  return { row, declaration };
+  return { row, declaration, ranges };
 }
 
 /**
