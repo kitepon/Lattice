@@ -69,14 +69,14 @@ export function phaseTodoRevisionPlanVersion({
 }) {
   const versionDigest = digestTodoArtifact({
     schema: featureGraphDigest !== null ? 'lattice.phase_todo_revision_version.v3'
-      : ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(desiredPlan.schema)
+      : ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9'].includes(desiredPlan.schema)
       ? 'lattice.phase_todo_revision_version.v2' : 'lattice.phase_todo_revision_version.v1', project_id: projectId,
     plan_key: planKey, predecessor, desired_topology: {
       schema: desiredPlan.schema, project_id: desiredPlan.project_id,
       plan_key: desiredPlan.plan_key, predecessor_plan_digest: desiredPlan.predecessor_plan_digest,
       tasks: desiredPlan.tasks, phases: desiredPlan.phases,
       hard_dependencies: desiredPlan.hard_dependencies, joins: desiredPlan.joins,
-      ...(['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(desiredPlan.schema)
+      ...(['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9'].includes(desiredPlan.schema)
         ? { phase_accept_dependencies: desiredPlan.phase_accept_dependencies } : {}),
     }, task_migration: taskMigration, phase_migration: phaseMigration,
     ...(featureGraphDigest === null ? {} : { feature_graph_digest: featureGraphDigest }),
@@ -305,7 +305,7 @@ export function validatePhaseTodoRevision(value) {
       || !(revisionV3
         ? ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(value.desired_plan.schema)
         : (revisionV4 || revisionV5)
-          ? ['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(value.desired_plan.schema)
+          ? ['lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9'].includes(value.desired_plan.schema)
           : value.desired_plan.schema === (revisionV2 ? 'lattice.todo_plan.v5' : 'lattice.todo_plan.v4'))
       || value.desired_plan.project_id !== value.project_id
       || value.desired_plan.plan_key !== value.plan_key
@@ -856,7 +856,7 @@ export function explainPhaseTodoRevision(value) {
     if (!predecessorCheck.valid) return predecessorCheck;
     if (!validateTodoPlan(value.desired_plan)) return reject('desired_plan_invalid', '/desired_plan');
     const expectedPlanSchemas = revisionV3 ? ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8']
-      : (revisionV4 || revisionV5) ? ['lattice.todo_plan.v7', 'lattice.todo_plan.v8']
+      : (revisionV4 || revisionV5) ? ['lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9']
         : [revisionV2 ? 'lattice.todo_plan.v5' : 'lattice.todo_plan.v4'];
     if (!expectedPlanSchemas.includes(value.desired_plan.schema)) {
       return reject('desired_plan_schema_mismatch', '/desired_plan/schema');
@@ -1037,7 +1037,7 @@ export function validateTodoRevisionSet(value) {
 }
 
 const PHASE_PREDECESSOR_SCHEMAS = new Set([
-  'lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8',
+  'lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9',
 ]);
 const sourceKey = (entry) => `${entry.source_ref}\0${entry.source_digest}`;
 

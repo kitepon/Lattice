@@ -463,6 +463,9 @@ const REGISTRY = {
   done_condition_schema_downgrade: {
     repair: (detail) => `The desired plan schema ${q(detail.desired_schema)} drops done_condition from ${q(detail.predecessor_schema)}: build the desired plan with ${q(detail.predecessor_schema)}.`,
   },
+  function_split_schema_downgrade: {
+    repair: (detail) => `The desired plan schema ${q(detail.desired_schema)} drops function_split from ${q(detail.predecessor_schema)}: build the desired plan with ${q(detail.predecessor_schema)}.`,
+  },
   acquire_phase_requires_unassigned_predecessor: {
     repair: (detail) => `Task ${migratedTask(detail)} already has a phase, so it cannot acquire one: migrate it with policy 'carry' or 'reset' instead.`,
   },

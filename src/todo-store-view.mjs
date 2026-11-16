@@ -15,7 +15,8 @@ export function normalizeCheckoutEol(bytes) {
 }
 
 export function isPhaseTodoPlanSchema(schema) {
-  return ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(schema);
+  return ['lattice.todo_plan.v4', 'lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8',
+    'lattice.todo_plan.v9'].includes(schema);
 }
 
 /** One finished-predecessor predicate for Store replay and readiness: done or retired (a13: retire deletes the task, so its edges count as gone). */
@@ -34,7 +35,7 @@ export function stepTodoReopenedPending(ids, event) {
 }
 
 export function isDecoupledPhaseTodoPlanSchema(schema) {
-  return ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(schema);
+  return ['lattice.todo_plan.v5', 'lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9'].includes(schema);
 }
 
 // CLI側(migrate/plan create/最後のdone)が「終端重監査が要る」ことを通知するために

@@ -38,6 +38,8 @@ the same upgrade `next_action`.
 
 ## Registration
 
+ADR 0205 b2 registers `todo_plan` 9 (task `function_split`) and `todo_split_record` 1 (`splits/<plan>/<task>.json`, read by `readTodoSplit`).
+
 Teaching the validator a new event/plan/manifest schema version bumps
 `NEWEST_KNOWN_TODO_SCHEMA` in the same diff; `test/todo-newer-value.test.mjs`
 fails when the table and `src/todo-contracts.mjs` disagree. A new event kind or
