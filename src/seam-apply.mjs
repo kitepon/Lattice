@@ -72,7 +72,7 @@ async function deriveWithClosure({ cwd, deriveOnce }) {
 const SYMBOL_LOOKUP_LIMIT = 500;
 
 /** gitに載らないbuild成果物のうち、focused testが要るものを実在する時だけ張る。 */
-async function buildOutputMounts(repoRoot) {
+export async function buildOutputMounts(repoRoot) {
   const { access } = await import('node:fs/promises');
   const mounts = [];
   for (const entry of ['sensor/dist']) {
@@ -173,7 +173,7 @@ async function runIn(worktreePath, command, args) {
  * 網は受入の一点だけで、過程には触れない。不認定は拒否ではなく、理由を見て直せば
  * 何度でも再提出できる。
  */
-async function detectSeveredReferences({ worktreePath, files, residualPath }) {
+export async function detectSeveredReferences({ worktreePath, files, residualPath }) {
   const readFileNodes = (target) => {
     const result = invokeSensorCli(
       (command, args, options) => spawnSync(command, args, options),
