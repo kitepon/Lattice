@@ -19,6 +19,7 @@ import { phaseTodoRevisionPlanVersion, validatePhaseTodoRevision } from './todo-
 export { validateBindingCarry } from './plan-binding-carry.mjs';
 
 const INPUT_SCHEMA = 'lattice.plan_revise_input.v1';
+const LIGHT_PLAN_SCHEMAS = ['lattice.todo_plan.v7', 'lattice.todo_plan.v8', 'lattice.todo_plan.v9'];
 
 function fail(reason, pointer, detail = {}) {
   throw new TodoStoreError('INPUT_INVALID', reason, undefined, { pointer, ...detail });
@@ -209,7 +210,7 @@ export function resolvePlanRevision({ member, input, env = process.env, now = ne
       next_action: `lattice todo revise-phase --plan ${desired.plan_key} --input <phase-revision.json>`,
     });
   }
-  if (!['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(member.plan.schema)) {
+  if (!LIGHT_PLAN_SCHEMAS.includes(member.plan.schema)) {
     fail('predecessor_plan_schema_unsupported', '/desired/plan_key');
   }
   if (desired.project_id !== member.plan.project_id) {
@@ -231,7 +232,7 @@ export function compilePlanRevision({ member, input, env, now }) {
   return compileLightRevision({ member, desired, continuity });
 }
 
-function compileLightRevision({ member, desired, continuity }) {
+function compileLightRevision({ member, desired, continuity, splitMarks = null }) {
   const taskMigration = continuity.map(({ task_id: id, policy }) => ({
     from_task_id: id, to_task_id: policy === 'retire' ? 'removed' : id,
     state_policy: policy === 'retire' ? 'removed'
@@ -241,7 +242,7 @@ function compileLightRevision({ member, desired, continuity }) {
     journal_head_digest: member.journal.events.at(-1).event_digest,
     plan_version: member.plan.plan_version,
   };
-  const seed = planSeed(desired, predecessor.plan_digest, member.plan);
+  const seed = planSeed(desired, predecessor.plan_digest, member.plan, splitMarks);
   const phaseMigration = compileLightPhaseMigration(member.plan, seed, taskMigration,
     new Map(member.tasks.map(({ task_id: id, status }) => [id, status])));
   const version = phaseTodoRevisionPlanVersion({
@@ -281,7 +282,7 @@ export async function planReviseSchema() {
  * (v7/v8以外・源泉束縛・旧event・compile_binding付きtask)ならfalse。書く前の判定にだけ使う。
  */
 export function lightRevisionExpresses(member) {
-  return ['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(member.plan.schema)
+  return LIGHT_PLAN_SCHEMAS.includes(member.plan.schema)
     && member.journal.events[0]?.schema !== 'lattice.todo_event.v2'
     && member.plan.tasks.every((task) => task.narrative_anchor === null && task.compile_binding === null);
 }
@@ -297,18 +298,19 @@ export function desiredFromPlan(plan, { env = process.env, now = new Date() } = 
       next_action: `lattice todo revise-phase --plan ${plan.plan_key} --input <phase-revision.json>`,
     });
   }
-  if (!['lattice.todo_plan.v7', 'lattice.todo_plan.v8'].includes(plan.schema)) {
+  if (!LIGHT_PLAN_SCHEMAS.includes(plan.schema)) {
     fail('predecessor_plan_schema_unsupported', '/desired/plan_key');
   }
   const edge = ({ from, to }) => ({
     from: { project_id: from.project_id, plan_key: from.plan_key, task_id: from.task_id },
     to: { project_id: to.project_id, plan_key: to.plan_key, task_id: to.task_id } });
   return {
-    schema: plan.schema === 'lattice.todo_plan.v8'
-      ? 'lattice.plan_create_input.v5' : 'lattice.plan_create_input.v4',
+    schema: plan.schema === 'lattice.todo_plan.v7'
+      ? 'lattice.plan_create_input.v4' : 'lattice.plan_create_input.v5',
     project_id: plan.project_id, plan_key: plan.plan_key, plan_version: plan.plan_version,
     actor: resolveTodoActor(env), recorded_at: now.toISOString(),
-    tasks: plan.tasks, phases: plan.phases,
+    // function_split is not authorable (ADR 0205 §2): planSeed carries it from the predecessor by task id.
+    tasks: plan.tasks.map(({ function_split: _split, ...task }) => task), phases: plan.phases,
     hard_dependencies: plan.hard_dependencies.map(edge), joins: plan.joins,
     phase_accept_dependencies: plan.phase_accept_dependencies,
   };
@@ -348,7 +350,7 @@ function unwrapPointers(error) {
 }
 
 export async function applyPlanRevision({
-  repoRoot, input: authored, env = process.env, dryRun = false, notes: extraNotes = [],
+  repoRoot, input: authored, env = process.env, dryRun = false, notes: extraNotes = [], splitMarks = null,
 }) {
   const bare = isBareCreateInput(authored);
   const wrapped = bare ? { schema: INPUT_SCHEMA, desired: authored } : authored;
@@ -367,17 +369,18 @@ export async function applyPlanRevision({
   const { desired, continuity } = resolved;
   // 集合の並びは正準化済みなので、同じ内容の別の並びは「変更なし」になる。
   const unchanged = continuity.every(({ policy }) => policy === 'carry')
-    && canonicalizeTodoArtifact(planSeed(desired, null, member.plan))
+    && canonicalizeTodoArtifact(planSeed(desired, null, member.plan, splitMarks))
       === canonicalizeTodoArtifact(planSeed(member.plan, null));
   const binding = await readPlanBackchainBinding({ repoRoot, plan: member.plan });
   let revision;
   let featureChainFindings = null;
+  if (binding !== null && splitMarks !== null) fail('plan_revise_split_unsupported', '/', { cause: 'backchain_bound' });
   if (binding !== null && !unchanged) {
     ({ revision, findings: featureChainFindings } = await compileBackchainRevision({
       repoRoot, member, authoring: desired,
       chain: successorBackchain(binding.chain, desired, continuity) }));
   } else {
-    revision = compileLightRevision({ member, desired, continuity });
+    revision = compileLightRevision({ member, desired, continuity, splitMarks });
     if (!unchanged && !validatePhaseTodoRevision(revision)) fail('plan_revise_artifact_invalid', '/');
   }
   let applied = null;

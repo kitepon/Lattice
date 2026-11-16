@@ -32,7 +32,7 @@ Owner decisions (2026-11-16 JST), D-numbers as in the decision record:
 
 ### 1. Detection at `todo start` (Plan/lifecycle)
 
-`todo start --plan P --task T`, in a witness or enforced plan (conversation plans have no judgment; unchanged), after today's
+`todo start --plan P --task T`, in every plan that has not chosen conversation (witness, enforced, or no mode declared yet; conversation plans have no judgment; unchanged), after today's
 readiness check and before the enforced gates:
 
 1. Read T's open relations (`readTodoTaskRelations({taskId: T})`, ADR 0204 §5; nothing else is opened).
@@ -49,9 +49,10 @@ readiness check and before the enforced gates:
      done, which keeps U from closing before the split it must rebase on).
    The adds and joins of one start are one plan revision.
 4. T is not started. With `--override-reason` (witness or enforced), step 3 is skipped and T starts as today (recorded).
-5. Detection is skipped, and T starts as today, when either lane is unset (lanes cannot be compared), and when the plan
-   cannot take a light revision (`lightRevisionExpresses` false): the start result then carries the warning
-   `split_unsupported` (an unknown state is not a danger; nothing is refused).
+5. Detection is skipped, and T starts as today, when the plan cannot take a light revision (`lightRevisionExpresses`
+   false, or a feature-chain-bound plan): the start emits the warning `LATTICE_START_SPLIT_UNSUPPORTED` naming
+   `split_unsupported` (an unknown state is not a danger; nothing is refused). A lane is always set (plan v7+ requires it), so there is
+   no unset-lane case. Two lanes already in progress on one function is skipped per function (stage C).
 
 Detection sits in `startTask` after `taskRelations` and before `enforcedStartGate`, so the gates never see a held T.
 
@@ -88,8 +89,8 @@ A caller never retries the start; the chart's startable notice brings T back.
 S is startable in U's lane, so the startable notice tells U's worker. S has no witness row and skips the enforced gates
 1-3 like a no-code task (it overlaps its own members by construction); its relations come only from the members' rows
 after done S. `todo start S` computes `cut_cost` once (Neve's `cutCost({repoRoot, target, memberTaskIds})`, the seam-cost
-profile with every member owning F; best effort, null with the reason) and shows it in the start result and as a note on
-S, so the worker sees the size before deciding. `todo show S` shows the mark, members, the note and the verify record; it
+profile with every member owning F; best effort, null with the reason) and shows it in the start result (`function_split {path, symbol, members, cut_cost, guide}`; no note is written: nothing
+reads one), so the worker sees the size and the steps before deciding. `todo show S` shows the mark, members and the verify record; it
 never runs the sensor.
 
 - The split task's design memo and the `todo start S` result also tell the worker: once verify accepts, open the PR with
