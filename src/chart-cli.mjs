@@ -9,6 +9,7 @@ import { Writable } from 'node:stream';
 import { promisify } from 'node:util';
 
 import { parseFlagMap } from './todo-authoring-input.mjs';
+import { isTodoIdentifier } from './todo-contracts.mjs';
 import { TODO_CHARTS_ROOT_ENV } from './todo-external.mjs';
 import {
   readTodoChartMeta, readTodoStoreDisplaySource, TodoStoreError, writeTodoChartMeta,
@@ -176,14 +177,23 @@ function projectIdOf(env, dir) {
 }
 
 /**
- * K4 `chart set [--name <text>] [--created-by <id>]`, at least one; `created` = K5 made the chart in this run.
+ * K4 `chart set [--name <text>] [--created-by <id>] [--no-code-lane <lanes>]`, at least one; `created` = K5 made the chart in this run.
  * Without --name the patch has no `name` key, so the name stays as is (null stays null): the a102 sidecar migration.
  */
 async function chartSet({ cwd, env, flags, created }) {
-  if (!('name' in flags) && !('created-by' in flags)) {
+  if (!('name' in flags) && !('created-by' in flags) && !('no-code-lane' in flags)) {
     throw refusal('CHART_NAME_INVALID', 'chart_set_flag_missing', { field: '--name',
-      rule: '--name, --created-by or both',
-      next_action: 'lattice chart set --name <text> [--created-by <id>] (or --created-by <id> alone)' });
+      rule: '--name, --created-by, --no-code-lane or any of them',
+      next_action: 'lattice chart set --name <text> [--created-by <id>] [--no-code-lane <lane>[,<lane>...]]' });
+  }
+  // g3: the host marks the lanes whose tasks touch no code, once per chart; '' clears the list. Lattice names no lane itself.
+  const lanes = 'no-code-lane' in flags
+    ? (typeof flags['no-code-lane'] === 'string' ? flags['no-code-lane'].split(',').map((lane) => lane.trim()).filter(Boolean) : null)
+    : undefined;
+  if (lanes === null || (lanes ?? []).some((lane) => !isTodoIdentifier(lane))) {
+    throw refusal('CHART_NAME_INVALID', 'chart_no_code_lane_invalid', { field: '--no-code-lane',
+      rule: 'comma-separated lane ids (letters, digits, . _ -); empty clears the list',
+      next_action: 'lattice chart set --no-code-lane <lane>[,<lane>...]' });
   }
   const name = 'name' in flags ? (typeof flags.name === 'string' ? flags.name.trim() : null) : undefined;
   if (name !== undefined && !validChartName(name)) {
@@ -201,9 +211,10 @@ async function chartSet({ cwd, env, flags, created }) {
   const dir = await repoRoot(cwd);
   const createdBy = explicit ?? (created ? env[SEAT_ID_ENV] || null : undefined);
   const { meta, unchanged } = await writeTodoChartMeta({ repoRoot: dir,
-    patch: { ...(name === undefined ? {} : { name }), ...(createdBy === undefined ? {} : { created_by: createdBy }) } });
+    patch: { ...(name === undefined ? {} : { name }), ...(createdBy === undefined ? {} : { created_by: createdBy }),
+      ...(lanes === undefined ? {} : { no_code_lanes: [...new Set(lanes)].sort() }) } });
   return { schema: 'lattice.chart_set_result.v1', project_id: projectIdOf(env, dir), name: meta.name,
-    created_by: meta.created_by, created_at: meta.created_at, unchanged };
+    created_by: meta.created_by, created_at: meta.created_at, no_code_lanes: meta.no_code_lanes, unchanged };
 }
 
 const URL_PATTERN = /^(?:https:\/\/|ssh:\/\/|file:\/\/|git@)[^\s\p{Cc}]+$/u;
@@ -326,8 +337,8 @@ export async function runChartCli({ argv, cwd, env, stdout, stderr, created = fa
       result = await chartSources(env, ids);
     } else if (group === 'chart' && command === 'set') {
       const { flags, rest } = parseFlagMap(words.slice(2));
-      if (rest.length > 0 || Object.keys(flags).some((key) => !['name', 'created-by'].includes(key))) {
-        return usage(stderr, 'chart set [--name <text>] [--created-by <id>] [--json]');
+      if (rest.length > 0 || Object.keys(flags).some((key) => !['name', 'created-by', 'no-code-lane'].includes(key))) {
+        return usage(stderr, 'chart set [--name <text>] [--created-by <id>] [--no-code-lane <lane>[,<lane>...]] [--json]');
       }
       result = await chartSet({ cwd, env, flags, created });
     } else if (group === 'chart' && command === 'repo' && sub === 'bind') {
