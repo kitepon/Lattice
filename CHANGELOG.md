@@ -2,15 +2,18 @@
 
 ## Unreleased
 
+## 0.107.0 — 2026-11-16
+
+コードを触らない工程を強制で止めず、閉じる時の証拠を CLI からも外し、コードの工程表で履歴がつながるようにした版。ホストへの変更：有り（`chart set --no-code-lane`、`done --evidence`と`phase accept|reject --evidence`は別名、門4の削除、`sensor init`が`.git/info/exclude`へ`.lattice/sensor/`を書く）。
+
 - `lattice sensor init|sync`：git の作業木なら、先に `.lattice/sensor/`（索引）を `.git/info/exclude` へ足す。`.lattice/` 全体は除外しない（`.lattice/todo` を `git add` できなくなるため）。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
 - コードを触らない工程を enforced で止めない。ホストが `lattice chart set --no-code-lane <lane>[,<lane>...]`（空文字で解除）を工程表ごとに一度だけ設定すると、その lane の工程は着手の関門1〜3を受けない（宣言した空の境界として数え、衝突せず古くもならない）。コードの工程の関門は変わらない。Lattice は lane の名前を持たない。`chart set` の結果に `no_code_lanes` が加わる。
 - 工程表の設定 `.lattice/chart.json` に、省略できる `no_code_lanes`（コードに触れない lane の並び、昇順・重複なし、既定は空）を足した。ホストへの変更：有り（工程表の設定の形）。Store は `readTodoChartMeta` に常に `no_code_lanes` を返し（欠けた旧ファイルは `[]`）、`writeTodoChartMeta` の patch で一覧ごと置き換える。空にするとキーごと消すので、一度も設定しない工程表の `chart.json` は今までと同じ形のまま。**設定した工程表だけ**、この版より古い席は `chart_meta_invalid` で読めない。その工程表を読む席を先に上げる。設定する CLI（`chart set --no-code-lane`）と、enforced の門1〜3で飛ばす処理は別PR（g3、アリス）。
-- `lattice sensor init|sync`：git の作業木なら、先に `.lattice/` を `.git/info/exclude` へ足す。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
 - `lattice chart repo sync`：最初の取得だけ `--depth=1`、2回目からは深さを付けずに取る。これまでは毎回 `--depth=1` で、新しい先頭がそのたびに浅い根になり、前の先頭が祖先でなくなった。そのせいで enforced の門4が、マージ済みのコミットを「今の先頭でない」と断り、`todo structure input` は `baseline_not_ancestor` になっていた。fast-forward だけで動く点は変えない。
 - 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。
 - `phase accept` / `phase reject` は証拠も必須slotも求めず、任意の `--message` だけを取る（`--input` の判断記述子は廃止）。段の `required_evidence_slots` は plan と status の形に残るが、CLI は使わない（plan schema の版上げは別件）。`audit_pending` の次の一手は `accept [--message <text>]` と `reject --reason <text> [--message <text>]`。
 - 外したもの：`todo evidence promote`、`todo evidence anchor`、ADR 0200 の門4（enforced の計画で done に URL か HEAD のコミットを書かせるもの）、`todo verify` の証拠の読み直し（`uncommitted_evidence` はこの版では常に空配列）、phase の結果と `phase status` の `decision_evidence_state`、拒否文の `ENFORCED_DONE_MESSAGE`。旧 event の証拠記述子は読める（移行しない）。
-- 言葉：監査待ち→監査前（まだ監査していないPhase）。工程図の札、`todo status`などの案内文、文書の表記だけが変わる。JSON の欄名（`audit_pending`など）は変えない。
+- 実装：アリス（PR #204 k4b、#205 g1、#206 と #209 g2、#211 g3）、ルドミラ（PR #208 g3s）。
 
 ## 0.106.0 — 2026-11-15
 
@@ -22,6 +25,7 @@
 - 測った値：証拠付きの完了 600 件の工程表で、`todo add`は 12.6 秒→0.56 秒、`status`は 0.53 秒→0.28 秒。
 - 0.105 以前の CLI は、新しい形の完了の記録を読めない。その工程表を読む席を 0.106.0 に上げる。
 - 実装：ルドミラ（PR #202、ADR 0203）。
+- 言葉：監査待ち→監査前（まだ監査していないPhase）。工程図の札、`todo status`などの案内文、文書の表記だけが変わる。JSON の欄名（`audit_pending`など）は変えない。
 
 ## 0.105.0 — 2026-11-15
 
