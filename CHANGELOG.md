@@ -21,7 +21,9 @@
 - 証拠をやめた（CLI と段の関門）。Git と PR が本当の証拠を持つので、Lattice は工程の管理だけにする。`todo done --message <text>` の文が閉じた記録になり、Store は `task.evidence.message` として持つ。`--message` が無ければ今までの既定の文。`todo done --evidence <file>` と `phase accept|reject --evidence <file>` は次のminorまでの別名で、fileの文を `--message` として読み、`lattice.todo_command_retired.v1` を stderr へ出し、blob は書かない。
 - `phase accept` / `phase reject` は証拠も必須slotも求めず、任意の `--message` だけを取る（`--input` の判断記述子は廃止）。段の `required_evidence_slots` は plan と status の形に残るが、CLI は使わない（plan schema の版上げは別件）。`audit_pending` の次の一手は `accept [--message <text>]` と `reject --reason <text> [--message <text>]`。
 - 外したもの：`todo evidence promote`、`todo evidence anchor`、ADR 0200 の門4（enforced の計画で done に URL か HEAD のコミットを書かせるもの）、`todo verify` の証拠の読み直し（`uncommitted_evidence` はこの版では常に空配列）、phase の結果と `phase status` の `decision_evidence_state`、拒否文の `ENFORCED_DONE_MESSAGE`。旧 event の証拠記述子は読める（移行しない）。
-- 実装：アリス（PR #204 k4b、#205 g1、#206 と #209 g2、#211 g3）、ルドミラ（PR #208 g3s）。
+- Windows：計画の覚え書きの書き込みが、ファイル名の差し替えで一時的な `EPERM`（他のプロセスが一瞬開いている時）に当たると失敗していた。工程の記録と同じく、差し替えを数回やり直す。
+- `sensor init|sync` の除外の行を書けなかった時、git が無い・git の作業木でない時を除いて、黙らずに `LATTICE_SENSOR_EXCLUDE_FAILED` の警告を一行出す。
+- 実装：アリス（PR #204 k4b、#205 g1、#206 と #209 と g6 g2、#211 g3）、ルドミラ（PR #208 g3s、n3w）。
 
 ## 0.106.0 — 2026-11-15
 
