@@ -2,6 +2,8 @@
 // unfinished task's, on resolved ranges the caller passes in. Resolve, sensor and git run outside (transactTodoRelations
 // forbids them inside its lock); nothing here refuses anything.
 
+import { digestTodoArtifact } from './todo-contracts.mjs';
+
 const compareText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 
 /**
@@ -37,7 +39,7 @@ export const rangeIndex = (resolved) => new Map(resolved.map(({ path: target, sy
  * → `{relations: [{task_a, task_b, path, overlaps}], gone: [{task_a, task_b, path}], unresolved}`: `gone` names the pairs of
  * this task that no longer overlap on a path they once shared (the caller closes only those that are open).
  */
-export function judgeTask({ taskId, rows, ranges, openRelations = [] }) {
+export function judgeTask({ taskId, rows, ranges, openRelations = [], only = null }) {
   const mine = claimsOf(rows[taskId]);
   const relations = [];
   const missing = new Set();
@@ -61,6 +63,8 @@ export function judgeTask({ taskId, rows, ranges, openRelations = [] }) {
       for (const claim of claims) {
         for (const other of others) {
           if (claim.access === 'read' && other.access === 'read') continue;
+          // `only` narrows to one resource's meaning (a5b): 'ww' = both write, 'rw' = one writes and the other reads.
+          if ((only === 'ww' && (claim.access !== 'write' || other.access !== 'write')) || (only === 'rw' && claim.access === other.access)) continue;
           const [first, second] = taskA === taskId ? [side(target, claim), side(target, other)] : [side(target, other), side(target, claim)];
           if (!overlap(first, second)) continue;
           found.set(JSON.stringify([first, second]), { a: first, b: second });
@@ -90,6 +94,44 @@ export function neededAnchors(rows, taskId, paths) {
     for (const anchor of anchorsOf(claimsOf(row))) if (paths.has(anchor.path)) found.set(`${anchor.path}\0${anchor.symbol}`, anchor);
   }
   return [...found.values()];
+}
+
+/**
+ * ADR 0204 a5b: narrow the compile's shared path resources to the task pairs that really overlap. A resource on path P
+ * (an owned path `own-…`, or a read x write `rw-…` state on P) is shared by `todo_ids`; when both tasks of a pair claim
+ * P and at least one of them declared functions in it, the pair stays only if `judgeTask` finds an overlap (same function,
+ * overlapping lines, a write on either side). A pair with no claim on exactly P, or with only whole-file claims, stays
+ * as the compile made it. → a function for `compileRuntimePlanV1`'s `refineResources`.
+ */
+export function refineResourcesByFunction({ rows, ranges }) {
+  const comparable = (target, first, second) => {
+    const left = claimsOf(rows[first] ?? {owns: [], reads: [], writes: []}).get(target);
+    const right = claimsOf(rows[second] ?? {owns: [], reads: [], writes: []}).get(target);
+    return left !== undefined && right !== undefined && [...left, ...right].some(({ symbol }) => symbol !== null);
+  };
+  const overlaps = (target, first, second, only) => judgeTask({ taskId: first, rows: { [first]: rows[first], [second]: rows[second] }, ranges, only })
+    .relations.some(({ path: where }) => where === target);
+  // The path a shared resource stands for, or null when it is not one this can narrow: an owned path (`own-…`), a read x write
+  // state on one path (`rw-…`), or a predicted write overlap of one path with itself (`predicted-ww-…`, target `P ↔ P`).
+  const pathOf = (resource) => {
+    if (resource.kind === 'path' && resource.resource_id.startsWith('own-')) return resource.target;
+    if (resource.kind !== 'state') return null;
+    if (resource.resource_id.startsWith('rw-')) return resource.target;
+    const [left, right, ...rest] = resource.target.split(' ↔ ');
+    return resource.resource_id.startsWith('predicted-ww-') && rest.length === 0 && left === right ? left : null;
+  };
+  return (resources) => resources.flatMap((resource) => {
+    const target = pathOf(resource);
+    if (target === null || resource.todo_ids.length < 2) return [resource];
+    const pairs = [];
+    for (let left = 0; left < resource.todo_ids.length; left += 1) {
+      for (let right = left + 1; right < resource.todo_ids.length; right += 1) pairs.push([resource.todo_ids[left], resource.todo_ids[right]]);
+    }
+    const kept = pairs.filter(([first, second]) => !comparable(target, first, second) || overlaps(target, first, second, resource.resource_id.startsWith('rw-') ? 'rw' : 'ww'));
+    if (kept.length === pairs.length) return [resource];
+    return kept.map(([first, second]) => ({ ...resource,
+      resource_id: `${resource.resource_id}-fn-${digestTodoArtifact({ first, second }).slice(0, 12)}`, todo_ids: [first, second] }));
+  });
 }
 
 /** One relation as seen from `taskId`: `{with, path, overlaps: [{self, other}]}` (`self` is this task's side). */

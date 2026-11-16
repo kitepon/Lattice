@@ -201,8 +201,8 @@ import {
   readTodoPlanNotesForStatus,
 } from './todo-note-store.mjs';
 import { dependencyNoteBody, todoAddNoteBody } from './todo-revision-note.mjs';
-import { buildDeclarationRow, declaredPaths, proposeFromText } from './todo-declaration.mjs';
-import { judgeTask, neededAnchors, rangeIndex, relationView } from './todo-judgment.mjs';
+import { buildDeclarationRow, declaredPaths, proposeFromText, resolveDeclaredRanges } from './todo-declaration.mjs';
+import { anchorsOf, claimsOf, judgeTask, neededAnchors, rangeIndex, relationView } from './todo-judgment.mjs';
 import { readTodoRelations, readTodoRelationSummary, transactTodoRelations } from './todo-relation-store.mjs';
 import { readTodoParallelCandidatesForStatus } from './todo-parallel-candidates.mjs';
 import { commitTodoStoreMutation } from './todo-store-git-transaction.mjs';
@@ -3554,6 +3554,10 @@ async function independenceCompile({ repoRoot, planKey, inputRef }) {
   // INDEPENDENCE_ARTIFACT_INVALIDでtyped fail」を既に区別している。ここでcatchすると
   // **corrupt/permission/I-Oまで「初回」へ化けて履歴が黙って切れる**（suzune の監査で実測・room [1148]）。
   const previousArtifact = await readTodoIndependenceArtifact({ repoRoot, store, planKey });
+  // a5b: resolve the declared functions once so the compile judges a path declared with functions by those functions only.
+  const anchors = Object.values(witnessSet.manual_witness).flatMap((row) => anchorsOf(claimsOf(row)));
+  const functionRanges = anchors.length === 0 ? null
+    : rangeIndex(await resolveDeclaredRanges({ root: repoRoot, anchors }));
   const artifact = compileTodoIndependence({
     witnessSet,
     plan: member.plan,
@@ -3561,6 +3565,7 @@ async function independenceCompile({ repoRoot, planKey, inputRef }) {
     compiledAt: new Date().toISOString(),
     sensorEvidence: observation.sensor_evidence,
     previousArtifact,
+    functionRanges,
   });
   const { ref } = await writeTodoIndependenceArtifact({ repoRoot, artifact });
   // compile成功後にだけ、受理した宣言をruntime readerが要求するcanonical bytesで固定する。
