@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 宣言した工程が9つ以上でも `independence compile` / `witness declare` が通る。これまでは 9 つ目で `INDEPENDENCE_COMPILE_FAILED` / `NODE_LIMIT_EXCEEDED`（波の最小数を厳密に探す上限が 8）になり、記録が書かれず、enforced では全工程の着手が断られた。上限を超えたら波の計画（`wave_plan`）だけを省き（`outcome: compiled` で `wave_plan: null`）、衝突・先行・境界・判定は全て書く。衝突判定は変えない。実行系（`run start`）の上限 8 は変えない。
 - 計画を改訂（`todo add`、`predecessor`、`plan revise` など）しても、宣言済みで変わらない工程の独立の記録が残る。これまでは改訂のたびに新しい版の記録が無くなり、enforced の計画では全工程の着手が断られ、`independence compile` も「readyの未宣言」を理由に拒んでいた。改訂のあと宣言を新しい版へ写して、宣言済みの行だけで再計算する（失敗しても改訂は戻さず、警告1行）。新しく足した宣言前の工程は、その工程だけが未知で、その工程だけが断られる。それを含む組は、宣言するまで独立と判定しない（ADR 0127 決定6のまま）。`INDEPENDENCE_READY_UNDECLARED` は無くなり、`witness declare` は宣言済みの行でいつも compile する（`waiting_for` は残る）。
 
 ## 0.107.0 — 2026-11-16

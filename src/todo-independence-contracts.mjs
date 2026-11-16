@@ -400,6 +400,7 @@ function wavePlan(value, taskIds) {
  * conflictは`conflict_resources`のresource idを参照し、kindとnormalized targetを一度だけ保持する。
  * `task_boundaries`はtask別の宣言境界で、鮮度のdiff交差判定をartifactだけで閉じるために持つ。
  * `wave_plan`はschedulability compileが`compiled`を返した時だけ持ち、unknownが残る間はnullになる。
+ * `outcome: compiled`で`wave_plan: null`は、exact探索の上限(MAX_TODOS)を超えたため波の計画だけを省いた記録で、verdictは全て揃う（g5）。
  * verdictに現れないペアをverified独立と読めるのは、両taskにunknownが無いときだけである。
  */
 export function validateTodoIndependence(value) {
