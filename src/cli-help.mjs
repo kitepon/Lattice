@@ -34,7 +34,7 @@ Commands:
   create --input <file> [--serialization-reviewed]
       # 結果へdispatch_shapeを載せる。--serialization-reviewedは互換のため受理するだけで門ではない
   create --schema --json             # 既定は最新版（v5）のJSON Schemaを返す
-  create --schema-version <1|2|3|4|5> --json
+  create --schema-version <1|2|3|4|5|6> --json
   create --template --json           # 作者が書くkeyだけの最小のv5入力（各taskの設計メモを書けばplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
   revise [--plan <key>] --input <file> [--dry-run] [--json]
@@ -296,7 +296,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'setup status': 'setup status [--host <claude|codex|grok|cursor|all>] [--json]',
   status: 'status [--json]',
   'session-context': 'session-context [--json]',
-  'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5> --json | --template --json',
+  'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5|6> --json | --template --json',
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
   'plan backchain': 'plan backchain --input <file> [--dry-run] [--json] | --schema --json',

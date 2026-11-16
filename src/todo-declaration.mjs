@@ -7,8 +7,11 @@ import path from 'node:path';
 import { runSensorCli } from './sensor-cli.mjs';
 import { parseAnchor, proposeSymbols, resolveAnchors, SensorResolveError } from './sensor-resolve.mjs';
 import { isTodoIdentifier } from './todo-contracts.mjs';
+import { TodoStoreError } from './todo-store.mjs';
 
-const items = (value) => (typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : []);
+// A flag is a comma list; plan input (`touches`) already gives an array.
+const items = (value) => (Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [])
+  .map((item) => item.trim()).filter(Boolean);
 const sortedUnique = (values) => [...new Set(values)].sort();
 
 /** `a.mjs,b.mjs#foo` → bare paths, anchors, and entries that cannot be stored (with why). */
@@ -102,4 +105,32 @@ export async function proposeFromText({ root, observable, title, memo }) {
   if (!observable || !existsSync(path.join(root, '.lattice/sensor/sensor.db'))) return null;
   // Resolve's `snake` leaves `qualified: undefined` on a definition; a result is canonical JSON, so drop undefined here.
   try { return JSON.parse(JSON.stringify(await proposeSymbols({ root, title, memo }))); } catch { return null; }
+}
+
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isPathList = (list) => list === undefined || (Array.isArray(list) && list.every((entry) => typeof entry === 'string' && entry.trim() !== ''));
+
+/**
+ * Plan input v6 (ADR 0204 §6): `tasks[].touches {owns, reads}` is read here and goes to the witness set only.
+ * Returns the input as v5 without `touches`, so the stored plan and its digest are the v5 ones, plus the claims to declare
+ * (`{task_id, owns[], reads[]}`; a task whose lists are both empty claims nothing and is left out). `pointer` prefixes a refusal.
+ */
+export function splitTouches(input, pointer = '') {
+  if (input?.schema !== 'lattice.plan_create_input.v6' || !Array.isArray(input.tasks)) return { input, touches: [] };
+  const touches = [];
+  const tasks = input.tasks.map((task, index) => {
+    if (!isRecord(task) || !('touches' in task)) return task;
+    const { touches: claim, ...rest } = task;
+    if (!isRecord(claim) || Object.keys(claim).some((key) => key !== 'owns' && key !== 'reads')
+      || !isPathList(claim.owns) || !isPathList(claim.reads)) {
+      throw new TodoStoreError('INPUT_INVALID', 'plan_create_touches_invalid', undefined, {
+        pointer: `${pointer}/tasks/${index}/touches`, expected: { owns: 'string[] of path or path#function', reads: 'string[] of path or path#function' },
+        actual: claim, next_action: 'Write touches as {"owns": ["src/a.mjs#foo"], "reads": ["src/b.mjs"]}; both lists are optional.',
+      });
+    }
+    const { owns = [], reads = [] } = claim;
+    if (owns.length + reads.length > 0) touches.push({ task_id: rest.task_id, owns, reads });
+    return rest;
+  });
+  return { input: { ...input, schema: 'lattice.plan_create_input.v5', tasks }, touches };
 }

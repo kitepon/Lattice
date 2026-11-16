@@ -12,6 +12,7 @@ import {
   applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter, readTodoStore, TodoStoreError,
 } from './todo-store.mjs';
 import { appendTodoNote } from './todo-note-store.mjs';
+import { splitTouches } from './todo-declaration.mjs';
 import { planReviseNoteBody } from './todo-revision-note.mjs';
 import { phaseTodoRevisionPlanVersion, validatePhaseTodoRevision } from './todo-revision.mjs';
 
@@ -350,7 +351,14 @@ export async function applyPlanRevision({
   repoRoot, input: authored, env = process.env, dryRun = false, notes: extraNotes = [],
 }) {
   const bare = isBareCreateInput(authored);
-  const input = bare ? { schema: INPUT_SCHEMA, desired: authored } : authored;
+  const wrapped = bare ? { schema: INPUT_SCHEMA, desired: authored } : authored;
+  let input = wrapped;
+  let touches;
+  try {
+    const split = splitTouches(wrapped?.desired, '/desired');
+    touches = split.touches;
+    if (split.input !== wrapped?.desired) input = { ...wrapped, desired: split.input };
+  } catch (error) { throw bare ? unwrapPointers(error) : error; }
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ plan }) => plan.plan_key === input?.desired?.plan_key);
   let resolved;
@@ -400,6 +408,8 @@ export async function applyPlanRevision({
       throw error;
     }
   }
+  const declarations = dryRun || touches.length === 0 ? null
+    : await (await import('./todo-cli.mjs')).declareTouches({ repoRoot, planKey: revision.plan_key, touches });
   const result = {
     schema: unchanged ? 'lattice.plan_revise_unchanged.v1' : 'lattice.plan_revise_result.v1',
     project_id: revision.project_id, plan_key: revision.plan_key,
@@ -407,6 +417,7 @@ export async function applyPlanRevision({
     dry_run: dryRun, revision: unchanged ? null : revision, applied,
     continuity, rebound_task_ids: reboundTaskIds,
     ...(featureChainFindings === null ? {} : { feature_chain_findings: featureChainFindings }),
+    ...(declarations === null ? {} : { declarations }),
     result_digest: '',
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');

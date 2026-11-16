@@ -15,7 +15,7 @@ import { TodoStoreError } from './todo-store.mjs';
 const REVIEW_SCHEMA = 'lattice.plan_scope_review.v1';
 const RESULT_SCHEMA = 'lattice.plan_scope_review_result.v1';
 // a31: 席が書く既定（v5、template）も審査できる。schemaを省いた入力はv5として読む（plan createと同じ）。
-const PLAN_CREATE_SCHEMAS = new Set(['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5']);
+const PLAN_CREATE_SCHEMAS = new Set(['lattice.plan_create_input.v4', 'lattice.plan_create_input.v5', 'lattice.plan_create_input.v6']);
 const DEFAULT_PLAN_CREATE_SCHEMA = 'lattice.plan_create_input.v5';
 const TODO_EXTRACTION_SCHEMAS = new Set([
   'lattice.todo_extraction.v3',
