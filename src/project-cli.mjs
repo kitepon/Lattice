@@ -46,6 +46,7 @@ import {
 } from './todo-dispatch-shape.mjs';
 import { splitTouches } from './todo-declaration.mjs';
 import { readTodoRelationSummary } from './todo-relation-store.mjs';
+import { splitLabels } from './todo-split-labels.mjs';
 import { completeCreateInput, explainFlagCommand, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
@@ -458,6 +459,8 @@ export async function runSessionContext({ cwd, stdout, cliVersion, env = process
     // todoは`lattice todo status`のresultそのもの。新しい意味論を発明しない。
     todo: state.todo,
     independence,
+    // ADR 0205 §7: additive; `todo` above is the status projection and keeps its exact shape
+    ...(state.store === null || splitLabels(state.store).length === 0 ? {} : { labels: splitLabels(state.store) }),
     turn: projectTurn({
       store: state.store, todo: state.todo, actor: resolveTodoActor(env),
       // 名乗れないときの理由はstatusが既に持つ（invalidはnext_action.reason、未初期化はstate）。

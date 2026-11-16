@@ -7,8 +7,9 @@ import { renderDiagramLegend, renderRightPane } from './todo-gantt-html-independ
 import { escapeHtmlAttribute, escapeHtmlText, noticesBannerHtml, refKey } from './todo-gantt-html-shared.mjs';
 import { CSS, NESTED_CSS } from './todo-gantt-html-style.mjs';
 import { TODO_STRUCTURE_PRESENTATION_SCHEMA } from './todo-structure-presentation.mjs';
+import { splitLabelsOf } from './todo-split-labels.mjs';
 
-export const TODO_GANTT_RENDERER_VERSION = 'lattice.todo_gantt_renderer.v20';
+export const TODO_GANTT_RENDERER_VERSION = 'lattice.todo_gantt_renderer.v21';
 export const TODO_GANTT_PROSE_MAX_BYTES = 8 * 1024 * 1024;
 export const TODO_GANTT_HTML_MAX_BYTES = 24 * 1024 * 1024;
 const PROSE_OMITTED_TEXT = '（表示上限のため省略）';
@@ -89,6 +90,7 @@ function normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, 
   };
   for (const member of readModel.members) {
     const states = new Map(member.tasks.map((state) => [state.task_id, state]));
+    const splitLabelOf = new Map(splitLabelsOf(member).map(({ task_id: id, label }) => [id, label]));
     for (const task of member.plan.tasks) {
       // retired（恒久除去）は図にも詳細パネルにも出さない。履歴と理由はsnapshot/journalが持つ。
       if (states.get(task.task_id)?.status === 'retired') continue;
@@ -124,7 +126,7 @@ function normalizeSections(readModel, narratives, anchorOutcomes, noteContexts, 
       }
       result.push({
         ref, task: shownTask, state: states.get(task.task_id), narrativeRef, anchorOutcome, noteContext,
-        connections: connected.get(refKey(ref)) ?? [],
+        connections: connected.get(refKey(ref)) ?? [], splitLabel: splitLabelOf.get(task.task_id) ?? null,
       });
     }
   }

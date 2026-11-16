@@ -73,6 +73,9 @@ export function renderConnectionChips(connections = []) {
   return `${open === 0 ? '' : `<span class="connection-chip">他条件に接続 ${open}</span>`}${priority === 0 ? '' : '<span class="connection-chip">優先接続</span>'}`;
 }
 
+/** ADR 0205 §7: the 分割待ち / 関数分割 chip, drawn beside the status (which it never replaces). */
+export const renderSplitLabel = (label) => (label === null || label === undefined ? '' : `<span class="connection-chip">${escapeHtmlText(label)}</span>`);
+
 export function renderTaskIndexEntry(section, lookup) {
   const key = refKey(section.ref);
   const status = DOCUMENT_STATUS[section.state.status] ?? { mark: '?', label: '状態不明' };
@@ -81,7 +84,7 @@ export function renderTaskIndexEntry(section, lookup) {
   // A ToDo the diagram does not draw keeps its row here — the index is the
   // complete list — and it selects its own detail, which exists either way.
   const selectKey = key;
-  return `<li><button type="button" data-select-node-key="${escapeHtmlAttribute(selectKey)}"><span class="task-index-status status-${escapeHtmlAttribute(section.state.status)}" role="img" aria-label="${escapeHtmlAttribute(status.label)}">${escapeHtmlText(status.mark)}</span><span class="task-index-reference">${escapeHtmlText(taskReference(section, lookup))}</span><strong>${escapeHtmlText(section.task.title)}</strong>${blockedReason}${renderConnectionChips(section.connections)}</button></li>`;
+  return `<li><button type="button" data-select-node-key="${escapeHtmlAttribute(selectKey)}"><span class="task-index-status status-${escapeHtmlAttribute(section.state.status)}" role="img" aria-label="${escapeHtmlAttribute(status.label)}">${escapeHtmlText(status.mark)}</span>${renderSplitLabel(section.splitLabel)}<span class="task-index-reference">${escapeHtmlText(taskReference(section, lookup))}</span><strong>${escapeHtmlText(section.task.title)}</strong>${blockedReason}${renderConnectionChips(section.connections)}</button></li>`;
 }
 
 /** plan_key -> 最終活動時刻。journalの末尾eventが、そのplanが最後に動いた時点。 */
