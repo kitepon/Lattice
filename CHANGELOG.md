@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- コードを触らない工程を enforced で止めない。ホストが `lattice chart set --no-code-lane <lane>[,<lane>...]`（空文字で解除）を工程表ごとに一度だけ設定すると、その lane の工程は着手の関門1〜3を受けない（宣言した空の境界として数え、衝突せず古くもならない）。コードの工程の関門は変わらない。Lattice は lane の名前を持たない。`chart set` の結果に `no_code_lanes` が加わる。
 - 工程表の設定 `.lattice/chart.json` に、省略できる `no_code_lanes`（コードに触れない lane の並び、昇順・重複なし、既定は空）を足した。ホストへの変更：有り（工程表の設定の形）。Store は `readTodoChartMeta` に常に `no_code_lanes` を返し（欠けた旧ファイルは `[]`）、`writeTodoChartMeta` の patch で一覧ごと置き換える。空にするとキーごと消すので、一度も設定しない工程表の `chart.json` は今までと同じ形のまま。**設定した工程表だけ**、この版より古い席は `chart_meta_invalid` で読めない。その工程表を読む席を先に上げる。設定する CLI（`chart set --no-code-lane`）と、enforced の門1〜3で飛ばす処理は別PR（g3、アリス）。
 - `lattice sensor init|sync`：git の作業木なら、先に `.lattice/` を `.git/info/exclude` へ足す。これまで、メンバーの clone で `sensor init` をすると 143 MB の `.lattice/` が未追跡で残り、`git add -A` で commit されかねなかった。`chart repo sync` が足していたのと同じ行で、二重には足さない。
 - `lattice chart repo sync`：最初の取得だけ `--depth=1`、2回目からは深さを付けずに取る。これまでは毎回 `--depth=1` で、新しい先頭がそのたびに浅い根になり、前の先頭が祖先でなくなった。そのせいで enforced の門4が、マージ済みのコミットを「今の先頭でない」と断り、`todo structure input` は `baseline_not_ancestor` になっていた。fast-forward だけで動く点は変えない。
