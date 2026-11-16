@@ -107,7 +107,7 @@ if (help !== null) {
     process.exitCode = projectCliFailure(process.stderr, error);
   }
 } else if (args.length === 5 && args[0] === 'plan' && args[1] === 'create'
-  && args[2] === '--schema-version' && ['1', '2', '3', '4', '5'].includes(args[3]) && args[4] === '--json') {
+  && args[2] === '--schema-version' && ['1', '2', '3', '4', '5', '6'].includes(args[3]) && args[4] === '--json') {
   const { projectCliFailure, runPlanCreateSchema } = await import('../src/project-cli.mjs');
   try {
     process.exitCode = await runPlanCreateSchema({ stdout: process.stdout, version: Number(args[3]) });
@@ -176,6 +176,9 @@ if (help !== null) {
     try {
       process.exitCode = await runPlanRevise({ cwd: process.cwd(), inputRef: flags.input, planKey: flags.plan,
         dryRun: flags['dry-run'] === true, stdout: process.stdout, env: process.env });
+      if (process.exitCode === 0 && flags['dry-run'] !== true) {
+        await (await import('../src/todo-cli.mjs')).carryIndependenceAfterRevision({ cwd: process.cwd() });
+      }
     } catch (error) {
       process.exitCode = projectCliFailure(process.stderr, error, { command: 'revise', flags });
     }
@@ -326,7 +329,7 @@ function withImpliedJson(argv) {
   const implied = (bare && argv.length === 1 && (command === 'status' || command === 'session-context'))
     || (bare && argv.length === 3 && command === 'plan' && sub === 'show')
     || (bare && command === 'sensor' && (sub === 'init' || sub === 'sync') && argv.length <= 3)
-    || (command === 'sensor' && sub === 'diff')
+    || (command === 'sensor' && (sub === 'diff' || sub === 'resolve' || sub === 'touched'))
     || (command === 'plan' && (sub === 'revise' || sub === 'backchain')
       && input > 1 && typeof argv[input + 1] === 'string' && !argv[input + 1].startsWith('-'));
   return implied ? [...argv, '--json'] : argv;

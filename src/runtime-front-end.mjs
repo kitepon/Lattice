@@ -434,10 +434,12 @@ export function evidenceFromCollectedOutcomes(options = {}) {
  * 入力shape違反はTypeErrorでfail closed。
  */
 export function compileRuntimePlanV1(options = {}) {
-  if (!exactRecord(options, ['request', 'sensorEvidence', 'planRef', 'planEpoch', 'predecessorRefs'])) {
+  const { omitWavesOverLimit, ...required } = options;
+  if (!exactRecord(required, ['request', 'sensorEvidence', 'planRef', 'planEpoch', 'predecessorRefs'])
+    || (omitWavesOverLimit !== undefined && typeof omitWavesOverLimit !== 'boolean')) {
     fail('compileRuntimePlanV1 optionsがexact shapeでない');
   }
-  const { request, sensorEvidence, planRef, planEpoch, predecessorRefs } = options;
+  const { request, sensorEvidence, planRef, planEpoch, predecessorRefs } = required;
   if (!validateRunRequest(request)) fail('run_request.v1がcontractを満たさない');
   if (!identifier(planRef)) fail('planRefがidentifierではない');
   if (!Number.isSafeInteger(planEpoch) || planEpoch < 0) fail('planEpochが不正');
@@ -808,7 +810,7 @@ export function compileRuntimePlanV1(options = {}) {
   };
 
   const bundle = compileBoundaryObservationV2(observationSet);
-  const compiled = compileSchedulabilityGraphV2(bundle.graph);
+  const compiled = compileSchedulabilityGraphV2(bundle.graph, omitWavesOverLimit === true ? { omitWavesOverLimit: true } : {});
 
   if (compiled.outcome === 'unsupported' && compiled.code === 'NODE_LIMIT_EXCEEDED') {
     return nonDispatchable('NODE_LIMIT_EXCEEDED', { todo_count: todoIds.length });
@@ -843,11 +845,13 @@ export function compileRuntimePlanV1(options = {}) {
   }
   if (compiled.outcome !== 'compiled') fail(`未知のcompiler outcome: ${compiled.outcome}`);
 
-  // producer非依存の独立verifierと必ず一致すること（成功条件5）。
-  const verified = verifySchedulabilityPlanV2(bundle.graph, compiled.plan);
-  if (verified.outcome !== 'verified'
-    || verified.minimum_feasible_waves !== compiled.plan.minimum_feasible_waves) {
-    fail(`producerとverifierの結果が一致しない: ${JSON.stringify(verified)}`);
+  // producer非依存の独立verifierと必ず一致すること（成功条件5）。g5: wave planを省いた(plan: null)時は検証する対象が無い。
+  if (compiled.plan !== null) {
+    const verified = verifySchedulabilityPlanV2(bundle.graph, compiled.plan);
+    if (verified.outcome !== 'verified'
+      || verified.minimum_feasible_waves !== compiled.plan.minimum_feasible_waves) {
+      fail(`producerとverifierの結果が一致しない: ${JSON.stringify(verified)}`);
+    }
   }
 
   // boundary_manifest.v2をTODOごとに構成する。
@@ -888,6 +892,14 @@ export function compileRuntimePlanV1(options = {}) {
       fail(`生成manifestがboundary_manifest contractを満たさない: ${todoId}`);
     }
     manifests[todoId] = manifest;
+  }
+
+  // g5: no wave plan (over the exact-search limit) means no runtime plan either: its claim is `exact_minimum`.
+  if (compiled.plan === null) {
+    return {
+      outcome: 'dispatchable', plan: null, manifests, schedule: null, pairwise_verdicts: compiled.pairwise_verdicts,
+      graph: bundle.graph, resources: bundle.resources, graph_digest: bundle.graph_digest,
+    };
   }
 
   const plan = {

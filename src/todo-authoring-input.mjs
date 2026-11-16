@@ -66,6 +66,7 @@ export const AUTHORING_DIGEST_FIELDS = Object.freeze({
   'lattice.todo_witness_set.v3': 'witness_set_digest',
   'lattice.todo_witness_set.v4': 'witness_set_digest',
   'lattice.todo_witness_set.v5': 'witness_set_digest',
+  'lattice.todo_witness_set.v6': 'witness_set_digest',
   'lattice.todo_extraction.v2': 'extraction_digest',
   'lattice.todo_extraction.v3': 'extraction_digest',
   'lattice.todo_extraction.v4': 'extraction_digest',

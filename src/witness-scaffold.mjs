@@ -12,7 +12,7 @@
  */
 
 import { canonicalizeTodoArtifact, isTodoIdentifier, isTodoRef, todoSelfDigest } from './todo-contracts.mjs';
-import { TODO_WITNESS_SET_SCHEMA } from './todo-independence-contracts.mjs';
+import { TODO_WITNESS_SET_READ_ANCHORS_SCHEMA, TODO_WITNESS_SET_SCHEMA } from './todo-independence-contracts.mjs';
 
 const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 const sortedUnique = (values) => [...new Set(values)].sort(compareText);
@@ -66,10 +66,12 @@ function explainDraftTask(task, schema) {
     && isTodoIdentifier(entry.kind) && typeof entry.ref === 'string' && entry.ref.length > 0))) {
     return { reason: 'invalid_unknowns', path: '/unknowns' };
   }
-  if (task.concern_anchors !== undefined && !(Array.isArray(task.concern_anchors)
-    && task.concern_anchors.every((anchor) => plainObject(anchor) && isTodoRef(anchor.within)
-      && Array.isArray(anchor.symbols) && anchor.symbols.length > 0 && anchor.symbols.every(isTodoIdentifier)))) {
-    return { reason: 'invalid_concern_anchors', path: '/concern_anchors' };
+  for (const key of ['concern_anchors', 'read_anchors']) {
+    if (task[key] !== undefined && !(Array.isArray(task[key])
+      && task[key].every((anchor) => plainObject(anchor) && isTodoRef(anchor.within)
+        && Array.isArray(anchor.symbols) && anchor.symbols.length > 0 && anchor.symbols.every(isTodoIdentifier)))) {
+      return { reason: `invalid_${key}`, path: `/${key}` };
+    }
   }
   return null;
 }
@@ -122,6 +124,9 @@ export function witnessDraftTemplate({ projectId, planKey, taskIds, witnessSet =
       ...(witness.unknowns.length > 0 ? { unknowns: witness.unknowns.map(({ kind, ref }) => ({ kind, ref })) } : {}),
       ...(witness.concern_anchors?.length > 0 ? {
         concern_anchors: witness.concern_anchors.map(({ within, symbols }) => ({ within: within.target, symbols: [...symbols] })),
+      } : {}),
+      ...(witness.read_anchors?.length > 0 ? {
+        read_anchors: witness.read_anchors.map(({ within, symbols }) => ({ within: within.target, symbols: [...symbols] })),
       } : {}),
     };
   };
@@ -185,6 +190,13 @@ export function buildWitnessSet({ draft, observationByPath } = {}) {
         reasons.push(`anchor_outside_owned:${taskId}:${anchor.within}`);
       }
     }
+    const readTargets = new Set(Array.isArray(task.reads) ? task.reads : []);
+    for (const anchor of task.read_anchors ?? []) {
+      if (!readTargets.has(anchor.within)) reasons.push(`read_anchor_outside_reads:${taskId}:${anchor.within}`);
+    }
+    const anchorEntries = (anchors) => [...anchors]
+      .map((anchor) => ({ within: { kind: 'path', target: anchor.within }, symbols: sortedUnique(anchor.symbols) }))
+      .sort((left, right) => compareText(left.within.target, right.within.target));
     manualWitness[taskId] = {
       owns: owns.map(({ target, creates }) => (
         creates ? { kind: 'path', target, creates: true } : { kind: 'path', target }
@@ -205,21 +217,17 @@ export function buildWitnessSet({ draft, observationByPath } = {}) {
         .map(({ kind, ref }) => ({ kind, ref }))
         .sort((left, right) => compareText(`${left.kind}\u0000${left.ref}`, `${right.kind}\u0000${right.ref}`)),
       ...(Array.isArray(task.concern_anchors) && task.concern_anchors.length > 0
-        ? {
-          concern_anchors: [...task.concern_anchors]
-            .map((anchor) => ({
-              within: { kind: 'path', target: anchor.within },
-              symbols: sortedUnique(anchor.symbols),
-            }))
-            .sort((left, right) => compareText(left.within.target, right.within.target)),
-        }
-        : {}),
+        ? { concern_anchors: anchorEntries(task.concern_anchors) } : {}),
+      ...(Array.isArray(task.read_anchors) && task.read_anchors.length > 0
+        ? { read_anchors: anchorEntries(task.read_anchors) } : {}),
     };
   }
   if (reasons.length > 0) return reject(reasons);
 
   const witnessSet = {
-    schema: TODO_WITNESS_SET_SCHEMA,
+    // v6 only when some task reads functions: charts that do not use reads keep v5 and older readers (ADR 0204 §6).
+    schema: Object.values(manualWitness).some((witness) => witness.read_anchors !== undefined)
+      ? TODO_WITNESS_SET_READ_ANCHORS_SCHEMA : TODO_WITNESS_SET_SCHEMA,
     project_id: draft.project_id,
     plan_key: draft.plan_key,
     capacity: { executors: draft.capacity.executors },

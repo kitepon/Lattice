@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { fsyncDirectory } from './fs-dir-sync.mjs';
 import {
-  lstat, mkdir, open, readFile, readdir, rename, rm, stat,
+  lstat, mkdir, open, readFile, readdir, rm, stat,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { LOCK_WAIT_MS, StoreLockError, withStoreLock } from './store-lock.mjs';
-import { syncPublishedFile } from './fs-publish.mjs';
+import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
 import { normalizeCheckoutEol } from './todo-store-view.mjs';
 import { memoByFileIdentity } from './todo-version-memo.mjs';
 import { TODO_VERSION_COMPACT_FILE, readVersionCompact } from './todo-version-compact.mjs';
@@ -201,7 +201,7 @@ async function atomicWrite(ref, bytes) {
     await syncPublishedFile(handle, ref);
     await handle.close();
     handle = null;
-    await rename(temporary, ref);
+    await renamePublishedFile(temporary, ref);
     await fsyncDirectory(path.dirname(ref));
   } finally {
     if (handle) await handle.close();

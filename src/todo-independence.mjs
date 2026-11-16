@@ -284,6 +284,7 @@ export function compileTodoIndependence(options = {}) {
     planRef: witnessRequestId(witnessSet, plan.plan_version),
     planEpoch: 0,
     predecessorRefs: [],
+    omitWavesOverLimit: true,
   });
 
   if (compiled.outcome !== 'dispatchable'
@@ -316,7 +317,9 @@ export function compileTodoIndependence(options = {}) {
     conflicts: conflictProjection.conflicts,
     precedences: dispatchable ? precedencesFrom(compiled.pairwise_verdicts) : [],
     unknowns: dispatchable ? [] : unknownsFrom(compiled.detail),
-    wave_plan: dispatchable
+    // g5: `outcome: compiled` with `wave_plan: null` = the exact wave search was omitted (more tasks than MAX_TODOS in the
+    // schedulability compiler); every verdict above is still complete. `unknown` is the other reason for null.
+    wave_plan: dispatchable && compiled.schedule !== null
       ? {
         waves: compiled.schedule.waves.map((wave) => ({
           task_ids: [...wave.todo_ids].sort(compareText),

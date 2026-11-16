@@ -48,14 +48,16 @@ function assertArray(value, label) {
 }
 
 function normalizeOptions(options) {
-  if (!exactRecord(options, []) && !exactRecord(options, ['maxSearchStates'])) {
+  const keys = Object.keys(options).sort();
+  if (!exactRecord(options, keys) || !keys.every((key) => ['maxSearchStates', 'omitWavesOverLimit'].includes(key))
+    || (options.omitWavesOverLimit !== undefined && typeof options.omitWavesOverLimit !== 'boolean')) {
     fail('options shapeが不正');
   }
   const maxSearchStates = options.maxSearchStates ?? DEFAULT_MAX_SEARCH_STATES;
   if (!Number.isSafeInteger(maxSearchStates) || maxSearchStates < 0) {
     fail('maxSearchStatesがnon-negative safe integerではない');
   }
-  return { maxSearchStates };
+  return { maxSearchStates, omitWavesOverLimit: options.omitWavesOverLimit === true };
 }
 
 function assertAcyclic(todos, precedences) {
@@ -270,14 +272,18 @@ function pairwiseVerdicts(graph) {
  */
 export function compileSchedulabilityGraphV2(normalizedGraph, options = {}) {
   const graph = normalizeGraph(normalizedGraph);
-  const { maxSearchStates } = normalizeOptions(options);
+  const { maxSearchStates, omitWavesOverLimit } = normalizeOptions(options);
 
-  if (graph.todos.length > MAX_TODOS) {
+  const overLimit = graph.todos.length > MAX_TODOS;
+  if (overLimit && !omitWavesOverLimit) {
     return { outcome: 'unsupported', code: 'NODE_LIMIT_EXCEEDED' };
   }
   if (graph.unknowns.length > 0) {
     return { outcome: 'unknown', code: 'BOUNDARY_UNKNOWN', unknowns: graph.unknowns };
   }
+  // g5: the exact minimum-wave search stops at MAX_TODOS. A caller that only needs the verdicts (independence) opts in to
+  // `plan: null` above it: the pairwise verdicts do not depend on the search, and no minimum is claimed.
+  if (overLimit) return { outcome: 'compiled', pairwise_verdicts: pairwiseVerdicts(graph), plan: null };
   if (maxSearchStates === 0) {
     return { outcome: 'unsupported', code: 'SEARCH_BUDGET_EXHAUSTED' };
   }

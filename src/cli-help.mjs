@@ -34,7 +34,7 @@ Commands:
   create --input <file> [--serialization-reviewed]
       # 結果へdispatch_shapeを載せる。--serialization-reviewedは互換のため受理するだけで門ではない
   create --schema --json             # 既定は最新版（v5）のJSON Schemaを返す
-  create --schema-version <1|2|3|4|5> --json
+  create --schema-version <1|2|3|4|5|6> --json
   create --template --json           # 作者が書くkeyだけの最小のv5入力（各taskの設計メモを書けばplan createが受理する）
   backchain --schema --json         # 最終成果から必要な機能を逆算する入力契約
   revise [--plan <key>] --input <file> [--dry-run] [--json]
@@ -137,7 +137,8 @@ Write commands:
         # 1件を閉じる。planは書き直さず、他のtaskの状態とjournalはそのまま
   add --plan <key> --task <id> --title <text> [--phase <id>] [--lane <lane>] [--done-condition <text>]
       [--design-memo <text>] [--after <id>[,<id>...]] [--before <id>[,<id>...]] [--reason <text>]
-        # 1件を足す（a39）。planの全体を書かずに軽量改訂で新plan_versionを作り、他のtaskはcarry
+      [--owns <path>[#<function>][,...]] [--reads <path>[#<function>][,...]]
+        # 1件を足す（a39）。planの全体を書かずに軽量改訂で新plan_versionを作り、他のtaskはcarry。--owns/--reads は変える・読む関数を path#関数 で一度だけ宣言する（解決できない名前は行を書かず、近い名前を結果に返す。足すこと自体は失敗しない）
   done --plan <key> --task <id> [--message <text>] [--test-result <markdown-file>]
         # taskを閉じる。--messageの文が閉じた記録になる（省略すると既定の文）。--evidence <file>は次のminorまでの別名で、fileの文を--messageとして読む。
         # 既にdoneなら何も足さずunchanged:trueで成功する（a12）
@@ -168,13 +169,13 @@ Write commands:
       # enforced = witness＋未宣言・古い宣言・衝突・参照なしdone・heavy段階の監査なし閉じを止める（ADR 0200）
       # このplanの調整方式（witness検証で並列するか、会話で調整するか）を記録する
   independence compile --plan <key> --input <file>  # witness setとsensorから並列可否を記録する
-  independence compile --schema --json  # compileが読むwitness set（lattice.todo_witness_set.v5）のJSON Schema
+  independence compile --schema --json  # compileが読むwitness set（lattice.todo_witness_set.v5。read_anchorsを使う計画はv6: docs/schemas/lattice.todo_witness_set.v6.schema.json）のJSON Schema
   independence witness migrate --plan <key>  # revision後の宣言をtask migrationで写す
   independence witness scaffold --template --plan <key> [--json]  # 未完の工程を並べた下書きのひな形を出す
   independence witness scaffold --schema --json  # 下書き（lattice.todo_witness_draft.v2）のJSON Schema
   independence witness scaffold --plan <key> --input <draft>  # 下書きとfresh観測から宣言を書き出す
-  independence witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]
-      # 1件のtaskの行だけを宣言する（a40）。readyが全部宣言済みならcompileまで行い、未宣言はwaiting_forに返す
+  independence witness declare --plan <key> --task <id> [--owns <path>[#<function>][,...]] [--reads <path>[#<function>][,...]] [--writes ...]
+      # 1件のtaskの行だけを宣言する（a40）。宣言済みの行でcompileまで行い、未宣言のreadyはwaiting_forに返す
   structure input --plan <key> --input <file> --dry-run --json
       # plan identity・topology・unfinished task coverage・baseline祖先を無変更で検査する
   structure input --plan <key> --input <file>
@@ -227,6 +228,17 @@ todo startのadvisoryとtodo independenceの投影が、その状況と次の一
 `,
   sensor: `Usage: lattice sensor <init|sync> [path] [--json]
        lattice sensor diff <rootA> <rootB> [options] [--json]
+       lattice sensor resolve <path#symbol>... [--path <root>] [--related] [--json]
+       lattice sensor touched <from> [<to>] [--path <root>] [--json]
+
+resolve: path#symbolの関数の行範囲を、維持されている索引から引く（完全一致のみ）。symbolは区切りを.でつないだ
+  入れ子の名前（Bar.baz）で、pathとsymbolは最初の#で分ける。外れたらunresolvedに同じファイルの近い名前
+  （nearest）と他ファイルの同名（elsewhere）を返し、終了コードは0。--relatedで直接の呼び出し元と先も添える。
+
+touched: <from>..<to>（<to>の既定はHEAD）の差分のhunkを、変えた関数へ写す。touchedは{path, symbol, kind, start_line, end_line}、
+  関数に入らない変更（import、トップ階層、消えた関数、改名、バイナリ、索引にない種類のファイル）はunattributedに
+  理由つきで返し、ファイル単位の変更として扱う。<to>がHEADで作業木がcleanなら維持された索引を使い、そうでなければ
+  <to>の使い捨てworktreeで新しく索引する（未commitの状態は見ない）。
 
 diff options:
   --subtree-a <rel>     # A側をこの部分木だけに絞り、prefixを剥がしてから突き合わせる
@@ -284,7 +296,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'setup status': 'setup status [--host <claude|codex|grok|cursor|all>] [--json]',
   status: 'status [--json]',
   'session-context': 'session-context [--json]',
-  'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5> --json | --template --json',
+  'plan create': 'plan create --input <file> [--serialization-reviewed] | --schema --json | --schema-version <1|2|3|4|5|6> --json | --template --json',
   'plan show': 'plan show <plan_key> --json',
   'plan scope-review': 'plan scope-review --plan-input <plan-create-or-extraction.json> --review <scope-review.json> --json | --schema --json',
   'plan backchain': 'plan backchain --input <file> [--dry-run] [--json] | --schema --json',
@@ -337,8 +349,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   charts: 'charts list [--json] | source [--project <id>]... [--json]  # LATTICE_CHARTS_ROOT配下の全工程表を1プロセスで読む',
   'charts list': 'charts list [--json]  # lattice.charts_list_result.v1 {charts_root, charts:[{project_id, name, created_by, created_at, source}], findings}',
   'charts source': 'charts source [--project <id>]... [--json]  # lattice.charts_source_result.v1 {charts:{<id>: <source>|null}}（--project無し=全工程表）',
-  chart: 'chart set [--name <text>] [--created-by <id>] [--json] | repo bind --url <url> --branch <branch> [--json] | repo sync [--json]',
-  'chart set': 'chart set [--name <text>] [--created-by <id>] [--json]  # lattice.chart_set_result.v1（どちらか1つ以上。名前は1-40字・制御文字なし。--nameが無ければ名前はそのまま。--created-byは作成者が空の時だけ）',
+  chart: 'chart set [--name <text>] [--created-by <id>] [--no-code-lane <lane>[,<lane>...]] [--json] | repo bind --url <url> --branch <branch> [--json] | repo sync [--json]',
+  'chart set': 'chart set [--name <text>] [--created-by <id>] [--no-code-lane <lane>[,<lane>...]] [--json]  # lattice.chart_set_result.v1（1つ以上。--no-code-lane はコードを触らない工程のlaneで、enforcedの着手の関門1-3を外す（空文字で消す）。名前は1-40字・制御文字なし。--nameが無ければ名前はそのまま。--created-byは作成者が空の時だけ）',
   'chart repo': 'chart repo bind --url <url> --branch <branch> [--json] | sync [--json]  # lattice.chart_repo_result.v1',
   'chart repo bind': 'chart repo bind --url <url> --branch <branch> [--json]  # コード工程表のrepoを記録する',
   'chart repo sync': 'chart repo sync [--json]  # depth-1 fetch、accepted_tipからだけ前進（reset/forceしない）、その後sensor。status current|synced|dirty|diverged|failed',
@@ -347,7 +359,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation|enforced> --reason <text>'
     + ' | compile --plan <key> --input <file> | compile --schema --json | witness migrate --plan <key>'
     + ' | witness scaffold --template --plan <key> [--json] | witness scaffold --schema --json | witness scaffold --plan <key> --input <draft>'
-    + ' | witness declare --plan <key> --task <id> [--owns <path>[,<path>...]] [--reads ...] [--writes ...]',
+    + ' | witness declare --plan <key> --task <id> [--owns <path>[#<function>][,...]] [--reads <path>[#<function>][,...]] [--writes ...]',
   'todo independence mode': 'todo independence mode --plan <key> --set <witness|conversation|enforced> --reason <text>',
   'todo structure': 'todo structure --schema --json | [--plan <key>] --json | input --plan <key> --input <file> [--dry-run --json] | compile --plan <key> --input <file> | realize --plan <key> --task <id> (--planned|--realized <actual-structure.json>) [--commit <HEAD|sha>]... | realize --plan <key> --task <id> --input <full-realization.json> | finalize --plan <key> --json',
   'todo seam-profile': 'todo seam-profile --plan <key> --file <path> [--json]',
@@ -414,6 +426,8 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo migrate': 'todo migrate --input <extraction.json> [--serialization-reviewed] [--json] | --input <extraction.json> --dry-run --json [--serialization-reviewed] | --schema --json',
   'sensor init': 'sensor init [path] [--json]',
   'sensor sync': 'sensor sync [path] [--json]',
+  'sensor resolve': 'sensor resolve <path#symbol>... [--path <root>] [--related] [--json]',
+  'sensor touched': 'sensor touched <from> [<to>] [--path <root>] [--json]',
   'sensor diff': 'sensor diff <rootA> <rootB> [--subtree-a <rel>] [--subtree-b <rel>]'
     + ' [--map-a <from>=<to>] [--map-b <from>=<to>] [--limit <n>] [--json]',
   'runtime-errors snapshot': 'runtime-errors snapshot [--after-cursor <n>] [--limit <n>] --json',
