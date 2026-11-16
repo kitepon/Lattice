@@ -1,5 +1,8 @@
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import sensorPackage from '../sensor/package.json' with { type: 'json' };
 import { compareSensorIndexes, parseSensorDiffArgs, SensorDiffError } from './sensor-diff.mjs';
 import { spawnSensorCli } from './sensor-runtime.mjs';
@@ -57,6 +60,18 @@ function runDiff(request, stdout, stderr) {
   }
 }
 
+/** g2: the index (`.lattice/`, ~143 MB) must not be committed by `git add -A` in a product clone; not a git work tree = nothing to do. */
+async function excludeSensorIndex(projectPath) {
+  try {
+    const { stdout } = await promisify(execFile)('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: projectPath });
+    const exclude = path.resolve(projectPath, stdout.trim());
+    const text = await readFile(exclude, 'utf8').catch(() => '');
+    if (text.split(/\r?\n/u).includes('.lattice/')) return;
+    await mkdir(path.dirname(exclude), { recursive: true });
+    await appendFile(exclude, `${text === '' || text.endsWith('\n') ? '' : '\n'}.lattice/\n`);
+  } catch { /* no git work tree */ }
+}
+
 function execute(command, projectPath) {
   return new Promise((resolve, reject) => {
     let captured = 0;
@@ -107,6 +122,7 @@ export async function runSensorCli({ argv, stdout, stderr }) {
     return 1;
   }
   try {
+    await excludeSensorIndex(request.path);
     const result = await execute(request.command, request.path);
     if (result.code !== 0 || result.signal || result.overflow) {
       const notInitialized = request.command === 'sync' && /not initialized/u.test(result.stderr);
