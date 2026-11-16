@@ -45,6 +45,7 @@ import {
   computeTodoDispatchShapeForPlan,
 } from './todo-dispatch-shape.mjs';
 import { splitTouches } from './todo-declaration.mjs';
+import { readTodoRelationSummary } from './todo-relation-store.mjs';
 import { completeCreateInput, explainFlagCommand, readAuthoringJsonFile, resolveTodoActor } from './todo-authoring-input.mjs';
 import { publicRefusalCode, withRefusalGuidance } from './cli-refusal-guidance.mjs';
 
@@ -152,6 +153,15 @@ export function validateProjectStatus(value) {
  * store読みは呼び出し側が済ませている。ここが払うのはplanごとの小さな記録ファイルと、
  * 記録があるときだけのHEAD照合である。readyが無いplanは述べる対象が無いので載せない。
  */
+/** a5c: the plan's function-level relation count from its one summary file (ADR 0204 §5), or null when it has none. */
+async function relationSummaryOf(repoRoot, planKey) {
+  try {
+    const summary = await readTodoRelationSummary({ repoRoot, planKey });
+    return summary === null || summary.relation_count === 0 ? null
+      : { relation_count: summary.relation_count, unresolved_count: summary.unresolved_count, head_sha: summary.head_sha };
+  } catch (error) { return { unreadable: error?.detail?.reason ?? error?.code ?? 'relations_unreadable' }; }
+}
+
 async function summarizeIndependence({ repoRoot, store, todo }) {
   const readyPlanKeys = [...new Set(todo.next_ready.map(({ plan_key: key }) => key))].sort();
   if (readyPlanKeys.length === 0) return [];
@@ -190,8 +200,10 @@ async function summarizeIndependence({ repoRoot, store, todo }) {
       currentBaseSha: currentBaseSha ?? PLACEHOLDER_SHA,
       changedPaths: null,
     });
+    const functionConflicts = await relationSummaryOf(repoRoot, planKey);
     summaries.push({
       plan_key: planKey,
+      ...(functionConflicts === null ? {} : { function_conflicts: functionConflicts }),
       coverage: projected.coverage,
       guidance: selectIndependenceGuidance({
         coverage: projected.coverage,

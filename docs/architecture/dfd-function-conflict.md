@@ -19,12 +19,14 @@ a3b declaration CLI, a4 Store relations, a5 judgment, a6 Touched). Roles: [funct
 | Reader | Reads | Never reads |
 |---|---|---|
 | `session-context`, `status`, `todo show`, display read, dashboard | per plan: summary `{relation_count, open_relations (bounded), unresolved_count, head_sha}` | sensor index, witness set, full relation log; no recompute; no git per plan |
-| `todo start` | the summary of its plan + its own open relations | the same |
+| `todo start` (a5c) | the summary of its plan; when it has relations, its own open relations from the log (`readTodoRelations({taskId})`) → `advisory.relations` | the same |
+| `todo show` (a5c) | the same → `relations` (`{open: [{with, path, overlaps: [{self, other}]}], plan_relation_count, unresolved_count, head_sha}`; `{unreadable}` when the record cannot be read) | the same |
+| `session-context` (a5c) | the summary → `independence[].function_conflicts {relation_count, unresolved_count, head_sha}` for a plan with ready tasks and relations | the same |
 | `todo independence` (explicit, diagnostic) | relation log, independence artifact | — |
 
 `todo done` / `todo retire` end with one empty `transactTodoRelations` (only when the plan summary says `relation_count > 0`) so a finished task's open relations close; failure is ignored and the plan's next write closes them.
 
-Not done in a5: the independence compile still judges per file (a path with anchors is still a whole-file resource there) and `todo start`/the read surfaces do not show relations yet.
+Not done in a5: the independence compile still judges per file (a path with anchors is still a whole-file resource there; a5b) and `todo start`/the read surfaces do not show relations yet (a5c).
 
 ## State it owns
 
