@@ -229,10 +229,16 @@ todo startのadvisoryとtodo independenceの投影が、その状況と次の一
   sensor: `Usage: lattice sensor <init|sync> [path] [--json]
        lattice sensor diff <rootA> <rootB> [options] [--json]
        lattice sensor resolve <path#symbol>... [--path <root>] [--related] [--json]
+       lattice sensor touched <from> [<to>] [--path <root>] [--json]
 
 resolve: path#symbolの関数の行範囲を、維持されている索引から引く（完全一致のみ）。symbolは区切りを.でつないだ
   入れ子の名前（Bar.baz）で、pathとsymbolは最初の#で分ける。外れたらunresolvedに同じファイルの近い名前
   （nearest）と他ファイルの同名（elsewhere）を返し、終了コードは0。--relatedで直接の呼び出し元と先も添える。
+
+touched: <from>..<to>（<to>の既定はHEAD）の差分のhunkを、変えた関数へ写す。touchedは{path, symbol, kind, start_line, end_line}、
+  関数に入らない変更（import、トップ階層、消えた関数、改名、バイナリ、索引にない種類のファイル）はunattributedに
+  理由つきで返し、ファイル単位の変更として扱う。<to>がHEADで作業木がcleanなら維持された索引を使い、そうでなければ
+  <to>の使い捨てworktreeで新しく索引する（未commitの状態は見ない）。
 
 diff options:
   --subtree-a <rel>     # A側をこの部分木だけに絞り、prefixを剥がしてから突き合わせる
@@ -421,6 +427,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'sensor init': 'sensor init [path] [--json]',
   'sensor sync': 'sensor sync [path] [--json]',
   'sensor resolve': 'sensor resolve <path#symbol>... [--path <root>] [--related] [--json]',
+  'sensor touched': 'sensor touched <from> [<to>] [--path <root>] [--json]',
   'sensor diff': 'sensor diff <rootA> <rootB> [--subtree-a <rel>] [--subtree-b <rel>]'
     + ' [--map-a <from>=<to>] [--map-b <from>=<to>] [--limit <n>] [--json]',
   'runtime-errors snapshot': 'runtime-errors snapshot [--after-cursor <n>] [--limit <n>] --json',
