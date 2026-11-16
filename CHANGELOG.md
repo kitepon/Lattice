@@ -1,13 +1,17 @@
 # Changelog
 
+## 0.110.2 — 2026-11-17
+
+工程を足す時の Store の検証を一回にする版。ホストへの変更：無し（形式は変えない）。本番の Store の写しで `todo add` 5.7 秒 → 4.3 秒（ルドミラ測定）。
+
+- Store：一つの命令の中で、同じ journal と plan/revision の bytes を一回しか検証しない（w4、ルドミラ）。ホストへの変更：無し（形式は変えない）。`todo add` は Store を約 13 回読み、そのたびに全 journal と plan-scoped chain の segment、plan.json、revision.json の canonical 確認と契約検証をやり直していた。検証は bytes だけで決まるので、process の中で、通った bytes を（sha256 と ref と読みの強さで）覚え、二回目からは JSON の解析だけにする。bytes が変われば検証し直す。BellTeam の写しで `todo add` 5.7 秒→4.3 秒（アリスの w2 の測定の続き）。
+
 ## 0.110.1 — 2026-11-17
 
 本番の書き込みが遅い問題の直し（lattice-bellteam-write-slow-20261116）。ホストへの変更：無し（形式は変えない）。段階 B（0.110.0）をまだ入れていない席は、この版で一度に上げる。
 
 - センサーの観測：一回の集まりの問い合わせ（申告したファイルごとの `affected`）を順に一つずつではなく、少数ずつ同時に走らせる（w3、ネヴェ、#235）。結果の順と中身は変えない。本番の Store の写しで `todo add` 20.5 秒 → 6.5〜7.4 秒（アリス測定）。
 - 受け入れ：写しでの測定はルドミラ（#234）とアリス（#235 の後）。
-
-- Store：一つの命令の中で、同じ journal と plan/revision の bytes を一回しか検証しない（w4、ルドミラ）。ホストへの変更：無し（形式は変えない）。`todo add` は Store を約 13 回読み、そのたびに全 journal と plan-scoped chain の segment、plan.json、revision.json の canonical 確認と契約検証をやり直していた。検証は bytes だけで決まるので、process の中で、通った bytes を（sha256 と ref と読みの強さで）覚え、二回目からは JSON の解析だけにする。bytes が変われば検証し直す。BellTeam の写しで `todo add` 5.7 秒→4.3 秒（アリスの w2 の測定の続き）。
 - Store：一回の書き込みが数十秒かかる問題（w1-store-write-slow、ルドミラ）。ホストへの変更：無し（読みが履歴を検証し直さなくなるだけ。形式は変えない）。BellTeam の写し（`bellteam-dev-added` の保持版 888、note 約 1400）で測ると、`todo note` 一回が 4.4 秒、`status` が 1.9 秒で、0.106.0 と 0.109.0 は同じだった（コードの退行ではなく、保持している過去版の数に比例して増える）。時間の主因は、読みのたびに全ての保持版の `compact.json.gz`（canonical 再確認と自己ダイジェスト）と plan-scoped chain（hash chain 全検証）を検証し直していたことで、ADR 0204 の k4（読みは履歴を再検証しない）が、この二つに届いていなかった。読みでは形（shape）だけを確かめ、`todo verify` と compaction の書き手は今までどおり全部確かめる。`compact.json.gz` の読みは同じ process 内で一回に束ね、note の移行は複製しない。写しで `todo note` 4.4 秒→2.0 秒、`status` 1.9 秒→0.9 秒（五回の中央値）。
 
 ## 0.110.0 — 2026-11-17
