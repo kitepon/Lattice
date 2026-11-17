@@ -52,6 +52,7 @@ async function fixture(context, { commit = true } = {}) {
   success(root, ['plan', 'create', '--input', 'plan.json']);
   return root;
 }
+const git = (root, ...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
 const declare = (taskId, ...flags) => ['todo', 'independence', 'witness', 'declare', '--plan', 'dev', '--task', taskId, ...flags];
 const readSet = async (root) => JSON.parse(await readFile(path.join(root, '.lattice/todo/witness/dev.json'), 'utf8'));
 
@@ -164,6 +165,41 @@ test('a name that was not declared as new and no longer resolves stays a whole-f
   const declared = success(root, declare('Q', '--owns', 'src/a.js#beta'));
   assert.equal(declared.declaration.conflicts.length, 1);
   assert.deepEqual(declared.declaration.conflicts[0].overlaps[0].other, { symbol: null, start_line: null, end_line: null, access: 'write' });
+});
+
+test('a whole code file is accepted as today and the result says how many functions it makes conflicting (ADR 0204 §7.3)', async (context) => {
+  const root = await fixture(context);
+  await writeFile(path.join(root, 'README.md'), '# notes\n');
+  git(root, 'add', '.');
+  git(root, '-c', 'user.name=f', '-c', 'user.email=f@f', 'commit', '--quiet', '-m', 'docs');
+  const declared = success(root, declare('P', '--owns', 'src/a.js,README.md', '--reads', 'src/b.js'));
+  assert.equal(declared.declaration.written, true);
+  const [a, b] = declared.declaration.whole_files;
+  assert.deepEqual([a.path, a.access, a.functions > 1, a.candidates], ['src/a.js', 'write', true, []]);
+  assert.deepEqual([b.path, b.access], ['src/b.js', 'read']);
+  assert.equal(declared.declaration.whole_files.length, 2, 'README.md has no functions: no entry');
+  assert.equal(a.text, `src/a.js: whole file, its ${a.functions} functions all conflict; by function: --owns src/a.js#<function>`);
+  // a function claim, even next to a whole file elsewhere, gets no entry for the file it names functions in
+  const narrowed = success(root, declare('Q', '--owns', 'src/a.js#alpha', '--reads', 'src/b.js#beta'));
+  assert.deepEqual(narrowed.declaration.whole_files, []);
+});
+
+test('whole_files candidates are the functions the title and design memo name in that file; an add keeps the file', async (context) => {
+  const root = await fixture(context);
+  const added = success(root, ['todo', 'add', '--plan', 'dev', '--task', 'S', '--title', 'S', '--phase', 'p',
+    '--design-memo', 'Change `beta` so it returns more.', '--owns', 'src/a.js']);
+  assert.equal(added.declaration.written, true);
+  const [entry] = added.declaration.whole_files;
+  assert.deepEqual(entry.candidates, ['beta']);
+  assert.match(entry.text, /^src\/a\.js: whole file, its \d+ functions all conflict; by function: --owns src\/a\.js#beta$/u);
+  assert.equal((await readSet(root)).manual_witness.S.concern_anchors, undefined);
+});
+
+test('a Store root with no commit leaves whole_files out; the declaration is unaffected', async (context) => {
+  const root = await fixture(context, { commit: false });
+  const declared = success(root, declare('P', '--owns', 'src/a.js'));
+  assert.equal(declared.declaration.written, true);
+  assert.deepEqual(declared.declaration.whole_files, []);
 });
 
 test('a malformed entry is reported, not recorded', async (context) => {

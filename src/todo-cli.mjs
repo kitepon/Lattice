@@ -4166,12 +4166,14 @@ async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) 
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
   const writer = createTodoStoreWriter({ caller: 'todo-relations' });
   const mine = declaredPaths(flags);
+  const task = member.plan.tasks.find(({ task_id: id }) => id === taskId);
   const headSha = observable ? currentHeadSha(repoRoot) : null;
   const peek = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
   let alsoResolve = neededAnchors(peek?.plan_key === planKey ? peek.manual_witness : {}, taskId, mine);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { row, declaration, ranges } = await buildDeclarationRow({
-      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve });
+      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve,
+      text: { title: task?.title, memo: typeof task?.design_memo === 'string' ? task.design_memo : undefined } });
     if (row === null) return { declaration, scaffolded: null };
     const resolved = new Set([...alsoResolve, ...declaration.resolved].map(({ path: where, symbol }) => `${where}\0${symbol}`));
     const draftFor = (witnessSet, unfinishedTaskIds) => {
