@@ -156,6 +156,13 @@ enforced start refusal) showed only `--owns <path>`. Owner approved (1) and (2) 
    Resolve process the declaration already runs (Code graph adds `files: [path]` → `{path, functions}` to Resolve); no extra
    process, nothing read on a read. If Resolve is unavailable the entry is left out; the declaration is unaffected.
 
+4. The result says it to the one member it concerns (Behemoth a344, 2026-11-17: a rule line reaches every seat on every
+   turn, this happens to one member at one moment; a rule naming result fields went stale in a day). Each `new_names` entry
+   carries `text`, like `whole_files`: "<path>#<name>: not in the code, recorded as a new function; if you meant <nearest>,
+   declare again with that name" (the nearest part only when there is one). `todo add` with `declaration.written: false`
+   carries the same `next_action` as `witness declare` (correct the entry, declare with `witness declare`, never add again).
+   Then the common rules drop the written-false clause.
+
 ## Load budget (acceptance, on a BellTeam copy)
 
 - `todo add` with declarations: at most today's add + 2 s; Resolve + overlap for one task ≤ 1 s.
