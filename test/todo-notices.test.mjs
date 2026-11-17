@@ -70,6 +70,7 @@ test('re-earned readiness is a new notice; an enforced plan without a row offers
   const first = success(root, ['todo', 'done', '--plan', 'a', '--task', 'P', '--message', 'one']).notices
     .find(({ task_id: id }) => id === 'R');
   assert.match(first.next_action, /^lattice todo independence witness declare --plan b --task R /u);
+  assert.match(first.next_action, /--owns <path>#<function>\[,\.\.\.\] \[--reads <path>#<function>,\.\.\.\]$/u);
   assert.equal(first.coordination_mode, 'enforced');
   success(root, ['todo', 'reopen', '--plan', 'a', '--task', 'P', '--reason', 'again']);
   assert.deepEqual(projectTodoNotices(await readTodoStore({ repoRoot: root }), { lane: 'bot-c' }), []);

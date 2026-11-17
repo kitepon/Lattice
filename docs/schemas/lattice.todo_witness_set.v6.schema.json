@@ -424,6 +424,17 @@
                   "minLength": 1,
                   "maxLength": 1024
                 }
+              },
+              "new_symbols": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 256,
+                "description": "Optional (ADR 0204 §7). The names of `symbols` that did not resolve when the ToDo declared them: functions that do not exist yet. With no range such a name overlaps only a whole-file claim on the path and the same name. Strictly sorted and unique, a subset of symbols.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
               }
             }
           }
@@ -467,6 +478,17 @@
                 "minItems": 1,
                 "maxItems": 256,
                 "description": "Symbol names owned by this ToDo inside the resource. Strictly sorted and unique.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "new_symbols": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 256,
+                "description": "Optional (ADR 0204 §7). The names of `symbols` that did not resolve when the ToDo declared them: functions that do not exist yet. With no range such a name overlaps only a whole-file claim on the path and the same name. Strictly sorted and unique, a subset of symbols.",
                 "items": {
                   "type": "string",
                   "minLength": 1,

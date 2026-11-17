@@ -1488,7 +1488,8 @@ function headResolves(repoRoot) {
 }
 
 const declareCommand = (planKey, taskId) => `lattice todo independence witness declare --plan ${planKey} --task ${taskId}`
-  + ' --owns <path>[,<path>...] [--reads <path>,...] [--writes <path>,...]';
+  + ' --owns <path>#<function>[,...] [--reads <path>#<function>,...] [--writes <path>,...]'
+  + ' (a path alone only for a file with no functions or a new file)';
 
 /**
  * g3: a task in a lane the host marked `no_code_lanes` (`chart set --no-code-lane`) touches no code, so gates 1–3 do not apply:
@@ -1509,7 +1510,7 @@ function enforcedStartGate({ advisory, planKey, taskId, overrideReason }) {
     throw new TodoStoreError('TODO_TRANSITION_REFUSED', reason, undefined, { plan_key: planKey, task_id: taskId, ...detail });
   };
   if (advisory.coverage === 'missing' || unknown('witness_missing')) {
-    refuse('enforced_witness_undeclared', { next_action: `Declare the files ${taskId} touches, then start again: \`${declareCommand(planKey, taskId)}\`.` });
+    refuse('enforced_witness_undeclared', { next_action: `Declare the functions ${taskId} touches, then start again: \`${declareCommand(planKey, taskId)}\`.` });
   }
   if (advisory.drift_intersecting === true || unknown('record_stale')) {
     refuse('enforced_witness_stale', { next_action: `Main changed under ${taskId}'s declared files since the check: declare them again (it recompiles), then start: \`${declareCommand(planKey, taskId)}\`.` });

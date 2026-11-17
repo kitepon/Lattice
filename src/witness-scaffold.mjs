@@ -69,7 +69,9 @@ function explainDraftTask(task, schema) {
   for (const key of ['concern_anchors', 'read_anchors']) {
     if (task[key] !== undefined && !(Array.isArray(task[key])
       && task[key].every((anchor) => plainObject(anchor) && isTodoRef(anchor.within)
-        && Array.isArray(anchor.symbols) && anchor.symbols.length > 0 && anchor.symbols.every(isTodoIdentifier)))) {
+        && Array.isArray(anchor.symbols) && anchor.symbols.length > 0 && anchor.symbols.every(isTodoIdentifier)
+        && (anchor.new_symbols === undefined || (Array.isArray(anchor.new_symbols) && anchor.new_symbols.length > 0
+          && anchor.new_symbols.every((symbol) => anchor.symbols.includes(symbol))))))) {
       return { reason: `invalid_${key}`, path: `/${key}` };
     }
   }
@@ -123,10 +125,12 @@ export function witnessDraftTemplate({ projectId, planKey, taskIds, witnessSet =
       writes: witness.writes.filter((target) => !owned.has(target)),
       ...(witness.unknowns.length > 0 ? { unknowns: witness.unknowns.map(({ kind, ref }) => ({ kind, ref })) } : {}),
       ...(witness.concern_anchors?.length > 0 ? {
-        concern_anchors: witness.concern_anchors.map(({ within, symbols }) => ({ within: within.target, symbols: [...symbols] })),
+        concern_anchors: witness.concern_anchors.map(({ within, symbols, new_symbols: fresh }) => ({
+          within: within.target, symbols: [...symbols], ...(fresh === undefined ? {} : { new_symbols: [...fresh] }) })),
       } : {}),
       ...(witness.read_anchors?.length > 0 ? {
-        read_anchors: witness.read_anchors.map(({ within, symbols }) => ({ within: within.target, symbols: [...symbols] })),
+        read_anchors: witness.read_anchors.map(({ within, symbols, new_symbols: fresh }) => ({
+          within: within.target, symbols: [...symbols], ...(fresh === undefined ? {} : { new_symbols: [...fresh] }) })),
       } : {}),
     };
   };
@@ -195,7 +199,8 @@ export function buildWitnessSet({ draft, observationByPath } = {}) {
       if (!readTargets.has(anchor.within)) reasons.push(`read_anchor_outside_reads:${taskId}:${anchor.within}`);
     }
     const anchorEntries = (anchors) => [...anchors]
-      .map((anchor) => ({ within: { kind: 'path', target: anchor.within }, symbols: sortedUnique(anchor.symbols) }))
+      .map((anchor) => ({ within: { kind: 'path', target: anchor.within }, symbols: sortedUnique(anchor.symbols),
+        ...(anchor.new_symbols === undefined ? {} : { new_symbols: sortedUnique(anchor.new_symbols) }) }))
       .sort((left, right) => compareText(left.within.target, right.within.target));
     manualWitness[taskId] = {
       owns: owns.map(({ target, creates }) => (

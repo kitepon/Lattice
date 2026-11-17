@@ -34,6 +34,27 @@ test('judgeTask: different functions of one file do not conflict, the same funct
   assert.equal(judgeTask({ taskId: 'S', rows: { Q: rows.Q, S: rows.S }, ranges }).relations.length, 1);
 });
 
+test('judgeTask: a name declared as new keeps its name and no lines; it meets a whole-file claim and the same name only (ADR 0204 §7)', () => {
+  const fresh = (name) => ({ ...row({ owns: ['a.js'], concern: [['a.js', [name]]] }),
+    concern_anchors: [{ within: { kind: 'path', target: 'a.js' }, symbols: [name], new_symbols: [name] }] });
+  const P = fresh('Fresh');
+  const unranged = { symbol: 'Fresh', start_line: null, end_line: null, access: 'write' };
+  const same = judgeTask({ taskId: 'Q', rows: { P, Q: fresh('Fresh') }, ranges });
+  assert.deepEqual(same.relations[0].overlaps, [{ a: unranged, b: unranged }]);
+  assert.equal(same.unresolved, 0);
+  assert.equal(judgeTask({ taskId: 'Q', rows: { P, Q: fresh('Other') }, ranges }).relations.length, 0);
+  assert.equal(judgeTask({ taskId: 'Q', rows: { P, Q: row({ owns: ['a.js'], concern: [['a.js', ['alpha']]] }) }, ranges }).relations.length, 0);
+  const whole = judgeTask({ taskId: 'Q', rows: { P, Q: row({ owns: ['a.js'] }) }, ranges }).relations;
+  assert.equal(whole.length, 1);
+  // once the name exists it has a range and is judged by lines
+  const exists = rangeIndex([{ path: 'a.js', symbol: 'Fresh', start_line: 1, end_line: 3 }]);
+  assert.deepEqual(judgeTask({ taskId: 'Q', rows: { P, Q: row({ owns: ['a.js'], concern: [['a.js', ['Fresh']]] }) }, ranges: exists }).relations[0].overlaps[0].a.start_line, 1);
+  // a name NOT declared as new with no range is a whole-file claim and is counted
+  const lost = judgeTask({ taskId: 'Q', rows: { P: row({ owns: ['a.js'], concern: [['a.js', ['gone']]] }), Q: row({ owns: ['a.js'], concern: [['a.js', ['alpha']]] }) }, ranges });
+  assert.equal(lost.relations.length, 1);
+  assert.equal(lost.unresolved, 1);
+});
+
 test('judgeTask: read x write conflicts, read x read does not, a plain path is a whole-file claim', () => {
   const writer = row({ owns: ['a.js'], concern: [['a.js', ['alpha']]] });
   const reader = row({ reads: ['a.js'], readAnchors: [['a.js', ['alpha']]] });

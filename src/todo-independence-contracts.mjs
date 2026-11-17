@@ -223,7 +223,8 @@ function explainConcernAnchors(anchors, owns, writes, at) {
   }
   for (const [index, entry] of anchors.entries()) {
     const entryAt = `${at}/${index}`;
-    if (!exactRecord(entry, ['within', 'symbols'])) {
+    // `new_symbols` (ADR 0204 §7) is optional: the names of `symbols` that did not resolve when the task declared them.
+    if (!exactRecord(entry, Object.hasOwn(entry, 'new_symbols') ? ['within', 'symbols', 'new_symbols'] : ['within', 'symbols'])) {
       return reject('unexpected_or_missing_keys', entryAt);
     }
     if (!exactRecord(entry.within, ['kind', 'target'])
@@ -246,6 +247,13 @@ function explainConcernAnchors(anchors, owns, writes, at) {
     }
     if (!strictlySorted(entry.symbols)) {
       return reject('unsorted_or_duplicate_collection', `${entryAt}/symbols`);
+    }
+    if (Object.hasOwn(entry, 'new_symbols')) {
+      if (!Array.isArray(entry.new_symbols) || entry.new_symbols.length < 1 || entry.new_symbols.length > entry.symbols.length
+        || !entry.new_symbols.every((symbol) => entry.symbols.includes(symbol))) {
+        return reject('invalid_concern_anchor_symbol', `${entryAt}/new_symbols`);
+      }
+      if (!strictlySorted(entry.new_symbols)) return reject('unsorted_or_duplicate_collection', `${entryAt}/new_symbols`);
     }
   }
   if (!strictlySorted(anchors, (entry) => `${entry.within.kind}\0${entry.within.target}`)) {

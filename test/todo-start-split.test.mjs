@@ -163,6 +163,15 @@ test('planSplitHold: a retired split of the same function gives the next id, and
   assert.equal(both, null);
 });
 
+test('planSplitHold: an overlap whose side has no range (a function that does not exist yet) is not cut', () => {
+  const task = (id, lane) => ({ task_id: id, lane, phase_id: 'p', function_split: null });
+  const plan = { plan_key: 'dev', tasks: [task('U', 'a'), task('T', 'b')], hard_dependencies: [] };
+  const member = { plan, tasks: [{ task_id: 'U', status: 'in-progress' }, { task_id: 'T', status: 'pending' }] };
+  const unranged = { symbol: 'Fresh', start_line: null, end_line: null, access: 'write' };
+  const read = { open: [{ task_a: 'T', task_b: 'U', path: 'src/a.js', overlaps: [{ a: unranged, b: unranged }] }] };
+  assert.equal(planSplitHold({ member, taskId: 'T', read }), null);
+});
+
 test('b6: 分割待ち on every member of an unfinished split (the one in progress too), 関数分割 on S; none once S is closed', async (context) => {
   const root = await repo(context);
   for (const id of ['U', 'T']) declare(root, id, '--owns', 'src/a.js#alpha');

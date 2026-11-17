@@ -101,19 +101,69 @@ test('--reads path#symbol writes read_anchors and moves the set to v6; v5 refuse
   assert.equal((await readSet(root)).schema, 'lattice.todo_witness_set.v5');
 });
 
-test('an unresolved name is refused with the nearest names, exit 0, and nothing is written', async (context) => {
+test('a name that does not exist yet keeps the row: it is a new name, listed with the nearest names (ADR 0204 §7)', async (context) => {
   const root = await fixture(context);
   const declared = success(root, declare('P', '--owns', 'src/a.js#alpa,src/a.js#beta', '--reads', 'src/b.js#nope_at_all'));
-  assert.equal(declared.declaration.written, false);
-  const [near, none] = declared.declaration.unresolved;
-  assert.deepEqual([near.path, near.symbol, near.reason], ['src/a.js', 'alpa', 'symbol_not_found']);
+  assert.equal(declared.declaration.written, true);
+  assert.deepEqual(declared.declaration.unresolved, []);
+  const [near, none] = declared.declaration.new_names;
+  assert.deepEqual([near.path, near.symbol], ['src/a.js', 'alpa']);
   assert.ok(near.nearest.includes('alpha'), JSON.stringify(near));
-  assert.deepEqual([none.symbol, none.nearest.length >= 0], ['nope_at_all', true]);
-  assert.equal(declared.witness_ref, null);
-  assert.match(declared.next_action, /src\/a\.js#alpa \(symbol_not_found\); nearest: .*alpha/u);
+  assert.deepEqual([none.path, none.symbol], ['src/b.js', 'nope_at_all']);
+  assert.deepEqual(declared.declaration.resolved.map(({ symbol }) => symbol), ['beta']);
+  const row = (await readSet(root)).manual_witness.P;
+  assert.deepEqual(row.concern_anchors, [{ within: { kind: 'path', target: 'src/a.js' }, symbols: ['alpa', 'beta'], new_symbols: ['alpa'] }]);
+  assert.deepEqual(row.read_anchors, [{ within: { kind: 'path', target: 'src/b.js' }, symbols: ['nope_at_all'], new_symbols: ['nope_at_all'] }]);
+  assert.equal(explainTodoWitnessSet(await readSet(root)).valid, true);
+  // The same declaration with the right name replaces the row: no new name is left.
+  const again = success(root, declare('P', '--owns', 'src/a.js#alpha'));
+  assert.deepEqual(again.declaration.new_names, []);
+  assert.equal((await readSet(root)).manual_witness.P.concern_anchors[0].new_symbols, undefined);
+});
+
+test('new_symbols must be a sorted subset of symbols', async (context) => {
+  const root = await fixture(context);
+  success(root, declare('P', '--owns', 'src/a.js#alpa,src/a.js#beta'));
+  for (const bad of [['gamma'], ['beta', 'alpa'], []]) {
+    const set = structuredClone(await readSet(root));
+    set.manual_witness.P.concern_anchors[0].new_symbols = bad;
+    set.witness_set_digest = todoSelfDigest(set, 'witness_set_digest');
+    assert.equal(explainTodoWitnessSet(set).valid, false, JSON.stringify(bad));
+  }
+});
+
+test('a path or symbol Resolve cannot read is still not written', async (context) => {
+  const root = await fixture(context);
+  const declared = success(root, declare('P', '--owns', '../outside.js#alpha'));
+  assert.equal(declared.declaration.written, false);
+  assert.deepEqual(declared.declaration.unresolved.map(({ reason }) => reason), ['path_invalid']);
   await assert.rejects(readFile(path.join(root, '.lattice/todo/witness/dev.json')), { code: 'ENOENT' });
-  // The same declaration with the right name then succeeds from scratch.
-  assert.equal(success(root, declare('P', '--owns', 'src/a.js#alpha')).declaration.written, true);
+});
+
+test('two tasks that declare the same new name conflict; a new name does not conflict with another function or another new name', async (context) => {
+  const root = await fixture(context);
+  success(root, declare('P', '--owns', 'src/a.js#Fresh'));
+  const same = success(root, declare('Q', '--owns', 'src/a.js#Fresh'));
+  assert.equal(same.declaration.conflicts.length, 1);
+  assert.deepEqual(same.declaration.conflicts[0].overlaps[0].self, { symbol: 'Fresh', start_line: null, end_line: null, access: 'write' });
+  const other = success(root, declare('Q', '--owns', 'src/a.js#alpha'));
+  assert.deepEqual(other.declaration.conflicts, []);
+  const otherNew = success(root, declare('Q', '--owns', 'src/a.js#Other'));
+  assert.deepEqual(otherNew.declaration.conflicts, []);
+  // a whole-file claim on that path overlaps the new name
+  const whole = success(root, declare('Q', '--owns', 'src/a.js'));
+  assert.equal(whole.declaration.conflicts.length, 1);
+});
+
+test('a name that was not declared as new and no longer resolves stays a whole-file claim', async (context) => {
+  const root = await fixture(context);
+  success(root, declare('P', '--owns', 'src/a.js#alpha'));
+  await writeFile(path.join(root, 'src/a.js'), SOURCE.replace('alpha', 'alphaRenamed'));
+  execFileSync('git', ['-c', 'user.name=f', '-c', 'user.email=f@f', 'commit', '--quiet', '-am', 'rename'], { cwd: root, stdio: 'pipe' });
+  success(root, ['sensor', 'sync', '.', '--json']);
+  const declared = success(root, declare('Q', '--owns', 'src/a.js#beta'));
+  assert.equal(declared.declaration.conflicts.length, 1);
+  assert.deepEqual(declared.declaration.conflicts[0].overlaps[0].other, { symbol: null, start_line: null, end_line: null, access: 'write' });
 });
 
 test('a malformed entry is reported, not recorded', async (context) => {
@@ -124,11 +174,12 @@ test('a malformed entry is reported, not recorded', async (context) => {
   assert.match(declared.next_action, /write path#function/u);
 });
 
-test('functions on a Store root with no commit cannot be checked: reported, never recorded as a guess', async (context) => {
+test('functions on a Store root with no commit cannot be checked: the row is written with the names as new names', async (context) => {
   const root = await fixture(context, { commit: false });
   const declared = success(root, declare('P', '--owns', 'src/a.js#alpha'));
-  assert.equal(declared.declaration.written, false);
-  assert.deepEqual(declared.declaration.unresolved.map(({ reason }) => reason), ['no_code_tree']);
+  assert.equal(declared.declaration.written, true);
+  assert.deepEqual(declared.declaration.new_names.map(({ symbol }) => symbol), ['alpha']);
+  assert.deepEqual((await readSet(root)).manual_witness.P.concern_anchors[0].new_symbols, ['alpha']);
   // Bare paths still declare there, as before.
   assert.equal(success(root, declare('P', '--owns', 'src/a.js')).declaration.written, true);
 });
@@ -144,8 +195,8 @@ test('todo add --owns/--reads: the task is added first; the declaration comes ba
   const second = success(root, ['todo', 'add', '--plan', 'dev', '--task', 'T', '--title', 'T', '--phase', 'p', '--design-memo', 'NO_PLAN',
     '--owns', 'src/a.js#betta']);
   assert.equal(second.task_id, 'T');
-  assert.equal(second.declaration.written, false);
-  assert.ok(second.declaration.unresolved[0].nearest.includes('beta'));
+  assert.equal(second.declaration.written, true);
+  assert.ok(second.declaration.new_names[0].nearest.includes('beta'));
   const shown = success(root, ['todo', 'show', '--plan', 'dev', '--task', 'T']);
   assert.equal(shown.task.task_id, 'T');
 });

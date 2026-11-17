@@ -37,10 +37,14 @@ export function parseDeclarationList(value) {
   return { paths, anchors, malformed };
 }
 
-const byWithin = (anchors) => {
+/** `{within, symbols[, new_symbols]}` per path; `isNew(anchor)` marks the names that did not resolve when declared (ADR 0204 §7). */
+const byWithin = (anchors, isNew = () => false) => {
   const grouped = new Map();
-  for (const { path: within, symbol } of anchors) grouped.set(within, [...(grouped.get(within) ?? []), symbol]);
-  return [...grouped].map(([within, symbols]) => ({ within, symbols: sortedUnique(symbols) }));
+  for (const anchor of anchors) grouped.set(anchor.path, [...(grouped.get(anchor.path) ?? []), anchor]);
+  return [...grouped].map(([within, list]) => {
+    const fresh = sortedUnique(list.filter(isNew).map(({ symbol }) => symbol));
+    return { within, symbols: sortedUnique(list.map(({ symbol }) => symbol)), ...(fresh.length > 0 ? { new_symbols: fresh } : {}) };
+  });
 };
 
 async function resolveOnce(root, anchors) {
@@ -58,10 +62,11 @@ const unresolvedEntry = (anchor, reason, nearest = [], elsewhere = []) => ({
 });
 
 /**
- * Resolve a task's declared functions and build its witness-draft row.
- * → `{row, declaration: {written, resolved[], unresolved[], malformed[]}}`; `row` is null when `written` is false
- * (a task's row is not written until every name resolves, so the next declare retries from scratch).
- * `observable` false = the Store root has no code tree: functions cannot be checked, never recorded as a guess.
+ * Resolve a task's declared functions and build its witness-draft row (ADR 0204 §7).
+ * → `{row, declaration: {written, resolved[], new_names[], unresolved[], malformed[]}}`. A name that does not resolve is kept
+ * in the row as a new name (`new_symbols` of its anchor) and listed in `new_names` with the nearest names, so a typo is seen
+ * at once; `row` is null (`written` false) only for a malformed entry (`malformed`, or `unresolved` for a path or symbol Resolve
+ * cannot read at all). No code tree or no Resolve answer writes the row with every name as new: that give-up protected nothing.
  */
 export async function buildDeclarationRow({ root, observable, owns, reads, writes, alsoResolve = [] }) {
   const own = parseDeclarationList(owns);
@@ -69,30 +74,39 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
   const malformed = [...own.malformed, ...read.malformed];
   const keyOf = (anchor) => `${anchor.path}\0${anchor.symbol}`;
   const wanted = [...new Map([...own.anchors, ...read.anchors].map((anchor) => [keyOf(anchor), anchor])).values()];
-  const declaration = { written: false, resolved: [], unresolved: [], malformed };
+  const declaration = { written: false, resolved: [], new_names: [], unresolved: [], malformed };
   if (malformed.length > 0) return { row: null, declaration };
-  // `alsoResolve`: other tasks' anchors, answered by the same Resolve call (a5 compares ranges); a miss there is not this task's refusal.
+  // `alsoResolve`: other tasks' anchors, answered by the same Resolve call (a5 compares ranges); a miss there is not this task's.
   const wantedKeys = new Set(wanted.map(keyOf));
   const extra = [...new Map(alsoResolve.filter((anchor) => !wantedKeys.has(keyOf(anchor))).map((anchor) => [keyOf(anchor), anchor])).values()];
   let ranges = [];
-  if (wanted.length > 0 && !observable) {
-    declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'no_code_tree'));
-    return { row: null, declaration };
-  }
+  const everyNew = () => {
+    declaration.new_names = wanted.map((anchor) => ({ path: anchor.path, symbol: anchor.symbol, nearest: [], elsewhere: [] }));
+    return buildRow({ own, read, writes, declaration, ranges, isNew: () => true });
+  };
+  if (wanted.length > 0 && !observable) return everyNew();
+  let newKeys = new Set();
   if (wanted.length + extra.length > 0 && observable) {
     let answer;
     try { answer = await resolveOnce(root, [...wanted, ...extra]); } catch (error) {
       if (wanted.length === 0) return buildRow({ own, read, writes, declaration, ranges });
-      declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'resolve_unavailable'));
       declaration.resolve_error = error?.code ?? error?.message ?? 'resolve_failed';
-      return { row: null, declaration };
+      return everyNew();
     }
     const mine = answer.unresolved.filter((anchor) => wantedKeys.has(keyOf(anchor)));
-    declaration.unresolved = mine.map((anchor) => unresolvedEntry(
+    const entry = (anchor) => unresolvedEntry(
       anchor, anchor.reason,
       anchor.nearest.map(({ qualified }) => qualified),
       anchor.elsewhere.map(({ path: where, qualified }) => `${where}#${qualified}`),
-    ));
+    );
+    // path_invalid / symbol_empty cannot be stored at all; every other miss is a name that does not exist yet.
+    const unreadable = mine.filter(({ reason }) => reason === 'path_invalid' || reason === 'symbol_empty');
+    declaration.unresolved = unreadable.map(entry);
+    declaration.new_names = mine.filter((anchor) => !unreadable.includes(anchor)).map((anchor) => {
+      const { path: where, symbol, nearest, elsewhere } = entry(anchor);
+      return { path: where, symbol, nearest, elsewhere };
+    });
+    newKeys = new Set(declaration.new_names.map(keyOf));
     ranges = answer.resolved;
     declaration.resolved = answer.resolved.filter(({ path: where, symbol }) => wantedKeys.has(`${where}\0${symbol}`))
       .map(({ path: where, symbol, kind, start_line: start, end_line: end }) => ({
@@ -100,12 +114,12 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
       }));
     if (declaration.unresolved.length > 0) return { row: null, declaration };
   }
-  return buildRow({ own, read, writes, declaration, ranges });
+  return buildRow({ own, read, writes, declaration, ranges, isNew: (anchor) => newKeys.has(keyOf(anchor)) });
 }
 
-function buildRow({ own, read, writes, declaration, ranges }) {
-  const concern = byWithin(own.anchors);
-  const readAnchors = byWithin(read.anchors);
+function buildRow({ own, read, writes, declaration, ranges, isNew }) {
+  const concern = byWithin(own.anchors, isNew);
+  const readAnchors = byWithin(read.anchors, isNew);
   const row = {
     owns: sortedUnique([...own.paths, ...concern.map(({ within }) => within)]),
     reads: sortedUnique([...read.paths, ...readAnchors.map(({ within }) => within)]),

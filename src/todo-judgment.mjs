@@ -13,12 +13,14 @@ const compareText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 export function claimsOf(row) {
   const claims = new Map();
   const add = (target, claim) => claims.set(target, [...(claims.get(target) ?? []), claim]);
-  const anchored = (list) => new Map((list ?? []).map(({ within, symbols }) => [within.target, symbols]));
+  const anchored = (list) => new Map((list ?? []).map(({ within, symbols, new_symbols: fresh = [] }) => [within.target,
+    symbols.map((symbol) => ({ symbol, fresh: fresh.includes(symbol) }))]));
   const concern = anchored(row.concern_anchors);
   const readAnchor = anchored(row.read_anchors);
   const written = new Set([...row.owns.filter(({ kind }) => kind === 'path').map(({ target }) => target), ...row.writes]);
-  for (const target of written) for (const symbol of concern.get(target) ?? [null]) add(target, { symbol, access: 'write' });
-  for (const target of row.reads) for (const symbol of readAnchor.get(target) ?? [null]) add(target, { symbol, access: 'read' });
+  const nameless = [{ symbol: null, fresh: false }];
+  for (const target of written) for (const { symbol, fresh } of concern.get(target) ?? nameless) add(target, { symbol, fresh, access: 'write' });
+  for (const target of row.reads) for (const { symbol, fresh } of readAnchor.get(target) ?? nameless) add(target, { symbol, fresh, access: 'read' });
   return claims;
 }
 
@@ -35,7 +37,8 @@ export const rangeIndex = (resolved) => new Map(resolved.map(({ path: target, sy
 /**
  * Judge `taskId` against every other task in `rows` (`{taskId: witnessRow}`, already limited to unfinished tasks).
  * `ranges` is a `rangeIndex`; an anchored claim with no range (the name no longer resolves) is read as a whole-file claim
- * and counted in `unresolved` (distinct names). Overlap needs at least one write; two reads never conflict (ADR 0204, claim 4).
+ * and counted in `unresolved` (distinct names), except a name the task declared as new (`new_symbols`): it keeps its name with no lines
+ * and overlaps only a whole-file claim and the same name (ADR 0204 §7). Overlap needs at least one write; two reads never conflict (ADR 0204, claim 4).
  * → `{relations: [{task_a, task_b, path, overlaps}], gone: [{task_a, task_b, path}], unresolved}`: `gone` names the pairs of
  * this task that no longer overlap on a path they once shared (the caller closes only those that are open).
  */
@@ -43,15 +46,22 @@ export function judgeTask({ taskId, rows, ranges, openRelations = [], only = nul
   const mine = claimsOf(rows[taskId]);
   const relations = [];
   const missing = new Set();
+  // A name declared as new that has no range yet keeps its name and no lines (ADR 0204 §7); a name NOT declared as new that
+  // no longer resolves (renamed on main) is read as a whole-file claim, never as "no conflict".
   const side = (target, claim) => {
     const range = claim.symbol === null ? undefined : ranges.get(rangeKey(target, claim.symbol));
+    if (range === undefined && claim.symbol !== null && claim.fresh) return { symbol: claim.symbol, start_line: null, end_line: null, access: claim.access };
     if (claim.symbol !== null && range === undefined) missing.add(rangeKey(target, claim.symbol));
     return range === undefined
       ? { symbol: null, start_line: null, end_line: null, access: claim.access }
       : { symbol: claim.symbol, start_line: range.start_line, end_line: range.end_line, access: claim.access };
   };
-  const overlap = (left, right) => left.symbol === null || right.symbol === null
-    || !(left.end_line < right.start_line || right.end_line < left.start_line);
+  const unranged = (entry) => entry.symbol !== null && entry.start_line === null;
+  const overlap = (left, right) => {
+    if (left.symbol === null || right.symbol === null) return true;
+    if (unranged(left) || unranged(right)) return unranged(left) && unranged(right) && left.symbol === right.symbol;
+    return !(left.end_line < right.start_line || right.end_line < left.start_line);
+  };
   for (const otherId of Object.keys(rows).sort(compareText)) {
     if (otherId === taskId) continue;
     const [taskA, taskB] = taskId < otherId ? [taskId, otherId] : [otherId, taskId];

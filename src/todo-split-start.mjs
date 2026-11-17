@@ -46,7 +46,8 @@ export function planSplitHold({ member, taskId, read }) {
     const other = byId.get(otherId);
     if (state.get(otherId) !== 'in-progress' || other.lane === self.lane) continue;
     for (const { self: mine, other: theirs } of overlaps) {
-      if (mine.access !== 'write' || theirs.access !== 'write' || mine.symbol === null || theirs.symbol === null) continue;
+      // a side with no range (whole file, or a function that does not exist yet) has nothing to cut
+      if (mine.access !== 'write' || theirs.access !== 'write' || mine.start_line === null || theirs.start_line === null) continue;
       const key = `${where}\0${theirs.symbol}`;
       const entry = functions.get(key) ?? { path: where, symbol: theirs.symbol, start_line: theirs.start_line, end_line: theirs.end_line, owners: new Set() };
       entry.owners.add(otherId);

@@ -56,17 +56,18 @@ test('splitTouches: v6 becomes v5 without touches; bad shapes are refused at the
     (error) => error.detail.pointer === '/desired/tasks/1/touches' && error.detail.reason === 'plan_create_touches_invalid');
 });
 
-test('plan create v6 declares touches: plan equals the v5 one, row recorded, unresolved name reported without undoing the create', async (context) => {
+test('plan create v6 declares touches: plan equals the v5 one, row recorded, new name kept and reported without undoing the create', async (context) => {
   const withTouches = await repo(context);
   await write(withTouches, 'plan.json', plan('lattice.plan_create_input.v6', {
     P: { owns: ['src/a.js#alpha'], reads: ['src/b.js#beta'] }, Q: { owns: ['src/a.js#alpa'] } }));
   const created = success(withTouches, ['plan', 'create', '--input', 'plan.json']);
   assert.equal(created.declarations.P.written, true);
-  assert.equal(created.declarations.Q.written, false);
-  assert.ok(created.declarations.Q.unresolved[0].nearest.includes('alpha'));
+  assert.equal(created.declarations.Q.written, true);
+  assert.ok(created.declarations.Q.new_names[0].nearest.includes('alpha'));
   const set = await readSet(withTouches);
   assert.equal(set.schema, 'lattice.todo_witness_set.v6');
-  assert.deepEqual(Object.keys(set.manual_witness), ['P']);
+  assert.deepEqual(Object.keys(set.manual_witness), ['P', 'Q']);
+  assert.deepEqual(set.manual_witness.Q.concern_anchors[0].new_symbols, ['alpa']);
   assert.deepEqual(set.manual_witness.P.read_anchors[0].symbols, ['beta']);
 
   // The stored plan is byte-for-byte what the same input without touches makes.
