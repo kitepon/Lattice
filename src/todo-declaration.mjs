@@ -99,8 +99,10 @@ const unresolvedEntry = (anchor, reason, nearest = [], elsewhere = []) => ({
  * in the row as a new name (`new_symbols` of its anchor) and listed in `new_names` with the nearest names, so a typo is seen
  * at once; `row` is null (`written` false) only for a malformed entry (`malformed`, or `unresolved` for a path or symbol Resolve
  * cannot read at all). No code tree or no Resolve answer writes the row with every name as new: that give-up protected nothing.
+ * `strict` (the `todo done S` rewrite, ADR 0205 §5) keeps the old reading: a name that is not on HEAD is `unresolved` and the row is not
+ * written, because the cut it names must have landed. The new-name rule is for a member's own declare/add.
  */
-export async function buildDeclarationRow({ root, observable, owns, reads, writes, alsoResolve = [], text = {} }) {
+export async function buildDeclarationRow({ root, observable, owns, reads, writes, alsoResolve = [], text = {}, strict = false }) {
   const own = parseDeclarationList(owns);
   const read = parseDeclarationList(reads);
   const malformed = [...own.malformed, ...read.malformed];
@@ -112,11 +114,15 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
   const wantedKeys = new Set(wanted.map(keyOf));
   const extra = [...new Map(alsoResolve.filter((anchor) => !wantedKeys.has(keyOf(anchor))).map((anchor) => [keyOf(anchor), anchor])).values()];
   let ranges = [];
-  const everyNew = () => {
+  const everyNew = (reason) => {
+    if (strict) {
+      declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, reason));
+      return { row: null, declaration };
+    }
     declaration.new_names = wanted.map((anchor) => ({ path: anchor.path, symbol: anchor.symbol, nearest: [], elsewhere: [] }));
     return buildRow({ own, read, writes, declaration, ranges, isNew: () => true });
   };
-  if (wanted.length > 0 && !observable) return everyNew();
+  if (wanted.length > 0 && !observable) return everyNew('no_code_tree');
   let newKeys = new Set();
   // ADR 0204 §7.3: a path declared without `#` that holds functions is asked in the same Resolve call (`files`).
   const bare = wholeFileClaims({ own, read, writes });
@@ -125,7 +131,7 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
     try { answer = await resolveOnce(root, [...wanted, ...extra], bare.map(({ path: where }) => where)); } catch (error) {
       if (wanted.length === 0) return buildRow({ own, read, writes, declaration, ranges });
       declaration.resolve_error = error?.code ?? error?.message ?? 'resolve_failed';
-      return everyNew();
+      return everyNew('resolve_unavailable');
     }
     const mine = answer.unresolved.filter((anchor) => wantedKeys.has(keyOf(anchor)));
     const entry = (anchor) => unresolvedEntry(
@@ -134,7 +140,7 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
       anchor.elsewhere.map(({ path: where, qualified }) => `${where}#${qualified}`),
     );
     // path_invalid / symbol_empty cannot be stored at all; every other miss is a name that does not exist yet.
-    const unreadable = mine.filter(({ reason }) => reason === 'path_invalid' || reason === 'symbol_empty');
+    const unreadable = mine.filter(({ reason }) => strict || reason === 'path_invalid' || reason === 'symbol_empty');
     declaration.unresolved = unreadable.map(entry);
     declaration.new_names = mine.filter((anchor) => !unreadable.includes(anchor)).map((anchor) => {
       const { path: where, symbol, nearest, elsewhere } = entry(anchor);

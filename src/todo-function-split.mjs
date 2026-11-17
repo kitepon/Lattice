@@ -215,7 +215,7 @@ export async function reorganizeNotSplit({ repoRoot, env, planKey, taskId, reaso
 /**
  * The gate and the rewrite of `todo done S` (ADR 0205 §5): needs an accepted record, then each unfinished mapped member's
  * write anchor on F becomes its mapped function through the ADR 0204 declaration path (resolved at the repository's HEAD, so
- * relations are judged again and close where the overlap is gone; a function not on HEAD yet is kept as a new name, ADR 0204 §7). A row without the anchor is skipped: the rewrite is idempotent.
+ * relations are judged again and close where the overlap is gone). A row without the anchor is skipped: the rewrite is idempotent.
  */
 export async function splitDoneGate({ repoRoot, planKey, taskId, deps }) {
   // shortcut: one more Store read on every `todo done` to learn whether the task is a split task; read the mark from the done's own read if that cost shows.
@@ -240,6 +240,6 @@ export async function splitDoneGate({ repoRoot, planKey, taskId, deps }) {
   }
   if (unresolved.length > 0) {
     throw refuse('split_map_unresolved', { plan_key: planKey, task_id: taskId, unresolved,
-      next_action: `A mapped function cannot be stored as a declaration (see unresolved): run \`lattice todo function-split decline --plan ${planKey} --task ${taskId} --reason <text>\`.` });
+      next_action: 'The new functions are not in this repository yet: merge the split PR, sync the repository (`lattice chart repo sync`), then run `todo done` again.' });
   }
 }

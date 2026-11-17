@@ -1428,7 +1428,8 @@ async function holdForSplit({ repoRoot, env, member, planKey, taskId, read, over
 /** What the function-split commands need from this module: retire a task, and declare a row again (resolved at HEAD). */
 const splitDeps = (repoRoot, planKey) => ({
   retire: (options) => retireTask(options),
-  declareRow: ({ taskId, flags }) => declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot) }),
+  // strict: the cut must be on HEAD (ADR 0205 §5); the new-name rule (ADR 0204 §7) is for a member's own declare/add.
+  declareRow: ({ taskId, flags }) => declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot), strict: true }),
 });
 
 /** ADR 0205 §3: starting the split task S shows the worker its members, the size of the cut and what to do (no member rule exists). */
@@ -4160,7 +4161,7 @@ function declarationNextAction(planKey, taskId, declaration) {
  * Resolve and the fresh observation run before the Store lock; if another declaration changed the set meanwhile (a row or
  * path this attempt did not resolve or observe), the call writes nothing and the attempt runs again (three at most).
  */
-async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) {
+async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable, strict = false }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
@@ -4172,7 +4173,7 @@ async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) 
   let alsoResolve = neededAnchors(peek?.plan_key === planKey ? peek.manual_witness : {}, taskId, mine);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { row, declaration, ranges } = await buildDeclarationRow({
-      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve,
+      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve, strict,
       text: { title: task?.title, memo: typeof task?.design_memo === 'string' ? task.design_memo : undefined } });
     if (row === null) return { declaration, scaffolded: null };
     const resolved = new Set([...alsoResolve, ...declaration.resolved].map(({ path: where, symbol }) => `${where}\0${symbol}`));

@@ -115,7 +115,7 @@ test('done S is refused until verify accepts, and a task that is not a split tas
   assert.match(refusal(root, ['todo', 'function-split', 'verify', '--plan', 'dev', '--task', splitId, '--commit', 'a'.repeat(40), '--map', 'Z=src/lib.mjs#f']), /function_split_map_invalid/u);
 });
 
-test('an accepted cut: done S rewrites both rows and closes the relation', async (context) => {
+test('an accepted cut: done S refuses until the map is on main, then rewrites both rows and closes the relation', async (context) => {
   const { root, git, splitId, commitOn } = await split(context);
   success(root, ['todo', 'start', '--plan', 'dev', '--task', splitId]);
   const commit = await commitOn('cut', { 'src/lib.mjs': CUT });
@@ -124,12 +124,17 @@ test('an accepted cut: done S rewrites both rows and closes the relation', async
   assert.equal(verified.outcome, 'accepted', JSON.stringify(verified.conditions));
   assert.deepEqual(Object.keys(verified.conditions), ['behaviour', 'tests', 'fresh', 'overlap', 'parallel']);
   assert.match(verified.conditions.parallel.detail, /waves 2 -> 1/u);
-  // the new functions are on a branch, not on main yet: done still rewrites both rows, keeping the names as new names (ADR 0204 §7)
-  const done = success(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'merged the cut']);
-  assert.equal(done.status, 'done');
-  assert.deepEqual((await readTodoWitnessSet({ repoRoot: root, planKey: 'dev' })).manual_witness.U.concern_anchors[0].new_symbols, ['stepA']);
+  // the new functions are on a branch, not on main: nothing is rewritten, done is refused
+  const refused = refusal(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'x']);
+  assert.match(refused, /split_map_unresolved/u);
+  assert.match(refused, /merge the split PR, sync the repository \(`lattice chart repo sync`\), then run `todo done` again/u);
+  // the declarations are unchanged: no name of the cut is kept as a new name (ADR 0205 §5, strict at HEAD)
+  const rows = (await readTodoWitnessSet({ repoRoot: root, planKey: 'dev' })).manual_witness;
+  for (const id of ['U', 'T']) assert.deepEqual(rows[id].concern_anchors, [{ within: { kind: 'path', target: 'src/lib.mjs' }, symbols: ['work'] }]);
   git('merge', '--ff-only', 'cut');
   success(root, ['sensor', 'sync', '.', '--json']); // what `chart repo sync` does after it takes main in
+  const done = success(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'merged the cut']);
+  assert.equal(done.status, 'done');
   const witness = (await readTodoWitnessSet({ repoRoot: root, planKey: 'dev' })).manual_witness;
   assert.deepEqual(witness.U.concern_anchors.map(({ symbols }) => symbols), [['stepA']]);
   assert.deepEqual(witness.T.concern_anchors.map(({ symbols }) => symbols), [['stepB']]);
