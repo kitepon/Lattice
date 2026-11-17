@@ -89,6 +89,10 @@ async function wholeFiles({ root, observable, bare, files, text }) {
   });
 }
 
+/** ADR 0204 §7.4: a new name says so to the member it concerns; the nearest name only when there is one. */
+const newNameEntry = ({ path: where, symbol, nearest = [], elsewhere = [] }) => ({ path: where, symbol, nearest, elsewhere,
+  text: `${where}#${symbol}: not in the code, recorded as a new function${nearest.length > 0 ? `; if you meant ${nearest[0]}, declare again with that name` : ''}` });
+
 const unresolvedEntry = (anchor, reason, nearest = [], elsewhere = []) => ({
   path: anchor.path, symbol: anchor.symbol, reason, nearest, elsewhere,
 });
@@ -119,7 +123,7 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
       declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, reason));
       return { row: null, declaration };
     }
-    declaration.new_names = wanted.map((anchor) => ({ path: anchor.path, symbol: anchor.symbol, nearest: [], elsewhere: [] }));
+    declaration.new_names = wanted.map(newNameEntry);
     return buildRow({ own, read, writes, declaration, ranges, isNew: () => true });
   };
   if (wanted.length > 0 && !observable) return everyNew('no_code_tree');
@@ -142,10 +146,7 @@ export async function buildDeclarationRow({ root, observable, owns, reads, write
     // path_invalid / symbol_empty cannot be stored at all; every other miss is a name that does not exist yet.
     const unreadable = mine.filter(({ reason }) => strict || reason === 'path_invalid' || reason === 'symbol_empty');
     declaration.unresolved = unreadable.map(entry);
-    declaration.new_names = mine.filter((anchor) => !unreadable.includes(anchor)).map((anchor) => {
-      const { path: where, symbol, nearest, elsewhere } = entry(anchor);
-      return { path: where, symbol, nearest, elsewhere };
-    });
+    declaration.new_names = mine.filter((anchor) => !unreadable.includes(anchor)).map((anchor) => newNameEntry(entry(anchor)));
     newKeys = new Set(declaration.new_names.map(keyOf));
     ranges = answer.resolved;
     declaration.resolved = answer.resolved.filter(({ path: where, symbol }) => wantedKeys.has(`${where}\0${symbol}`))

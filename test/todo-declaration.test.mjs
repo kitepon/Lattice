@@ -122,6 +122,28 @@ test('a name that does not exist yet keeps the row: it is a new name, listed wit
   assert.equal((await readSet(root)).manual_witness.P.concern_anchors[0].new_symbols, undefined);
 });
 
+test('a new name says so in its own text: the nearest name only when there is one (ADR 0204 §7.4)', async (context) => {
+  const root = await fixture(context);
+  const declared = success(root, declare('P', '--owns', 'src/a.js#alpa,src/new.js#Fresh'));
+  const [near, none] = declared.declaration.new_names;
+  assert.equal(near.text, 'src/a.js#alpa: not in the code, recorded as a new function; if you meant alpha, declare again with that name');
+  assert.deepEqual(none.nearest, []);
+  assert.equal(none.text, 'src/new.js#Fresh: not in the code, recorded as a new function');
+});
+
+test('todo add whose declaration was not written carries the same next_action as witness declare (ADR 0204 §7.4)', async (context) => {
+  const root = await fixture(context);
+  const added = success(root, ['todo', 'add', '--plan', 'dev', '--task', 'S', '--title', 'S', '--phase', 'p', '--design-memo', 'NO_PLAN',
+    '--owns', 'src/a.js#']);
+  assert.equal(added.task_id, 'S');
+  assert.equal(added.declaration.written, false);
+  assert.match(added.declaration.next_action, /^dev\/S's functions were not recorded: src\/a\.js# \(expected_path_hash_symbol; write path#function/u);
+  assert.equal(added.declaration.next_action, success(root, declare('Q', '--owns', 'src/a.js#')).next_action.replace('dev/Q', 'dev/S'));
+  // a written declaration has none
+  const fine = success(root, ['todo', 'add', '--plan', 'dev', '--task', 'T', '--title', 'T', '--phase', 'p', '--design-memo', 'NO_PLAN', '--owns', 'src/a.js#alpha']);
+  assert.equal(fine.declaration.next_action, undefined);
+});
+
 test('new_symbols must be a sorted subset of symbols', async (context) => {
   const root = await fixture(context);
   success(root, declare('P', '--owns', 'src/a.js#alpa,src/a.js#beta'));
