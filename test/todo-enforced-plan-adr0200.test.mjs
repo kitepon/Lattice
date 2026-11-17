@@ -60,6 +60,7 @@ test('gate 1: an undeclared task does not start; declaring it is the way out', a
   const refused = refusal(root, start('P'));
   assert.deepEqual([refused.code, refused.message], ['TODO_TRANSITION_REFUSED', 'enforced_witness_undeclared']);
   assert.match(refused.detail.next_action, /witness declare --plan dev --task P/u);
+  assert.match(refused.detail.next_action, /--owns <path>#<function>\[,\.\.\.\] \[--reads <path>#<function>,\.\.\.\]/u);
   success(root, declare('P', '--owns', 'src/a.js'));
   success(root, declare('Q', '--owns', 'src/b.js'));
   success(root, declare('L', '--owns', 'src/c.js'));

@@ -946,11 +946,12 @@ const relationText = (field) => typeof field === 'string' && field.length > 0 &&
 const relationSha = (field) => field === null || relationText(field);
 const lineNumber = (field) => Number.isSafeInteger(field) && field >= 1;
 
-/** One side of an overlap. A whole-file claim has no symbol and no range (both null). */
+/** One side of an overlap. A whole-file claim has no symbol and no range (all null); a function that does not exist yet (ADR 0204 §7) has its name and no range. */
 function relationEntry(entry) {
   return exactRecord(entry, ['symbol', 'start_line', 'end_line', 'access'])
     && ['read', 'write'].includes(entry.access)
     && ((entry.symbol === null && entry.start_line === null && entry.end_line === null)
+      || (relationText(entry.symbol) && entry.start_line === null && entry.end_line === null)
       || (relationText(entry.symbol) && lineNumber(entry.start_line) && lineNumber(entry.end_line)
         && entry.end_line >= entry.start_line));
 }

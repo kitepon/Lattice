@@ -37,20 +37,56 @@ export function parseDeclarationList(value) {
   return { paths, anchors, malformed };
 }
 
-const byWithin = (anchors) => {
+/** `{within, symbols[, new_symbols]}` per path; `isNew(anchor)` marks the names that did not resolve when declared (ADR 0204 §7). */
+const byWithin = (anchors, isNew = () => false) => {
   const grouped = new Map();
-  for (const { path: within, symbol } of anchors) grouped.set(within, [...(grouped.get(within) ?? []), symbol]);
-  return [...grouped].map(([within, symbols]) => ({ within, symbols: sortedUnique(symbols) }));
+  for (const anchor of anchors) grouped.set(anchor.path, [...(grouped.get(anchor.path) ?? []), anchor]);
+  return [...grouped].map(([within, list]) => {
+    const fresh = sortedUnique(list.filter(isNew).map(({ symbol }) => symbol));
+    return { within, symbols: sortedUnique(list.map(({ symbol }) => symbol)), ...(fresh.length > 0 ? { new_symbols: fresh } : {}) };
+  });
 };
 
-async function resolveOnce(root, anchors) {
-  try { return await resolveAnchors({ root, anchors }); } catch (error) {
+async function resolveOnce(root, anchors, files = []) {
+  try { return await resolveAnchors({ root, anchors, files }); } catch (error) {
     if (!(error instanceof SensorResolveError) || error.code !== 'RESOLVE_INDEX_MISSING') throw error;
   }
   // First use only: the maintained index does not exist yet (Observe builds it; later calls reuse it).
   const sink = { write() {} };
   await runSensorCli({ argv: ['init', root, '--json'], stdout: sink, stderr: sink });
-  return resolveAnchors({ root, anchors });
+  return resolveAnchors({ root, anchors, files });
+}
+
+/**
+ * The paths a declaration claims whole: owned, written or read without `#`, and not narrowed to functions by an anchor of the
+ * same access (a path with anchors claims only those). `[{path, access}]`, `write` when the path is claimed both ways.
+ */
+function wholeFileClaims({ own, read, writes }) {
+  const anchored = (list) => new Set(list.map(({ path: where }) => where));
+  const written = anchored(own.anchors);
+  const readOnly = anchored(read.anchors);
+  const claims = new Map();
+  for (const where of [...own.paths, ...items(writes)]) if (!written.has(where)) claims.set(where, 'write');
+  for (const where of read.paths) if (!readOnly.has(where) && !claims.has(where)) claims.set(where, 'read');
+  return [...claims].map(([where, access]) => ({ path: where, access })).sort((left, right) => (left.path < right.path ? -1 : 1));
+}
+
+/**
+ * ADR 0204 §7.3, information only: for each whole-file claim on a file with functions, how many functions it makes conflicting
+ * and which functions the title / design memo name in that file. Never a refusal or a question; no functions = no entry.
+ */
+async function wholeFiles({ root, observable, bare, files, text }) {
+  const counts = new Map(files.map(({ path: where, functions }) => [where, functions]));
+  const found = bare.filter(({ path: where }) => counts.get(where) > 0);
+  if (found.length === 0) return [];
+  const proposed = await proposeFromText({ root, observable, title: text.title, memo: text.memo });
+  return found.map(({ path: where, access }) => {
+    const candidates = sortedUnique((proposed?.proposed ?? []).flatMap(({ definitions }) => definitions)
+      .filter(({ path: definedIn }) => definedIn === where).map(({ symbol }) => symbol));
+    const functions = counts.get(where);
+    return { path: where, access, functions, candidates,
+      text: `${where}: whole file, its ${functions} functions all conflict; by function: --owns ${where}#${candidates[0] ?? '<function>'}` };
+  });
 }
 
 const unresolvedEntry = (anchor, reason, nearest = [], elsewhere = []) => ({
@@ -58,54 +94,73 @@ const unresolvedEntry = (anchor, reason, nearest = [], elsewhere = []) => ({
 });
 
 /**
- * Resolve a task's declared functions and build its witness-draft row.
- * → `{row, declaration: {written, resolved[], unresolved[], malformed[]}}`; `row` is null when `written` is false
- * (a task's row is not written until every name resolves, so the next declare retries from scratch).
- * `observable` false = the Store root has no code tree: functions cannot be checked, never recorded as a guess.
+ * Resolve a task's declared functions and build its witness-draft row (ADR 0204 §7).
+ * → `{row, declaration: {written, resolved[], new_names[], unresolved[], malformed[]}}`. A name that does not resolve is kept
+ * in the row as a new name (`new_symbols` of its anchor) and listed in `new_names` with the nearest names, so a typo is seen
+ * at once; `row` is null (`written` false) only for a malformed entry (`malformed`, or `unresolved` for a path or symbol Resolve
+ * cannot read at all). No code tree or no Resolve answer writes the row with every name as new: that give-up protected nothing.
+ * `strict` (the `todo done S` rewrite, ADR 0205 §5) keeps the old reading: a name that is not on HEAD is `unresolved` and the row is not
+ * written, because the cut it names must have landed. The new-name rule is for a member's own declare/add.
  */
-export async function buildDeclarationRow({ root, observable, owns, reads, writes, alsoResolve = [] }) {
+export async function buildDeclarationRow({ root, observable, owns, reads, writes, alsoResolve = [], text = {}, strict = false }) {
   const own = parseDeclarationList(owns);
   const read = parseDeclarationList(reads);
   const malformed = [...own.malformed, ...read.malformed];
   const keyOf = (anchor) => `${anchor.path}\0${anchor.symbol}`;
   const wanted = [...new Map([...own.anchors, ...read.anchors].map((anchor) => [keyOf(anchor), anchor])).values()];
-  const declaration = { written: false, resolved: [], unresolved: [], malformed };
+  const declaration = { written: false, resolved: [], new_names: [], whole_files: [], unresolved: [], malformed };
   if (malformed.length > 0) return { row: null, declaration };
-  // `alsoResolve`: other tasks' anchors, answered by the same Resolve call (a5 compares ranges); a miss there is not this task's refusal.
+  // `alsoResolve`: other tasks' anchors, answered by the same Resolve call (a5 compares ranges); a miss there is not this task's.
   const wantedKeys = new Set(wanted.map(keyOf));
   const extra = [...new Map(alsoResolve.filter((anchor) => !wantedKeys.has(keyOf(anchor))).map((anchor) => [keyOf(anchor), anchor])).values()];
   let ranges = [];
-  if (wanted.length > 0 && !observable) {
-    declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'no_code_tree'));
-    return { row: null, declaration };
-  }
-  if (wanted.length + extra.length > 0 && observable) {
-    let answer;
-    try { answer = await resolveOnce(root, [...wanted, ...extra]); } catch (error) {
-      if (wanted.length === 0) return buildRow({ own, read, writes, declaration, ranges });
-      declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, 'resolve_unavailable'));
-      declaration.resolve_error = error?.code ?? error?.message ?? 'resolve_failed';
+  const everyNew = (reason) => {
+    if (strict) {
+      declaration.unresolved = wanted.map((anchor) => unresolvedEntry(anchor, reason));
       return { row: null, declaration };
     }
+    declaration.new_names = wanted.map((anchor) => ({ path: anchor.path, symbol: anchor.symbol, nearest: [], elsewhere: [] }));
+    return buildRow({ own, read, writes, declaration, ranges, isNew: () => true });
+  };
+  if (wanted.length > 0 && !observable) return everyNew('no_code_tree');
+  let newKeys = new Set();
+  // ADR 0204 §7.3: a path declared without `#` that holds functions is asked in the same Resolve call (`files`).
+  const bare = wholeFileClaims({ own, read, writes });
+  if (wanted.length + extra.length + bare.length > 0 && observable) {
+    let answer;
+    try { answer = await resolveOnce(root, [...wanted, ...extra], bare.map(({ path: where }) => where)); } catch (error) {
+      if (wanted.length === 0) return buildRow({ own, read, writes, declaration, ranges });
+      declaration.resolve_error = error?.code ?? error?.message ?? 'resolve_failed';
+      return everyNew('resolve_unavailable');
+    }
     const mine = answer.unresolved.filter((anchor) => wantedKeys.has(keyOf(anchor)));
-    declaration.unresolved = mine.map((anchor) => unresolvedEntry(
+    const entry = (anchor) => unresolvedEntry(
       anchor, anchor.reason,
       anchor.nearest.map(({ qualified }) => qualified),
       anchor.elsewhere.map(({ path: where, qualified }) => `${where}#${qualified}`),
-    ));
+    );
+    // path_invalid / symbol_empty cannot be stored at all; every other miss is a name that does not exist yet.
+    const unreadable = mine.filter(({ reason }) => strict || reason === 'path_invalid' || reason === 'symbol_empty');
+    declaration.unresolved = unreadable.map(entry);
+    declaration.new_names = mine.filter((anchor) => !unreadable.includes(anchor)).map((anchor) => {
+      const { path: where, symbol, nearest, elsewhere } = entry(anchor);
+      return { path: where, symbol, nearest, elsewhere };
+    });
+    newKeys = new Set(declaration.new_names.map(keyOf));
     ranges = answer.resolved;
     declaration.resolved = answer.resolved.filter(({ path: where, symbol }) => wantedKeys.has(`${where}\0${symbol}`))
       .map(({ path: where, symbol, kind, start_line: start, end_line: end }) => ({
         path: where, symbol, kind, start_line: start, end_line: end,
       }));
     if (declaration.unresolved.length > 0) return { row: null, declaration };
+    declaration.whole_files = await wholeFiles({ root, observable, bare, files: answer.files ?? [], text });
   }
-  return buildRow({ own, read, writes, declaration, ranges });
+  return buildRow({ own, read, writes, declaration, ranges, isNew: (anchor) => newKeys.has(keyOf(anchor)) });
 }
 
-function buildRow({ own, read, writes, declaration, ranges }) {
-  const concern = byWithin(own.anchors);
-  const readAnchors = byWithin(read.anchors);
+function buildRow({ own, read, writes, declaration, ranges, isNew }) {
+  const concern = byWithin(own.anchors, isNew);
+  const readAnchors = byWithin(read.anchors, isNew);
   const row = {
     owns: sortedUnique([...own.paths, ...concern.map(({ within }) => within)]),
     reads: sortedUnique([...read.paths, ...readAnchors.map(({ within }) => within)]),

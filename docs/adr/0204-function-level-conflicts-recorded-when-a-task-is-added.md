@@ -127,6 +127,35 @@ the sensor index, the witness set or the full relation log, never recompute, and
   (+~11 s per `todo add` in a witness/enforced plan on a BellTeam-size chart). That breaks decision 4, so 0.108.0 (g4, g5)
   ships only together with a2 (Observe on the maintained index). Neve does a2 first.
 
+### 7. A function that does not exist yet, and the declare texts (Owner 2026-11-17)
+
+Production 2026-11-16/17: in every cross-lane write x write overlap on code one side was a whole file, so the function unit
+and stage B had no input. Two members fell back to a file or a parent because a new name refused the whole row (Rapi
+`ReplySwipe`; Anis keeps "new names fail, declare files" in her procedure). The text a worker reads when it declares (the
+enforced start refusal) showed only `--owns <path>`. Owner approved (1) and (2) below.
+
+1. Texts: every declare command Lattice prints (start refusal `enforced_witness_undeclared`, stale refusal, notices) shows
+   the function form first: `--owns <path>#<function>[,...] [--reads <path>#<function>,...]`, a path alone only for a file
+   with no functions or a new file.
+2. New names: a name that does not resolve no longer stops the row. The row is written with every resolved anchor and the
+   unresolved names, which are kept in the anchor as `new_symbols` (subset of `symbols` that did not resolve when declared).
+   The result lists them as `declaration.new_names: [{path, symbol, nearest[], elsewhere[]}]` so a typo is seen at once;
+   `unresolved` stays for a malformed entry only. Judgment of a name in `new_symbols` with no range: it overlaps a whole-file
+   claim on that path and the same name on that path; it does not overlap another function's range or another new name.
+   A name not in `new_symbols` that no longer resolves keeps today's reading (whole file, counted in `unresolved_count`), so a
+   function renamed on main after the declaration is never read as "no conflict". Once a new name exists on main it resolves
+   and is judged by its range. A new name cannot be cut by B (no range): planSplitHold skips such an overlap and the start
+   keeps today's behaviour for it. The same applies when the Store root has no code tree or Resolve is unavailable: the row
+   is written with the names as new names instead of not being written (that give-up protected nothing).
+3. A whole code file declared (Owner: 「合理的だ。その方針で実装しろ」): accepted as today, never refused or asked to confirm
+   (a confirmation would be a refusal that protects only parallelism). The result adds `declaration.whole_files:
+   [{path, access, functions, candidates[]}]` for each path declared without `#` that holds functions: `functions` = how many
+   functions the claim makes conflicting, `candidates` = the title/design-memo proposals (existing `proposeFromText`) that lie
+   in that file, and the text line "<path>: whole file, its N functions all conflict; by function: --owns <path>#<candidate>".
+   A path with no functions (docs, config, css, a test directory, a new file) gets no entry. The count comes from the same
+   Resolve process the declaration already runs (Code graph adds `files: [path]` → `{path, functions}` to Resolve); no extra
+   process, nothing read on a read. If Resolve is unavailable the entry is left out; the declaration is unaffected.
+
 ## Load budget (acceptance, on a BellTeam copy)
 
 - `todo add` with declarations: at most today's add + 2 s; Resolve + overlap for one task ≤ 1 s.

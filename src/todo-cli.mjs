@@ -1428,7 +1428,8 @@ async function holdForSplit({ repoRoot, env, member, planKey, taskId, read, over
 /** What the function-split commands need from this module: retire a task, and declare a row again (resolved at HEAD). */
 const splitDeps = (repoRoot, planKey) => ({
   retire: (options) => retireTask(options),
-  declareRow: ({ taskId, flags }) => declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot) }),
+  // strict: the cut must be on HEAD (ADR 0205 §5); the new-name rule (ADR 0204 §7) is for a member's own declare/add.
+  declareRow: ({ taskId, flags }) => declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot), strict: true }),
 });
 
 /** ADR 0205 §3: starting the split task S shows the worker its members, the size of the cut and what to do (no member rule exists). */
@@ -1488,7 +1489,8 @@ function headResolves(repoRoot) {
 }
 
 const declareCommand = (planKey, taskId) => `lattice todo independence witness declare --plan ${planKey} --task ${taskId}`
-  + ' --owns <path>[,<path>...] [--reads <path>,...] [--writes <path>,...]';
+  + ' --owns <path>#<function>[,...] [--reads <path>#<function>,...] [--writes <path>,...]'
+  + ' (a path alone only for a file with no functions or a new file)';
 
 /**
  * g3: a task in a lane the host marked `no_code_lanes` (`chart set --no-code-lane`) touches no code, so gates 1–3 do not apply:
@@ -1509,7 +1511,7 @@ function enforcedStartGate({ advisory, planKey, taskId, overrideReason }) {
     throw new TodoStoreError('TODO_TRANSITION_REFUSED', reason, undefined, { plan_key: planKey, task_id: taskId, ...detail });
   };
   if (advisory.coverage === 'missing' || unknown('witness_missing')) {
-    refuse('enforced_witness_undeclared', { next_action: `Declare the files ${taskId} touches, then start again: \`${declareCommand(planKey, taskId)}\`.` });
+    refuse('enforced_witness_undeclared', { next_action: `Declare the functions ${taskId} touches, then start again: \`${declareCommand(planKey, taskId)}\`.` });
   }
   if (advisory.drift_intersecting === true || unknown('record_stale')) {
     refuse('enforced_witness_stale', { next_action: `Main changed under ${taskId}'s declared files since the check: declare them again (it recompiles), then start: \`${declareCommand(planKey, taskId)}\`.` });
@@ -4159,18 +4161,20 @@ function declarationNextAction(planKey, taskId, declaration) {
  * Resolve and the fresh observation run before the Store lock; if another declaration changed the set meanwhile (a row or
  * path this attempt did not resolve or observe), the call writes nothing and the attempt runs again (three at most).
  */
-async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable }) {
+async function declareTaskRow({ repoRoot, planKey, taskId, flags, observable, strict = false }) {
   const store = await readTodoStore({ repoRoot });
   const member = store.members.find(({ descriptor }) => descriptor.plan_key === planKey);
   if (member === undefined) throw new TodoStoreError('STORE_INCONSISTENT', 'plan_not_active', undefined, { plan_key: planKey });
   const writer = createTodoStoreWriter({ caller: 'todo-relations' });
   const mine = declaredPaths(flags);
+  const task = member.plan.tasks.find(({ task_id: id }) => id === taskId);
   const headSha = observable ? currentHeadSha(repoRoot) : null;
   const peek = await readTodoWitnessSet({ repoRoot, planKey }).catch(() => null);
   let alsoResolve = neededAnchors(peek?.plan_key === planKey ? peek.manual_witness : {}, taskId, mine);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { row, declaration, ranges } = await buildDeclarationRow({
-      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve });
+      root: repoRoot, observable, owns: flags.owns, reads: flags.reads, writes: flags.writes, alsoResolve, strict,
+      text: { title: task?.title, memo: typeof task?.design_memo === 'string' ? task.design_memo : undefined } });
     if (row === null) return { declaration, scaffolded: null };
     const resolved = new Set([...alsoResolve, ...declaration.resolved].map(({ path: where, symbol }) => `${where}\0${symbol}`));
     const draftFor = (witnessSet, unfinishedTaskIds) => {

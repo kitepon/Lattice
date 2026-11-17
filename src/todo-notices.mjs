@@ -25,7 +25,7 @@ function triggerOf(member, event, ref) {
 export function startPath(planKey, taskId, mode, declared) {
   return [
     ...(mode === 'enforced' && !declared
-      ? [`lattice todo independence witness declare --plan ${planKey} --task ${taskId} --owns <path>[,<path>...]`] : []),
+      ? [`lattice todo independence witness declare --plan ${planKey} --task ${taskId} --owns <path>#<function>[,...] [--reads <path>#<function>,...]`] : []),
     `lattice todo start --plan ${planKey} --task ${taskId}`,
   ];
 }

@@ -125,7 +125,12 @@ test('an accepted cut: done S refuses until the map is on main, then rewrites bo
   assert.deepEqual(Object.keys(verified.conditions), ['behaviour', 'tests', 'fresh', 'overlap', 'parallel']);
   assert.match(verified.conditions.parallel.detail, /waves 2 -> 1/u);
   // the new functions are on a branch, not on main: nothing is rewritten, done is refused
-  assert.match(refusal(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'x']), /split_map_unresolved/u);
+  const refused = refusal(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'x']);
+  assert.match(refused, /split_map_unresolved/u);
+  assert.match(refused, /merge the split PR, sync the repository \(`lattice chart repo sync`\), then run `todo done` again/u);
+  // the declarations are unchanged: no name of the cut is kept as a new name (ADR 0205 §5, strict at HEAD)
+  const rows = (await readTodoWitnessSet({ repoRoot: root, planKey: 'dev' })).manual_witness;
+  for (const id of ['U', 'T']) assert.deepEqual(rows[id].concern_anchors, [{ within: { kind: 'path', target: 'src/lib.mjs' }, symbols: ['work'] }]);
   git('merge', '--ff-only', 'cut');
   success(root, ['sensor', 'sync', '.', '--json']); // what `chart repo sync` does after it takes main in
   const done = success(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'merged the cut']);
