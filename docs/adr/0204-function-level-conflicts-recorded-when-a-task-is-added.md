@@ -147,8 +147,14 @@ enforced start refusal) showed only `--owns <path>`. Owner approved (1) and (2) 
    and is judged by its range. A new name cannot be cut by B (no range): planSplitHold skips such an overlap and the start
    keeps today's behaviour for it. The same applies when the Store root has no code tree or Resolve is unavailable: the row
    is written with the names as new names instead of not being written (that give-up protected nothing).
-3. (Proposed, not yet decided) A whole code file declared: accepted, and the result says how many functions it makes
-   conflicting and the function form with the candidates from the title and design memo.
+3. A whole code file declared (Owner: 「合理的だ。その方針で実装しろ」): accepted as today, never refused or asked to confirm
+   (a confirmation would be a refusal that protects only parallelism). The result adds `declaration.whole_files:
+   [{path, access, functions, candidates[]}]` for each path declared without `#` that holds functions: `functions` = how many
+   functions the claim makes conflicting, `candidates` = the title/design-memo proposals (existing `proposeFromText`) that lie
+   in that file, and the text line "<path>: whole file, its N functions all conflict; by function: --owns <path>#<candidate>".
+   A path with no functions (docs, config, css, a test directory, a new file) gets no entry. The count comes from the same
+   Resolve process the declaration already runs (Code graph adds `files: [path]` → `{path, functions}` to Resolve); no extra
+   process, nothing read on a read. If Resolve is unavailable the entry is left out; the declaration is unaffected.
 
 ## Load budget (acceptance, on a BellTeam copy)
 

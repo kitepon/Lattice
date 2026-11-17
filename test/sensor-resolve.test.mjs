@@ -24,6 +24,9 @@ async function indexed(t) {
   ].join('\n'));
   await writeFile(path.join(root, 'src/b.mjs'), 'export function renderThing() { return 1; }\n');
   await writeFile(path.join(root, 'src/J.java'), 'package x;\npublic class J {\n  public int f() { return 1; }\n  public int f(int a) { return a; }\n}\n');
+  // d3 fixture: a constructor and a method, an arrow function, and a file of types only
+  await writeFile(path.join(root, 'src/c.mjs'), 'export const LIMIT = 3;\nexport class Box { constructor() {} get() { return 1; } }\nexport const arrow = () => 2;\n');
+  await writeFile(path.join(root, 'src/types.d.ts'), 'export interface Shape { x: number }\n');
   assert.equal(await runSensorCli({ argv: ['init', root, '--json'], stdout: sink, stderr: sink }), 0);
   return root;
 }
@@ -90,6 +93,22 @@ test('a3: related callers/callees only when asked; seed fallback proposes exact 
   assert.deepEqual(seeds.proposed.map((p) => p.name), ['renderThing', 'qux']);
   assert.deepEqual(seeds.proposed[0].definitions.map((d) => d.path), ['src/b.mjs']);
   assert.deepEqual(seeds.not_found, ['missingFunction']);
+});
+
+test('d3: Resolve counts the function-like definitions of a whole file; an unknown path answers 0', async (t) => {
+  const root = await indexed(t);
+  const { files, resolved } = await resolveAnchors({ root, anchors: [{ path: 'src/a.mjs', symbol: 'alpha' }],
+    files: ['src/a.mjs', 'src/c.mjs', './src/b.mjs', 'src/types.d.ts', 'src/nope.mjs', '../x.mjs'] });
+  assert.deepEqual(files, [
+    { path: 'src/a.mjs', functions: 4 },
+    { path: 'src/c.mjs', functions: 3 },
+    { path: './src/b.mjs', functions: 1 },
+    { path: 'src/types.d.ts', functions: 0 },
+    { path: 'src/nope.mjs', functions: 0 },
+    { path: '../x.mjs', functions: 0 },
+  ]);
+  assert.equal(resolved.length, 1, 'anchors in the same request are answered as before');
+  assert.deepEqual((await resolveAnchors({ root, anchors: [] })).files, [], 'no files asked, none answered');
 });
 
 test('a3: lattice sensor resolve answers on stdout, exit 0 on a miss, typed error without an index', async (t) => {
