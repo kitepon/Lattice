@@ -154,6 +154,21 @@ export function resolveAnchors(
   return out;
 }
 
+/** Function-like definitions: functions, methods (constructors are methods). Types, fields and variables are not. */
+const FUNCTION_LIKE = new Set(['function', 'method']);
+
+/**
+ * How many functions a whole-file claim makes conflicting (ADR 0204 §7.3). A file with none, a path that is not indexed or
+ * not a repo-relative path answers 0; there is no refusal.
+ */
+export function countFunctions(host: AnchorResolveHost, paths: string[]): Array<{ path: string; functions: number }> {
+  return paths.map((written) => {
+    const path = written.replace(/^\.\//, '');
+    const valid = path !== '' && !path.startsWith('/') && !path.split('/').includes('..');
+    return { path: written, functions: valid ? host.getNodesInFile(path).filter((node) => FUNCTION_LIKE.has(node.kind)).length : 0 };
+  });
+}
+
 export interface NamedDefinitions {
   name: string;
   /** Exact-name definitions across the project (at most {@link NAME_DEFINITION_LIMIT}); empty when none or too common. */
