@@ -1818,8 +1818,10 @@ async function declareOnAdd({ repoRoot, planKey, taskId, flags }) {
     return { written: false, resolved: [], unresolved: [], malformed: [], proposed };
   }
   try {
-    const declared = await declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot) });
-    return declared.declaration;
+    const { declaration } = await declareTaskRow({ repoRoot, planKey, taskId, flags, observable: headResolves(repoRoot) });
+    // as witness declare: a row not written says what to correct and that the same flags go to `witness declare` (ADR 0204 §7.4)
+    return declaration.written || declaration.malformed.length + declaration.unresolved.length === 0 ? declaration
+      : { ...declaration, next_action: declarationNextAction(planKey, taskId, declaration) };
   } catch (error) {
     if (!(error instanceof TodoStoreError)) throw error;
     return { written: false, resolved: [], unresolved: [], malformed: [],
