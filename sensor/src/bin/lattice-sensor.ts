@@ -1756,19 +1756,21 @@ program
       }
       const chunks: Buffer[] = [];
       for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-      const request = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { anchors?: unknown; names?: unknown; related?: unknown };
+      const request = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { anchors?: unknown; names?: unknown; related?: unknown; files?: unknown };
       const anchors = request.anchors ?? [];
       const names = request.names ?? [];
+      const files = request.files ?? [];
       if (!Array.isArray(anchors) || !anchors.every((a) => a && typeof a.path === 'string' && typeof a.symbol === 'string')
-        || !Array.isArray(names) || !names.every((n) => typeof n === 'string')) {
-        error('resolve expects {"anchors"?:[{"path":string,"symbol":string}],"names"?:string[],"related"?:boolean} on stdin');
+        || !Array.isArray(names) || !names.every((n) => typeof n === 'string')
+        || !Array.isArray(files) || !files.every((f) => typeof f === 'string')) {
+        error('resolve expects {"anchors"?:[{"path":string,"symbol":string}],"names"?:string[],"files"?:string[],"related"?:boolean} on stdin');
         process.exit(2);
       }
       const { default: LatticeSensor } = await loadLatticeSensor();
       const cg = await LatticeSensor.open(projectPath);
-      const { resolveAnchors, lookupNames } = await import('../graph/anchor-resolve');
+      const { resolveAnchors, lookupNames, countFunctions } = await import('../graph/anchor-resolve');
       const result = resolveAnchors(cg, anchors, { related: request.related === true });
-      console.log(JSON.stringify({ schema: 'lattice.sensor_resolve.v1', ...result, named: lookupNames(cg, names) }));
+      console.log(JSON.stringify({ schema: 'lattice.sensor_resolve.v1', ...result, named: lookupNames(cg, names), files: countFunctions(cg, files) }));
       cg.destroy();
     } catch (err) {
       error(`resolve failed: ${err instanceof Error ? err.message : String(err)}`);

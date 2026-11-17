@@ -77,12 +77,13 @@ const snake = ({ startLine, endLine, qualified, ...rest }) => ({ ...rest, qualif
 /**
  * Resolve `{path, symbol}[]` against the maintained index of `root`.
  * → `{resolved: [{path, symbol, qualified, kind, start_line, end_line, related?}], unresolved: [{path, symbol, reason, nearest[], elsewhere[]}],
- *     ambiguous: [{path, symbol, names[]}]}`
+ *     ambiguous: [{path, symbol, names[]}], files: [{path, functions}]}`
  * Exact match only. A symbol with several definitions in its file (overloads, same name in two classes) returns every span, and
  * `ambiguous` names the case when they are different definitions. `unresolved` is an answer, not an error.
+ * `files` (ADR 0204 §7.3): paths written without `#`; `functions` = function-like definitions in that file, 0 when none or not indexed.
  */
-export async function resolveAnchors({ root, anchors, related = false }) {
-  const result = await runSensorJson({ command: 'resolve', root, request: { anchors, related } });
+export async function resolveAnchors({ root, anchors, related = false, files = [] }) {
+  const result = await runSensorJson({ command: 'resolve', root, request: { anchors, related, files } });
   const moveRelated = (node) => (node.related === undefined ? node : {
     ...node,
     related: Object.fromEntries(Object.entries(node.related).map(([key, value]) => [key,
@@ -94,6 +95,7 @@ export async function resolveAnchors({ root, anchors, related = false }) {
       ...anchor, nearest: anchor.nearest.map(snake), elsewhere: anchor.elsewhere.map(snake),
     })),
     ambiguous: result.ambiguous,
+    files: result.files,
   };
 }
 
