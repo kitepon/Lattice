@@ -23,7 +23,8 @@ export function splitGuide({ planKey, taskId, mark }) {
       + ' (map the members whose function changed; an unmapped member keeps its declaration).'
       + ' Once verify accepts, open the PR with `[skip ci]` in the commit message (verify already ran the checks for the cut), merge it,'
       + ` then run \`lattice todo done --plan ${planKey} --task ${taskId} --message <what you merged>\`.`,
-    `Not split: run \`${base} decline --plan ${planKey} --task ${taskId} --reason <text>\`; the later tasks then wait for the one that started first.`,
+    `Not split: run \`${base} decline --plan ${planKey} --task ${taskId} --reason <text>\`; the later tasks then wait for the one that started first,`
+      + ' unless you moved your change out of the function and declared again first: with no write overlap left there is no wait.',
   ].join('\n');
 }
 

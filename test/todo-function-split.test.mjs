@@ -89,6 +89,25 @@ test('decline with no member in progress adds no edge', async (context) => {
   assert.equal(status(await member(root), splitId), 'retired');
 });
 
+test('decline after U redeclared away from the function: the overlap is gone, T gets no edge and starts at once', async (context) => {
+  const { root, git, splitId } = await split(context);
+  await mkdir(path.join(root, 'src'), { recursive: true });
+  await writeFile(path.join(root, 'src/other.mjs'), 'export function elsewhere() {\n  return 1;\n}\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'other');
+  // U moves its change out of `work` and declares again: ADR 0204 judges the relations again and closes the one with T
+  success(root, ['sensor', 'sync', '.', '--json']);
+  assert.equal(success(root, ['todo', 'independence', 'witness', 'declare', '--plan', 'dev', '--task', 'U', '--owns', 'src/other.mjs#elsewhere']).declaration.written, true);
+  const result = success(root, ['todo', 'function-split', 'decline', '--plan', 'dev', '--task', splitId, '--reason', 'moved out']);
+  assert.deepEqual(result.predecessor_edges, []);
+  const m = await member(root);
+  assert.equal(status(m, splitId), 'retired');
+  assert.ok(!edges(m).includes('U>T'));
+  const notes = JSON.stringify(success(root, ['todo', 'note', 'list', '--plan', 'dev', '--json']));
+  assert.match(notes, /was not made: moved out; the overlap with U is gone, T does not wait/u);
+  assert.doesNotMatch(notes, /now waits for/u);
+  assert.equal(success(root, ['todo', 'start', '--plan', 'dev', '--task', 'T']).status, 'in-progress');
+});
+
 test('done S is refused until verify accepts, and a task that is not a split task is refused by the new commands', async (context) => {
   const { root, splitId } = await split(context);
   assert.match(refusal(root, ['todo', 'done', '--plan', 'dev', '--task', splitId, '--message', 'x']), /split_not_accepted/u);

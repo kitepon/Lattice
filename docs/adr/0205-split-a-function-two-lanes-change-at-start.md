@@ -161,6 +161,14 @@ reason. A rejected verify writes the record first, then the revision; a crash be
 or decline (the retire is re-runnable from a rejected record). No 接続 is used:
 the members are always in one plan (relations are judged within a plan).
 
+Overlap gone (Owner 2026-11-17): a member may remove the overlap itself by moving its change out of F and declaring again
+(ADR 0204 path: relations are judged again and close where the overlap is gone). Before adding the predecessor edge U → T,
+decline and a rejected verify read the open relations between U and T: the edge is added only while a write x write overlap
+on S's path is still open between them (a whole-file claim on that path counts). With none, T gets no predecessor, its note
+says the overlap is gone, and S is retired as usual, so T can start at once. No new refusal: an unreadable relation file
+fails the command as any Store read does. Seen in production 2026-11-17 10:58-11:02 JST: split-d1ae57e86fc5, Kiro's a312
+moved out of `createMemberProfileApi` and redeclared, decline still made Belota's a311 wait about 2 minutes for a312.
+
 ### 7. Labels (D9; Plan/lifecycle projection and the gantt)
 
 Derived from the plan already read; no file opened for them:
