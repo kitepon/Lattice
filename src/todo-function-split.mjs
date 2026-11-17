@@ -7,7 +7,8 @@ import { verifyFunctionSplit } from './function-split-verify.mjs';
 import { measureWaveCount } from './seam-verification.mjs';
 import { parseAnchor } from './sensor-resolve.mjs';
 import { appendTodoNote } from './todo-note-store.mjs';
-import { anchorsOf, claimsOf, judgeTask, rangeIndex } from './todo-judgment.mjs';
+import { anchorsOf, claimsOf, judgeTask, rangeIndex, relationView } from './todo-judgment.mjs';
+import { readTodoTaskRelations } from './todo-relation-store.mjs';
 import { readTodoSplit, recordTodoSplit } from './todo-split-store.mjs';
 import {
   createTodoStoreWriter, readTodoStore, readTodoWitnessSet, TodoStoreError,
@@ -166,6 +167,13 @@ const reaches = (plan, from, to) => {
   return false;
 };
 
+/** The tasks `lead` still has an open write x write overlap with on `path` (a whole-file side counts); `read` null = none open. */
+function writeOverlaps({ read, lead, path }) {
+  return (read?.open ?? []).map((relation) => relationView(lead, relation))
+    .filter((view) => view.path === path && view.overlaps.some(({ self, other }) => self.access === 'write' && other.access === 'write'))
+    .map((view) => view.with);
+}
+
 /**
  * Not split (D6, D7): the member in progress that started first becomes the predecessor of the unfinished members that have
  * not started, each member gets a note with the reason, then S is retired. The edges go first, so a crash leaves S open and
@@ -180,8 +188,11 @@ export async function reorganizeNotSplit({ repoRoot, env, planKey, taskId, reaso
   const open = mark.members.filter((id) => state.has(id) && !FINISHED.has(state.get(id).status));
   const lead = open.filter((id) => state.get(id).status === 'in-progress')
     .sort((left, right) => (state.get(left).started_at < state.get(right).started_at ? -1 : 1))[0];
-  const edges = lead === undefined ? [] : open.filter((id) => state.get(id).status !== 'in-progress' && !reaches(member.plan, lead, id))
-    .map((id) => ({ from: lead, to: id }));
+  const candidates = lead === undefined ? [] : open.filter((id) => state.get(id).status !== 'in-progress' && !reaches(member.plan, lead, id));
+  // ADR 0205 §6: a member that moved out of F and declared again leaves no overlap: no edge for it (an unreadable relation file fails here, as any Store read).
+  const overlapping = candidates.length === 0 ? [] : writeOverlaps({ read: await readTodoTaskRelations({ repoRoot, planKey, taskId: lead }), lead, path: mark.path });
+  const edges = candidates.filter((id) => overlapping.includes(id)).map((id) => ({ from: lead, to: id }));
+  const gone = new Set(candidates.filter((id) => !overlapping.includes(id)));
   let planVersion = member.plan.plan_version;
   if (edges.length > 0) {
     const { applyPlanRevision, desiredFromPlan } = await import('./plan-revise.mjs');
@@ -194,7 +205,7 @@ export async function reorganizeNotSplit({ repoRoot, env, planKey, taskId, reaso
   for (const id of open) {
     await appendTodoNote({ repoRoot, projectId: member.plan.project_id, planKey, planVersion, taskId: id, actor,
       recordedAt: new Date().toISOString(), supersedes: null, eligibleSupersedes: [],
-      body: `function split ${taskId} on ${mark.path}#${mark.symbol} was not made: ${reason}${lead !== undefined && id !== lead && state.get(id).status !== 'in-progress' ? `; ${id} now waits for ${lead}` : ''}` });
+      body: `function split ${taskId} on ${mark.path}#${mark.symbol} was not made: ${reason}${lead === undefined || id === lead || state.get(id).status === 'in-progress' ? '' : gone.has(id) ? `; the overlap with ${lead} is gone, ${id} does not wait` : `; ${id} now waits for ${lead}`}` });
   }
   const retired = await deps.retire({ repoRoot, env, planKey, taskId, reason });
   return { schema: 'lattice.todo_function_split_decline_result.v1', project_id: member.plan.project_id, plan_key: planKey,
