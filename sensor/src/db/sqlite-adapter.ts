@@ -67,12 +67,21 @@ class NodeSqliteAdapter implements SqliteDatabase {
       this._db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
     } catch (err) {
       // A WAL database whose -wal/-shm are gone, in a folder this process cannot write (read-only mount, Aiterm fork
-      // write-ban), cannot create them: SQLITE_READONLY. No WAL files = no live writer, so read the file as it is.
+      // write-ban), cannot create them: SQLITE_READONLY on Linux, SQLITE_CANTOPEN under the macOS write-ban. No WAL files
+      // = no live writer, so read the file as it is. Any other failure (corrupt, busy, locked) is the caller's to see.
       // shortcut: immutable reads a file a writer may start changing later, fine for a short read-only session; upgrade if one must follow a live writer.
       // The constructor throws below, so nobody else can close this handle (Windows keeps the file locked).
       try { this._db.close(); } catch { /* already unusable */ }
-      if (!/readonly database/i.test(err instanceof Error ? err.message : String(err))) throw err;
-      this._db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, { readOnly: true });
+      const primary = typeof (err as { errcode?: unknown })?.errcode === 'number' ? (err as { errcode: number }).errcode & 0xff : 0;
+      if (primary !== 8 && primary !== 14 && !/readonly database/i.test(err instanceof Error ? err.message : String(err))) throw err;
+      try {
+        this._db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, { readOnly: true });
+        this._db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
+        return;
+      } catch {
+        try { this._db.close(); } catch { /* not opened */ }
+        throw err; // immutable failed too: the original error is the true one
+      }
     }
   }
 
