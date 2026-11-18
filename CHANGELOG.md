@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.111.2 — 2026-11-18
+
+書き込めないプロジェクトでもコードの道具が読むだけで動く版（BugHub factory::mac-kite::lattice::aa4b23b3…、lattice-bughub-mac-kite-20261118、ネヴェ #245）。ホストへの変更：無し。
+
+- 書き込みを断られるプロジェクト（読み取り専用のマウント、Aiterm の読み取り専用の分身が使う `sandbox-exec deny file-write*`）で、`lattice-mcp` は常駐プロセスを起こさず、その場で読むだけで答える。書き込みの鍵で EPERM/EACCES/EROFS を受けたら「書き手になれない」と扱い、`LATTICE.MCP_SERVER_FAILED`（mcp.start EPERM）を記録しない。それでも起きた常駐プロセスは一行書いて 0 で終わる。
+- 読むだけの接続で、WAL の付属ファイルが無く作れない時は、`immutable=1` でファイルをそのまま読む（付属ファイルが無ければ動いている書き手はいない）。
+- CVE-2026-112366（picomatch の ReDoS、直った版は未公開）：Lattice で picomatch を使う唯一の所、Cargo のワークスペースの member の展開で extglob を切った（`noextglob: true`）。Cargo の glob に extglob は無い。
+
 ## 0.111.1 — 2026-11-17
 
 申告の結果が、その担当本人に言う版（ADR 0204 §7.4、d6、アリス #243）。ホストへの変更：無し（文の欄だけ）。ベヒモスの指摘：結果の読み方を共通の規則に書くと全ての席に毎回届き、欄の名前が変わると一日で古くなる。
