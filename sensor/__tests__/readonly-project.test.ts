@@ -104,6 +104,54 @@ describe.skipIf(!canChmod)('a project folder that cannot be written is served re
     await serveAndRead();
   }, 40_000);
 
+  /**
+   * A BellTeam fork has no default index: cwd is outside the project and the index is reached through `projectPath` only.
+   * The explicit project must be opened read-only too (the engine itself is not readOnly), answering status and explore
+   * without creating a file.
+   */
+  async function serveExplicit(prefix: string[] = []): Promise<void> {
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lattice-readonly-cwd-')));
+    let stderr = '';
+    const [command, ...args] = [...prefix, process.execPath, BIN, 'serve', '--mcp'];
+    child = spawn(command!, args, {
+      cwd: elsewhere,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, LATTICE_SENSOR_WASM_RELAUNCHED: '1', LATTICE_SENSOR_NO_RELAUNCH: '1' },
+    }) as ChildProcessWithoutNullStreams;
+    child.stderr.on('data', (c: Buffer) => { stderr += c.toString(); });
+    try {
+      const before = fs.readdirSync(sensorDir).sort();
+      const init = await request(child, {
+        id: 0, method: 'initialize',
+        params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '0.0.0' } },
+      });
+      expect(init.error).toBeUndefined();
+      let id = 1;
+      for (const [name, args2] of [
+        ['lattice_sensor_status', {}],
+        ['lattice_sensor_explore', { query: 'readonlyProbe' }],
+      ] as const) {
+        const res = await request(child, { id: id++, method: 'tools/call', params: { name, arguments: { ...args2, projectPath: root } } });
+        expect(res.error).toBeUndefined();
+        expect(res.result.isError, `${name}: ${JSON.stringify(res.result)}${stderr}`).not.toBe(true);
+        expect(JSON.stringify(res.result)).not.toMatch(/readonly database|SQLITE_/i);
+      }
+      expect(fs.readdirSync(sensorDir).sort()).toEqual(before);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  }
+
+  it('an explicit projectPath on a write-banned index answers status and explore and creates no file', async () => {
+    for (const f of fs.readdirSync(sensorDir)) { if (f.startsWith('sensor.db')) fs.chmodSync(path.join(sensorDir, f), 0o444); }
+    fs.chmodSync(sensorDir, 0o555);
+    await serveExplicit();
+  }, 40_000);
+
+  it.skipIf(process.platform !== 'darwin')('an explicit projectPath under sandbox-exec deny file-write* (macOS write-ban)', async () => {
+    await serveExplicit(['/usr/bin/sandbox-exec', '-p', `(version 1)(allow default)(deny file-write* (subpath "${root}"))`]);
+  }, 40_000);
+
   // The real Aiterm fork write-ban (aiterm-mcp src/write-ban.ts): SQLite answers SQLITE_CANTOPEN there, not READONLY.
   // The deny matches the real path only (a path under mktemp's /var does not match), hence realpathSync in beforeEach.
   it.skipIf(process.platform !== 'darwin')('under sandbox-exec deny file-write* on the project (macOS write-ban)', async () => {

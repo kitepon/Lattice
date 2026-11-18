@@ -8,6 +8,7 @@ import type LatticeSensor from '../index';
 import type { QueryPool } from './query-pool';
 import { findNearestLatticeSensorRoot, isSameIndexRoot } from '../directory';
 import { LatticeSensorPackageVersion } from './version';
+import { projectWritable } from './writer-lock';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
 // Lazy-load the heavy LatticeSensor chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -2323,7 +2324,9 @@ export class ToolHandler {
       }
     }
 
-    const open = () => loadLatticeSensor().openSync(canonicalRoot);
+    // A folder this process cannot write (read-only mount, fork write-ban) is read-only here too: a read-write open would
+    // hand back a read-only handle whose WAL pragma throws on every call. Query-pool workers reach this path directly.
+    const open = () => loadLatticeSensor().openSync(canonicalRoot, { readOnly: !projectWritable(canonicalRoot) });
     const cg = this.projectLifecycle?.open(canonicalRoot, open) ?? open();
     this.projectCache.set(canonicalRoot, cg);
     this.trimProjects();

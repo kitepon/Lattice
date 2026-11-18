@@ -17,7 +17,7 @@ import { resolveServerRoot } from '../directory';
 import { IndexOpenError, ToolHandler } from './tools';
 import { isIndexCorruption, moveIndexAside } from './index-repair';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
-import { assertNoRebuild, readWriterLock, RebuildInProgressError, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
+import { assertNoRebuild, projectWritable, readWriterLock, RebuildInProgressError, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 import { QueryPool, resolvePoolSize } from './query-pool';
 import { acquireProject, ProjectLease } from './project-lifecycle';
 
@@ -101,7 +101,8 @@ export class MCPEngine {
         // Explicit projects and read-only fallbacks also hold SQLite handles.
         // Fence them before opening, just like the default daemon project.
         assertNoRebuild(root);
-        if (this.opts.readOnly) return loadLatticeSensor().openSync(root, { readOnly: true });
+        // A folder this process cannot write cannot host a writer: serve it read-only, no watcher, no sync.
+        if (this.opts.readOnly || !projectWritable(root)) return loadLatticeSensor().openSync(root, { readOnly: true });
         if (!this.opts.watch) return open();
         const lease = acquireProject(root, open, this.watchOptions());
         this.explicitProjects.set(lease.cg, lease);
