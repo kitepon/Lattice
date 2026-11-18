@@ -69,10 +69,11 @@ describe.skipIf(!canChmod)('a project folder that cannot be written is served re
     expect(refused).toMatchObject({ kind: 'taken', existing: null, unwritable: expect.stringMatching(/^(EACCES|EPERM|EROFS)$/) });
   });
 
-  it('serve --mcp initializes, answers a read tool and starts no daemon and no writer', async () => {
-    fs.chmodSync(sensorDir, 0o555);
+  /** A real `serve --mcp` on the project (command prefix = how the folder is made unwritable); the read tool must answer. */
+  async function serveAndRead(prefix: string[] = []): Promise<void> {
     let stderr = '';
-    child = spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+    const [command, ...args] = [...prefix, process.execPath, BIN, 'serve', '--mcp'];
+    child = spawn(command!, args, {
       cwd: root,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, LATTICE_SENSOR_WASM_RELAUNCHED: '1', LATTICE_SENSOR_NO_RELAUNCH: '1' },
@@ -91,10 +92,21 @@ describe.skipIf(!canChmod)('a project folder that cannot be written is served re
     });
     expect(res.error).toBeUndefined();
     expect(res.result.isError, JSON.stringify(res.result) + stderr).not.toBe(true);
-    expect(JSON.stringify(res.result)).toContain('readonlyProbe');
+    expect(JSON.stringify(res.result), stderr).toContain('readonlyProbe');
 
     expect(stderr).toMatch(/this session is read-only/);
     expect(stderr).not.toMatch(/MCP_SERVER_FAILED|Failed to open|Proxy path failed|Tool execution failed/);
     expect(fs.readdirSync(sensorDir).filter((f) => /^(daemon|writer)\.pid/.test(f))).toEqual([]);
+  }
+
+  it('serve --mcp initializes, answers a read tool and starts no daemon and no writer', async () => {
+    fs.chmodSync(sensorDir, 0o555);
+    await serveAndRead();
+  }, 40_000);
+
+  // The real Aiterm fork write-ban (aiterm-mcp src/write-ban.ts): SQLite answers SQLITE_CANTOPEN there, not READONLY.
+  // The deny matches the real path only (a path under mktemp's /var does not match), hence realpathSync in beforeEach.
+  it.skipIf(process.platform !== 'darwin')('under sandbox-exec deny file-write* on the project (macOS write-ban)', async () => {
+    await serveAndRead(['/usr/bin/sandbox-exec', '-p', `(version 1)(allow default)(deny file-write* (subpath "${root}"))`]);
   }, 40_000);
 });
