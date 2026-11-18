@@ -10,6 +10,7 @@
  * wasm fallback. When run from source instead, it requires Node >= 22.5.
  */
 
+import { pathToFileURL } from 'url';
 import { toWslSharedIndexError } from './wsl-shared-index';
 
 export interface SqliteStatement {
@@ -60,7 +61,19 @@ class NodeSqliteAdapter implements SqliteDatabase {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite');
     this._dbPath = dbPath;
-    this._db = opts?.readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
+    if (!opts?.readOnly) { this._db = new DatabaseSync(dbPath); return; }
+    this._db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      this._db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
+    } catch (err) {
+      // A WAL database whose -wal/-shm are gone, in a folder this process cannot write (read-only mount, Aiterm fork
+      // write-ban), cannot create them: SQLITE_READONLY. No WAL files = no live writer, so read the file as it is.
+      // shortcut: immutable reads a file a writer may start changing later, fine for a short read-only session; upgrade if one must follow a live writer.
+      // The constructor throws below, so nobody else can close this handle (Windows keeps the file locked).
+      try { this._db.close(); } catch { /* already unusable */ }
+      if (!/readonly database/i.test(err instanceof Error ? err.message : String(err))) throw err;
+      this._db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, { readOnly: true });
+    }
   }
 
   /**

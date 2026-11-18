@@ -2034,3 +2034,24 @@ export class UsersController {
     expect(references.map((r) => r.referenceName)).toEqual(['real']);
   });
 });
+
+describe('cargo workspace member globs (CVE-2026-112366)', () => {
+  it('does not run extglobs: +(*a) on a hostile directory name returns at once, crates/* still matches', async () => {
+    const { getCargoWorkspaceCrateMap } = await import('../src/resolution/frameworks/cargo-workspace');
+    const hostile = `${'a'.repeat(31)}!`;
+    const dirs: Record<string, string[]> = { '.': ['crates', hostile], crates: ['core'] };
+    const context = {
+      readFile: (p: string) => {
+        if (p === 'Cargo.toml') return '[workspace]\nmembers = ["crates/*", "+(*a)"]\n';
+        if (p === 'crates/core/Cargo.toml') return '[package]\nname = "mytool-core"\n';
+        return null;
+      },
+      listDirectories: (dir: string) => dirs[dir] ?? [],
+    } as unknown as Parameters<typeof getCargoWorkspaceCrateMap>[0];
+
+    const started = Date.now();
+    const crates = getCargoWorkspaceCrateMap(context);
+    expect(Date.now() - started).toBeLessThan(2000); // about 10 s with extglobs on (picomatch <= 4.0.7)
+    expect(crates.get('mytool-core')).toBe('crates/core');
+  });
+});
