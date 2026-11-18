@@ -2051,7 +2051,56 @@ describe('cargo workspace member globs (CVE-2026-112366)', () => {
 
     const started = Date.now();
     const crates = getCargoWorkspaceCrateMap(context);
-    expect(Date.now() - started).toBeLessThan(2000); // about 10 s with extglobs on (picomatch <= 4.0.7)
+    expect(Date.now() - started).toBeLessThan(2000); // about 10 s with picomatch <= 4.0.7 and extglobs on
     expect(crates.get('mytool-core')).toBe('crates/core');
+  });
+
+  async function expand(members: string[], dirs: Record<string, string[]>): Promise<string[]> {
+    const { getCargoWorkspaceCrateMap } = await import('../src/resolution/frameworks/cargo-workspace');
+    const crates = new Set<string>();
+    const context = {
+      readFile: (p: string) => {
+        if (p === 'Cargo.toml') return `[workspace]\nmembers = [${members.map((m) => `"${m}"`).join(', ')}]\n`;
+        const m = p.match(/^(.*)\/Cargo\.toml$/);
+        if (m) {
+          crates.add(m[1]);
+          return `[package]\nname = "${m[1].replace(/\//g, '-')}"\n`;
+        }
+        return null;
+      },
+      listDirectories: (dir: string) => dirs[dir] ?? [],
+    } as unknown as Parameters<typeof getCargoWorkspaceCrateMap>[0];
+    getCargoWorkspaceCrateMap(context);
+    return [...crates].sort();
+  }
+
+  const tree = {
+    '.': ['crates', 'tools', 'target'],
+    crates: ['a1', 'a2', 'ab', 'core', 'nested'],
+    'crates/nested': ['deep'],
+    tools: ['x'],
+    target: ['crates'],
+  };
+
+  it('* stays inside one component; ** spans directories', async () => {
+    expect(await expand(['crates/*'], tree)).toEqual(['crates/a1', 'crates/a2', 'crates/ab', 'crates/core', 'crates/nested']);
+    expect(await expand(['crates/**'], tree)).toEqual([
+      'crates/a1', 'crates/a2', 'crates/ab', 'crates/core', 'crates/nested', 'crates/nested/deep',
+    ]);
+    expect(await expand(['**/deep'], tree)).toEqual(['crates/nested/deep']);
+  });
+
+  it('? and [...] / [!...] match single characters; braces are literal', async () => {
+    expect(await expand(['crates/a?'], tree)).toEqual(['crates/a1', 'crates/a2', 'crates/ab']);
+    expect(await expand(['crates/a[0-9]'], tree)).toEqual(['crates/a1', 'crates/a2']);
+    expect(await expand(['crates/a[!0-9]'], tree)).toEqual(['crates/ab']);
+    expect(await expand(['crates/{a1,a2}'], tree)).toEqual([]);
+  });
+
+  it('a hostile many-star member returns at once', async () => {
+    const dirs = { '.': ['a'.repeat(5000) + 'b'] };
+    const started = Date.now();
+    expect(await expand([`${'*a'.repeat(40)}c`, '+(*a)'], dirs)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });

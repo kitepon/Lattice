@@ -7,7 +7,6 @@
  * into workspace member crates.
  */
 
-import picomatch from 'picomatch';
 import { ResolutionContext } from '../types';
 
 const GLOB_CHARS = /[*?[\]{}!]/;
@@ -166,6 +165,100 @@ function cleanPath(memberPath: string): string {
   return memberPath.replace(/\\/g, '/').replace(/\/$/, '');
 }
 
+type GlobToken =
+  | { kind: 'char'; ch: string }
+  | { kind: 'any' }
+  | { kind: 'star' }
+  | { kind: 'set'; negate: boolean; ranges: Array<[string, string]> };
+
+/** One path component of a Cargo (glob crate) pattern: `?`, `*`, `[...]`, `[!...]`; everything else is literal. */
+function compileGlobComponent(part: string): GlobToken[] {
+  const tokens: GlobToken[] = [];
+  for (let i = 0; i < part.length; i++) {
+    const ch = part.charAt(i);
+    if (ch === '*') {
+      if (tokens[tokens.length - 1]?.kind !== 'star') tokens.push({ kind: 'star' });
+    } else if (ch === '?') {
+      tokens.push({ kind: 'any' });
+    } else if (ch === '[') {
+      const negate = part.charAt(i + 1) === '!';
+      const start = i + (negate ? 2 : 1);
+      const end = part.indexOf(']', start + 1);
+      if (end === -1) {
+        tokens.push({ kind: 'char', ch });
+        continue;
+      }
+      const body = part.slice(start, end);
+      const ranges: Array<[string, string]> = [];
+      for (let k = 0; k < body.length; k++) {
+        if (body.charAt(k + 1) === '-' && k + 2 < body.length) {
+          ranges.push([body.charAt(k), body.charAt(k + 2)]);
+          k += 2;
+        } else {
+          ranges.push([body.charAt(k), body.charAt(k)]);
+        }
+      }
+      tokens.push({ kind: 'set', negate, ranges });
+      i = end;
+    } else {
+      tokens.push({ kind: 'char', ch });
+    }
+  }
+  return tokens;
+}
+
+function globTokenMatches(token: GlobToken, ch: string): boolean {
+  if (token.kind === 'char') return token.ch === ch;
+  if (token.kind === 'any') return true;
+  if (token.kind === 'set') return token.ranges.some(([lo, hi]) => ch >= lo && ch <= hi) !== token.negate;
+  return false;
+}
+
+/** `*` backtracks to the last star only, so a component matches in O(tokens x name length); no regex, no ReDoS. */
+function matchGlobComponent(tokens: GlobToken[], name: string): boolean {
+  let t = 0;
+  let n = 0;
+  let starT = -1;
+  let starN = 0;
+  while (n < name.length) {
+    const token = tokens[t];
+    if (token?.kind === 'star') {
+      starT = t++;
+      starN = n;
+    } else if (token && globTokenMatches(token, name.charAt(n))) {
+      t++;
+      n++;
+    } else if (starT >= 0) {
+      t = starT + 1;
+      n = ++starN;
+    } else {
+      return false;
+    }
+  }
+  while (tokens[t]?.kind === 'star') t++;
+  return t === tokens.length;
+}
+
+/** Compile a Cargo member glob to a predicate over a `/`-separated relative path. `**` as a whole component spans zero or more directories. */
+function compileCargoGlob(member: string): (rel: string) => boolean {
+  const parts = member.split('/').map((part) => (part === '**' ? null : compileGlobComponent(part)));
+  return (rel) => {
+    const names = rel.split('/');
+    let reach = new Array<boolean>(names.length + 1).fill(false);
+    reach[0] = true;
+    for (const part of parts) {
+      const next = new Array<boolean>(names.length + 1).fill(false);
+      for (let j = 0; j <= names.length; j++) {
+        next[j] = part === null
+          ? !!reach[j] || (j > 0 && !!next[j - 1])
+          : j > 0 && !!reach[j - 1] && matchGlobComponent(part, names[j - 1] ?? '');
+      }
+      reach = next;
+    }
+    return !!reach[names.length];
+  };
+}
+
 function expandGlobMember(member: string, context: ResolutionContext): string[] {
   if (!context.listDirectories) return [];
 
@@ -175,8 +268,8 @@ function expandGlobMember(member: string, context: ResolutionContext): string[] 
     .replace(/[^/]*$/, '')
     .replace(/\/$/, '');
 
-  // Cargo member globs have no extglob; noextglob keeps a hostile `+(*a)` from ReDoS (CVE-2026-112366, picomatch <= 4.0.7, no fixed version)
-  const matcher = picomatch(member, { dot: false, noextglob: true });
+  // Own matcher instead of picomatch: Cargo has no extglob or braces, and picomatch <= 4.0.7 has a ReDoS (CVE-2026-112366, no fixed version)
+  const matcher = compileCargoGlob(member);
   const matches: string[] = [];
   const seen = new Set<string>();
 
@@ -219,7 +312,7 @@ function expandMembers(members: string[], context: ResolutionContext): string[] 
  * Build a map from crate-name aliases to workspace member directory paths.
  * Example: "mytool-core" and "mytool_core" -> "crates/mytool-core"
  *
- * Supports glob members (e.g. `members = ["crates/*"]`) via picomatch
+ * Supports glob members (e.g. `members = ["crates/*"]`, Cargo glob syntax)
  * when the context exposes `listDirectories`.
  */
 export function getCargoWorkspaceCrateMap(context: ResolutionContext): Map<string, string> {
