@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.111.3 — 2026-11-18
+
+0.111.2 の続き：macOS の書き込み禁止の下でも読める版（ネヴェ #247）。ホストへの変更：無し。
+
+- 0.111.2 は Linux の書き込み禁止（SQLITE_READONLY）だけを読み替えていた。macOS の `sandbox-exec deny file-write*` では、読むだけの接続の最初の読みが SQLITE_CANTOPEN（「unable to open database file」）になり、mac-kite では読めなかった。主のエラー番号が 8 か 14 の時は、`immutable=1` で開き直す。それ以外（壊れ・使用中・ロック）はそのまま返す。開き直しも失敗したら、元のエラーを返す。
+- 試験：macOS の CI で、本物の `serve --mcp` を `/usr/bin/sandbox-exec` の書き込み禁止の下で動かす。
+
 ## 0.111.2 — 2026-11-18
 
 書き込めないプロジェクトでもコードの道具が読むだけで動く版（BugHub factory::mac-kite::lattice::aa4b23b3…、lattice-bughub-mac-kite-20261118、ネヴェ #245）。ホストへの変更：無し。
