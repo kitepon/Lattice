@@ -48,7 +48,37 @@ export interface WriterLockInfo {
 
 export type WriterAcquireResult =
   | { kind: 'acquired'; pidPath: string; info: WriterLockInfo }
-  | { kind: 'taken'; existing: WriterLockInfo | null; pidPath: string };
+  /** `unwritable` = the errno that stopped the lock write (EPERM/EACCES/EROFS): this process cannot be the writer. */
+  | { kind: 'taken'; existing: WriterLockInfo | null; pidPath: string; unwritable?: string };
+
+/**
+ * The project folder refuses writes (read-only mount, or the Aiterm fork write-ban `sandbox-exec deny file-write*`).
+ * Not an error of the project: the session cannot be the writer and serves reads only.
+ */
+export function cannotWrite(err: unknown): string | null {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EROFS' ? code : null;
+}
+
+/** Can this process write in the project's `.lattice/sensor`? Only a refused write answers false (never a retry, never an error). */
+export function projectWritable(projectRoot: string): boolean {
+  const probe = `${getWriterPidPath(projectRoot)}.${process.pid}.probe`;
+  try {
+    fs.writeFileSync(probe, '', { mode: 0o600 });
+    fs.unlinkSync(probe);
+    return true;
+  } catch (err) {
+    return cannotWrite(err) === null;
+  }
+}
+
+/** Thrown by the daemon when its project cannot be written; the detached daemon exits quietly on it. */
+export class ProjectNotWritableError extends Error {
+  constructor(public readonly errno: string) {
+    super(`The project folder cannot be written (${errno}); it is served read-only without a daemon.`);
+    this.name = 'ProjectNotWritableError';
+  }
+}
 
 function encode(info: WriterLockInfo): string {
   return JSON.stringify(info) + '\n';
@@ -77,6 +107,21 @@ export function tryAcquireWriterLock(
   projectRoot: string,
   mode: string,
   lockName: 'writer.pid' | 'rebuild.pid' = 'writer.pid',
+): WriterAcquireResult {
+  try {
+    return acquireWriterLock(projectRoot, mode, lockName);
+  } catch (err) {
+    // Cannot write here = cannot be the writer: callers that serve read-only on `taken` do so; none retries.
+    const unwritable = cannotWrite(err);
+    if (unwritable) return { kind: 'taken', existing: null, pidPath: getWriterPidPath(projectRoot, lockName), unwritable };
+    throw err;
+  }
+}
+
+function acquireWriterLock(
+  projectRoot: string,
+  mode: string,
+  lockName: 'writer.pid' | 'rebuild.pid',
 ): WriterAcquireResult {
   const pidPath = getWriterPidPath(projectRoot, lockName);
   fs.mkdirSync(path.dirname(pidPath), { recursive: true });
@@ -193,7 +238,9 @@ export function readWriterLock(projectRoot: string, lockName: 'writer.pid' | 're
 export function writerLockHeldMessage(
   existing: WriterLockInfo | null,
   pidPath: string,
+  unwritable?: string,
 ): string {
+  if (unwritable) return `The project folder cannot be written (${unwritable}); this session is read-only. ${pidPath}`;
   const who = existing && existing.pid > 0
     ? `PID ${existing.pid} (${existing.mode || 'unknown'} mode)`
     : 'another process';

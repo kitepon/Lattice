@@ -175,7 +175,8 @@ function expandGlobMember(member: string, context: ResolutionContext): string[] 
     .replace(/[^/]*$/, '')
     .replace(/\/$/, '');
 
-  const matcher = picomatch(member, { dot: false });
+  // Cargo member globs have no extglob; noextglob keeps a hostile `+(*a)` from ReDoS (CVE-2026-112366, picomatch <= 4.0.7, no fixed version)
+  const matcher = picomatch(member, { dot: false, noextglob: true });
   const matches: string[] = [];
   const seen = new Set<string>();
 

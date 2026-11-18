@@ -126,7 +126,7 @@ export class MCPEngine {
       if (writer.kind === 'taken') {
         // u03 E15: the single-writer protection is kept by serving read-only
         // (as direct mode does for E4) instead of refusing to start.
-        process.stderr.write(`[LatticeSensor MCP] Serving reads in-process without auto-sync: ${writerLockHeldMessage(writer.existing, writer.pidPath)}\n`);
+        process.stderr.write(`[LatticeSensor MCP] Serving reads in-process without auto-sync: ${writerLockHeldMessage(writer.existing, writer.pidPath, writer.unwritable)}\n`);
         this.opts = { ...this.opts, readOnly: true };
       } else {
         this.writerLockRoot = opts.writerLockRoot;
@@ -431,7 +431,7 @@ export class MCPEngine {
     try {
       writer = tryAcquireWriterLock(root, 'repair');
       if (writer.kind === 'taken') {
-        throw new IndexOpenError(`The default index is damaged but another process owns it; it will be retried on the next request. ${writerLockHeldMessage(writer.existing, writer.pidPath)}`);
+        throw new IndexOpenError(`The default index is damaged but another process owns it; it will be retried on the next request. ${writerLockHeldMessage(writer.existing, writer.pidPath, writer.unwritable)}`);
       }
       const cause = this.toolHandler.getOpenFailureMessage();
       const aside = moveIndexAside(dbPath);

@@ -58,6 +58,7 @@ import { LatticeSensorPackageVersion } from './version';
 import {
   releaseWriterLock,
   tryAcquireWriterLock,
+  ProjectNotWritableError,
   assertNoRebuild,
   writerLockHeldMessage,
 } from './writer-lock';
@@ -221,6 +222,10 @@ export class Daemon {
     assertNoRebuild(this.projectRoot);
     const writer = tryAcquireWriterLock(this.projectRoot, 'daemon');
     if (writer.kind === 'taken') {
+      if (writer.unwritable) {
+        this.cleanupLockfile();
+        throw new ProjectNotWritableError(writer.unwritable);
+      }
       const msg = writerLockHeldMessage(writer.existing, writer.pidPath);
       process.stderr.write(`[LatticeSensor daemon] ${msg}\n`);
       this.cleanupLockfile();

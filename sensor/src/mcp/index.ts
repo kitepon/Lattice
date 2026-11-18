@@ -54,6 +54,9 @@ import {
   assertNoRebuild,
   releaseWriterLock,
   tryAcquireWriterLock,
+  cannotWrite,
+  projectWritable,
+  ProjectNotWritableError,
 } from './writer-lock';
 import {
   canProbeDaemonIdentity,
@@ -484,7 +487,9 @@ export class MCPServer {
         const who = writer.existing && writer.existing.pid > 0
           ? `PID ${writer.existing.pid} (${writer.existing.mode || 'unknown'} mode)`
           : 'another process';
-        engine = readOnlyFallback(`writer lock held by ${who}; this session is read-only`);
+        engine = readOnlyFallback(writer.unwritable
+          ? `project folder cannot be written (${writer.unwritable}); this session is read-only`
+          : `writer lock held by ${who}; this session is read-only`);
       } else {
         this.writerLockRoot = writerRoot;
       }
@@ -546,12 +551,29 @@ export class MCPServer {
     // kills/restarts can be placed in time (#1431 — the log was undatable).
     timestampStderrLines();
     const root = resolveDaemonRoot(this.projectPath) ?? this.projectPath ?? process.cwd();
+    // A project that cannot be written has no daemon: its sessions serve reads in-process. Not a failure.
+    const notWritable = (errno: string): never => {
+      process.stderr.write(`[LatticeSensor daemon] The project folder cannot be written (${errno}); not starting a daemon, sessions serve it read-only; exiting.\n`);
+      process.exit(0);
+    };
     for (let attempt = 0; attempt < TAKEOVER_MAX_RETRIES; attempt++) {
-      const lock = tryAcquireDaemonLock(root);
+      let lock: ReturnType<typeof tryAcquireDaemonLock>;
+      try {
+        lock = tryAcquireDaemonLock(root);
+      } catch (err) {
+        const errno = cannotWrite(err);
+        if (errno) return notWritable(errno);
+        throw err;
+      }
 
       if (lock.kind === 'acquired') {
         const daemon = new Daemon(root);
-        await daemon.start();
+        try {
+          await daemon.start();
+        } catch (err) {
+          if (err instanceof ProjectNotWritableError) return notWritable(err.errno);
+          throw err;
+        }
         this.daemon = daemon;
         this.mode = 'daemon';
         // The detached daemon has no PPID watchdog or stdin lifeline, so a
@@ -647,6 +669,8 @@ export class MCPServer {
       // verbatim so the local-handshake proxy fails the session closed
       // instead of silently falling back to direct mode.
       if (probe) return probe;
+      // A project that refuses writes cannot host a daemon: serve this session in-process (read-only) at once.
+      if (!projectWritable(root)) return { fallbackReason: 'no-daemon' };
       // None reachable — spawn one (detached) and poll for its bind.
       spawnDetachedDaemon(root);
       for (let attempt = 0; attempt < DAEMON_CONNECT_MAX_RETRIES; attempt++) {
