@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.111.5 — 2026-11-18
+
+picomatch を依存から外した版（CVE-2026-112366、BugHub CaseGroup::84a09cc7、ネヴェ #251）。ホストへの変更：無し。
+
+- picomatch の 4.0.7 以下には ReDoS があり、直った版がまだ出ていない。0.111.3 では唯一の呼び出しに `noextglob:true` を付けて塞いでいたが、依存は残っていた。
+- Cargo.toml の workspace members の照合（`sensor/src/resolution/frameworks/cargo-workspace.ts`）を、Cargo の書き方（`?`・`*`・`**`・`[...]`・`[!...]`）だけを扱う自前の照合に置き換えた。正規表現は作らず、照合の手間は名前の長さに比例する。波括弧と extglob は Cargo と同じく文字として扱う。
+- picomatch を本体と sensor の依存から、`@types/picomatch` を sensor の開発用の依存から外した。`npm ls picomatch --omit=dev` は本体と sensor のどちらでも空。
+- 試験：`crates/*`、`crates/**`、`**/deep`、`?`、`[...]`、`[!...]`、文字としての波括弧、`*a*a…c` と `+(*a)` がすぐ返ること。
+
 ## 0.111.4 — 2026-11-18
 
 0.111.3 の続き：場所を指定して呼ぶ読み取り専用の分身でも、書き込めない索引を読める版（ネヴェ #249）。ホストへの変更：無し。
