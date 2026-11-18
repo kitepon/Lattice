@@ -69,8 +69,9 @@ class NodeSqliteAdapter implements SqliteDatabase {
       // A WAL database whose -wal/-shm are gone, in a folder this process cannot write (read-only mount, Aiterm fork
       // write-ban), cannot create them: SQLITE_READONLY. No WAL files = no live writer, so read the file as it is.
       // shortcut: immutable reads a file a writer may start changing later, fine for a short read-only session; upgrade if one must follow a live writer.
-      if (!/readonly database/i.test(err instanceof Error ? err.message : String(err))) throw err;
+      // The constructor throws below, so nobody else can close this handle (Windows keeps the file locked).
       try { this._db.close(); } catch { /* already unusable */ }
+      if (!/readonly database/i.test(err instanceof Error ? err.message : String(err))) throw err;
       this._db = new DatabaseSync(`${pathToFileURL(dbPath).href}?immutable=1`, { readOnly: true });
     }
   }
