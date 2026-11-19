@@ -77,10 +77,30 @@ export function projectTodoCrossPlanDependencies(members) {
 }
 
 /**
+ * A member's journal as the host reads it: `{first: {at, agent}|null, last_at, tasks: [{task_id, changed_at, started: {at, agent}|null}]}`
+ * (`started` = the last `start`; only tasks with an event). One loop for the compact read and the closed history.
+ */
+function journalActivity(events) {
+  const tasks = new Map();
+  let first = null;
+  let last = null;
+  for (const event of events) {
+    if (first === null || event.recorded_at < first.recorded_at) first = event;
+    if (last === null || event.recorded_at > last) last = event.recorded_at;
+    if (event.task_id === undefined || event.task_id === null) continue;
+    const entry = tasks.get(event.task_id) ?? { task_id: event.task_id, changed_at: event.recorded_at, started: null };
+    if (event.recorded_at > entry.changed_at) entry.changed_at = event.recorded_at;
+    if (event.kind === 'start') entry.started = { at: event.recorded_at, agent: event.actor?.agent ?? null };
+    tasks.set(event.task_id, entry);
+  }
+  return { first: first === null ? null : { at: first.recorded_at, agent: first.actor?.agent ?? null },
+    last_at: last, tasks: [...tasks.values()] };
+}
+
+/**
  * Compact display read (host surface, `todo display read --compact`): each member's `journal` and `plan_scoped` are replaced by
  * what a chart host uses, so the size grows with tasks and live edges, never with notes, evidence or repeated events.
- * `activity` = `{first: {at, agent}|null, last_at, tasks: [{task_id, changed_at, started: {at, agent}|null}]}` (journal events
- * only; `started` = the last `start`; only tasks with an event). `cross_plan_dependencies` = the live
+ * `activity` = `journalActivity`; `cross_plan_dependencies` = the live
  * `[{event_digest, from, to}]` of the member's plan-scoped chain (a removal in any member's chain drops it).
  * A member with neither (the unverified raw read) is returned as it is.
  */
@@ -89,26 +109,112 @@ export function compactDisplayStore(store) {
     .filter((event) => event.kind === 'cross_plan_dependency_removed').map((event) => event.payload.target_event_digest)));
   return { ...store, members: store.members.map(({ journal, plan_scoped: planScoped, ...member }) => {
     if (journal === undefined && planScoped === undefined) return member;
-    const events = journal?.events ?? [];
-    const tasks = new Map();
-    let first = null;
-    let last = null;
-    for (const event of events) {
-      if (first === null || event.recorded_at < first.recorded_at) first = event;
-      if (last === null || event.recorded_at > last) last = event.recorded_at;
-      if (event.task_id === undefined || event.task_id === null) continue;
-      const entry = tasks.get(event.task_id) ?? { task_id: event.task_id, changed_at: event.recorded_at, started: null };
-      if (event.recorded_at > entry.changed_at) entry.changed_at = event.recorded_at;
-      if (event.kind === 'start') entry.started = { at: event.recorded_at, agent: event.actor?.agent ?? null };
-      tasks.set(event.task_id, entry);
-    }
     return { ...member,
-      activity: { first: first === null ? null : { at: first.recorded_at, agent: first.actor?.agent ?? null },
-        last_at: last, tasks: [...tasks.values()] },
+      activity: journalActivity(journal?.events ?? []),
       cross_plan_dependencies: (planScoped?.events ?? [])
         .filter((event) => event.kind === 'cross_plan_dependency' && !removed.has(event.event_digest))
         .map((event) => ({ event_digest: event.event_digest, from: event.payload.from, to: event.payload.to })) };
   }) };
+}
+
+const isObject = (value) => value !== null && typeof value === 'object';
+const taskKeyOf = (planKey, taskId) => `${planKey}\0${taskId}`;
+const isOpenTree = ({ finished, total }) => finished < total;
+
+/**
+ * Open display read (`todo display read --open`): the compact result with every per-task list limited to the tasks of open
+ * trees (`finished < total` in the result's own `trees`, the one source) and `closed: {trees, tasks}` over the chart.
+ * Pure. `plan.phases`, descriptors and `activity.first/last_at` stay whole. A ref of another chart is never a task of
+ * this chart here, so a join or dependency naming one keeps it.
+ */
+export function openDisplayResult(result) {
+  const trees = result.trees ?? [];
+  const closedTrees = trees.filter((tree) => !isOpenTree(tree));
+  const kept = new Set(trees.filter(isOpenTree).flatMap(({ tasks }) => tasks.map((task) => taskKeyOf(task.plan_key, task.task_id))));
+  const closed = { trees: closedTrees.length, tasks: closedTrees.reduce((sum, { total }) => sum + total, 0) };
+  const connections = (result.connections ?? []).filter(({ plan_key: planKey, task_id: taskId }) => kept.has(taskKeyOf(planKey, taskId)));
+  const referred = new Set(connections.flatMap((entry) => entry.connections.map(({ ref }) => ref)));
+  const base = { ...result, schema: 'lattice.todo_display_open_result.v1',
+    trees: trees.filter(isOpenTree), connections, closed,
+    external_tasks: (result.external_tasks ?? []).filter(({ project_id: projectId, plan_key: planKey, task_id: taskId }) => referred.has(`${projectId}/${planKey}/${taskId}`)) };
+  if (!isObject(result.store)) return base;
+  const { store } = result;
+  return { ...base, store: { ...store, members: store.members.map((member) => {
+    const planKey = member.descriptor?.plan_key ?? member.plan?.plan_key;
+    const projectId = member.plan?.project_id ?? store.project_id;
+    const keptTask = ({ task_id: taskId }) => kept.has(taskKeyOf(planKey, taskId));
+    const local = (ref) => (ref.project_id ?? projectId) === projectId;
+    const keepRef = (ref) => isObject(ref) && (!local(ref) || kept.has(taskKeyOf(ref.plan_key, ref.task_id)));
+    const next = { ...member };
+    if (Array.isArray(member.tasks)) next.tasks = member.tasks.filter(keptTask);
+    if (Array.isArray(member.snapshot?.tasks)) next.snapshot = { ...member.snapshot, tasks: member.snapshot.tasks.filter(keptTask) };
+    if (isObject(member.plan)) {
+      next.plan = { ...member.plan };
+      if (Array.isArray(member.plan.tasks)) next.plan.tasks = member.plan.tasks.filter(keptTask);
+      if (Array.isArray(member.plan.hard_dependencies)) next.plan.hard_dependencies = member.plan.hard_dependencies.filter((edge) => keepRef(edge?.to));
+      if (Array.isArray(member.plan.joins)) {
+        next.plan.joins = member.plan.joins.filter((entry) => keepRef(entry?.before))
+          .map((entry) => ({ ...entry, after: (entry.after ?? []).filter(keepRef) }));
+      }
+    }
+    if (isObject(member.activity)) next.activity = { ...member.activity, tasks: member.activity.tasks.filter(keptTask) };
+    if (Array.isArray(member.cross_plan_dependencies)) {
+      next.cross_plan_dependencies = member.cross_plan_dependencies
+        .filter(({ from, to }) => [from, to].some((ref) => isObject(ref) && local(ref) && kept.has(taskKeyOf(ref.plan_key, ref.task_id))));
+    }
+    return next;
+  }) } };
+}
+
+const compareCodeUnit = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+// History order: finished_at newest first (no time last), then plan_key, task_id ascending.
+const compareHistory = (left, right) => compareCodeUnit(right.finished_at ?? '', left.finished_at ?? '')
+  || compareCodeUnit(left.plan_key, right.plan_key) || compareCodeUnit(left.task_id, right.task_id);
+const CURSOR_PREFIX = 'h1.';
+const encodeHistoryCursor = ({ finished_at: finishedAt, plan_key: planKey, task_id: taskId }) =>
+  CURSOR_PREFIX + Buffer.from(JSON.stringify([finishedAt, planKey, taskId])).toString('base64url');
+
+/** The position a `next_cursor` names as a row-shaped key, or null when it does not parse. */
+export function decodeHistoryCursor(cursor) {
+  if (typeof cursor !== 'string' || !cursor.startsWith(CURSOR_PREFIX)) return null;
+  try {
+    const [finishedAt, planKey, taskId] = JSON.parse(Buffer.from(cursor.slice(CURSOR_PREFIX.length), 'base64url').toString('utf8'));
+    return (finishedAt === null || typeof finishedAt === 'string') && typeof planKey === 'string' && typeof taskId === 'string'
+      ? { finished_at: finishedAt, plan_key: planKey, task_id: taskId } : null;
+  } catch { return null; }
+}
+
+/**
+ * Closed history (`todo display history`): the tasks of closed trees (`finished >= total`), newest finish first, one page.
+ * `{closed: {trees, tasks}, tasks: [...], next_cursor}`; `before` is a decoded cursor (rows after it), `limit` a clamped count.
+ * `finished_at` = `done_at` of a done task, else the task's latest journal event. Pure; reads the full (not compact) store.
+ */
+export function closedDisplayHistory({ store, trees }, { limit, before = null }) {
+  const closedTrees = trees.filter((tree) => !isOpenTree(tree));
+  const members = new Map((store?.members ?? []).map((member) => {
+    const planKey = member.descriptor?.plan_key ?? member.plan?.plan_key;
+    return [planKey, {
+      plan: new Map((member.plan?.tasks ?? []).map((task) => [task.task_id, task])),
+      state: new Map((member.tasks ?? member.snapshot?.tasks ?? []).map((task) => [task.task_id, task])),
+      activity: new Map(journalActivity(member.journal?.events ?? []).tasks.map((entry) => [entry.task_id, entry])),
+    }];
+  }));
+  const rows = closedTrees.flatMap((tree) => tree.tasks.map(({ plan_key: planKey, task_id: taskId }) => {
+    const member = members.get(planKey);
+    const task = member?.plan.get(taskId);
+    const state = member?.state.get(taskId);
+    const activity = member?.activity.get(taskId);
+    return { tree_id: tree.tree_id, plan_key: planKey, task_id: taskId,
+      title: task?.title ?? null, lane: task?.lane ?? null, phase_id: task?.phase_id ?? null,
+      parent_task_id: task?.parent_task_id ?? null, design_memo: task?.design_memo ?? null,
+      done_condition: task?.done_condition ?? null, status: state?.status ?? null, done_at: state?.done_at ?? null,
+      finished_at: state?.status === 'done' && state.done_at ? state.done_at : activity?.changed_at ?? null,
+      activity: { changed_at: activity?.changed_at ?? null, started: activity?.started ?? null } };
+  })).sort(compareHistory);
+  const rest = before === null ? rows : rows.filter((row) => compareHistory(row, before) > 0);
+  const page = rest.slice(0, limit);
+  return { closed: { trees: closedTrees.length, tasks: rows.length }, tasks: page,
+    next_cursor: rest.length > page.length ? encodeHistoryCursor(page.at(-1)) : null };
 }
 
 /**
