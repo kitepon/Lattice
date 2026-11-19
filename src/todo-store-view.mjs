@@ -77,6 +77,41 @@ export function projectTodoCrossPlanDependencies(members) {
 }
 
 /**
+ * Compact display read (host surface, `todo display read --compact`): each member's `journal` and `plan_scoped` are replaced by
+ * what a chart host uses, so the size grows with tasks and live edges, never with notes, evidence or repeated events.
+ * `activity` = `{first: {at, agent}|null, last_at, tasks: [{task_id, changed_at, started: {at, agent}|null}]}` (journal events
+ * only; `started` = the last `start`; only tasks with an event). `cross_plan_dependencies` = the live
+ * `[{event_digest, from, to}]` of the member's plan-scoped chain (a removal in any member's chain drops it).
+ * A member with neither (the unverified raw read) is returned as it is.
+ */
+export function compactDisplayStore(store) {
+  const removed = new Set(store.members.flatMap((member) => (member.plan_scoped?.events ?? [])
+    .filter((event) => event.kind === 'cross_plan_dependency_removed').map((event) => event.payload.target_event_digest)));
+  return { ...store, members: store.members.map(({ journal, plan_scoped: planScoped, ...member }) => {
+    if (journal === undefined && planScoped === undefined) return member;
+    const events = journal?.events ?? [];
+    const tasks = new Map();
+    let first = null;
+    let last = null;
+    for (const event of events) {
+      if (first === null || event.recorded_at < first.recorded_at) first = event;
+      if (last === null || event.recorded_at > last) last = event.recorded_at;
+      if (event.task_id === undefined || event.task_id === null) continue;
+      const entry = tasks.get(event.task_id) ?? { task_id: event.task_id, changed_at: event.recorded_at, started: null };
+      if (event.recorded_at > entry.changed_at) entry.changed_at = event.recorded_at;
+      if (event.kind === 'start') entry.started = { at: event.recorded_at, agent: event.actor?.agent ?? null };
+      tasks.set(event.task_id, entry);
+    }
+    return { ...member,
+      activity: { first: first === null ? null : { at: first.recorded_at, agent: first.actor?.agent ?? null },
+        last_at: last, tasks: [...tasks.values()] },
+      cross_plan_dependencies: (planScoped?.events ?? [])
+        .filter((event) => event.kind === 'cross_plan_dependency' && !removed.has(event.event_digest))
+        .map((event) => ({ event_digest: event.event_digest, from: event.payload.from, to: event.payload.to })) };
+  }) };
+}
+
+/**
  * 接続 (schedule): one plan chain's connection_added events with how each ended. `ended` is 'removed' or
  * 'resolved' (an add has at most one end, which Store append enforces); a state of 'removed' is not shown.
  */
