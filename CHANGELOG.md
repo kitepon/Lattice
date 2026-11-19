@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.112.0 — 2026-11-19
+
+ホスト向けに、大きさが工程の数で決まる表示読み取りを足した版（アリス #253）。ホストへの変更：新しい読み取りを使う時だけ、呼び出しに `--compact` を足す。
+
+- BellTeam の工程表の `lattice todo display read --json` が 17.5MB になり、BellTeam の画面の上限 16MiB を超えた。全部の計画の journal と plan_scoped の出来事（メモの本文・証拠・関数の申告）を丸ごと載せていて、出来事が増えるたびに大きくなっていた。
+- `lattice todo display read --json --compact` を足した。schema は `lattice.todo_display_compact_result.v1`。外枠と state の決まりは今の読み取りと同じ。各計画の `journal` と `plan_scoped` の代わりに、次の二つを載せる。
+  - `activity`：最初の出来事（時刻と担当）、最後の出来事の時刻、工程ごとの最後に動いた時刻と最後の着手（時刻と担当）
+  - `cross_plan_dependencies`：今も生きている計画間の線
+- 大きさは工程の数と生きた線の数で決まる。メモ・証拠・申告・繰り返しの出来事では大きくならない。
+- `--compact` を付けない読み取りは変えていない。Lattice 自身のガントはこちらを使う。
+- 試験：ホストが使う欄が全部、今の読み取りと同じ値になること。メモ・取り下げ・着手を5回重ねると、今の読み取りは 5KB を超えて大きくなり、`--compact` の方は 400 バイト未満しか増えないこと。
+
 ## 0.111.5 — 2026-11-18
 
 picomatch を依存から外した版（CVE-2026-112366、BugHub CaseGroup::84a09cc7、ネヴェ #251）。ホストへの変更：無し。
