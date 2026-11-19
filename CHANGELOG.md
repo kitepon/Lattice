@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.113.1 — 2026-11-20
+
+大きな計画に工程を足すと、project 全体の Store が読めなくなる障害を直した版（ルドミラ #257）。ホストへの変更：この版に上げる。止まった Store はファイルを直さずに読める。
+
 - Store：`todo add`で作る改訂の最初の記録（genesis）が 1 MiB を超えると、書いた直後からその計画を含む project 全体が`STORE_CORRUPT`/`journal_segment_limit_exceeded`で読めなくなっていた。BellTeam の`bellteam-dev-added`（工程 1,383 件）で 2026-11-20 01:27 JST から全席の読み書きが止まった（g1、ルドミラ）。ホストへの変更：この版に上げる。書いた 1 件だけの genesis の記録は 8 MiB（`snapshotBytes`）まで読める。ほかの記録は従来どおり 1 MiB。次の記録を足すと、その genesis は単独で`journal/sealed/`へ封じられる。8 MiB を超える genesis は書く前に`STORE_WRITE_REFUSED`/`revision_genesis_exceeds_limit`で断る。止まった store は、ファイルを直さずこの版で読める。0.113.0 以前の CLI は、その版を読めないままなので、その計画を読む席は上げる。
 
 ## 0.113.0 — 2026-11-19
