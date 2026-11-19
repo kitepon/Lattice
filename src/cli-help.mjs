@@ -96,7 +96,7 @@ Read commands:
   notice list [--lane <lane>] [--include-acked] [--json]  # 着手できるようになった工程の知らせ（既定は未ackだけ。lane省略で全lane）
   blockers [--json]  # ブロック中の工程を全部返す（題・担当・理由の全文・ブロックした時刻と者・外すコマンド。読むだけ。外すのは誰でも todo unblock）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
-  display read [--json]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す
+  display read [--json] [--compact]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す。--compact は journal を activity、plan_scoped を cross_plan_dependencies に絞った lattice.todo_display_compact_result.v1（大きさは task と生きた線に比例）
   display source [--json]  # 安い変更検知（lattice.todo_store_display_source.v1）。変わった時だけreadする
   independence [--plan <key>] [--json]  # readyを検証済み並列・要直列・未検査へ分けて投影する
   structure --schema --json  # plan定義後に入力する論理dataflow契約をstore非依存で返す
@@ -347,7 +347,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo blockers': 'todo blockers [--json]  # lattice.todo_blockers_result.v1 {blockers: [{plan_key, task_id, title, lane, reason, blocked_at, blocked_by, unblock_action}]}',
   'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 廃止予定の別名: todo connect priority',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
-  'todo display': 'todo display read [--json] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
+  'todo display': 'todo display read [--json] [--compact] | source [--json]  # host表示用の読取。不整合でも断らずstateで返す',
   charts: 'charts list [--json] | source [--project <id>]... [--json]  # LATTICE_CHARTS_ROOT配下の全工程表を1プロセスで読む',
   'charts list': 'charts list [--json]  # lattice.charts_list_result.v1 {charts_root, charts:[{project_id, name, created_by, created_at, source}], findings}',
   'charts source': 'charts source [--project <id>]... [--json]  # lattice.charts_source_result.v1 {charts:{<id>: <source>|null}}（--project無し=全工程表）',
@@ -356,7 +356,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'chart repo': 'chart repo bind --url <url> --branch <branch> [--json] | sync [--json]  # lattice.chart_repo_result.v1',
   'chart repo bind': 'chart repo bind --url <url> --branch <branch> [--json]  # コード工程表のrepoを記録する',
   'chart repo sync': 'chart repo sync [--json]  # depth-1 fetch、accepted_tipからだけ前進（reset/forceしない）、その後sensor。status current|synced|dirty|diverged|failed',
-  'todo display read': 'todo display read [--json]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）',
+  'todo display read': 'todo display read [--json] [--compact]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）。--compact: lattice.todo_display_compact_result.v1（journal→activity、plan_scoped→cross_plan_dependencies）',
   'todo display source': 'todo display source [--json]  # lattice.todo_store_display_source.v1（安い変更検知。変わった時だけreadする）',
   'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation|enforced> --reason <text>'
     + ' | compile --plan <key> --input <file> | compile --schema --json | witness migrate --plan <key>'

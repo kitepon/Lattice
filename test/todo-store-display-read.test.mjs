@@ -13,6 +13,7 @@ import test from 'node:test';
 import {
   createTodoStoreWriter, initializeTodoStore, readTodoStoreDisplaySource, readTodoStoreForDisplay,
 } from '../src/todo-store.mjs';
+import { compactDisplayStore } from '../src/todo-store-view.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-07-26T00:00:00.000Z';
@@ -349,4 +350,83 @@ test('todo display read/source expose the envelope over the CLI; inconsistency i
   await w.clobber('.lattice/todo/manifest.json', 'not json');
   assert.throws(() => cli('source', '--json'), (error) => error.status === 1
     && JSON.parse(error.stderr).code === 'STORE_INCONSISTENT');
+});
+
+// Compact host read (`todo display read --compact`): the same facts the host reads, in a size that does not grow with payloads.
+const lifecycle = (kind, taskId, agent, at, payload = {}) => ({ kind, task_id: taskId, recorded_at: at, actor: { agent }, payload, event_digest: `d-${kind}-${taskId}-${at}` });
+
+test('compactDisplayStore: activity is the earliest/latest event and per-task latest + last start; live cross-plan edges only', () => {
+  const edge = (digest, from, to) => ({ kind: 'cross_plan_dependency', event_digest: digest, payload: { from, to, reason: 'long text '.repeat(50) } });
+  const ref = (plan, taskId) => ({ project_id: 'project-1', plan_key: plan, task_id: taskId });
+  const store = { schema: 's', project_id: 'project-1', manifest: { m: 1 }, members: [
+    { descriptor: { plan_key: 'alpha' }, plan: { plan_key: 'alpha' }, tasks: [{ task_id: 'T1', status: 'done' }],
+      journal: { events: [
+        lifecycle('start', 'T1', 'a1', '2026-01-02T00:00:00.000Z', { evidence: 'x'.repeat(1000) }),
+        lifecycle('start', 'T1', 'a2', '2026-01-03T00:00:00.000Z'),
+        lifecycle('note', 'T1', 'a3', '2026-01-04T00:00:00.000Z', { body: 'y'.repeat(1000) }),
+        lifecycle('start', 'T2', 'a1', '2026-01-01T00:00:00.000Z'),
+        { kind: 'coordination_mode', recorded_at: '2026-01-05T00:00:00.000Z', actor: { agent: 'a9' }, payload: {} }] },
+      plan_scoped: { ref: 'r', events: [edge('e1', ref('beta', 'B1'), ref('alpha', 'T1')), edge('e2', ref('beta', 'B2'), ref('alpha', 'T1'))] } },
+    { descriptor: { plan_key: 'beta' }, plan: { plan_key: 'beta' }, tasks: [], journal: { events: [] },
+      plan_scoped: { ref: 'r2', events: [{ kind: 'cross_plan_dependency_removed', event_digest: 'x1', payload: { target_event_digest: 'e2' } }] } },
+    { descriptor: { plan_key: 'gamma' }, plan: null, snapshot: { tasks: [] } }] };
+  const compact = compactDisplayStore(store);
+  const [alpha, beta, gamma] = compact.members;
+  assert.equal(alpha.journal, undefined);
+  assert.equal(alpha.plan_scoped, undefined);
+  assert.deepEqual(alpha.activity, { first: { at: '2026-01-01T00:00:00.000Z', agent: 'a1' }, last_at: '2026-01-05T00:00:00.000Z',
+    tasks: [{ task_id: 'T1', changed_at: '2026-01-04T00:00:00.000Z', started: { at: '2026-01-03T00:00:00.000Z', agent: 'a2' } },
+      { task_id: 'T2', changed_at: '2026-01-01T00:00:00.000Z', started: { at: '2026-01-01T00:00:00.000Z', agent: 'a1' } }] });
+  // e2 is removed by a tombstone in another member's chain; only the live edge stays, without its reason
+  assert.deepEqual(alpha.cross_plan_dependencies, [{ event_digest: 'e1', from: ref('beta', 'B1'), to: ref('alpha', 'T1') }]);
+  assert.deepEqual(beta.activity, { first: null, last_at: null, tasks: [] });
+  assert.deepEqual(beta.cross_plan_dependencies, []);
+  assert.deepEqual(gamma, store.members[2], 'an unverified raw member has no journal and is returned as it is');
+  assert.deepEqual([alpha.descriptor, alpha.plan, alpha.tasks, compact.manifest], [store.members[0].descriptor, store.members[0].plan, store.members[0].tasks, store.manifest]);
+});
+
+test('todo display read --compact: every field the host uses equals the full read, and payloads do not grow it', async (context) => {
+  const w = await workspace(context);
+  const bin = path.join(import.meta.dirname, '..', 'bin', 'lattice.mjs');
+  const env = { ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0', LATTICE_TODO_ACTOR_HOST: 'h', LATTICE_TODO_ACTOR_SESSION: 's', LATTICE_TODO_ACTOR_AGENT: 'agent-7' };
+  const run = (...args) => execFileSync(process.execPath, [bin, ...args], { cwd: w.root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const read = (...flags) => JSON.parse(run('todo', 'display', 'read', ...flags));
+  run('todo', 'start', '--plan', 'alpha', '--task', 'T1');
+  const before = read('--json', '--compact');
+  assert.equal(before.schema, 'lattice.todo_display_compact_result.v1');
+  assert.deepEqual(Object.keys(before).sort(), Object.keys(read('--json')).sort());
+  for (const heavy of [
+    () => run('todo', 'note', '--plan', 'alpha', '--task', 'T1', '--message', 'n'.repeat(2000)),
+    () => run('todo', 'retract', '--plan', 'alpha', '--task', 'T1', '--reason', 'r'.repeat(500)),
+    () => run('todo', 'start', '--plan', 'alpha', '--task', 'T1'),
+  ]) heavy();
+  const full = read('--json');
+  const compact = read('--json', '--compact');
+  const sizes = (value) => Buffer.byteLength(JSON.stringify(value));
+  assert.ok(sizes(compact) < sizes(full), 'the full read carries the events');
+  for (const [index, member] of full.store.members.entries()) {
+    const light = compact.store.members[index];
+    assert.deepEqual([light.descriptor, light.plan, light.tasks, light.journal, light.plan_scoped], [member.descriptor, member.plan, member.tasks, undefined, undefined]);
+    const events = member.journal.events;
+    assert.equal(light.activity.first?.at ?? null, events.length === 0 ? null : events.map(({ recorded_at: at }) => at).sort()[0]);
+    assert.equal(light.activity.last_at, events.length === 0 ? null : events.map(({ recorded_at: at }) => at).sort().at(-1));
+    for (const { task_id: id, changed_at: changed, started } of light.activity.tasks) {
+      const own = events.filter(({ task_id: taskId }) => taskId === id);
+      assert.equal(changed, own.map(({ recorded_at: at }) => at).sort().at(-1));
+      const last = own.filter(({ kind }) => kind === 'start').at(-1);
+      assert.deepEqual(started, last === undefined ? null : { at: last.recorded_at, agent: last.actor.agent });
+    }
+    assert.deepEqual(light.activity.tasks.map(({ task_id: id }) => id).sort(), [...new Set(events.map(({ task_id: id }) => id).filter(Boolean))].sort());
+  }
+  assert.equal(compact.store.members[0].activity.tasks[0].started.agent, 'agent-7');
+  // more payload and repeated events on the same task: the compact read keeps its size (timestamps have fixed width)
+  for (let n = 0; n < 5; n += 1) {
+    run('todo', 'note', '--plan', 'alpha', '--task', 'T1', '--message', `more ${n} `.repeat(300));
+    run('todo', 'retract', '--plan', 'alpha', '--task', 'T1', '--reason', 'again '.repeat(80));
+    run('todo', 'start', '--plan', 'alpha', '--task', 'T1');
+  }
+  const after = read('--json', '--compact');
+  assert.ok(sizes(read('--json')) > sizes(full) + 5000, 'the full read grew');
+  assert.ok(sizes(after) - sizes(compact) < 400, `compact grew ${sizes(after) - sizes(compact)} bytes`);
+  assert.equal(after.store.members[0].activity.tasks.length, compact.store.members[0].activity.tasks.length);
 });

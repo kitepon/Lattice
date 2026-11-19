@@ -173,6 +173,7 @@ import {
   externalCycle, readTodoExternalChart, readTodoExternalTasks, withTodoExternalTasks,
 } from './todo-external.mjs';
 import { projectTodoTrees } from './todo-trees.mjs';
+import { compactDisplayStore } from './todo-store-view.mjs';
 import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
@@ -1280,13 +1281,15 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
  * xchart: the display envelope plus `external_tasks`, so a host computing readiness from it sees other charts too;
  * a100: plus `trees`, each task tree and its size, so the host never computes the graph.
  */
-async function displayRead(repoRoot, env) {
+async function displayRead(repoRoot, env, { compact = false } = {}) {
   const display = await readTodoStoreForDisplay({ repoRoot });
   const externalTasks = display.store ? (await readTodoExternalTasks(display.store, env)).external_tasks : [];
-  return { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
+  const result = { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
     trees: display.store ? projectTodoTrees(display.store) : [],
     ...(display.store && splitLabels(display.store).length > 0 ? { labels: splitLabels(display.store) } : {}),
     connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [] };
+  // trees, labels and connections are read from the full view above; only the shipped store is compacted
+  return compact ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
 }
 
 /** 接続: `[{plan_key, task_id, connections}]` for every task that has any (the one list: 他条件に接続 and 優先接続). */
@@ -5460,10 +5463,12 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     && (argv.length === 3 || argv[3] === '--json')) {
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: argv[2] });
   } else if (argv[0] === 'display' && (argv[1] === 'read' || argv[1] === 'source')
-    && (argv.length === 2 || (argv.length === 3 && argv[2] === '--json'))) {
+    && (argv.length === 2 || (argv.length === 3 && argv[2] === '--json')
+      || (argv[1] === 'read' && argv.slice(2).every((flag) => flag === '--json' || flag === '--compact')
+        && new Set(argv.slice(2)).size === argv.length - 2))) {
     // Host display read (BellTeam module): a typed inconsistency is a state, never a refusal.
     action = argv[1] === 'read'
-      ? async (repoRoot) => displayRead(repoRoot, env)
+      ? async (repoRoot) => displayRead(repoRoot, env, { compact: argv.includes('--compact') })
       : (repoRoot) => readTodoStoreDisplaySource({ repoRoot });
   } else if (argv[0] === 'note' && argv[1] !== 'list') {
     const flags = matchFlagCommand(argv, ['note'], NOTE_FLAG_SPEC);
