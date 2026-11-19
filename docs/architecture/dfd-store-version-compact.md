@@ -49,13 +49,22 @@ w1-store-write-slow follows the k4 rule (a read no longer re-verifies history; `
 
 | Read | Before | Now |
 |---|---|---|
-| `readVersionCompact(dir, max, {verify})` | every read: gunzip, parse, canonical re-serialization, `compact_digest` self digest | `verify: false` (`retainedPlanVersion`, `readNoteMigrations`): gunzip, parse, shape check. Default `verify: true` (the compaction writers' `readRetainedVersion`): unchanged. The record is memoized per process by file identity and mode, so the store reader and the note reader share one read |
+| `readVersionCompact(dir, max, {verify})` | every read: gunzip, parse, canonical re-serialization, `compact_digest` self digest | `verify: false` (`retainedPlanVersion`, `readNoteMigrations`): gunzip, parse, shape check. Default `verify: true` (the compaction writers' `readRetainedVersion`): unchanged. The record is not memoized (m1, below): each caller memoizes the small value it derives |
 | `readPlanScopedJournal(repoRoot, ref, {verify})` | every read: per-event canonical re-check and the whole hash chain | `verify: false` (the member's chain on a read, the inherited-coordination walk): sealed-segment digest, per-event schema and event self digest, kind check. `verifyHistory: true` (`todo verify`) restores the canonical re-check and the hash chain |
 | `readNoteMigrations` | one `structuredClone` of every version's task migration per call | the memoized migration is shared; `migrationIndex` only reads it |
 
 w4 (same day): one command reads the Store about a dozen times (`todo add`: 16 `manifest.json` reads). `parseJournalSegment` and `parseCanonicalJsonLine` remember, per process, the bytes they accepted, keyed by sha256 of the bytes, the ref (artifacts) and the mode; a repeat read of the same bytes only runs `JSON.parse`, so callers still get fresh objects. Changed bytes miss the key and are validated again; a failure is never remembered; a strict (`verifyHistory`) read is not satisfied by a read-mode entry.
 
 Still per retained version on every read: one `lstat` (memo identity), one gunzip + parse of `compact.json.gz`, and one entry of the note migration index. Nothing else walks history.
+
+m1-read-skips-retained-revisions (2026-11-20, Flora a466: module CLI children 450-560 MB each on bellteam, 1,649 retained versions of `bellteam-dev-added`). Measured on a copy of the production Store: one `session-context` opened 1,795 `compact.json.gz` and 979 `plan-scoped.jsonl`, because the inherited-coordination walk (`inheritedTodoCoordination`) reached a declaration made 975 revisions back and scanned every version for each predecessor digest. Two changes, no format change:
+
+| Step | Before | Now |
+|---|---|---|
+| `readVersionCompact` | memoized the whole record per version (a revision's per-task migration: the RSS grew with the revision count) | not memoized. `retainedPlanVersion` memoizes only the three digests by file identity; `readNoteMigrations` already memoizes its small migration |
+| `carriedPlanScopedChain` (every revision writer) | carried live cross-plan edges and open schedule connections | also carries the predecessor's effective coordination (its own declaration, else the inherited one) as one `coordination_mode` event with the original actor, time and reason, so the new version's own chain holds it and the walk ends at the version itself ([phase revision flow](dfd-store-phase-revision.md)) |
+
+A plan whose version has no declaration in its own chain still walks its lineage once per read (an undeclared plan, or a version written before this release): exit = declare the mode once (`todo independence mode`) or the next revision carries it. On the production copy: `session-context` 454 MB / 2.8 s to 234 MB / 0.9 s (the two undeclared plans, 84 and 62 versions, remain).
 
 Unchanged: the active version, `manifest.json`, `status`/`session-context`/`display read` shapes, every event schema.
 

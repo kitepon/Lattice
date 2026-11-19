@@ -1787,11 +1787,13 @@ async function readTodoStoreView(options = {}) {
  * unreadable. perf-store: validated once per process per unchanged plan.json (todo-version-memo).
  */
 async function retainedPlanVersion(repoRoot, base, version) {
-  const compact = await readCompactRecord(repoRoot, base, version, { verify: false }).catch(() => null);
-  if (compact !== null) {
-    return { plan: { plan_digest: compact.plan_digest, predecessor_plan_digest: compact.predecessor_plan_digest,
-      topology_digest: compact.topology_digest }, journalRef: `${base}/${version}/journal/active.jsonl` };
-  }
+  // m1: only the three digests stay in the memo; the record itself (a whole revision's migration) is dropped after the read.
+  const identity = await memoByFileIdentity([path.resolve(repoRoot, base, version, TODO_VERSION_COMPACT_FILE)], async () => {
+    const compact = await readCompactRecord(repoRoot, base, version, { verify: false }).catch(() => null);
+    return compact === null ? null : { plan_digest: compact.plan_digest, predecessor_plan_digest: compact.predecessor_plan_digest,
+      topology_digest: compact.topology_digest };
+  });
+  if (identity !== null) return { plan: identity, journalRef: `${base}/${version}/journal/active.jsonl` };
   const ref = `${base}/${version}/plan.json`;
   const plan = await memoByFileIdentity([path.resolve(repoRoot, ref)], async () => {
     const value = await readArtifact(repoRoot, ref, {
@@ -2904,6 +2906,13 @@ function carriedPlanScopedChain(store, previous, plan, journalRef, taskMigration
       recorded_at: event.recorded_at, provenance: event.provenance,
       payload: { from, to, reason: event.payload.reason } });
     pushPlanScopedEvent(successor.plan_scoped, carried);
+  }
+  // m1: the declaration travels with the plan, so a read of this version finds it in its own chain instead of walking every
+  // retained predecessor (a plan declared 975 revisions ago opened all 1,649 compact records per read).
+  if (previous.coordination) {
+    const { mode, reason, declared_by: actor, declared_at: recordedAt } = previous.coordination;
+    pushPlanScopedEvent(successor.plan_scoped, buildPlanScopedEvent(successor, { kind: 'coordination_mode', actor,
+      recorded_at: recordedAt, provenance: null, payload: { mode, reason } }));
   }
   // 接続: only the schedule connections still open travel; a settled or removed one equals no connection.
   for (const entry of projectTodoScheduleConnections(previous.plan_scoped?.events ?? [])) {
