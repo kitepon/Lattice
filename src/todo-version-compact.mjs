@@ -10,7 +10,6 @@
 import { readFile } from 'node:fs/promises';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { canonicalizeTodoArtifact, isTodoDigest, isTodoIdentifier, todoSelfDigest } from './todo-contracts.mjs';
-import { memoByFileIdentity } from './todo-version-memo.mjs';
 
 export const TODO_VERSION_COMPACT_SCHEMA = 'lattice.todo_version_compact.v1';
 export const TODO_VERSION_COMPACT_FILE = 'compact.json.gz';
@@ -104,16 +103,15 @@ export const packVersionCompact = (record) => gzipSync(Buffer.from(`${canonicali
  * and keeps the shape check: one gunzip and one parse per version, which a read pays for every retained version of a plan.
  */
 export async function readVersionCompact(directory, maxBytes = 8 * 1024 * 1024, { verify = true } = {}) {
-  // perf-store: a retained version is immutable, and the store reader and the note reader both ask for it in one process.
-  return memoByFileIdentity([`${directory}/${TODO_VERSION_COMPACT_FILE}`], async () => {
-    let packed;
-    try { packed = await readFile(`${directory}/${TODO_VERSION_COMPACT_FILE}`); } catch (error) {
-      if (error?.code === 'ENOENT') return null;
-      throw error;
-    }
-    const text = gunzipSync(packed, { maxOutputLength: maxBytes }).toString('utf8');
-    const value = JSON.parse(text);
-    if ((verify && text !== `${canonicalizeTodoArtifact(value)}\n`) || !validateVersionCompact(value, { verify })) throw new Error('compact_record_invalid');
-    return value;
-  }, verify ? 'verify' : 'read');
+  // Not memoized: a record holds a revision's whole per-task migration, so keeping one per retained version grew RSS with the
+  // revision count (m1). Callers memoize the small value they derive (identity, note migration).
+  let packed;
+  try { packed = await readFile(`${directory}/${TODO_VERSION_COMPACT_FILE}`); } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  const text = gunzipSync(packed, { maxOutputLength: maxBytes }).toString('utf8');
+  const value = JSON.parse(text);
+  if ((verify && text !== `${canonicalizeTodoArtifact(value)}\n`) || !validateVersionCompact(value, { verify })) throw new Error('compact_record_invalid');
+  return value;
 }

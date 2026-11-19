@@ -75,6 +75,8 @@ Store `carriedPlanScopedChain` (private, all five writers above):
 | Validate | prospective members with the carried chain instead of none | Existing `validateMergedGraph`: a carried edge closing a cycle with the successor's own edges refuses the revision (`STORE_INCONSISTENT/merged_cycle`, nothing published); exit = disconnect that edge, then revise |
 | Publish | carried chain bytes | `writeCarriedPlanScopedChain`: written (or removed when empty) after the successor artifacts and before the manifest switch. The version is not active yet, so a resumed transaction rewrites it from the current predecessor; the bytes depend only on predecessor chain and successor |
 
+Coordination declaration travels with the plan (m1, 2026-11-20). `carriedPlanScopedChain` also writes the predecessor's effective coordination (`previous.coordination`: its own declaration, else the inherited one) as one `coordination_mode` event with the original actor, `declared_at` and reason before the carried connections. The successor's own chain then holds the declaration, so `inheritedTodoCoordination` ends at the version itself and a read no longer opens the retained predecessors ([version compact](dfd-store-version-compact.md)). `projectTodoCoordination` is unchanged (the last `coordination_mode` event wins); an older CLI reads the event as before.
+
 Oversize genesis segment (g1, 2026-11-20, production outage). A revision's
 `plan_genesis` (sequence 0) is one line whose `state_migration` carries every
 task, so it grows with the plan; ADR 0201 bounds a plan by `snapshotBytes`
