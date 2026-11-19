@@ -13,7 +13,7 @@ import test from 'node:test';
 import {
   createTodoStoreWriter, initializeTodoStore, readTodoStoreDisplaySource, readTodoStoreForDisplay,
 } from '../src/todo-store.mjs';
-import { compactDisplayStore } from '../src/todo-store-view.mjs';
+import { closedDisplayHistory, compactDisplayStore, decodeHistoryCursor, openDisplayResult } from '../src/todo-store-view.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
 
 const NOW = '2026-07-26T00:00:00.000Z';
@@ -429,4 +429,122 @@ test('todo display read --compact: every field the host uses equals the full rea
   assert.ok(sizes(read('--json')) > sizes(full) + 5000, 'the full read grew');
   assert.ok(sizes(after) - sizes(compact) < 400, `compact grew ${sizes(after) - sizes(compact)} bytes`);
   assert.equal(after.store.members[0].activity.tasks.length, compact.store.members[0].activity.tasks.length);
+});
+
+// Open read and closed history (`display read --open`, `display history`): only open trees stay in the read; closed ones page.
+test('openDisplayResult: every per-task list is limited to open trees; closed counts come from trees', () => {
+  const ref = (plan, taskId, project = 'p1') => ({ project_id: project, plan_key: plan, task_id: taskId });
+  const trees = [
+    { tree_id: 'a/A1', tasks: [{ plan_key: 'a', task_id: 'A1' }, { plan_key: 'a', task_id: 'A2' }], total: 2, finished: 2 },
+    { tree_id: 'a/A3', tasks: [{ plan_key: 'a', task_id: 'A3' }, { plan_key: 'b', task_id: 'B1' }], total: 2, finished: 1 },
+    { tree_id: 'b/B2', tasks: [{ plan_key: 'b', task_id: 'B2' }], total: 1, finished: 1 }];
+  const result = { schema: 'lattice.todo_display_compact_result.v1', state: 'verified', trees, labels: [{ keep: 'whole' }],
+    connections: [{ plan_key: 'a', task_id: 'A1', connections: [{ kind: 'task', ref: 'p2/x/X1' }] },
+      { plan_key: 'a', task_id: 'A3', connections: [{ kind: 'task', ref: 'p2/x/X2' }, { kind: 'priority' }] }],
+    external_tasks: [{ project_id: 'p2', plan_key: 'x', task_id: 'X1' }, { project_id: 'p2', plan_key: 'x', task_id: 'X2' }],
+    store: { project_id: 'p1', members: [
+      { descriptor: { plan_key: 'a' }, tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id })),
+        plan: { project_id: 'p1', plan_key: 'a', phases: [{ phase_id: 'ph' }], tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id })),
+          hard_dependencies: [{ from: ref('a', 'A1'), to: ref('a', 'A2') }, { from: ref('a', 'A3'), to: ref('b', 'B1') }],
+          joins: [{ before: ref('a', 'A2'), after: [ref('a', 'A1')] }, { before: ref('b', 'B1'), after: [ref('a', 'A3'), ref('a', 'A1'), ref('x', 'X2', 'p2')] }] },
+        activity: { first: { at: '1', agent: 'g' }, last_at: '9', tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id, changed_at: '5', started: null })) },
+        cross_plan_dependencies: [{ event_digest: 'k1', from: ref('a', 'A1'), to: ref('a', 'A2') }, { event_digest: 'k2', from: ref('x', 'X2', 'p2'), to: ref('a', 'A3') }] },
+      { descriptor: { plan_key: 'b' }, snapshot: { tasks: ['B1', 'B2'].map((id) => ({ task_id: id })) }, plan: null }] } };
+  const open = openDisplayResult(result);
+  assert.equal(open.schema, 'lattice.todo_display_open_result.v1');
+  assert.deepEqual(open.trees, [trees[1]]);
+  assert.deepEqual(open.closed, { trees: 2, tasks: 3 });
+  assert.deepEqual(open.labels, result.labels);
+  const [a, b] = open.store.members;
+  assert.deepEqual([a.tasks, a.plan.tasks, a.activity.tasks.map(({ task_id: id }) => id)], [[{ task_id: 'A3' }], [{ task_id: 'A3' }], ['A3']]);
+  assert.deepEqual(a.plan.hard_dependencies, [{ from: ref('a', 'A3'), to: ref('b', 'B1') }]);
+  assert.deepEqual(a.plan.joins, [{ before: ref('b', 'B1'), after: [ref('a', 'A3'), ref('x', 'X2', 'p2')] }], 'a closed after is dropped, a ref of another chart stays');
+  assert.deepEqual(a.plan.phases, [{ phase_id: 'ph' }]);
+  assert.deepEqual([a.activity.first, a.activity.last_at], [{ at: '1', agent: 'g' }, '9']);
+  assert.deepEqual(a.cross_plan_dependencies.map(({ event_digest: digest }) => digest), ['k2']);
+  assert.deepEqual(b.snapshot.tasks, [{ task_id: 'B1' }]);
+  assert.deepEqual(open.connections, [result.connections[1]]);
+  assert.deepEqual(open.external_tasks, [result.external_tasks[1]], 'only an external task a kept connection refers to');
+  assert.equal(result.store.members[0].tasks.length, 3, 'the input is not changed');
+  assert.deepEqual(openDisplayResult({ ...result, store: null, trees: [] }).closed, { trees: 0, tasks: 0 });
+});
+
+test('closedDisplayHistory: closed-tree tasks only, newest finish first, pages are exact and bounded', () => {
+  const tasks = ['T1', 'T2', 'T3', 'T4'].map((id) => ({ task_id: id, title: id, lane: 'l', design_memo: 'm', done_condition: null }));
+  const states = [{ task_id: 'T1', status: 'done', done_at: '2026-01-03' }, { task_id: 'T2', status: 'done', done_at: '2026-01-03' },
+    { task_id: 'T3', status: 'retired', done_at: null }, { task_id: 'T4', status: 'pending', done_at: null }];
+  const store = { members: [{ descriptor: { plan_key: 'a' }, plan: { tasks }, tasks: states,
+    journal: { events: [lifecycle('start', 'T3', 'g1', '2026-01-05'), lifecycle('retire', 'T3', 'g2', '2026-01-06'), lifecycle('start', 'T1', 'g3', '2026-01-01')] } }] };
+  const trees = [{ tree_id: 'a/T1', tasks: ['T1', 'T2', 'T3'].map((id) => ({ plan_key: 'a', task_id: id })), total: 3, finished: 3 },
+    { tree_id: 'a/T4', tasks: [{ plan_key: 'a', task_id: 'T4' }], total: 1, finished: 0 }];
+  const all = closedDisplayHistory({ store, trees }, { limit: 50 });
+  assert.deepEqual(all.closed, { trees: 1, tasks: 3 });
+  assert.deepEqual(all.tasks.map(({ task_id: id, finished_at: at }) => [id, at]), [['T3', '2026-01-06'], ['T1', '2026-01-03'], ['T2', '2026-01-03']]);
+  assert.deepEqual(all.tasks[0], { tree_id: 'a/T1', plan_key: 'a', task_id: 'T3', title: 'T3', lane: 'l', phase_id: null, parent_task_id: null,
+    design_memo: 'm', done_condition: null, status: 'retired', done_at: null, finished_at: '2026-01-06',
+    activity: { changed_at: '2026-01-06', started: { at: '2026-01-05', agent: 'g1' } } });
+  assert.equal(all.next_cursor, null);
+  const pages = [];
+  for (let cursor = null, guard = 0; guard < 10; guard += 1) {
+    const page = closedDisplayHistory({ store, trees }, { limit: 1, before: cursor === null ? null : decodeHistoryCursor(cursor) });
+    assert.ok(page.tasks.length <= 1);
+    pages.push(...page.tasks);
+    cursor = page.next_cursor;
+    if (cursor === null) break;
+  }
+  assert.deepEqual(pages, all.tasks, 'pages cover every closed task exactly once, in order');
+  for (const bad of [undefined, '', 'x', 'h1.', 'h1.!!', `h1.${Buffer.from('[1,2,3]').toString('base64url')}`]) assert.equal(decodeHistoryCursor(bad), null);
+});
+
+test('todo display read --open / display history over the CLI: a closed tree leaves the open read and comes back on reopen', async (context) => {
+  const w = await workspace(context);
+  const bin = path.join(import.meta.dirname, '..', 'bin', 'lattice.mjs');
+  const env = { ...process.env, LATTICE_DASHBOARD_AUTOSTART: '0', LATTICE_TODO_ACTOR_HOST: 'h', LATTICE_TODO_ACTOR_SESSION: 's', LATTICE_TODO_ACTOR_AGENT: 'agent-7' };
+  const run = (...args) => execFileSync(process.execPath, [bin, ...args], { cwd: w.root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const read = (...flags) => JSON.parse(run('todo', 'display', 'read', ...flags));
+  const history = (...flags) => JSON.parse(run('todo', 'display', 'history', ...flags));
+  for (const plan of ['alpha', 'beta']) {
+    run('todo', 'start', '--plan', plan, '--task', 'T1');
+    run('todo', 'done', '--plan', plan, '--task', 'T1', '--message', 'x');
+  }
+  const ids = (open) => open.store.members.flatMap((member) => member.plan.tasks.map(({ task_id: id }) => `${member.plan.plan_key}/${id}`)).sort();
+  const open = read('--open', '--json');
+  assert.equal(open.schema, 'lattice.todo_display_open_result.v1');
+  const same = (flags) => ({ ...read(...flags), verified_at: null });
+  assert.deepEqual(same(['--json', '--open']), { ...open, verified_at: null }, 'flags in any order');
+  assert.deepEqual(same(['--compact', '--open', '--json']), { ...open, verified_at: null }, '--open implies --compact');
+  assert.deepEqual(ids(open), ['alpha/T2', 'beta/T2']);
+  for (const member of open.store.members) {
+    assert.deepEqual([member.tasks.map(({ task_id: id }) => id), member.activity.tasks.map(({ task_id: id }) => id)], [['T2'], []]);
+    assert.equal(member.journal, undefined);
+  }
+  const full = read('--json');
+  assert.deepEqual(open.trees, full.trees.filter(({ finished, total }) => finished < total));
+  assert.deepEqual(open.closed, { trees: 2, tasks: 2 });
+  assert.deepEqual(open.closed, { trees: full.trees.filter(({ finished, total }) => finished >= total).length,
+    tasks: full.trees.filter(({ finished, total }) => finished >= total).reduce((sum, { total }) => sum + total, 0) });
+  assert.deepEqual(Object.keys(open).sort(), [...Object.keys(read('--json', '--compact')), 'closed'].sort());
+
+  const all = history('--json');
+  assert.equal(all.schema, 'lattice.todo_display_history_result.v1');
+  assert.deepEqual([all.state, all.closed, all.next_cursor], ['verified', { trees: 2, tasks: 2 }, null]);
+  assert.deepEqual(all.tasks.map(({ plan_key: plan, task_id: id, status }) => [plan, id, status]).sort(), [['alpha', 'T1', 'done'], ['beta', 'T1', 'done']]);
+  assert.ok(all.tasks.every(({ finished_at: at, done_at: done }) => at === done), 'a done task finishes at done_at');
+  assert.deepEqual(all.tasks.map(({ finished_at: at }) => at), all.tasks.map(({ finished_at: at }) => at).sort().reverse());
+  const first = history('--limit', '1');
+  assert.equal(first.tasks.length, 1);
+  assert.equal(typeof first.next_cursor, 'string');
+  const second = history('--json', '--before', first.next_cursor, '--limit', '1');
+  assert.deepEqual([...first.tasks, ...second.tasks], all.tasks);
+  assert.equal(second.next_cursor, null);
+  for (const bad of [['--before', 'nonsense'], ['--limit', '0'], ['--limit', 'x'], ['--limit']]) {
+    assert.throws(() => history(...bad), (error) => error.status === 2 && JSON.parse(error.stderr).code === 'INVALID_ARGUMENTS', bad.join(' '));
+  }
+  assert.equal(history('--limit', '9999').tasks.length, 2, 'a larger limit is clamped, not refused');
+
+  run('todo', 'reopen', '--plan', 'alpha', '--task', 'T1', '--reason', 'again');
+  const reopened = read('--open', '--json');
+  assert.deepEqual(ids(reopened), ['alpha/T1', 'alpha/T2', 'beta/T2']);
+  assert.deepEqual(reopened.closed, { trees: 1, tasks: 1 });
+  assert.deepEqual(history('--json').tasks.map(({ plan_key: plan }) => plan), ['beta']);
 });

@@ -173,7 +173,7 @@ import {
   externalCycle, readTodoExternalChart, readTodoExternalTasks, withTodoExternalTasks,
 } from './todo-external.mjs';
 import { projectTodoTrees } from './todo-trees.mjs';
-import { compactDisplayStore } from './todo-store-view.mjs';
+import { closedDisplayHistory, compactDisplayStore, decodeHistoryCursor, openDisplayResult } from './todo-store-view.mjs';
 import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
@@ -372,6 +372,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   'phase accept': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message'], required: ['plan', 'phase'] }),
   'phase reject': Object.freeze({ known: ['plan', 'phase', 'evidence', 'message', 'reason'], required: ['plan', 'phase'] }),
   'phase reopen': Object.freeze({ known: ['plan', 'phase', 'reason', 'override-reason'], required: ['plan', 'phase', 'reason'] }),
+  'display history': Object.freeze({ known: ['json', 'limit', 'before'], booleans: ['json'] }),
   'independence compile': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
   'independence mode': Object.freeze({ known: ['plan', 'set', 'reason'], required: ['plan', 'set', 'reason'] }),
   'independence witness scaffold': Object.freeze({ known: ['plan', 'input'], required: ['plan', 'input'] }),
@@ -1281,7 +1282,7 @@ async function startAdvisory({ repoRoot, store, projection, planKey, taskId }) {
  * xchart: the display envelope plus `external_tasks`, so a host computing readiness from it sees other charts too;
  * a100: plus `trees`, each task tree and its size, so the host never computes the graph.
  */
-async function displayRead(repoRoot, env, { compact = false } = {}) {
+async function displayRead(repoRoot, env, { compact = false, open = false } = {}) {
   const display = await readTodoStoreForDisplay({ repoRoot });
   const externalTasks = display.store ? (await readTodoExternalTasks(display.store, env)).external_tasks : [];
   const result = { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
@@ -1289,7 +1290,29 @@ async function displayRead(repoRoot, env, { compact = false } = {}) {
     ...(display.store && splitLabels(display.store).length > 0 ? { labels: splitLabels(display.store) } : {}),
     connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [] };
   // trees, labels and connections are read from the full view above; only the shipped store is compacted
-  return compact ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
+  const light = compact || open ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
+  return open ? openDisplayResult(light) : light;
+}
+
+const HISTORY_DEFAULT_LIMIT = 50;
+const HISTORY_MAX_LIMIT = 500;
+
+/** `todo display history`: the display envelope plus one page of the tasks of closed trees (newest finish first). */
+async function displayHistory(repoRoot, { limit, before }) {
+  const display = await readTodoStoreForDisplay({ repoRoot });
+  const trees = display.store ? projectTodoTrees(display.store) : [];
+  const { state, verified_at: verifiedAt, source, inconsistency, dropped_members: dropped } = display;
+  return { schema: 'lattice.todo_display_history_result.v1', state, verified_at: verifiedAt, source, inconsistency,
+    dropped_members: dropped, ...closedDisplayHistory({ store: display.store, trees }, { limit, before }) };
+}
+
+/** `display history` flags by name (--json optional): `{limit, before}`, or null for an unknown flag, a bad limit or an unparsable cursor. */
+function historyFlags(argv) {
+  const flags = matchFlagCommand(argv, ['display', 'history'], TODO_FLAG_SPECS['display history']);
+  if (flags === null || (flags.limit !== undefined && !/^[1-9][0-9]*$/.test(flags.limit))) return null;
+  const before = flags.before === undefined ? null : decodeHistoryCursor(flags.before);
+  return flags.before !== undefined && before === null ? null
+    : { limit: Math.min(flags.limit === undefined ? HISTORY_DEFAULT_LIMIT : Number(flags.limit), HISTORY_MAX_LIMIT), before };
 }
 
 /** 接続: `[{plan_key, task_id, connections}]` for every task that has any (the one list: 他条件に接続 and 優先接続). */
@@ -5464,12 +5487,15 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     action = (repoRoot) => bindings({ repoRoot, requestedPlanKey: argv[2] });
   } else if (argv[0] === 'display' && (argv[1] === 'read' || argv[1] === 'source')
     && (argv.length === 2 || (argv.length === 3 && argv[2] === '--json')
-      || (argv[1] === 'read' && argv.slice(2).every((flag) => flag === '--json' || flag === '--compact')
+      || (argv[1] === 'read' && argv.slice(2).every((flag) => flag === '--json' || flag === '--compact' || flag === '--open')
         && new Set(argv.slice(2)).size === argv.length - 2))) {
     // Host display read (BellTeam module): a typed inconsistency is a state, never a refusal.
     action = argv[1] === 'read'
-      ? async (repoRoot) => displayRead(repoRoot, env, { compact: argv.includes('--compact') })
+      ? async (repoRoot) => displayRead(repoRoot, env, { compact: argv.includes('--compact'), open: argv.includes('--open') })
       : (repoRoot) => readTodoStoreDisplaySource({ repoRoot });
+  } else if (argv[0] === 'display' && argv[1] === 'history' && historyFlags(argv) !== null) {
+    const flags = historyFlags(argv);
+    action = (repoRoot) => displayHistory(repoRoot, flags);
   } else if (argv[0] === 'note' && argv[1] !== 'list') {
     const flags = matchFlagCommand(argv, ['note'], NOTE_FLAG_SPEC);
     const hasMessage = typeof flags?.message === 'string' && flags.message.length > 0;
