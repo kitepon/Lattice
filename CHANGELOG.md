@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.113.0 — 2026-11-19
+
+ホスト向けに、まだ終わっていない木だけを読む方法と、終わった木の工程をページで読む方法を足した版（アリス #255）。ホストへの変更：新しい読み取りを使う時だけ、呼び出しを替える。
+
+- 0.112.0 の `--compact` でも、終わった工程は題名と設計メモが残るので、終わった木が増えるたびに大きくなる。BellTeam の画面の木・担当・件数は、まだ終わっていない木しか使わない。
+- `lattice todo display read --json --open`（`lattice.todo_display_open_result.v1`）を足した。`--compact` を含み、工程ごとの一覧を、まだ終わっていない木（`trees` の `finished < total`）の工程だけに絞る。省いた分は `closed: {trees, tasks}` で数だけ返す。どの木が終わったかは、同じ結果の `trees` だけで決める。
+- `lattice todo display history --json [--limit N] [--before <cursor>]`（`lattice.todo_display_history_result.v1`）を足した。終わった木の工程を、終わった時刻の新しい順に1ページ返す。既定は50件、最大500件。続きは `next_cursor` を `--before` に渡して読む。読めない cursor と正でない limit は `INVALID_ARGUMENTS`。
+- 一つの工程は必ず一つの木に入る。終わった木は、工程の `todo reopen` か、新しい線でまだ終わっていない工程とつながると開き直る。木の名前（`tree_id`）は中で一番若い工程なので、二つの木がつながると変わることがある。
+- 試験：`--open` には終わった木の工程が一つも無く、`closed` が `trees` と合うこと。`todo reopen` でその木が戻ること。history のページが、終わった工程を一度ずつ順に全部返し、limit を超えないこと。
+
 ## 0.112.0 — 2026-11-19
 
 ホスト向けに、大きさが工程の数で決まる表示読み取りを足した版（アリス #253）。ホストへの変更：新しい読み取りを使う時だけ、呼び出しに `--compact` を足す。
