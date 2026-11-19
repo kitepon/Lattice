@@ -75,6 +75,24 @@ Store `carriedPlanScopedChain` (private, all five writers above):
 | Validate | prospective members with the carried chain instead of none | Existing `validateMergedGraph`: a carried edge closing a cycle with the successor's own edges refuses the revision (`STORE_INCONSISTENT/merged_cycle`, nothing published); exit = disconnect that edge, then revise |
 | Publish | carried chain bytes | `writeCarriedPlanScopedChain`: written (or removed when empty) after the successor artifacts and before the manifest switch. The version is not active yet, so a resumed transaction rewrites it from the current predecessor; the bytes depend only on predecessor chain and successor |
 
+Oversize genesis segment (g1, 2026-11-20, production outage). A revision's
+`plan_genesis` (sequence 0) is one line whose `state_migration` carries every
+task, so it grows with the plan; ADR 0201 bounds a plan by `snapshotBytes`
+(8 MiB), not by tasks. `bellteam-dev-added` (1,383 tasks) wrote a genesis of
+1,049,569 B, past `journalSegmentBytes`; the writer did not check, and every
+reader then refused the active file as `STORE_CORRUPT/journal_segment_limit_exceeded`
+(no sealing can split one event). The rule: a lifecycle segment (active, sealed
+or `active.jsonl.gz`) that is exactly one line, a sequence-0 `plan_genesis`, may
+reach `snapshotBytes`; every other segment stays within `journalSegmentBytes`.
+
+| Step / owner | Input and decision | Output / failure and exit |
+|---|---|---|
+| Store `buildRevisionGenesis` / `buildPhaseRevisionGenesis` (every revision writer, before any file is written) | the built genesis line > `snapshotBytes` | Refuses `STORE_WRITE_REFUSED/revision_genesis_exceeds_limit{bytes, limit}`, nothing applied, so the Store is never left unreadable. Exit: retire finished tasks or split the plan. |
+| Store `parseJournalSegment` / `readJournal` (gzip `maxOutputLength`) / display `rawLastEventDigest` | segment bytes > 1 MiB | Accepted only when `isOversizeGenesisSegment` (one trailing newline, `kind: plan_genesis`, `sequence: 0`, ≤ `snapshotBytes`); otherwise `STORE_CORRUPT/journal_segment_limit_exceeded` as before. |
+| Store `appendTodoEvent` (next event on that version) | active (the oversize genesis) + event > 1 MiB | Existing seal rule: the genesis alone becomes `journal/sealed/000000000000-000000000000-…` and the event starts a new active. No store file is rewritten to recover an already written oversize genesis. |
+
+Older CLIs keep the 1 MiB read limit and still refuse such a version; seats read it with the release that carries this rule.
+
 Plan-scoped chain sealing (s1-seal, 2026-11-15, production outage). The
 plan-scoped chain refused every write once `plan-scoped.jsonl` reached
 `journalSegmentBytes` (1 MiB), so start/block/connect/rebind and the rebind
