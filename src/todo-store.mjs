@@ -293,11 +293,23 @@ async function readSnapshotArtifact(repoRoot, ref) {
  */
 const acceptedSegments = new Set();
 
+/**
+ * A revision genesis carries every task's migrated state in one line, so it grows with the plan (ADR 0201 bounds a plan by
+ * bytes) and no sealing can split it. A segment that is exactly one sequence-0 plan_genesis may therefore reach
+ * `snapshotBytes`; every other segment stays within `journalSegmentBytes`.
+ */
+function isOversizeGenesisSegment(bytes) {
+  if (bytes.length > TODO_LIMITS.snapshotBytes || bytes.indexOf(0x0a) !== bytes.length - 1) return false;
+  try {
+    const event = JSON.parse(bytes.toString('utf8'));
+    return event?.kind === 'plan_genesis' && event.sequence === 0;
+  } catch { return false; }
+}
+
 function parseJournalSegment(bytes, ref = null, { canonical: checkCanonical = true } = {}) {
   const detail = ref === null ? undefined : { ref };
-  if (bytes.length === 0 || bytes.length > TODO_LIMITS.journalSegmentBytes) {
-    fail('STORE_CORRUPT', bytes.length > TODO_LIMITS.journalSegmentBytes
-      ? 'journal_segment_limit_exceeded' : 'journal_empty', detail);
+  if (bytes.length === 0 || (bytes.length > TODO_LIMITS.journalSegmentBytes && !isOversizeGenesisSegment(bytes))) {
+    fail('STORE_CORRUPT', bytes.length > 0 ? 'journal_segment_limit_exceeded' : 'journal_empty', detail);
   }
   const text = decodeUtf8(bytes, 'STORE_CORRUPT', 'journal_invalid_utf8');
   if (!text.endsWith('\n') || text.startsWith('\uFEFF')) fail('STORE_CORRUPT', 'journal_byte_contract', detail);
@@ -370,7 +382,7 @@ async function readJournal(repoRoot, journalRef, { verify = true } = {}) {
   const segments = await readSealedSegments(repoRoot, journalRef, 'sealed', { canonical: verify });
   let activeBytes;
   try {
-    activeBytes = state === null ? gunzipSync(await readFile(packed.absolute), { maxOutputLength: TODO_LIMITS.journalSegmentBytes })
+    activeBytes = state === null ? gunzipSync(await readFile(packed.absolute), { maxOutputLength: TODO_LIMITS.snapshotBytes })
       : normalizeCheckoutEol(await readFile(state.absolute));
   } catch { fail('STORE_CORRUPT', 'journal_gzip_invalid', { ref: `${journalRef}.gz` }); }
   const duplicateActive = segments.at(-1)?.bytes.equals(activeBytes) === true;
@@ -2173,7 +2185,7 @@ async function readRawStoreJson(repoRoot, ref, maxBytes) {
 }
 
 async function rawLastEventDigest(repoRoot, ref, { missing = false } = {}) {
-  const bytes = await readRawStoreFile(repoRoot, ref, TODO_LIMITS.journalSegmentBytes, { missing });
+  const bytes = await readRawStoreFile(repoRoot, ref, TODO_LIMITS.snapshotBytes, { missing });
   if (bytes === null) return null;
   const lines = decodeUtf8(bytes, 'STORE_INCONSISTENT', 'invalid_utf8').split('\n').filter(Boolean);
   let digest;
@@ -3057,6 +3069,14 @@ export function buildPlanGenesis(plan, input) {
   return event;
 }
 
+/** No reader accepts a genesis segment past `snapshotBytes`; refuse before the revision writes anything. */
+function refuseOversizeGenesis(event) {
+  const bytes = canonicalLine(event).length;
+  if (bytes > TODO_LIMITS.snapshotBytes) {
+    fail('STORE_WRITE_REFUSED', 'revision_genesis_exceeds_limit', { bytes, limit: TODO_LIMITS.snapshotBytes });
+  }
+}
+
 export function buildRevisionGenesis(plan, input) {
   const event = {
     schema: 'lattice.todo_event.v2', project_id: plan.project_id, plan_key: plan.plan_key,
@@ -3074,6 +3094,7 @@ export function buildRevisionGenesis(plan, input) {
   };
   event.event_digest = todoSelfDigest(event, 'event_digest');
   if (!validateTodoEvent(event)) throw new TypeError('revision genesis violates lattice.todo_event.v2');
+  refuseOversizeGenesis(event);
   return event;
 }
 
@@ -3093,6 +3114,7 @@ export function buildPhaseRevisionGenesis(plan, input) {
   };
   event.event_digest = todoSelfDigest(event, 'event_digest');
   if (!validateTodoEvent(event)) throw new TypeError('phase revision genesis violates lattice.todo_event.v4');
+  refuseOversizeGenesis(event);
   return event;
 }
 
