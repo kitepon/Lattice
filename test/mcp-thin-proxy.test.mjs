@@ -29,13 +29,19 @@ test('実wrapperの中継はengineを読まず、見張りのnodeを足さない
     cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, HOME: root, USERPROFILE: root, XDG_STATE_HOME: path.join(root, 'state'),
       CG_TEST_SPAWN_LOG: spawnLog, CG_TEST_PROXY_LOG: log, LATTICE_SENSOR_MCP_LOG_ATTACH: '1',
-      LATTICE_SENSOR_NO_DAEMON: '0', LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '15000' },
+      LATTICE_SENSOR_NO_DAEMON: '0', LATTICE_SENSOR_DAEMON_IDLE_TIMEOUT_MS: '2000' },
   });
   tracked.push(child.pid);
   let out = '', err = '';
   child.stdout.on('data', b => { out += b; }); child.stderr.on('data', b => { err += b; });
   child.stdin.on('error', () => {});
-  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal }))).then(async result => {
+    // The detached daemon this launcher spawned: track it so the fixture stops it before removing the tree (Windows holds the directory).
+    try { tracked.push(...(await readFile(spawnLog, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))
+      .filter(event => event.kind === 'spawn').map(event => event.pid).filter(pid => Number.isSafeInteger(pid) && pid > 0)); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return result;
+  });
   const send = message => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   const frame = id => out.split('\n').filter(Boolean).map(line => JSON.parse(line)).find(f => f.id === id);
 
@@ -51,6 +57,9 @@ test('実wrapperの中継はengineを読まず、見張りのnodeを足さない
 
   child.stdin.end();
   assert.deepEqual(await closed, { code: 0, signal: null }, err);
+  // Let the daemon leave on its own idle timeout so nothing holds the directory when the fixture removes it (best effort; the fixture reaps survivors).
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (let i = 0; i < 400 && tracked.slice(1).some(alive); i++) await new Promise(r => setTimeout(r, 25));
   const { modules, spawned } = JSON.parse(await readFile(log, 'utf8'));
   const heavy = modules.filter(file => /\/sensor\/dist\/(mcp\/(engine|session|tools|daemon|transport)|db\/index|index)\.js$/.test(file));
   assert.deepEqual(heavy, [], 'the proxy loaded modules only the daemon or the fallback engine need');
