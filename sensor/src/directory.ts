@@ -47,6 +47,9 @@ export function latticeSensorRelativeDirFor(_projectRoot: string): string {
 }
 
 /** Absolute sensor state directory for a project. */
+/** Default database filename (lives here so the thin MCP proxy can name the DB without loading the db layer). */
+export const DATABASE_FILENAME = 'sensor.db';
+
 export function getLatticeSensorDir(projectRoot: string): string {
   return path.join(projectRoot, LATTICE_STATE_DIR, SENSOR_STATE_DIR);
 }

@@ -21,7 +21,9 @@
  *   `.lattice/sensor/` is reachable, or the daemon machinery fails for any reason.
  * - **Proxy** — what an MCP host actually talks to when sharing is on: a thin
  *   stdio↔socket pipe to the shared daemon. The proxy carries the #277 PPID
- *   watchdog, so a SIGKILL'd host reaps its proxy promptly. See {@link ./proxy.ts}.
+ *   watchdog, so a SIGKILL'd host reaps its proxy promptly. It loads neither the
+ *   engine nor the tool handlers (and runs no liveness-watchdog process) unless
+ *   the daemon never comes up and it falls back in-process. See {@link ./proxy.ts}.
  * - **Daemon** — a *detached* background process (its own session/process
  *   group) that serves N proxies over a Unix-domain socket / named pipe,
  *   sharing one LatticeSensor + watcher + SQLite handle. Spawned on demand; never a
@@ -32,22 +34,23 @@
  * that the original in-process daemon (a) was the first host's child, so closing
  * that terminal severed every other client, and (b) disabled the PPID watchdog,
  * regressing #277 (orphaned daemons on host SIGKILL).
+ *
+ * The mode is decided here with light modules only; engine, session, transport
+ * and daemon are `import()`ed inside the mode that needs them, so a proxy
+ * session (one per seat) stays near the cost of a bare Node process.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, StdioOptions } from 'child_process';
-import { resolveServerRoot, getLatticeSensorDir } from '../directory';
-import { StdioTransport } from './transport';
-import { MCPEngine } from './engine';
-import { MCPSession, type MCPStartupReceipt } from './session';
-import {
-  Daemon,
-  clearStaleDaemonLock,
-  isProcessAlive,
-  tryAcquireDaemonLock,
-} from './daemon';
-import { clearStaleDaemonArtifacts } from './daemon-registry';
+import { resolveServerRoot, getLatticeSensorDir, DATABASE_FILENAME } from '../directory';
+// Heavy modules (engine, session, transport, daemon: ~140 modules, ~50 MB) are
+// imported inside the mode that needs them, never here: a session that only
+// proxies to the shared daemon must stay a thin pipe. Type-only imports erase.
+import type { MCPEngine } from './engine';
+import type { MCPSession, MCPStartupReceipt } from './session';
+import type { Daemon } from './daemon';
+import { clearStaleDaemonArtifacts, isProcessAlive } from './daemon-registry';
 import { connectWithHello, runLocalHandshakeProxy, DaemonSocketOutcome } from './proxy';
 import {
   readWriterLock,
@@ -68,7 +71,6 @@ import {
   probeDaemonIdentity,
 } from './daemon-paths';
 import { getTelemetry } from '../telemetry';
-import { DATABASE_FILENAME } from '../db/index';
 import { LatticeSensorPackageVersion } from './version';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason, parsePpidPollMs, parseHostPpid } from './ppid-watchdog';
@@ -101,8 +103,9 @@ const TAKEOVER_RETRY_DELAY_MS = 100;
  * Say so on stderr: otherwise a session that quietly stopped syncing looks
  * the same as a healthy one in the logs.
  */
-function readOnlyFallback(holder: string): MCPEngine {
+async function readOnlyFallback(holder: string): Promise<MCPEngine> {
   process.stderr.write(`[LatticeSensor MCP] Serving reads in-process without auto-sync: ${holder}.\n`);
+  const { MCPEngine } = await import('./engine');
   return new MCPEngine({ readOnly: true });
 }
 
@@ -111,7 +114,7 @@ function readOnlyFallback(holder: string): MCPEngine {
  * legacy daemon. Plain-PID locks cannot prove daemon identity, but they still
  * prove that a process owns the legacy writer slot.
  */
-function makeFallbackEngine(root: string): MCPEngine {
+async function makeFallbackEngine(root: string): Promise<MCPEngine> {
   assertNoRebuild(root);
   let existing: ReturnType<typeof decodeLockInfo> = null;
   try {
@@ -135,11 +138,12 @@ function makeFallbackEngine(root: string): MCPEngine {
   if (writer && writer.pid > 0 && isProcessAlive(writer.pid)) {
     // Another process owns updates. A fallback may still serve read-only WAL
     // queries without claiming a second writer or starting a watcher (#1963).
-    return readOnlyFallback(`writer lock held by PID ${writer.pid} (${writer.mode} mode)`);
+    return await readOnlyFallback(`writer lock held by PID ${writer.pid} (${writer.mode} mode)`);
   }
   if (existing && isProcessAlive(existing.pid)) {
-    return readOnlyFallback(`live daemon PID ${existing.pid} holds the project lock`);
+    return await readOnlyFallback(`live daemon PID ${existing.pid} holds the project lock`);
   }
+  const { MCPEngine } = await import('./engine');
   return new MCPEngine({ writerLockRoot: root, queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
 }
 
@@ -479,6 +483,9 @@ export class MCPServer {
     // clients. A second direct session does not exit (u03 sweep E4): the
     // single-writer protection is kept by serving it read-only.
     const writerRoot = resolveDaemonRoot(this.projectPath);
+    const { MCPEngine } = await import('./engine');
+    const { MCPSession } = await import('./session');
+    const { StdioTransport } = await import('./transport');
     let engine: MCPEngine | null = null;
     if (writerRoot) {
       assertNoRebuild(writerRoot);
@@ -487,7 +494,7 @@ export class MCPServer {
         const who = writer.existing && writer.existing.pid > 0
           ? `PID ${writer.existing.pid} (${writer.existing.mode || 'unknown'} mode)`
           : 'another process';
-        engine = readOnlyFallback(writer.unwritable
+        engine = await readOnlyFallback(writer.unwritable
           ? `project folder cannot be written (${writer.unwritable}); this session is read-only`
           : `writer lock held by ${who}; this session is read-only`);
       } else {
@@ -547,6 +554,7 @@ export class MCPServer {
    * and reaps itself via client-refcount + idle timeout (see {@link Daemon}).
    */
   private async startDaemonProcess(): Promise<void> {
+    const { Daemon, clearStaleDaemonLock, tryAcquireDaemonLock } = await import('./daemon');
     // In daemon mode stderr IS `.lattice/sensor/daemon.log`; stamp every line so
     // kills/restarts can be placed in time (#1431 — the log was undatable).
     timestampStderrLines();
@@ -745,9 +753,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-// Export for use in CLI
-export { StdioTransport } from './transport';
-export { tools, ToolHandler } from './tools';
-// Surface a few daemon-mode bits for tests + diagnostics.
-export { Daemon } from './daemon';
+// The transport, tool handler and Daemon are no longer re-exported here: this
+// module is the thin launcher (the bin imports it directly) and a re-export
+// would load them all. Import them from './transport', './tools', './daemon'.
 export { LatticeSensorPackageVersion } from './version';

@@ -30,7 +30,8 @@
  *      MCP protocol errors and never reach this file (MCPServer keeps the
  *      process alive for those).
  *   ④ Node version guard (wave2レビューでのスコープ外発見の修理): this bin
- *      imports `../sensor/dist/index.js` directly, bypassing the sensor
+ *      imports `../sensor/dist/mcp/index.js` directly (the launcher: it loads the
+ *      engine only for the mode that needs it), bypassing the sensor
  *      CLI's own Node-version guard (sensor/src/bin/sensor.ts, guarding
  *      against a Node 25.x V8 turboshaft WASM JIT Zone allocator OOM during
  *      tree-sitter grammar compilation, and a MIN_NODE_MAJOR floor). This
@@ -121,7 +122,7 @@ if (nodeVersionGuard.blocked) {
   } else {
     let startupStage = 'mcp.import';
     try {
-      const { MCPServer } = await import('../sensor/dist/index.js');
+      const { MCPServer } = await import('../sensor/dist/mcp/index.js');
       startupStage = 'mcp.construct';
       const server = new MCPServer(parsed.path, createMcpStartupReceipt(packageJson.version));
       // MCPServer.start() resolves only when startup itself declined to serve

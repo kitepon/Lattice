@@ -17,44 +17,13 @@ import { JsonRpcRequest, JsonRpcNotification, JsonRpcTransport, ErrorCodes } fro
 import { MCPEngine } from './engine';
 import { tools } from './tools';
 import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX } from './server-instructions';
-import { LatticeSensorPackageVersion } from './version';
 import { resolveServerRoot } from '../directory';
 import { getTelemetry, ClientInfo } from '../telemetry';
 import { ExploreSessionState } from './explore-session-state';
+import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './handshake-info';
 
-/**
- * MCP Server Info — kept on the session because some clients log it. The
- * version tracks the real package version (was a hard-coded '0.1.0').
- */
-// Exported so the proxy can answer `initialize` locally with the IDENTICAL
-// payload the daemon would send — no drift between the two handshake paths.
-export const SERVER_INFO = {
-  name: 'lattice-sensor',
-  version: LatticeSensorPackageVersion,
-};
-
-/**
- * Instructions for the `initialize` response, with an optional notice
- * appended (`notice` non-null). Exported so the proxy's local handshake
- * sends the IDENTICAL payload — same convention as SERVER_INFO.
- *
- * ADR 0049 Decision 4: the upstream update-availability notice (#1243,
- * `getUpdateNotice()`) is no longer wired to the default parameter here — the
- * MCP surface must not mix an upstream-GitHub-sourced update notice into
- * agent-visible instructions. `notice` defaults to `null`, so callers that
- * pass only `base` get byte-identical instructions; the parameter itself
- * stays for tests and any future Lattice-owned notice.
- */
-export function initializeInstructions(base: string, notice: string | null = null): string {
-  if (!notice) return base;
-  return (
-    `${base}\n\n---\n${notice} This server keeps running the old version until ` +
-    `the user upgrades — mention it when convenient; do not run the upgrade yourself.`
-  );
-}
-
-/** MCP Protocol Version (latest the server claims). */
-export const PROTOCOL_VERSION = '2024-11-05';
+// Re-exported: the proxy and tests import these from the session module.
+export { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions };
 
 /**
  * How long to wait for the client's `roots/list` response before giving up

@@ -110,6 +110,9 @@ export interface DaemonLockInfo {
 /** The election and its clients must agree how long an observed startup is protected. */
 export const DAEMON_STARTUP_GRACE_MS = 10_000;
 
+/** Bytes/parse-window for a hello line — bounded against a malicious peer. Shared by the daemon and the proxy. */
+export const MAX_HELLO_LINE_BYTES = 4096;
+
 /** Time component only: callers still verify liveness and the socket hello. */
 export function daemonStartupDeadline(info: Pick<DaemonLockInfo, 'startedAt'> | null, now = Date.now()): number | null {
   const startedAt = info?.startedAt;

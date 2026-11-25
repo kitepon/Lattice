@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SchemaVersion } from '../types';
 import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from './migrations';
-import { getLatticeSensorDir, statInode } from '../directory';
+import { getLatticeSensorDir, statInode, DATABASE_FILENAME } from '../directory';
 
 export { SqliteDatabase, SqliteBackend } from './sqlite-adapter';
 
@@ -867,9 +867,9 @@ export class DatabaseConnection {
 }
 
 /**
- * Default database filename
+ * Default database filename (defined in ../directory, re-exported for existing callers)
  */
-export const DATABASE_FILENAME = 'sensor.db';
+export { DATABASE_FILENAME };
 
 /**
  * SQLite's sidecar files in WAL mode — the write-ahead log and its shared-memory
