@@ -9,7 +9,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { renamePublishedFile } from '../src/fs-publish.mjs';
 import {
-  TODO_LIMITS, canonicalizeTodoArtifact, isStrictTodoTimestamp, todoSelfDigest,
+  TODO_LIMITS, canonicalizeTodoArtifact, isStrictTodoTimestamp, todoSelfDigest, todoTaskPin,
 } from '../src/todo-contracts.mjs';
 import {
   TodoStoreError, appendImportedPlan, applyPhaseTodoRevision, buildTodoPlan, createTodoStoreWriter,
@@ -470,7 +470,7 @@ test('phase revisionは変更したproducerへのconsumer接続を公開後にre
   const live = projectTodoCrossPlanDependencies(store.members);
   assert.equal(live.length, 1);
   assert.equal(live[0].from.task_id, 'T1');
-  assert.equal(live[0].from.expected_topology_digest, desiredPlan.topology_digest);
+  assert.equal(live[0].from.expected_topology_digest, todoTaskPin(live[0].from)); // ADR 0206: the repair pins the task
   assert.equal(live[0].reason, 'producer topology binding');
   const events = store.members.find(({ plan }) => plan.plan_key === 'consumer').plan_scoped.events;
   assert.deepEqual(events.map(({ kind }) => kind),
@@ -478,7 +478,7 @@ test('phase revisionは変更したproducerへのconsumer接続を公開後にre
   assert.notEqual(consumer.plan_scoped.events.length, events.length);
 });
 
-test('phase revisionがconsumer接続のsource taskを除去するとtombstoneされfindingを残さない', async (context) => {
+for (const pinKind of ['topology', 'task']) test(`phase revisionがconsumer接続のsource taskを除去するとtombstoneされfindingを残さない (${pinKind} pin)`, async (context) => {
   const root = await bareWorkspace(context);
   const phase = { phase_id: 'phase-1', title: 'Phase 1', gate_policy: 'heavy',
     predecessor_phase_ids: [], required_evidence_slots: ['heavy'] };
@@ -499,7 +499,8 @@ test('phase revisionがconsumer接続のsource taskを除去するとtombstone�
   const consumer = store.members.find(({ plan }) => plan.plan_key === 'consumer');
   await appendTodoEvent({ repoRoot: root, writer, planKey: 'consumer', now: NOW,
     event: { kind: 'cross_plan_dependency', actor: ACTOR, recorded_at: NOW, payload: {
-      from: ref('T1', 'main', 'project-1', producer.plan.topology_digest),
+      from: ref('T1', 'main', 'project-1', pinKind === 'task'
+        ? todoTaskPin({ project_id: 'project-1', plan_key: 'main', task_id: 'T1' }) : producer.plan.topology_digest),
       to: ref('C1', 'consumer', 'project-1', consumer.plan.topology_digest),
       reason: 'producer topology binding',
     } } });
@@ -552,12 +553,12 @@ async function crossPlanRepairFixture(context) {
       to: ref(toTask, 'consumer', 'project-1', (await member('consumer')).plan.topology_digest),
       reason: `${fromTask} to ${toTask}` } } });
   // Carries the first task as `renameT1` (null keeps the id) and T2 unchanged; returns the applyPhaseTodoRevision options.
-  const revise = async (renameT1 = null, extra = {}) => {
+  const revise = async (renameT1 = null, { taskMigration: migrationOverride = null, ...extra } = {}) => {
     const { plan } = await member('main');
     const predecessor = { plan_digest: plan.plan_digest, plan_version: plan.plan_version,
       journal_head_digest: (await member('main')).journal.events.at(-1).event_digest };
     const first = renameT1 ?? plan.tasks[0].task_id;
-    const taskMigration = [
+    const taskMigration = migrationOverride ?? [
       { from_task_id: plan.tasks[0].task_id, to_task_id: first, state_policy: 'reset_pending' },
       { from_task_id: 'T2', to_task_id: 'T2', state_policy: 'reset_pending' }];
     const phaseMigration = [{ from_phase_id: 'phase-1', to_phase_id: 'phase-1', state_policy: 'reset' }];
@@ -596,7 +597,7 @@ test('consumer接続は修復が間に合わないまま二度改訂されても
   const live = projectTodoCrossPlanDependencies(store.members);
   assert.equal(live.length, 1);
   assert.equal(live[0].from.task_id, 'A2');
-  assert.equal(live[0].from.expected_topology_digest, (await member('main')).plan.topology_digest);
+  assert.equal(live[0].from.expected_topology_digest, todoTaskPin(live[0].from));
   assert.equal(live[0].to.task_id, 'C1');
 });
 
@@ -624,8 +625,56 @@ test('重複を作る修復は単独で見送られ、別の有効な修復を�
   assert.equal(store.cross_plan_findings[0].event_digest, stale.event_digest);
   const top = (await member('main')).plan.topology_digest;
   const live = projectTodoCrossPlanDependencies(store.members)
-    .map(({ from, to }) => `${from.task_id}@${from.expected_topology_digest === top ? 'v2' : 'v1'}>${to.task_id}`).sort();
+    .map(({ from, to }) => `${from.task_id}@${from.expected_topology_digest === top || from.expected_topology_digest === todoTaskPin(from) ? 'v2' : 'v1'}>${to.task_id}`).sort();
   assert.deepEqual(live, ['A1@v2>C1', 'A1@v2>C2', 'T1@v1>C1', 'T2@v2>C2']);
+});
+
+// ADR 0206 (s7): a cross-plan edge pins its source task. connectPinned writes the task pin; connect (above) keeps the legacy topology pin.
+const connectPinned = async (fixture, fromTask, toTask) => appendTodoEvent({ repoRoot: fixture.root, writer: fixture.writer,
+  planKey: 'consumer', now: NOW, event: { kind: 'cross_plan_dependency', actor: ACTOR, recorded_at: NOW, payload: {
+    from: ref(fromTask, 'main', 'project-1', todoTaskPin({ project_id: 'project-1', plan_key: 'main', task_id: fromTask })),
+    to: ref(toTask, 'consumer', 'project-1', (await fixture.member('consumer')).plan.topology_digest),
+    reason: `${fromTask} to ${toTask}` } } });
+const consumerEvents = async (fixture) => (await fixture.member('consumer')).plan_scoped.events;
+
+test('a task-pinned edge survives revisions that keep its task id and writes nothing', async (context) => {
+  const fixture = await crossPlanRepairFixture(context);
+  await connectPinned(fixture, 'T1', 'C1');
+  const before = await consumerEvents(fixture);
+  await fixture.revise(); // T1 keeps its id (retitled: the topology changes), T2 unchanged
+  await fixture.revise();
+  const store = await readTodoStore({ repoRoot: fixture.root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings, []);
+  assert.deepEqual((await consumerEvents(fixture)).map(({ event_digest: digest }) => digest), before.map(({ event_digest: digest }) => digest),
+    'two revisions of the source wrote no event into the owner chain');
+  assert.equal(projectTodoCrossPlanDependencies(store.members).length, 1);
+});
+
+test('a legacy topology-pinned edge is converted once to a task pin; later revisions write nothing', async (context) => {
+  const fixture = await crossPlanRepairFixture(context);
+  await fixture.connect('T1', 'C1');
+  await fixture.revise();
+  let events = await consumerEvents(fixture);
+  assert.deepEqual(events.map(({ kind }) => kind), ['cross_plan_dependency', 'cross_plan_dependency_removed', 'cross_plan_dependency']);
+  const [live] = projectTodoCrossPlanDependencies((await readTodoStore({ repoRoot: fixture.root, now: NOW })).members);
+  assert.equal(live.from.expected_topology_digest, todoTaskPin(live.from));
+  await fixture.revise();
+  assert.equal((await consumerEvents(fixture)).length, events.length, 'the converted edge no longer follows the topology');
+});
+
+test('a task-pinned edge follows a remap of its task and is then quiet again', async (context) => {
+  const fixture = await crossPlanRepairFixture(context);
+  await connectPinned(fixture, 'T1', 'C1');
+  await fixture.revise('A1');
+  const store = await readTodoStore({ repoRoot: fixture.root, now: NOW });
+  assert.deepEqual(store.cross_plan_findings, []);
+  const [live] = projectTodoCrossPlanDependencies(store.members);
+  assert.equal(live.from.task_id, 'A1');
+  assert.equal(live.from.expected_topology_digest, todoTaskPin(live.from));
+  const length = (await consumerEvents(fixture)).length;
+  assert.equal(length, 3);
+  await fixture.revise();
+  assert.equal((await consumerEvents(fixture)).length, length);
 });
 
 test('appendTodoEventはcross_plan_repairsを返し、後継writerはonCrossPlanRepairsを呼ぶ', async (context) => {

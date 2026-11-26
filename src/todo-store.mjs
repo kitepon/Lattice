@@ -45,6 +45,7 @@ import {
   isTodoIdentifier,
   isTodoRef,
   todoSelfDigest,
+  todoTaskPin,
   validateEvidenceDescriptor,
   validateTodoChartMeta,
   validateTodoImportSource,
@@ -1067,7 +1068,11 @@ function validateMergedGraph(members, crossPlanDependencies = projectTodoCrossPl
       return null;
     }
     if (foreign && ref.expected_topology_digest === undefined) fail('STORE_INCONSISTENT', 'cross_plan_binding_missing');
-    if (ref.expected_topology_digest !== undefined && topology !== ref.expected_topology_digest) {
+    // A task pin (ADR 0206) names the task: it never goes stale while the task exists (its absence is endpoint_missing above).
+    // Any other pin is a topology digest. shortcut: a remap onto ids that all stay in the plan (a swap) is not seen, upgrade to a migration check if one occurs.
+    const stale = ref.expected_topology_digest !== undefined && topology !== ref.expected_topology_digest
+      && ref.expected_topology_digest !== todoTaskPin(ref);
+    if (stale) {
       if (foreign && ownerPlan.plan_key === newPlanKey) fail('STORE_INCONSISTENT', 'binding_stale');
       finding('binding_stale');
     }
@@ -1153,7 +1158,7 @@ function crossPlanDependencyTask(store, ref) {
   const member = store.members.find(({ plan }) => plan.project_id === ref.project_id
     && plan.plan_key === ref.plan_key);
   if (member === undefined) fail('DEPENDENCY_INVALID', 'dependency_plan_not_found', { ref });
-  if (member.plan.topology_digest !== ref.expected_topology_digest) {
+  if (member.plan.topology_digest !== ref.expected_topology_digest && ref.expected_topology_digest !== todoTaskPin(ref)) {
     fail('DEPENDENCY_STALE', 'dependency_topology_stale', {
       ref, actual_topology_digest: member.plan.topology_digest,
     });
@@ -2010,6 +2015,10 @@ export async function readTodoCarriedBlocks({ repoRoot = process.cwd(), member, 
  * connection names (u03): returns the source task id it maps to now, 'removed', or null (unknown).
  */
 async function carriedSourceTask(repoRoot, source, ref, versionsCache) {
+  // ADR 0206: a task pin is repaired from the one revision that made it stale; no lineage walk, no retained versions read.
+  if (ref.expected_topology_digest === todoTaskPin(ref)) {
+    return (source.journal.events[0].payload.task_migration ?? []).find(({ from_task_id: from }) => from === ref.task_id)?.to_task_id ?? null;
+  }
   if (!versionsCache.has(source)) versionsCache.set(source, await retainedPlanVersions(repoRoot, source.plan));
   const byDigest = versionsCache.get(source);
   // Newest first: the active genesis maps its predecessor's ids onto the active ids.
@@ -2071,7 +2080,7 @@ async function repairCrossPlanBindings(repoRoot, store, { assertHeld, actor, rec
         ? 'removed the task' : 'carried the task'}`,
     } }];
     if (mapped !== 'removed') inputs.push({ kind: 'cross_plan_dependency', payload: {
-      from: { ...dependency.from, task_id: mapped, expected_topology_digest: source.plan.topology_digest },
+      from: { ...dependency.from, task_id: mapped, expected_topology_digest: todoTaskPin({ ...dependency.from, task_id: mapped }) },
       to: dependency.to, reason: dependency.reason,
     } });
     for (const input of inputs) {
@@ -3012,7 +3021,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
       .filter(({ event_digest: digest }) => options.eventDigests.includes(digest));
     if (dependencies.length !== options.eventDigests.length || dependencies.some(({ from, to, event_digest: digest }) => (
       from.project_id !== source.plan.project_id || from.plan_key !== source.plan.plan_key
-      || from.expected_topology_digest === source.plan.topology_digest
+      || from.expected_topology_digest === source.plan.topology_digest || from.expected_topology_digest === todoTaskPin(from)
       || to.project_id !== owner.plan.project_id || to.plan_key !== owner.plan.plan_key
       || !owner.plan_scoped.events.some((event) => event.event_digest === digest)
     ))) fail('DEPENDENCY_INVALID', 'dependency_rebind_original_mismatch');
@@ -3045,7 +3054,7 @@ export async function rebindTodoCrossPlanDependencies(options = {}) {
           target_event_digest: dependency.event_digest, reason: options.reason,
         } },
         { kind: 'cross_plan_dependency', payload: {
-          from: { ...dependency.from, expected_topology_digest: source.plan.topology_digest },
+          from: { ...dependency.from, expected_topology_digest: todoTaskPin(dependency.from) },
           to: dependency.to, reason: dependency.reason,
         } },
       ]) {
