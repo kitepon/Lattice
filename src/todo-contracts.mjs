@@ -152,6 +152,14 @@ export function digestTodoArtifact(value) {
   return createHash('sha256').update(canonicalizeTodoArtifact(value), 'utf8').digest('hex');
 }
 
+/**
+ * ADR 0206: the pin of a cross-plan edge's `from` ref into a plan of the same project. It names the task, not the plan's topology,
+ * so a revision that neither changes nor remaps the task leaves the pin (and the edge) as it is. Stored in `expected_topology_digest`.
+ */
+export function todoTaskPin({ project_id: projectId, plan_key: planKey, task_id: taskId }) {
+  return digestTodoArtifact({ schema: 'lattice.todo_task_pin.v1', project_id: projectId, plan_key: planKey, task_id: taskId });
+}
+
 export function todoSelfDigest(value, field) {
   const projection = {};
   for (const key of Object.keys(value)) if (key !== field) projection[key] = value[key];

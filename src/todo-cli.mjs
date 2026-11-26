@@ -36,6 +36,7 @@ import {
   isTodoRef,
   isTodoTestResult,
   todoSelfDigest,
+  todoTaskPin,
 } from './todo-contracts.mjs';
 import {
   adoptTodoDashboardActivity,
@@ -1960,8 +1961,8 @@ async function dependencyConnectLedger({
   if (liveLedgerEdge(store, endpoints)) return dependencyUnchanged(store, endpoints);
   const from = {
     project_id: store.project_id, plan_key: fromPlanKey, task_id: fromTaskId,
-    expected_topology_digest: source.plan.topology_digest,
   };
+  from.expected_topology_digest = todoTaskPin(from); // ADR 0206: the edge depends on its source task, not on the plan's other tasks
   const to = {
     project_id: store.project_id, plan_key: toPlanKey, task_id: toTaskId,
     expected_topology_digest: target.plan.topology_digest,

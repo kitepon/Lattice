@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Store (s7, Ludmila, ADR 0206): a cross-plan edge into a plan of the same project is pinned to its source task (`expected_topology_digest` = digest of `{project_id, plan_key, task_id}`, no schema change), not to the source plan's whole topology. A revision that does not rename or remove the source task writes nothing into the owner chains (it used to write 2 events per edge on every revision: bellteam-dev / -3 hold 20,324 / 10,914 events for 7 / 5 edges). A renamed or removed task is repaired from the revision's own `task_migration` as before; existing topology-pinned edges stay readable and are converted once on their next repair; sealed events are not rewritten. Older CLIs read the chain but see a task pin as a `binding_stale` finding (never stops dispatch): upgrade the seats.
+
 ## 0.114.1 — 2026-11-26
 
 工程表の読み取りで、確定済みの記録を毎回検証し直さなくした版（ルドミラ #264、計画 `lattice-seat-cost-20261126` の s5）。ホストへの変更：無し。形式も CLI も変えない。
