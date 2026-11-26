@@ -3,6 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -192,7 +193,7 @@ test('K7: a checkout interrupted after it wrote index and work tree is finished;
   writeFileSync(path.join(chart, 'a.txt'), 'local edit');
   assert.equal(ok(['chart', 'repo', 'sync', '--json'], code).status, 'dirty');
   assert.equal(git(chart, 'rev-parse', 'HEAD'), fourth);
-  assert.equal(execFileSync('cat', [path.join(chart, 'a.txt')], { encoding: 'utf8' }), 'local edit');
+  assert.equal(readFileSync(path.join(chart, 'a.txt'), 'utf8'), 'local edit');
   git(chart, 'add', 'a.txt');
   assert.equal(ok(['chart', 'repo', 'sync', '--json'], code).status, 'dirty');
   assert.equal(git(chart, 'rev-parse', 'HEAD'), fourth);
