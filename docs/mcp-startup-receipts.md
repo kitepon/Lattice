@@ -17,4 +17,4 @@ write 完了は client の受信・tool の成功・終了の証明ではない�
 
 保存は本体から切り離した unref worker で行い、同期の Windows ACL 検査や process birth の取得を initialize が待たない。POSIX は本人所有の directory 0700 / file 0600、Windows は既存の本人・SYSTEM・Administrators 限定 DACL 検査を使う。symlink / junction や確認できない権限の置き場へは保存しない。記録の I/O・権限・worker 生成が失敗しても、記録を省略して MCP の起動と応答を続ける。
 
-上限は累積 64 slot、各 JSON は最大 4 KiB。slot は排他 mkdir で予約し、各 slot の `pending.json` から `receipt.json` へ atomic rename する。一時 JSON は各 slot で最大 1 本、Windows ACL 検査の一時 file は検査後に消す。失敗した予約 slot は消さず、上限に数える。満杯では新しい記録を省略し、古い記録や active か不明な記録を自動削除しない。継続して観測するには、利用者が必要な記録を保全し、MCP が停止した状態で slot を整理する必要がある。既存の未知 file を勝手に回収しない。
+上限は累積 64 slot、各 JSON は最大 4 KiB。slot は排他 mkdir で予約し、各 slot の `pending.json` から `receipt.json` へ atomic rename する。一時 JSON は各 slot で最大 1 本、Windows ACL 検査の一時 file は検査後に消す。失敗した予約 slot は消さず、上限に数える。満杯では新しい記録を省略し（slot 名が 64 件ある root では worker 自体を起動しない: 非同期の事前確認で 1 session あたり約 12 MB の worker を省く。確認は目安で、予約は worker の排他 mkdir のまま）、古い記録や active か不明な記録を自動削除しない。継続して観測するには、利用者が必要な記録を保全し、MCP が停止した状態で slot を整理する必要がある。既存の未知 file を勝手に回収しない。
