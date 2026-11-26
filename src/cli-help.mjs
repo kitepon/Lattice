@@ -96,7 +96,7 @@ Read commands:
   notice list [--lane <lane>] [--include-acked] [--json]  # 着手できるようになった工程の知らせ（既定は未ackだけ。lane省略で全lane）
   blockers [--json]  # ブロック中の工程を全部返す（題・担当・理由の全文・ブロックした時刻と者・外すコマンド。読むだけ。外すのは誰でも todo unblock）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
-  display read [--json] [--compact] [--open]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す。--compact は journal を activity、plan_scoped を cross_plan_dependencies に絞った lattice.todo_display_compact_result.v1（大きさは task と生きた線に比例）。--open は --compact を含み、task ごとの一覧を開いた木の task だけに絞って closed {trees, tasks} を足す lattice.todo_display_open_result.v1
+  display read [--json] [--compact] [--open]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す。--compact は journal を activity、plan_scoped を cross_plan_dependencies に絞った lattice.todo_display_compact_result.v1（大きさは task と生きた線に比例）。--open は --compact を含み、task ごとの一覧を開いた木の task だけに絞って closed {trees, tasks} を足す lattice.todo_display_open_result.v2（member の revision と、検証済み member の snapshot を持たない。next_ready は state が verified の時だけ todo status と同じ一覧、他は null）
   display history [--json] [--limit <n>] [--before <cursor>]  # 閉じた木の task を終了の新しい順に1ページ返す（lattice.todo_display_history_result.v1。limit 既定50・最大500、next_cursor を --before へ渡して次頁）
   display source [--json]  # 安い変更検知（lattice.todo_store_display_source.v1）。変わった時だけreadする
   independence [--plan <key>] [--json]  # readyを検証済み並列・要直列・未検査へ分けて投影する
@@ -357,7 +357,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'chart repo': 'chart repo bind --url <url> --branch <branch> [--json] | sync [--json]  # lattice.chart_repo_result.v1',
   'chart repo bind': 'chart repo bind --url <url> --branch <branch> [--json]  # コード工程表のrepoを記録する',
   'chart repo sync': 'chart repo sync [--json]  # depth-1 fetch、accepted_tipからだけ前進（reset/forceしない）、その後sensor。status current|synced|dirty|diverged|failed',
-  'todo display read': 'todo display read [--json] [--compact] [--open]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）。--compact: lattice.todo_display_compact_result.v1（journal→activity、plan_scoped→cross_plan_dependencies）。--open: lattice.todo_display_open_result.v1（--compact を含み、開いた木の task だけ + closed {trees, tasks}）',
+  'todo display read': 'todo display read [--json] [--compact] [--open]  # lattice.todo_display_read_result.v1（state: verified|unverified|last_verified|unavailable）。--compact: lattice.todo_display_compact_result.v1（journal→activity、plan_scoped→cross_plan_dependencies）。--open: lattice.todo_display_open_result.v2（--compact を含み、開いた木の task だけ + closed {trees, tasks} + next_ready。revision と検証済み member の snapshot は出さない）',
   'todo display history': 'todo display history [--json] [--limit <n>] [--before <cursor>]  # lattice.todo_display_history_result.v1 {state, verified_at, source, inconsistency, dropped_members, closed:{trees,tasks}, tasks:[{tree_id, plan_key, task_id, title, lane, phase_id, parent_task_id, design_memo, done_condition, status, done_at, finished_at, activity:{changed_at, started}}], next_cursor}（閉じた木だけ。finished_at の新しい順。limit 既定50・最大500。不正な cursor は INVALID_ARGUMENTS）',
   'todo display source': 'todo display source [--json]  # lattice.todo_store_display_source.v1（安い変更検知。変わった時だけreadする）',
   'todo independence': 'todo independence [--plan <key>] [--json] | mode --plan <key> --set <witness|conversation|enforced> --reason <text>'

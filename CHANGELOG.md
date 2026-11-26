@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+ホスト向けに、`--open` の読取を軽くした（アリス、計画 `lattice-seat-cost-20261126` の C1）。ホストへの変更：`lattice.todo_display_open_result.v2` を読む。`next_ready` があれば `todo status` を別に呼ばなくてよい（無い古い版では今まで通り `todo status`）。
+
+- `lattice todo display read --json --open` の schema を `lattice.todo_display_open_result.v2` にした。各 `store.members[]` は `revision`（終わった木も含む計画の全体）を持たない。検証済みの member（`tasks` がある）は `snapshot`（`tasks` と同じ状態）も持たない。検証できていない生の member は、これまで通り絞った `snapshot` を持つ。
+- 新しい最上位の `next_ready`：`state` が `verified` の時は `todo status --json` の `next_ready` と同じ一覧を、同じ検証済みの読みから返す（Store の検証も process も一回で済む）。それ以外の `state` は `null`。
+- `state`、`store`、`verified_at`、`source`、`inconsistency`、`dropped_members`、`closed`、`external_tasks`、`connections`、`trees` は変えない。`--compact`（v1）と Lattice の gantt も変えない。
+- 測定（合成した 2,901 工程の計画、`todo add` で改訂を一回足した後、`--open`）：1,955,562 バイト → 11,144 バイト。
+- 試験：`next_ready` が `todo status` の `next_ready` と等しいこと（単独の計画、別の工程表の先行工程を待つ計画）。検証できていない読みでは `null` で、生の member が `snapshot` を残すこと。
+
 ## 0.113.2 — 2026-11-20
 
 大きな計画を一回読むだけで数百 MB と数秒かかっていたのを減らした版（ルドミラ #259）。ホストへの変更：無し。形式は変えない。

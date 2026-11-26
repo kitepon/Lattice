@@ -69,6 +69,8 @@ test('a task waits on another chart: not startable until that task is done, then
   assert.equal((await readTodoStore({ repoRoot: path.join(root, 'alpha') })).members[0].plan_scoped.events.length, 0);
 
   assert.deepEqual(ready(ok('beta', ['todo', 'status', '--json'])), []);
+  // open read v2: next_ready is todo status's own list, through the external predecessor too
+  assert.deepEqual(ok('beta', ['todo', 'display', 'read', '--open', '--json']).next_ready, []);
   const show = ok('beta', ['todo', 'show', '--plan', 'b', '--task', 'R', '--json']).prerequisites;
   assert.equal(show.ready, false);
   // A task on another chart is a 接続, not a 前工程: blocking_tasks stays same-chart only.
@@ -89,6 +91,8 @@ test('a task waits on another chart: not startable until that task is done, then
   const done = ok('alpha', ['todo', 'done', '--plan', 'a', '--task', 'P', '--message', 'merged']);
 
   assert.deepEqual(ready(ok('beta', ['todo', 'status', '--json'])), ['b/R']);
+  assert.deepEqual(ok('beta', ['todo', 'display', 'read', '--open', '--json']).next_ready,
+    ok('beta', ['todo', 'status', '--json']).next_ready);
   assert.equal(ok('beta', ['todo', 'show', '--plan', 'b', '--task', 'R', '--json']).prerequisites.ready, true);
   const [notice] = ok('beta', ['todo', 'notice', 'list']).notices;
   assert.equal(notice.task_id, 'R');
