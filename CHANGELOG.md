@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.114.2 — 2026-11-26
 
+計画をまたぐつながりを、元の計画全体ではなく元の作業に結び付けた版（ルドミラ #267、ADR 0206、計画 `lattice-seat-cost-20261126` の s7）。ホストへの変更：読む席と BellTeam 本体を一緒にこの版へ上げる。古い CLI は新しいつながりを `binding_stale` の所見として見せる（割り当ては止めない）。
+
+- Store：BellTeam の工程表の写しで、`bellteam-dev-added` に `todo add` するたびに `bellteam-dev` / `-3` へ 24 件書いていた記録が、初回の一度だけの変換（16 件）の後は 0 件になった。
 - Store (s7, Ludmila, ADR 0206): a cross-plan edge into a plan of the same project is pinned to its source task (`expected_topology_digest` = digest of `{project_id, plan_key, task_id}`, no schema change), not to the source plan's whole topology. A revision that does not rename or remove the source task writes nothing into the owner chains (it used to write 2 events per edge on every revision: bellteam-dev / -3 hold 20,324 / 10,914 events for 7 / 5 edges). A renamed or removed task is repaired from the revision's own `task_migration` as before; existing topology-pinned edges stay readable and are converted once on their next repair; sealed events are not rewritten. Older CLIs read the chain but see a task pin as a `binding_stale` finding (never stops dispatch): upgrade the seats.
 
 ## 0.114.1 — 2026-11-26
