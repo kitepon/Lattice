@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.114.3 — 2026-11-26
+
+BellTeam のコード工程表が止まったまま戻らなかった不具合を直した版（アリス #269、計画 `lattice-chart-edit-slow-20261126` の e5）。ホストへの変更：無し。止まっていた工程表は、この版の最初の sync で最新へ進む。
 
 - `lattice chart repo sync` (K7, アリス, 計画 `lattice-chart-edit-slow-20261126` の e5)：自分の `checkout -B <branch> <tip>` が、index と work tree を書いたあと HEAD を動かす前に止まると、以後の sync が全部 `dirty` を返して動かなくなっていた（BellTeam のコード工程表が 11/23 から止まった原因）。HEAD が `accepted_tip` で、記録済みの `FETCH_HEAD` がその子孫で、index と work tree が `FETCH_HEAD` の木と同じ時だけ、それは編集ではなく止まった切り替えなので、最後まで済ませて通常どおり続ける。それ以外の tracked の変更は今までどおり `dirty` で、何も動かさない。ホストへの変更：無し。
 
