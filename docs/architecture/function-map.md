@@ -166,7 +166,7 @@ charts only through these commands; Lattice owns everything under `LATTICE_CHART
 | K4 `lattice chart set [--name] [--created-by]`, at least one; without `--name` the name stays as is (`lattice.chart_set_result.v1`, `name` may be null), K1/K2/K7 below: `src/chart-cli.mjs` `runChartCli` ([CLI binding](dfd-charts-read.md#implementation-binding-cli-side-host-cli-alice)) | Plan CLI (Alice) | BellTeam naming and the one-time sidecar migration |
 | K1 `lattice charts list` (`lattice.charts_list_result.v1`), K2 `lattice charts source [--project]...` (`lattice.charts_source_result.v1`) | Plan CLI (Alice) over Store display source + chart meta | BellTeam list and change detection; one process for all charts; one bad chart is a finding, never a refusal |
 | K3 `projectTodoTrees(store)` → `trees` in `todo display read` | Plan/lifecycle (Alice) | BellTeam fractions and hide rule (a100) |
-| K7 `lattice chart repo bind|sync` (`lattice.chart_repo_result.v1`): depth-1 only on the first fetch (history stays connected after), fast-forward only from `accepted_tip`, then sensor | Plan CLI (Alice) | BellTeam code chart `bellteam`; dirty/diverged move nothing |
+| K7 `lattice chart repo bind|sync` (`lattice.chart_repo_result.v1`): depth-1 only on the first fetch (history stays connected after), fast-forward only from `accepted_tip`, then sensor; an interrupted own checkout (HEAD = `accepted_tip`, index and work tree = the recorded `FETCH_HEAD`, a descendant) is finished instead of answering `dirty` | Plan CLI (Alice) | BellTeam code chart `bellteam`; a real tracked edit and diverged move nothing |
 
 ## Dependency direction after the proposed split
 
