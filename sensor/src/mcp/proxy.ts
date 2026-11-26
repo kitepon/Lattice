@@ -21,15 +21,17 @@
 import * as fs from 'fs';
 import * as net from 'net';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
-import { DaemonClientHello, DaemonHello, MAX_HELLO_LINE_BYTES } from './daemon';
+import type { DaemonClientHello, DaemonHello } from './daemon';
+import { MAX_HELLO_LINE_BYTES } from './daemon-paths';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
 import { LatticeSensorPackageVersion, isLatticeVersion } from './version';
-import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions, type MCPStartupReceipt } from './session';
+import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './handshake-info';
+import type { MCPStartupReceipt } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
-import { getStaticTools } from './tools';
+import { getStaticTools } from './tool-definitions';
 import { ExploreSessionState } from './explore-session-state';
 import { getTelemetry, ClientInfo } from '../telemetry';
 import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
@@ -243,8 +245,10 @@ export interface LocalHandshakeDeps {
    *  when a non-Lattice daemon occupies the socket (session must fail closed). */
   getDaemonSocket(): Promise<DaemonSocketOutcome>;
   /** Lazily create an in-process engine — used ONLY if the daemon never comes up,
-   *  preserving the "a broken daemon never wedges a session" guarantee. */
-  makeEngine(): MCPEngine;
+   *  preserving the "a broken daemon never wedges a session" guarantee. May be
+   *  async: the caller loads the engine module on this path only, so a session
+   *  that stays attached to the daemon never pays for it. */
+  makeEngine(): MCPEngine | Promise<MCPEngine>;
   /** Project root for the fallback engine's lazy init. */
   root: string;
 }
@@ -263,11 +267,14 @@ export interface LocalHandshakeDeps {
  * never costs the old fall-back-to-direct robustness.
  */
 export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<void> {
-  // The proxy is long-lived and can serve fallback tool calls in-process. Match
-  // direct/daemon mode by killing this launcher if its main thread wedges, so an
-  // MCP host retry cannot accumulate abandoned `serve --mcp` wrapper processes.
-  const livenessWatchdog: WatchdogHandle | null = installMainThreadWatchdog();
-  let daemonStatus: 'connecting' | 'ready' | 'failed' = 'connecting';
+  // A proxy attached to the daemon is a pure pipe (parse a line, forward it): it
+  // runs no engine, so it has no long synchronous work to wedge on and carries no
+  // watchdog (a second `node -e` process cost ~45 MB per session). The watchdog
+  // is armed with the in-process fallback engine below, the one place this
+  // process runs tool code on its own main thread. Windows also guards the
+  // connect window, where a wedged launcher piled up across client restarts
+  // (#943); it is stopped as soon as the daemon is attached.
+  let livenessWatchdog: WatchdogHandle | null = process.platform === 'win32' ? installMainThreadWatchdog() : null;  let daemonStatus: 'connecting' | 'ready' | 'failed' = 'connecting';
   let daemonSocket: net.Socket | null = null;
   let clientInitId: unknown = undefined;   // suppress the daemon's reply to the forwarded initialize
   // Telemetry attribution for the in-process fallback only — calls routed to
@@ -317,21 +324,33 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     process.exit(0);
   };
   const ensureEngine = (): Promise<void> => {
-    if (!engine) {
-      engine = deps.makeEngine();
-      // ADR 0049 Decision 5④: record the typed direct-mode reason at the
-      // moment we commit to serving in-process, so lattice_sensor_status reports
-      // it even if the reason later changes (e.g. a subsequent connection-lost
-      // never retroactively edits an already-open engine's declared reason).
-      engine.setExecutionMode('direct', directModeReason);
+    if (!engineReady) {
+      engineReady = (async () => {
+        const created = await deps.makeEngine();
+        engine = created;
+        // ADR 0049 Decision 5④: record the typed direct-mode reason at the
+        // moment we commit to serving in-process, so lattice_sensor_status reports
+        // it even if the reason later changes (e.g. a subsequent connection-lost
+        // never retroactively edits an already-open engine's declared reason).
+        created.setExecutionMode('direct', directModeReason);
+        // Kill this launcher if the main thread wedges under the engine, so an
+        // MCP host retry cannot accumulate abandoned `serve --mcp` wrapper processes.
+        if (!shuttingDown && !livenessWatchdog) livenessWatchdog = installMainThreadWatchdog();
+        // ADR 0049 Decision 5②: `ensureInitialized` no longer swallows an open
+        // failure silently — its own try/catch (engine.ts `doInitialize`) records
+        // the failure via `ToolHandler.setOpenFailure` so the NEXT tool call
+        // fails closed via `getLatticeSensor()`, instead of this promise's rejection
+        // (which never actually fires — `doInitialize` never rethrows) being the
+        // only signal. This `.catch` is defensive belt-and-braces only.
+        await created.ensureInitialized(deps.root).catch(() => { /* recorded via setOpenFailure; see above */ });
+      })().catch((err) => {
+        // No engine (e.g. makeEngine refused): let the next call try again, as
+        // the pre-lazy-import code did when makeEngine threw.
+        engine = null;
+        engineReady = null;
+        throw err;
+      });
     }
-    // ADR 0049 Decision 5②: `ensureInitialized` no longer swallows an open
-    // failure silently — its own try/catch (engine.ts `doInitialize`) records
-    // the failure via `ToolHandler.setOpenFailure` so the NEXT tool call
-    // fails closed via `getLatticeSensor()`, instead of this promise's rejection
-    // (which never actually fires — `doInitialize` never rethrows) being the
-    // only signal. This `.catch` is defensive belt-and-braces only.
-    if (!engineReady) engineReady = engine.ensureInitialized(deps.root).catch(() => { /* recorded via setOpenFailure; see above */ });
     return engineReady;
   };
   // Daemon-unavailable fallback: serve a client message in-process.
@@ -464,6 +483,8 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   if (socket && !socket.destroyed && !shuttingDown) {
     daemonSocket = socket;
     daemonStatus = 'ready';
+    try { livenessWatchdog?.stop(); } catch { /* ignore */ }
+    livenessWatchdog = null;
     let sockBuf = '';
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {

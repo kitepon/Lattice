@@ -19,7 +19,7 @@ function alive(pid: number): boolean {
 
 // Exercise the real local-handshake entry point and its real watchdog child,
 // with only the daemon/engine dependencies replaced to inject bounded faults.
-async function exercise(mode: 'connecting-wedge' | 'fallback-wedge' | 'slow-fallback'): Promise<void> {
+async function exercise(mode: 'connecting-wedge' | 'fallback-wedge' | 'slow-fallback' | 'attached'): Promise<void> {
   const child = spawn(process.execPath, ['-e', `
     const { runLocalHandshakeProxy } = require(${JSON.stringify(MODULE)});
     const mode = ${JSON.stringify(mode)};
@@ -31,6 +31,17 @@ async function exercise(mode: 'connecting-wedge' | 'fallback-wedge' | 'slow-fall
     runLocalHandshakeProxy({
       root: process.cwd(),
       getDaemonSocket: async () => {
+        if (mode === 'attached') {
+          // A daemon that answers every forwarded request: the proxy is a pure pipe to it.
+          const net = require('net');
+          const server = net.createServer((peer) => peer.on('data', (chunk) => {
+            for (const line of String(chunk).split('\\n').filter(Boolean)) {
+              peer.write(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(line).id, result: { piped: true } }) + '\\n');
+            }
+          }));
+          await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+          return net.createConnection(server.address().port, '127.0.0.1');
+        }
         if (mode === 'connecting-wedge') {
           await delay(300);
           wedge();
@@ -70,6 +81,16 @@ async function exercise(mode: 'connecting-wedge' | 'fallback-wedge' | 'slow-fall
     if (mode !== 'connecting-wedge') {
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'test', arguments: {} } }) + '\n');
     }
+    if (mode === 'attached') {
+      await until(() => stdout.includes('"piped":true') || exited());
+      expect(stdout, stderr).toContain('"piped":true');
+      // No watchdog was armed for a pipe to the daemon (the debug line names every armed child).
+      expect(stderr).not.toContain('armed (child pid');
+      child.stdin.end();
+      await until(exited);
+      expect(child.exitCode, stderr).toBe(0);
+      return;
+    }
     if (mode === 'slow-fallback') {
       await until(() => stdout.includes('finished') || exited());
       expect(stdout, stderr).toContain('finished');
@@ -108,6 +129,10 @@ describe('local proxy liveness (#943)', () => {
 
   it('terminates a wedged fallback tool call and reaps its watchdog', async () => {
     await exercise('fallback-wedge');
+  }, 20000);
+
+  it.skipIf(process.platform === 'win32')('arms no watchdog process while attached to the daemon (thin proxy)', async () => {
+    await exercise('attached');
   }, 20000);
 
   it('allows slow yielding fallback work, then exits cleanly on stdin EOF with no watchdog orphan', async () => {

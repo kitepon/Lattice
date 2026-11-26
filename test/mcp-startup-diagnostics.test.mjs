@@ -28,7 +28,8 @@ async function fixture(t, sensorSource, enabled = true, seedOld = false) {
     await copyFile(path.join(REPO, file), path.join(root, file));
   }
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'module', version: packageJson.version }));
-  await writeFile(path.join(root, 'sensor/dist/index.js'), sensorSource);
+  await mkdir(path.join(root, 'sensor/dist/mcp'), { recursive: true });
+  await writeFile(path.join(root, 'sensor/dist/mcp/index.js'), sensorSource);
   const configHome = path.join(root, 'config');
   const stateHome = path.join(root, 'state');
   await mkdir(path.join(configHome, 'dotagents'), { recursive: true });

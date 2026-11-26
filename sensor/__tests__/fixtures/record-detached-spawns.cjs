@@ -47,3 +47,20 @@ if (log) {
     return child;
   };
 }
+
+// Thin-proxy evidence: when CG_TEST_PROXY_LOG is set, the launcher (never the
+// daemon, which re-enters this preload through execArgv) writes the sensor
+// modules it loaded and every child it spawned, once, as it exits.
+const proxyLog = process.env.CG_TEST_PROXY_LOG;
+if (proxyLog && !process.env.LATTICE_SENSOR_DAEMON_INTERNAL) {
+  const spawned = [];
+  const realSpawn = childProcess.spawn;
+  childProcess.spawn = function recordAll(...args) {
+    spawned.push({ command: String(args[0]), args: Array.isArray(args[1]) ? args[1].map(String) : [] });
+    return realSpawn.apply(this, args);
+  };
+  process.on('exit', () => {
+    const modules = Object.keys(require.cache).map((file) => file.split('\\').join('/')).filter((file) => file.includes('/sensor/dist/'));
+    fs.writeFileSync(proxyLog, JSON.stringify({ modules, spawned }));
+  });
+}
