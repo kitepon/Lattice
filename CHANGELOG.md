@@ -4,6 +4,20 @@
 
 - `lattice chart repo sync` (K7, アリス, 計画 `lattice-chart-edit-slow-20261126` の e5)：自分の `checkout -B <branch> <tip>` が、index と work tree を書いたあと HEAD を動かす前に止まると、以後の sync が全部 `dirty` を返して動かなくなっていた（BellTeam のコード工程表が 11/23 から止まった原因）。HEAD が `accepted_tip` で、記録済みの `FETCH_HEAD` がその子孫で、index と work tree が `FETCH_HEAD` の木と同じ時だけ、それは編集ではなく止まった切り替えなので、最後まで済ませて通常どおり続ける。それ以外の tracked の変更は今までどおり `dirty` で、何も動かさない。ホストへの変更：無し。
 
+## 0.114.2 — 2026-11-26
+
+計画をまたぐつながりを、元の計画全体ではなく元の作業に結び付けた版（ルドミラ #267、ADR 0206、計画 `lattice-seat-cost-20261126` の s7）。ホストへの変更：読む席と BellTeam 本体を一緒にこの版へ上げる。古い CLI は新しいつながりを `binding_stale` の所見として見せる（割り当ては止めない）。
+
+- Store：BellTeam の工程表の写しで、`bellteam-dev-added` に `todo add` するたびに `bellteam-dev` / `-3` へ 24 件書いていた記録が、初回の一度だけの変換（16 件）の後は 0 件になった。
+- Store (s7, Ludmila, ADR 0206): a cross-plan edge into a plan of the same project is pinned to its source task (`expected_topology_digest` = digest of `{project_id, plan_key, task_id}`, no schema change), not to the source plan's whole topology. A revision that does not rename or remove the source task writes nothing into the owner chains (it used to write 2 events per edge on every revision: bellteam-dev / -3 hold 20,324 / 10,914 events for 7 / 5 edges). A renamed or removed task is repaired from the revision's own `task_migration` as before; existing topology-pinned edges stay readable and are converted once on their next repair; sealed events are not rewritten. Older CLIs read the chain but see a task pin as a `binding_stale` finding (never stops dispatch): upgrade the seats.
+
+## 0.114.1 — 2026-11-26
+
+工程表の読み取りで、確定済みの記録を毎回検証し直さなくした版（ルドミラ #264、計画 `lattice-seat-cost-20261126` の s5）。ホストへの変更：無し。形式も CLI も変えない。
+
+- Store：BellTeam の工程表の写しで、`todo status` が 1.3 秒から 0.6 秒、`todo display read --open` が 1.8 秒から 0.55 秒になった（変わった直後の最初の読みは 2.7 秒から 1.2 秒）。検証済みの記録の印は `.lattice/generated/store-verified/receipts.json` に置く派生物で、無い・読めない・合わない時は今まで通り全部検証する。`todo verify` は使わない。
+- Store (s5, Ludmila): a verified read (`todo status`, `todo display read`) no longer re-validates every sealed byte in every process. A derived file `.lattice/generated/store-verified/receipts.json` remembers which exact bytes (sha256 + mode + validator-code fingerprint) were already validated; a missing or mismatching file is a cache miss and the read validates in full. `display read` no longer reads and re-digests the whole checkpoint to compare its source (a small `last-verified.head.json` carries it), no longer deep-copies the view, and serializes the checkpoint once; `replay` no longer scans a genesis migration per task. No format or CLI change; `todo verify` is unchanged. bellteam copy: `todo status` 1.3 s -> 0.6 s, `display read --open` 1.8 s -> 0.55 s (1.2 s for the first read after a change, 2.7 s before).
+
 ## 0.114.0 — 2026-11-26
 
 席ごとの負荷を下げた版（計画 `lattice-seat-cost-20261126`、2026-11-26 に BellTeam のコンテナが 20 GiB の上限に達した件）。ホストへの変更：`--open` の読取は `lattice.todo_display_open_result.v2` を読む。`lattice-mcp` の呼び方は変わらない。
@@ -18,8 +32,6 @@
 - `state`、`store`、`verified_at`、`source`、`inconsistency`、`dropped_members`、`closed`、`external_tasks`、`connections`、`trees` は変えない。`--compact`（v1）と Lattice の gantt も変えない。
 - 測定（合成した 2,901 工程の計画、`todo add` で改訂を一回足した後、`--open`）：1,955,562 バイト → 11,144 バイト。
 - 試験：`next_ready` が `todo status` の `next_ready` と等しいこと（単独の計画、別の工程表の先行工程を待つ計画）。検証できていない読みでは `null` で、生の member が `snapshot` を残すこと。
-
-- Store (s5, Ludmila): a verified read (`todo status`, `todo display read`) no longer re-validates every sealed byte in every process. A derived file `.lattice/generated/store-verified/receipts.json` remembers which exact bytes (sha256 + mode + validator-code fingerprint) were already validated; a missing or mismatching file is a cache miss and the read validates in full. `display read` no longer reads and re-digests the whole checkpoint to compare its source (a small `last-verified.head.json` carries it), no longer deep-copies the view, and serializes the checkpoint once; `replay` no longer scans a genesis migration per task. No format or CLI change; `todo verify` is unchanged. bellteam copy: `todo status` 1.3 s -> 0.6 s, `display read --open` 1.8 s -> 0.55 s (1.2 s for the first read after a change, 2.7 s before).
 
 ## 0.113.2 — 2026-11-20
 

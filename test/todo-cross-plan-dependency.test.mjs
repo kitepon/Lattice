@@ -17,7 +17,7 @@ import {
   readTodoStore,
 } from '../src/todo-store.mjs';
 import { appendTodoEvent } from './helpers/todo-authoring-store.mjs';
-import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
+import { canonicalizeTodoArtifact, todoSelfDigest, todoTaskPin } from '../src/todo-contracts.mjs';
 import { phaseTodoRevisionPlanVersion } from '../src/todo-revision.mjs';
 
 const NOW = '2026-08-09T00:00:00.000Z';
@@ -379,7 +379,7 @@ test('binding recovery atomically preserves both connections including a done ta
   const endpoints = (members) => projectTodoCrossPlanDependencies(members)
     .map(({ from, to, reason }) => ({ from, to, reason }));
   assert.deepEqual(endpoints(after.members), events.map(({ payload }) => ({ ...payload,
-    from: { ...payload.from, expected_topology_digest: result.source_topology_digest } })));
+    from: { ...payload.from, expected_topology_digest: todoTaskPin(payload.from) } })));
   const consumer = after.members.find(({ plan }) => plan.plan_key === 'consumer');
   assert.deepEqual(consumer.tasks.map(({ status }) => status), ['done', 'pending']);
   assert.deepEqual(consumer.plan_scoped.events.slice(0, 2), events);

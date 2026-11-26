@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { canonicalizeTodoArtifact, todoSelfDigest } from '../src/todo-contracts.mjs';
+import { canonicalizeTodoArtifact, todoSelfDigest, todoTaskPin } from '../src/todo-contracts.mjs';
 import { runTodoCli } from '../src/todo-cli.mjs';
 import {
   TodoStoreError,
@@ -256,7 +256,7 @@ test('edge-carry: revision setは改訂したplanへ入る台帳の線を引き�
   const active = await readTodoStore({ repoRoot: root });
   assert.deepEqual(active.cross_plan_findings, []);
   const [edge] = projectTodoCrossPlanDependencies(active.members);
-  assert.deepEqual([edge.from, edge.to, edge.reason], [ref('b', 'B1', set[1].desired_plan.topology_digest),
+  assert.deepEqual([edge.from, edge.to, edge.reason], [ref('b', 'B1', todoTaskPin({ project_id: 'project-1', plan_key: 'b', task_id: 'B1' })),
     ref('a', 'A1', set[0].desired_plan.topology_digest), '台帳の線']);
 });
 
