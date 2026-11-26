@@ -443,15 +443,18 @@ test('openDisplayResult: every per-task list is limited to open trees; closed co
       { plan_key: 'a', task_id: 'A3', connections: [{ kind: 'task', ref: 'p2/x/X2' }, { kind: 'priority' }] }],
     external_tasks: [{ project_id: 'p2', plan_key: 'x', task_id: 'X1' }, { project_id: 'p2', plan_key: 'x', task_id: 'X2' }],
     store: { project_id: 'p1', members: [
-      { descriptor: { plan_key: 'a' }, tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id })),
+      { descriptor: { plan_key: 'a' }, tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id })), revision: { desired_plan: 'whole' },
+        snapshot: { tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id })) },
         plan: { project_id: 'p1', plan_key: 'a', phases: [{ phase_id: 'ph' }], tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id })),
           hard_dependencies: [{ from: ref('a', 'A1'), to: ref('a', 'A2') }, { from: ref('a', 'A3'), to: ref('b', 'B1') }],
           joins: [{ before: ref('a', 'A2'), after: [ref('a', 'A1')] }, { before: ref('b', 'B1'), after: [ref('a', 'A3'), ref('a', 'A1'), ref('x', 'X2', 'p2')] }] },
         activity: { first: { at: '1', agent: 'g' }, last_at: '9', tasks: ['A1', 'A2', 'A3'].map((id) => ({ task_id: id, changed_at: '5', started: null })) },
         cross_plan_dependencies: [{ event_digest: 'k1', from: ref('a', 'A1'), to: ref('a', 'A2') }, { event_digest: 'k2', from: ref('x', 'X2', 'p2'), to: ref('a', 'A3') }] },
-      { descriptor: { plan_key: 'b' }, snapshot: { tasks: ['B1', 'B2'].map((id) => ({ task_id: id })) }, plan: null }] } };
-  const open = openDisplayResult(result);
-  assert.equal(open.schema, 'lattice.todo_display_open_result.v1');
+      { descriptor: { plan_key: 'b' }, snapshot: { tasks: ['B1', 'B2'].map((id) => ({ task_id: id })) }, revision: {}, plan: null }] } };
+  const open = openDisplayResult({ ...result, next_ready: [{ plan_key: 'a', task_id: 'A3' }] });
+  assert.equal(open.schema, 'lattice.todo_display_open_result.v2');
+  assert.deepEqual(open.next_ready, [{ plan_key: 'a', task_id: 'A3' }]);
+  assert.equal(openDisplayResult(result).next_ready, null, 'no next_ready given reads as null');
   assert.deepEqual(open.trees, [trees[1]]);
   assert.deepEqual(open.closed, { trees: 2, tasks: 3 });
   assert.deepEqual(open.labels, result.labels);
@@ -462,7 +465,9 @@ test('openDisplayResult: every per-task list is limited to open trees; closed co
   assert.deepEqual(a.plan.phases, [{ phase_id: 'ph' }]);
   assert.deepEqual([a.activity.first, a.activity.last_at], [{ at: '1', agent: 'g' }, '9']);
   assert.deepEqual(a.cross_plan_dependencies.map(({ event_digest: digest }) => digest), ['k2']);
-  assert.deepEqual(b.snapshot.tasks, [{ task_id: 'B1' }]);
+  assert.deepEqual(b.snapshot.tasks, [{ task_id: 'B1' }], 'a raw member (no tasks) keeps its filtered snapshot');
+  assert.equal(a.snapshot, undefined, 'a verified member (it has tasks) drops its snapshot');
+  assert.equal(a.revision ?? b.revision, undefined, 'revision is dropped from every member');
   assert.deepEqual(open.connections, [result.connections[1]]);
   assert.deepEqual(open.external_tasks, [result.external_tasks[1]], 'only an external task a kept connection refers to');
   assert.equal(result.store.members[0].tasks.length, 3, 'the input is not changed');
@@ -509,7 +514,11 @@ test('todo display read --open / display history over the CLI: a closed tree lea
   }
   const ids = (open) => open.store.members.flatMap((member) => member.plan.tasks.map(({ task_id: id }) => `${member.plan.plan_key}/${id}`)).sort();
   const open = read('--open', '--json');
-  assert.equal(open.schema, 'lattice.todo_display_open_result.v1');
+  assert.equal(open.schema, 'lattice.todo_display_open_result.v2');
+  // C1: next_ready is todo status's own list, from the same verified read (no second process).
+  const statusReady = () => JSON.parse(run('todo', 'status', '--json')).next_ready;
+  assert.deepEqual(open.next_ready, statusReady());
+  assert.equal(open.next_ready.length, 2);
   const same = (flags) => ({ ...read(...flags), verified_at: null });
   assert.deepEqual(same(['--json', '--open']), { ...open, verified_at: null }, 'flags in any order');
   assert.deepEqual(same(['--compact', '--open', '--json']), { ...open, verified_at: null }, '--open implies --compact');
@@ -517,13 +526,15 @@ test('todo display read --open / display history over the CLI: a closed tree lea
   for (const member of open.store.members) {
     assert.deepEqual([member.tasks.map(({ task_id: id }) => id), member.activity.tasks.map(({ task_id: id }) => id)], [['T2'], []]);
     assert.equal(member.journal, undefined);
+    assert.deepEqual([member.revision, member.snapshot], [undefined, undefined], 'open v2 ships neither revision nor a verified member\'s snapshot');
   }
   const full = read('--json');
   assert.deepEqual(open.trees, full.trees.filter(({ finished, total }) => finished < total));
   assert.deepEqual(open.closed, { trees: 2, tasks: 2 });
   assert.deepEqual(open.closed, { trees: full.trees.filter(({ finished, total }) => finished >= total).length,
     tasks: full.trees.filter(({ finished, total }) => finished >= total).reduce((sum, { total }) => sum + total, 0) });
-  assert.deepEqual(Object.keys(open).sort(), [...Object.keys(read('--json', '--compact')), 'closed'].sort());
+  assert.deepEqual(Object.keys(open).sort(), [...Object.keys(read('--json', '--compact')), 'closed', 'next_ready'].sort());
+  assert.equal(read('--json', '--compact').next_ready, undefined, '--compact (v1) is unchanged');
 
   const all = history('--json');
   assert.equal(all.schema, 'lattice.todo_display_history_result.v1');
@@ -546,5 +557,13 @@ test('todo display read --open / display history over the CLI: a closed tree lea
   const reopened = read('--open', '--json');
   assert.deepEqual(ids(reopened), ['alpha/T1', 'alpha/T2', 'beta/T2']);
   assert.deepEqual(reopened.closed, { trees: 1, tasks: 1 });
+  assert.deepEqual(reopened.next_ready, statusReady());
   assert.deepEqual(history('--json').tasks.map(({ plan_key: plan }) => plan), ['beta']);
+
+  // Any state but verified: next_ready is null, and a raw member keeps its snapshot.
+  await corruptManifestDigest(w);
+  const raw = read('--open', '--json');
+  assert.equal(raw.state, 'unverified');
+  assert.equal(raw.next_ready, null);
+  assert.ok(raw.store.members.every((member) => member.revision === undefined && Array.isArray(member.snapshot?.tasks)));
 });
