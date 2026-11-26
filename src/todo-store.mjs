@@ -73,6 +73,7 @@ import {
   collectTodoStructureGitProvenance,
 } from './todo-structure-git-adapter.mjs';
 import { sha256Bytes, verifyLinearHashChain } from './hash-chain.mjs';
+import { AcceptedKeys } from './todo-verified-receipts.mjs';
 import packageJson from '../package.json' with { type: 'json' };
 import { gitCatFileBatch, gitSync } from './git-process.mjs';
 import { matchesTodoSourceLineDigest } from './todo-source-line-eol.mjs';
@@ -236,7 +237,8 @@ function decodeUtf8(bytes, code, reason) {
 }
 
 /** w4: artifact bytes this process already accepted at one ref and mode (see `acceptedSegments`); a repeat read only parses. */
-const acceptedArtifacts = new Set();
+const acceptedKeys = new AcceptedKeys();
+const acceptedArtifacts = { has: (key) => acceptedKeys.has(`artifact:${key}`), add: (key) => acceptedKeys.add(`artifact:${key}`) };
 
 function parseCanonicalJsonLine(bytes, { code, reason, maxBytes, validate, ref = null, canonical = true }) {
   const detail = ref === null ? undefined : { ref };
@@ -291,7 +293,7 @@ async function readSnapshotArtifact(repoRoot, ref) {
  * w4: segments this process has already accepted, by sha256 of their bytes and the mode. The canonical check and `validateTodoEvent`
  * are pure functions of the bytes, so a repeat read of the same bytes (one command reads the Store about a dozen times) only parses.
  */
-const acceptedSegments = new Set();
+const acceptedSegments = { has: (key) => acceptedKeys.has(`segment:${key}`), add: (key) => acceptedKeys.add(`segment:${key}`) };
 
 /**
  * A revision genesis carries every task's migrated state in one line, so it grows with the plan (ADR 0201 bounds a plan by
@@ -622,16 +624,24 @@ function localSuccessors(plan, taskId) {
 
 const CARRY_STATE_POLICIES = ['carry', 'carry_reconciled_metadata', 'acquire_phase'];
 
+/** s5: the tasks a genesis carries open, once per event (replay asks for every task of the plan; a scan each was quadratic). */
+const carriedOpenByGenesis = new WeakMap();
+function genesisCarriedOpen(event) {
+  let tasks = carriedOpenByGenesis.get(event);
+  if (tasks === undefined) {
+    tasks = new Set((event.state_migration ?? []).filter((migration) => CARRY_STATE_POLICIES.includes(migration.state_policy)
+      && ['in-progress', 'blocked'].includes(migration.state?.status)).map((migration) => migration.to_task_id));
+    carriedOpenByGenesis.set(event, tasks);
+  }
+  return tasks;
+}
+
 /**
  * retract-anyone (A3, Ludmila 2026-11-12): the digest of the event that last made the task in-progress, or null.
  * One rule for replay and resolveTodoStartRetractionBinding. A revision genesis carrying the task open binds it.
  */
 function stepStartBinding(binding, event, taskId) {
-  if (event.kind === 'plan_genesis') {
-    return (event.state_migration ?? []).some((migration) => CARRY_STATE_POLICIES.includes(migration.state_policy)
-      && migration.to_task_id === taskId && ['in-progress', 'blocked'].includes(migration.state?.status))
-      ? event.event_digest : binding;
-  }
+  if (event.kind === 'plan_genesis') return genesisCarriedOpen(event).has(taskId) ? event.event_digest : binding;
   if (event.task_id !== taskId) return binding;
   if (event.kind === 'start' || (event.kind === 'reopen' && event.payload.to_status === undefined)) return event.event_digest;
   if (['done', 'retire', 'start_retracted', 'reopen'].includes(event.kind)) return null;
@@ -1641,6 +1651,9 @@ async function readTodoStoreLocked(options = {}) {
 
 async function readTodoStoreView(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+  // s5: `todo verify` re-validates everything; every other read reuses what an earlier process accepted for these exact bytes.
+  const useReceipts = options.verifyHistory !== true;
+  if (useReceipts) await acceptedKeys.attach(repoRoot);
   const barrier = await exactFileOrNull(path.resolve(repoRoot, SOURCE_CUTOVER_BARRIER_REF));
   if (barrier !== null) {
     let value;
@@ -1775,6 +1788,7 @@ async function readTodoStoreView(options = {}) {
       tasks, phases, coordination, snapshot_stale: snapshotStale });
   }
   const crossPlanFindings = validateMergedGraph(loaded, projectTodoCrossPlanDependencies(loaded));
+  if (useReceipts) await acceptedKeys.persist(repoRoot);
   return {
     schema: 'lattice.todo_store_read.v1', project_id: manifest.project_id, manifest,
     members: loaded, snapshot_stale: loaded.some((member) => member.snapshot_stale),
@@ -2149,6 +2163,9 @@ async function readStoreStableWith(options, readStore) {
 // Store display read (dfd-store-display-read.md). Read-only toward canonical Store files:
 // no lock, recovery or writer; the only write is the derived checkpoint below.
 const DISPLAY_CHECKPOINT_REF = '.lattice/generated/store-display/last-verified.json';
+// s5: a few hundred bytes beside the checkpoint: which source it holds and the file identity it was written with.
+const DISPLAY_CHECKPOINT_HEAD_REF = '.lattice/generated/store-display/last-verified.head.json';
+const DISPLAY_CHECKPOINT_HEAD_SCHEMA = 'lattice.todo_store_display_checkpoint_head.v1';
 const DISPLAY_CHECKPOINT_SCHEMA = 'lattice.todo_store_display_checkpoint.v1';
 const DISPLAY_SOURCE_SCHEMA = 'lattice.todo_store_display_source.v1';
 const DISPLAY_CHECKPOINT_MAX_BYTES = 64 * 1_048_576;
@@ -2266,16 +2283,20 @@ async function verifiedDisplaySource(repoRoot, store) {
   };
 }
 
-/** The existing read model without implementation bytes; JSON-serializable. */
+/**
+ * The existing read model without implementation bytes; JSON-serializable. s5: no deep copy (it cost ~0.2 s on the bellteam Store):
+ * the strict read is private to this call, every field left is JSON data (strings, numbers, plain objects), and the members are
+ * rebuilt here, so nothing outside the result holds them.
+ */
 function displayStoreView(store) {
-  return JSON.parse(JSON.stringify({
+  return {
     schema: store.schema, project_id: store.project_id, manifest: store.manifest,
     members: store.members.map(({ journal, plan_scoped: planScoped, ...member }) => ({
       ...member,
       journal: { events: journal.events },
       plan_scoped: { ref: planScoped.ref, events: planScoped.events },
     })),
-  }));
+  };
 }
 
 function checkpointDigest(checkpoint) {
@@ -2310,6 +2331,34 @@ async function readDisplayCheckpoint(repoRoot, projectId) {
   return valid ? checkpoint : null;
 }
 
+const displaySourceDigest = (source) => sha256Bytes(Buffer.from(JSON.stringify(source), 'utf8'));
+
+/**
+ * s5: true when the retained checkpoint is known to hold `source` without reading it: the head names the source digest and the
+ * size and mtime of the checkpoint file it was written with. Any doubt (no head, another writer touched the file) is false and the
+ * caller compares the checkpoint itself, as before.
+ */
+async function displayCheckpointHeadMatches(repoRoot, source) {
+  try {
+    const root = await canonicalRepoRoot(repoRoot);
+    const head = JSON.parse(await readFile(path.resolve(root, DISPLAY_CHECKPOINT_HEAD_REF), 'utf8'));
+    if (!exactRecord(head, ['schema', 'source_digest', 'size', 'mtime_ms'])
+      || head.schema !== DISPLAY_CHECKPOINT_HEAD_SCHEMA || head.source_digest !== displaySourceDigest(source)) return false;
+    const absolute = path.resolve(root, DISPLAY_CHECKPOINT_REF);
+    const stats = await lstat(absolute);
+    return !stats.isSymbolicLink() && stats.isFile() && stats.size === head.size && stats.mtimeMs === head.mtime_ms
+      && await realpath(absolute) === absolute;
+  } catch { return false; }
+}
+
+async function publishDisplayCheckpointHead(repoRoot, source) {
+  const root = await canonicalRepoRoot(repoRoot);
+  const stats = await lstat(path.resolve(root, DISPLAY_CHECKPOINT_REF));
+  await atomicWrite(path.resolve(root, DISPLAY_CHECKPOINT_HEAD_REF), Buffer.from(JSON.stringify({
+    schema: DISPLAY_CHECKPOINT_HEAD_SCHEMA, source_digest: displaySourceDigest(source), size: stats.size, mtime_ms: stats.mtimeMs,
+  }), 'utf8'));
+}
+
 async function publishDisplayCheckpoint(repoRoot, { verified_at: verifiedAt, source, store }) {
   const root = await canonicalRepoRoot(repoRoot);
   let directory = root;
@@ -2321,9 +2370,10 @@ async function publishDisplayCheckpoint(repoRoot, { verified_at: verifiedAt, sou
       fail('STORE_DISPLAY_CHECKPOINT_UNSAFE', 'unsafe_checkpoint_directory', { ref: path.relative(root, directory) });
     }
   }
-  const checkpoint = { schema: DISPLAY_CHECKPOINT_SCHEMA, verified_at: verifiedAt, source, store, checkpoint_digest: '' };
-  checkpoint.checkpoint_digest = checkpointDigest(checkpoint);
-  await atomicWrite(path.resolve(root, DISPLAY_CHECKPOINT_REF), Buffer.from(JSON.stringify(checkpoint), 'utf8'));
+  // s5: the store is serialized once (37.8 MB on bellteam): the digest covers the object without checkpoint_digest, the file adds it last.
+  const body = JSON.stringify({ schema: DISPLAY_CHECKPOINT_SCHEMA, verified_at: verifiedAt, source, store });
+  const digest = sha256Bytes(Buffer.from(body, 'utf8'));
+  await atomicWrite(path.resolve(root, DISPLAY_CHECKPOINT_REF), Buffer.from(`${body.slice(0, -1)},"checkpoint_digest":"${digest}"}`, 'utf8'));
 }
 
 async function readRawDisplayMembers(repoRoot, manifest) {
@@ -2371,9 +2421,13 @@ export async function readTodoStoreForDisplay({ repoRoot = process.cwd(), now } 
     const store = displayStoreView(strict);
     const source = await verifiedDisplaySource(root, strict);
     try {
-      const retained = await readDisplayCheckpoint(root, source.project_id);
-      if (JSON.stringify(retained?.source) !== JSON.stringify(source)) {
-        await publishDisplayCheckpoint(root, { verified_at: verifiedAt, source, store });
+      if (!await displayCheckpointHeadMatches(root, source)) {
+        const retained = await readDisplayCheckpoint(root, source.project_id);
+        if (JSON.stringify(retained?.source) !== JSON.stringify(source)) {
+          await publishDisplayCheckpoint(root, { verified_at: verifiedAt, source, store });
+        }
+        // The retained checkpoint (or the new one) holds this source: remember it so the next read need not open the file.
+        await publishDisplayCheckpointHead(root, source);
       }
     } catch (error) {
       process.emitWarning(`Store display checkpoint was not published: ${error?.detail?.reason ?? error?.code ?? error}`, {
