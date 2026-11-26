@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.114.0 — 2026-11-26
+
+席ごとの負荷を下げた版（計画 `lattice-seat-cost-20261126`、2026-11-26 に BellTeam のコンテナが 20 GiB の上限に達した件）。ホストへの変更：`--open` の読取は `lattice.todo_display_open_result.v2` を読む。`lattice-mcp` の呼び方は変わらない。
+
+- `lattice-mcp`（ネヴェ #261）：共有 daemon へ中継するだけの会話でも sensor 全体を読み込み、生存を見張る `node -e` を別に起こしていた。中継・daemon・直接のどれで動くかを軽い部品だけで決め、engine などはそのモードで要る時だけ読み込む。中継だけの会話は見張りの process を起こさない（daemon が起きずに会話の中で直接動く時は、今まで通り見張る。Windows は daemon につながるまでの間だけ見張る）。Linux の測定：一つの中継の会話が 91.7 MB と 43.3 MB の 2 process から、約 68 MB の 1 process になった。図は `docs/architecture/dfd-mcp-thin-proxy.md`。
+- `lattice-mcp` の起動記録（ネヴェ #263）：記録は累積 64 枠で、枠は空かない。64 枠がすべて埋まっている時は、記録用の worker（約 12 MB）を起こさない。空きがあれば今まで通り記録する。中継の会話は約 59 MB になった。
 
 ホスト向けに、`--open` の読取を軽くした（アリス、計画 `lattice-seat-cost-20261126` の C1）。ホストへの変更：`lattice.todo_display_open_result.v2` を読む。`next_ready` があれば `todo status` を別に呼ばなくてよい（無い古い版では今まで通り `todo status`）。
 
 - `lattice todo display read --json --open` の schema を `lattice.todo_display_open_result.v2` にした。各 `store.members[]` は `revision`（終わった木も含む計画の全体）を持たない。検証済みの member（`tasks` がある）は `snapshot`（`tasks` と同じ状態）も持たない。検証できていない生の member は、これまで通り絞った `snapshot` を持つ。
-- 新しい最上位の `next_ready`：`state` が `verified` の時は `todo status --json` の `next_ready` と同じ一覧を、同じ検証済みの読みから返す（Store の検証も process も一回で済む）。それ以外の `state` は `null`。
+- 新しい最上位の `next_ready`：`state` が `verified` の時は `todo status --json` の `next_ready` と同じ一覧を、同じ検証済みの読みから返す（Store の検証も process も一回で済む）。各要素は `todo status` と同じ `{plan_key, task_id, label, done_condition}`。それ以外の `state` は `null`。
 - `state`、`store`、`verified_at`、`source`、`inconsistency`、`dropped_members`、`closed`、`external_tasks`、`connections`、`trees` は変えない。`--compact`（v1）と Lattice の gantt も変えない。
 - 測定（合成した 2,901 工程の計画、`todo add` で改訂を一回足した後、`--open`）：1,955,562 バイト → 11,144 バイト。
 - 試験：`next_ready` が `todo status` の `next_ready` と等しいこと（単独の計画、別の工程表の先行工程を待つ計画）。検証できていない読みでは `null` で、生の member が `snapshot` を残すこと。
