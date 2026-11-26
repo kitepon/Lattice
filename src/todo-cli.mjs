@@ -1291,7 +1291,12 @@ async function displayRead(repoRoot, env, { compact = false, open = false } = {}
     connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [] };
   // trees, labels and connections are read from the full view above; only the shipped store is compacted
   const light = compact || open ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
-  return open ? openDisplayResult(light) : light;
+  if (!open) return light;
+  // next_ready (open v2): `todo status`'s list from this same verified read, so a host needs no second process or Store verification.
+  const nextReady = display.state === 'verified'
+    ? projectTodoStatus(externalTasks.length > 0 ? { ...display.store, external_tasks: externalTasks } : display.store,
+      { planNotes: [], parallelCandidates: [], structureFinalizations: [] }).next_ready : null;
+  return openDisplayResult({ ...light, next_ready: nextReady });
 }
 
 const HISTORY_DEFAULT_LIMIT = 50;

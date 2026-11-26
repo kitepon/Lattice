@@ -122,9 +122,11 @@ const taskKeyOf = (planKey, taskId) => `${planKey}\0${taskId}`;
 const isOpenTree = ({ finished, total }) => finished < total;
 
 /**
- * Open display read (`todo display read --open`): the compact result with every per-task list limited to the tasks of open
+ * Open display read (`todo display read --open`, v2): the compact result with every per-task list limited to the tasks of open
  * trees (`finished < total` in the result's own `trees`, the one source) and `closed: {trees, tasks}` over the chart.
- * Pure. `plan.phases`, descriptors and `activity.first/last_at` stay whole. A ref of another chart is never a task of
+ * v2 drops what no host reads: each member's `revision` (the whole desired plan, closed trees included) and, for a
+ * verified member (it has `tasks`), its `snapshot` (the same task states); an unverified raw member keeps its filtered
+ * `snapshot`. `next_ready` is the caller's (`result.next_ready`, null unless the read is verified). Pure. `plan.phases`, descriptors and `activity.first/last_at` stay whole. A ref of another chart is never a task of
  * this chart here, so a join or dependency naming one keeps it.
  */
 export function openDisplayResult(result) {
@@ -134,7 +136,7 @@ export function openDisplayResult(result) {
   const closed = { trees: closedTrees.length, tasks: closedTrees.reduce((sum, { total }) => sum + total, 0) };
   const connections = (result.connections ?? []).filter(({ plan_key: planKey, task_id: taskId }) => kept.has(taskKeyOf(planKey, taskId)));
   const referred = new Set(connections.flatMap((entry) => entry.connections.map(({ ref }) => ref)));
-  const base = { ...result, schema: 'lattice.todo_display_open_result.v1',
+  const base = { ...result, schema: 'lattice.todo_display_open_result.v2', next_ready: result.next_ready ?? null,
     trees: trees.filter(isOpenTree), connections, closed,
     external_tasks: (result.external_tasks ?? []).filter(({ project_id: projectId, plan_key: planKey, task_id: taskId }) => referred.has(`${projectId}/${planKey}/${taskId}`)) };
   if (!isObject(result.store)) return base;
@@ -145,9 +147,11 @@ export function openDisplayResult(result) {
     const keptTask = ({ task_id: taskId }) => kept.has(taskKeyOf(planKey, taskId));
     const local = (ref) => (ref.project_id ?? projectId) === projectId;
     const keepRef = (ref) => isObject(ref) && (!local(ref) || kept.has(taskKeyOf(ref.plan_key, ref.task_id)));
-    const next = { ...member };
-    if (Array.isArray(member.tasks)) next.tasks = member.tasks.filter(keptTask);
-    if (Array.isArray(member.snapshot?.tasks)) next.snapshot = { ...member.snapshot, tasks: member.snapshot.tasks.filter(keptTask) };
+    const { revision: _revision, ...next } = member;
+    if (Array.isArray(member.tasks)) {
+      next.tasks = member.tasks.filter(keptTask);
+      delete next.snapshot;
+    } else if (Array.isArray(member.snapshot?.tasks)) next.snapshot = { ...member.snapshot, tasks: member.snapshot.tasks.filter(keptTask) };
     if (isObject(member.plan)) {
       next.plan = { ...member.plan };
       if (Array.isArray(member.plan.tasks)) next.plan.tasks = member.plan.tasks.filter(keptTask);

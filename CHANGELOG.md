@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+ホスト向けに、`--open` の読取を軽くした（アリス、計画 `lattice-seat-cost-20261126` の C1）。ホストへの変更：`lattice.todo_display_open_result.v2` を読む。`next_ready` があれば `todo status` を別に呼ばなくてよい（無い古い版では今まで通り `todo status`）。
+
+- `lattice todo display read --json --open` の schema を `lattice.todo_display_open_result.v2` にした。各 `store.members[]` は `revision`（終わった木も含む計画の全体）を持たない。検証済みの member（`tasks` がある）は `snapshot`（`tasks` と同じ状態）も持たない。検証できていない生の member は、これまで通り絞った `snapshot` を持つ。
+- 新しい最上位の `next_ready`：`state` が `verified` の時は `todo status --json` の `next_ready` と同じ一覧を、同じ検証済みの読みから返す（Store の検証も process も一回で済む）。それ以外の `state` は `null`。
+- `state`、`store`、`verified_at`、`source`、`inconsistency`、`dropped_members`、`closed`、`external_tasks`、`connections`、`trees` は変えない。`--compact`（v1）と Lattice の gantt も変えない。
+- 測定（合成した 2,901 工程の計画、`todo add` で改訂を一回足した後、`--open`）：1,955,562 バイト → 11,144 バイト。
+- 試験：`next_ready` が `todo status` の `next_ready` と等しいこと（単独の計画、別の工程表の先行工程を待つ計画）。検証できていない読みでは `null` で、生の member が `snapshot` を残すこと。
+
 - Store (s5, Ludmila): a verified read (`todo status`, `todo display read`) no longer re-validates every sealed byte in every process. A derived file `.lattice/generated/store-verified/receipts.json` remembers which exact bytes (sha256 + mode + validator-code fingerprint) were already validated; a missing or mismatching file is a cache miss and the read validates in full. `display read` no longer reads and re-digests the whole checkpoint to compare its source (a small `last-verified.head.json` carries it), no longer deep-copies the view, and serializes the checkpoint once; `replay` no longer scans a genesis migration per task. No format or CLI change; `todo verify` is unchanged. bellteam copy: `todo status` 1.3 s -> 0.6 s, `display read --open` 1.8 s -> 0.55 s (1.2 s for the first read after a change, 2.7 s before).
 
 ## 0.113.2 — 2026-11-20
