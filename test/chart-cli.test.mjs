@@ -3,6 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -143,6 +144,64 @@ test('g1: a later chart repo sync keeps the previous tip an ancestor of the new 
   assert.equal(synced.status, 'synced');
   git(chart, 'merge-base', '--is-ancestor', first, 'HEAD'); // throws unless ancestor
   git(chart, 'merge-base', '--is-ancestor', second, 'HEAD');
+});
+
+test('K7: a checkout interrupted after it wrote index and work tree is finished; a real edit stays dirty', async (context) => {
+  const { base, root, ok } = await workspace(context);
+  const code = { LATTICE_PROJECT_ID: 'code' };
+  const upstream = path.join(base, 'upstream');
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const commit = (message) => {
+    writeFileSync(path.join(upstream, 'a.txt'), message);
+    git(upstream, 'add', 'a.txt');
+    git(upstream, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', message);
+    return git(upstream, 'rev-parse', 'HEAD');
+  };
+  execFileSync('git', ['init', '--quiet', '--initial-branch=main', upstream]);
+  const first = commit('one');
+  const url = pathToFileURL(upstream).href;
+  ok(['plan', 'create', '--input', 'plan.json'], code);
+  ok(['chart', 'repo', 'bind', '--url', url, '--branch', 'main', '--json'], code);
+  ok(['chart', 'repo', 'sync', '--json'], code);
+  const chart = path.join(root, 'code');
+  // What `checkout -B main <tip>` leaves when it stops after the index and work tree and before HEAD moves.
+  const interrupt = (tip) => {
+    git(chart, 'fetch', '--quiet', '--no-tags', url, 'main');
+    git(chart, 'read-tree', '-m', '-u', 'HEAD', tip);
+  };
+
+  const second = commit('two');
+  interrupt(second);
+  assert.equal(git(chart, 'rev-parse', 'HEAD'), first);
+  assert.notEqual(git(chart, 'status', '--porcelain', '--untracked-files=no'), '');
+  const healed = ok(['chart', 'repo', 'sync', '--json'], code);
+  assert.deepEqual([healed.status, healed.tip, healed.accepted_tip], ['current', second, second], JSON.stringify(healed));
+  assert.equal(git(chart, 'rev-parse', 'HEAD'), second);
+  assert.equal(git(chart, 'status', '--porcelain', '--untracked-files=no'), '');
+
+  // The upstream moved on while the checkout stood still: healing keeps the baseline, so the next fetch still fast-forwards.
+  const third = commit('three');
+  interrupt(third);
+  const fourth = commit('four');
+  const moved = ok(['chart', 'repo', 'sync', '--json'], code);
+  assert.deepEqual([moved.status, moved.tip], ['synced', fourth], JSON.stringify(moved));
+  git(chart, 'merge-base', '--is-ancestor', third, 'HEAD');
+
+  // A real edit, on top of the interrupted state or not, is never discarded.
+  const fifth = commit('five');
+  interrupt(fifth);
+  writeFileSync(path.join(chart, 'a.txt'), 'local edit');
+  assert.equal(ok(['chart', 'repo', 'sync', '--json'], code).status, 'dirty');
+  assert.equal(git(chart, 'rev-parse', 'HEAD'), fourth);
+  assert.equal(readFileSync(path.join(chart, 'a.txt'), 'utf8'), 'local edit');
+  git(chart, 'add', 'a.txt');
+  assert.equal(ok(['chart', 'repo', 'sync', '--json'], code).status, 'dirty');
+  assert.equal(git(chart, 'rev-parse', 'HEAD'), fourth);
+  // A FETCH_HEAD that is not ahead of HEAD does not excuse a staged edit either.
+  git(chart, 'reset', '--quiet', '--hard', 'HEAD');
+  writeFileSync(path.join(chart, 'a.txt'), 'staged edit');
+  git(chart, 'add', 'a.txt');
+  assert.equal(ok(['chart', 'repo', 'sync', '--json'], code).status, 'dirty');
 });
 
 function writeFileSync(target, text) {

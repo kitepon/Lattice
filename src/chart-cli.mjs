@@ -254,8 +254,10 @@ async function runSensor(command, dir) {
 
 /**
  * K7 sync. Named protection: never reset, clean, force or repoint; tracked edits make it `dirty` and a HEAD that is
- * not the accepted baseline makes it `diverged` (nothing moves). Self-exit: a failed step is reported and the next
- * sync tries again. HEAD moves only from the baseline. Only the first fetch is depth-1; later fetches keep the previous tip
+ * not the accepted baseline makes it `diverged` (nothing moves). Self-exits: a failed step is reported and the next
+ * sync tries again; the one state that is not an edit, our own checkout interrupted after it wrote index and work tree
+ * but before it moved HEAD (HEAD = baseline, index and work tree = FETCH_HEAD, a descendant), is finished.
+ * HEAD moves only from the baseline. Only the first fetch is depth-1; later fetches keep the previous tip
  * an ancestor of the new one (gate 4's merged-sha check and the structure adapter's `rev-list baseline..HEAD` need that).
  */
 async function chartRepoSync({ cwd, env }) {
@@ -281,13 +283,22 @@ async function chartRepoSync({ cwd, env }) {
       await mkdir(path.dirname(exclude), { recursive: true });
       await appendFile(exclude, `${excluded === '' || excluded.endsWith('\n') ? '' : '\n'}.lattice/\n`);
     }
-    if (await git('status', ['status', '--porcelain', '--untracked-files=no'])) return result('dirty');
+    // Charts moved before 0.101.0 kept the baseline in refs/remotes/origin/<branch>.
+    let accepted = meta.repo.accepted_tip ?? await optional(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]);
+    if (await git('status', ['status', '--porcelain', '--untracked-files=no'])) {
+      const interrupted = await optional(['rev-parse', '--verify', '--quiet', 'FETCH_HEAD^{commit}']);
+      const holds = (args) => runGit('git', args, { cwd: dir }).then(() => true, () => false);
+      if (interrupted === null || accepted === null || accepted !== await optional(['rev-parse', '--verify', '--quiet', 'HEAD'])
+        || !await holds(['merge-base', '--is-ancestor', 'HEAD', interrupted])
+        || !await holds(['diff', '--cached', '--quiet', interrupted]) || !await holds(['diff', '--quiet'])) return result('dirty');
+      await git('checkout', ['checkout', '--quiet', '-B', branch, interrupted]);
+      accepted = interrupted;
+      await writeTodoChartMeta({ repoRoot: dir, patch: { repo: { url, branch, accepted_tip: interrupted } } });
+    }
     // A lazily fetching (promisor) clone fetches each missing blob on every full object walk; never fetch lazily.
     for (const key of ['remote.origin.promisor', 'remote.origin.partialclonefilter', 'extensions.partialclone']) {
       await optional(['config', '--unset-all', key]);
     }
-    // Charts moved before 0.101.0 kept the baseline in refs/remotes/origin/<branch>.
-    const accepted = meta.repo.accepted_tip ?? await optional(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]);
     const head = await optional(['rev-parse', '--verify', '--quiet', 'HEAD']);
     await git('fetch', ['fetch', '--quiet', ...(head === null ? ['--depth=1'] : []), '--no-tags', url, branch]);
     const tip = await git('fetch', ['rev-parse', 'FETCH_HEAD']);

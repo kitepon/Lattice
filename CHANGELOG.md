@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `lattice chart repo sync` (K7, アリス, 計画 `lattice-chart-edit-slow-20261126` の e5)：自分の `checkout -B <branch> <tip>` が、index と work tree を書いたあと HEAD を動かす前に止まると、以後の sync が全部 `dirty` を返して動かなくなっていた（BellTeam のコード工程表が 11/23 から止まった原因）。HEAD が `accepted_tip` で、記録済みの `FETCH_HEAD` がその子孫で、index と work tree が `FETCH_HEAD` の木と同じ時だけ、それは編集ではなく止まった切り替えなので、最後まで済ませて通常どおり続ける。それ以外の tracked の変更は今までどおり `dirty` で、何も動かさない。ホストへの変更：無し。
+
 ## 0.114.2 — 2026-11-26
 
 計画をまたぐつながりを、元の計画全体ではなく元の作業に結び付けた版（ルドミラ #267、ADR 0206、計画 `lattice-seat-cost-20261126` の s7）。ホストへの変更：読む席と BellTeam 本体を一緒にこの版へ上げる。古い CLI は新しいつながりを `binding_stale` の所見として見せる（割り当ては止めない）。
