@@ -23,9 +23,11 @@ reader, path containment and atomic writer; no new module or public helper).
 | `lattice todo display history [--json] [--limit N] [--before <cursor>]` | CLI (host surface, 2026-11-19, closed history) | `{schema:'lattice.todo_display_history_result.v1', state, verified_at, source, inconsistency, dropped_members, closed: {trees, tasks}, tasks: [{tree_id, plan_key, task_id, title, lane, phase_id, parent_task_id, design_memo, done_condition, status, done_at, finished_at, activity: {changed_at, started}}], next_cursor}`: the same envelope and state rules as `display read`; only tasks of closed trees (`finished >= total`, `closedDisplayHistory`, `src/todo-store-view.mjs`, pure, over the full view and `projectTodoTrees`). Order: `finished_at` newest first (none last), then `plan_key`, `task_id` ascending; `finished_at` = `done_at` of a done task, else the task's latest journal event. `--limit` default 50, clamped to 500; `--before` takes a previous `next_cursor` (opaque `h1.<base64url>`) and returns the tasks after it; `next_cursor` is null on the last page; a cursor that does not parse (or a limit that is not a positive integer) is `INVALID_ARGUMENTS`. A page never holds more than the limit. |
 | `lattice todo display source [--json]` | CLI (host surface) | the `source` object as printed by `readTodoStoreDisplaySource`; its only refusal is the probe's typed `STORE_INCONSISTENT` (exit 1) for an unenumerable manifest of an existing Store; no Store yet exits 0. A host polls this and runs `display read` only when it changes. |
 | `readStoreStableWith(options, reader)` | private | the existing bounded publication-window retry loop, extracted unchanged; `readTodoStoreStable` uses it with `readTodoStore`, the display with the non-recovering `readTodoStoreView` |
-| `displayStoreView(store)` | private | serializable view: `schema:'lattice.todo_store_read.v1'`, `project_id`, `manifest`, `members:[{descriptor, plan, revision, journal:{events}, plan_scoped:{ref, events}, snapshot, tasks, phases, coordination, snapshot_stale}]` — the existing read model minus `journal.segments`, `journal.activeBytes`, `plan_scoped.activeBytes`, so existing renderers accept it unchanged |
+| `displayStoreView(store)` | private | serializable view (no deep copy since s5; the strict read is private to the call and holds JSON data only): `schema:'lattice.todo_store_read.v1'`, `project_id`, `manifest`, `members:[{descriptor, plan, revision, journal:{events}, plan_scoped:{ref, events}, snapshot, tasks, phases, coordination, snapshot_stale}]` — the existing read model minus `journal.segments`, `journal.activeBytes`, `plan_scoped.activeBytes`, so existing renderers accept it unchanged |
 | `observeDisplaySource(repoRoot)` | private | raw manifest + per-member raw metadata; shared by the probe and the unverified result |
-| `readDisplayCheckpoint` / `publishDisplayCheckpoint` | private | checkpoint validation and atomic publication |
+| `readDisplayCheckpoint` / `publishDisplayCheckpoint` | private | checkpoint validation and atomic publication; the store is serialized once (the digest covers the same text without `checkpoint_digest`, the file adds it last) |
+| `displayCheckpointHeadMatches` / `publishDisplayCheckpointHead` | private | s5: the head file beside the checkpoint, see [Re-read cost](#re-read-cost-verified-read-receipts-and-the-checkpoint-head-s5-2026-11-26) |
+| `AcceptedKeys` (`src/todo-verified-receipts.mjs`) | private to Store | s5: the bounded, derived, cross-process memory of validated bytes behind `acceptedSegments` / `acceptedArtifacts`, see the same section |
 
 ### No Store yet (display-uninit, 2026-11-12)
 
@@ -180,6 +182,28 @@ a checkpoint from individually cached current member snapshots. Stamp verified_a
 at observation start, not completion: daemon/local readers can race, and an older
 source may publish last. The next strict success observes the source difference
 and republishes it; no stronger source-version ordering is claimed.
+
+## Re-read cost: verified-read receipts and the checkpoint head (s5, 2026-11-26)
+
+Harm (bellteam copy, 2026-11-26): one verified read cost 1.3 s (`todo status`) to 1.8-2.1 s (`display read --open`) at ~170% CPU in
+a fresh process every time, and BellTeam reads again after every change of a busy chart. Profile: per-event validation of sealed
+bytes (29.4k plan-scoped events + a 2.1 MB genesis, each re-hashed) 0.53 s; reading and re-digesting the 37.8 MB checkpoint only to
+compare its source 0.25 s; the display deep copy 0.19 s; plan/revision/snapshot parse 0.23 s; `replay` 0.12 s (a scan of the genesis
+migration per task, quadratic). Contract: a read after a change costs in proportion to the bytes that changed; nothing is shown
+verified that this code did not validate over these exact bytes.
+
+| Step / owner | Input and decision | Output / failure and automatic exit |
+|---|---|---|
+| Store, receipts attach (start of `readTodoStoreView`, not for `todo verify`) | Read `.lattice/generated/store-verified/receipts.json` once per process: schema, fingerprint of the validator code (package version + `todo-contracts.mjs`, `todo-revision.mjs`, `todo-store.mjs`), `keys_digest`, at most 1024 keys of 512 bytes, file at most 1 MiB, regular non-symlink | Valid: its keys join the in-process sets. Missing, unreadable, oversized, wrong fingerprint or digest, wrong shape: **a cache miss**; the read validates in full as before. Never a failure, never a stop. |
+| Store, parse (`parseJournalSegment`, `parseCanonicalJsonLine`) | The key is the sha256 of the bytes just read (plus mode and, for artifacts, the ref) | Hit: JSON is parsed and the canonical/schema/self-digest checks are skipped. Miss: validated, then the key is added. Changed bytes have another key, so they are always validated. Failures are never remembered. |
+| Store, receipts persist (end of a successful `readTodoStoreView`) | Only when a key was added | Write the most recent 1024 keys with temp + rename, no fsync, only under a real non-symlink `.lattice/generated`; any failure is ignored (the next read validates and tries again). Derived: no writer, verifier or recovery reads it for anything but this skip. |
+| Store, checkpoint head (`readTodoStoreForDisplay`) | `last-verified.head.json` = `{schema, source_digest, size, mtime_ms}`: the source the checkpoint holds and its file identity | Head matches the fresh source and the checkpoint file still has that size and mtime: nothing is read or written. No head, another source, or another writer touched the file: compare the checkpoint as before, republish only if its source differs, then write the head. |
+
+`todo verify` (`verifyHistory`) neither loads nor writes receipts. A receipt file proves no more than the in-process memory did
+(w4): validation is a pure function of the bytes and the code; the new part is that the memory survives the process. Hashing every
+byte stays in the read, so a flipped bit is still found. After the change the remaining per-read cost is reading, hashing and
+parsing the files, replay, and the projections; the checkpoint rewrite (37.8 MB on bellteam: one serialization, digest, write with
+fsync) happens only when the source changed.
 
 ## Current raw-member read
 

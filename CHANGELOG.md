@@ -15,6 +15,8 @@
 - 測定（合成した 2,901 工程の計画、`todo add` で改訂を一回足した後、`--open`）：1,955,562 バイト → 11,144 バイト。
 - 試験：`next_ready` が `todo status` の `next_ready` と等しいこと（単独の計画、別の工程表の先行工程を待つ計画）。検証できていない読みでは `null` で、生の member が `snapshot` を残すこと。
 
+- Store (s5, Ludmila): a verified read (`todo status`, `todo display read`) no longer re-validates every sealed byte in every process. A derived file `.lattice/generated/store-verified/receipts.json` remembers which exact bytes (sha256 + mode + validator-code fingerprint) were already validated; a missing or mismatching file is a cache miss and the read validates in full. `display read` no longer reads and re-digests the whole checkpoint to compare its source (a small `last-verified.head.json` carries it), no longer deep-copies the view, and serializes the checkpoint once; `replay` no longer scans a genesis migration per task. No format or CLI change; `todo verify` is unchanged. bellteam copy: `todo status` 1.3 s -> 0.6 s, `display read --open` 1.8 s -> 0.55 s (1.2 s for the first read after a change, 2.7 s before).
+
 ## 0.113.2 — 2026-11-20
 
 大きな計画を一回読むだけで数百 MB と数秒かかっていたのを減らした版（ルドミラ #259）。ホストへの変更：無し。形式は変えない。
