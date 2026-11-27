@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.114.4 — 2026-11-27
+
+`todo dashboard ensure` が、古い記録のプロセス番号が別のユーザーに使われている時に落ちていた不具合を直した版（#271、BugHub `92b367ad`）。ホストへの変更：無し。
 
 - Dashboard (スノーホワイト, BugHub `factory::mac-kite::lattice::92b367ad`, 計画 `lattice-bughub-dashboard-eperm-20261127`)：`todo dashboard ensure` が、古い画面の記録に残ったプロセス番号を確かめる時、その番号が別のユーザー（再起動後の root のプロセスなど）に使われていると `kill EPERM` で型の外へ落ちていた。別のユーザーのプロセスは自分の画面のものではないので、無いものとして扱う（`observeDashboardProcess`・登録簿の生存確認・記録の書きかけ掃除）。ホストへの変更：無し。
 
