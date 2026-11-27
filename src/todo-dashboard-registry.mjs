@@ -352,7 +352,8 @@ async function daemonHealthy(descriptor) {
 
 function processIsAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) {
-    if (error?.code === 'ESRCH') return false;
+    // EPERM: the pid belongs to another user, so it is not our daemon.
+    if (error?.code === 'ESRCH' || error?.code === 'EPERM') return false;
     throw error;
   }
 }

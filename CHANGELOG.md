@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Dashboard (スノーホワイト, BugHub `factory::mac-kite::lattice::92b367ad`, 計画 `lattice-bughub-dashboard-eperm-20261127`)：`todo dashboard ensure` が、古い画面の記録に残ったプロセス番号を確かめる時、その番号が別のユーザー（再起動後の root のプロセスなど）に使われていると `kill EPERM` で型の外へ落ちていた。別のユーザーのプロセスは自分の画面のものではないので、無いものとして扱う（`observeDashboardProcess`・登録簿の生存確認・記録の書きかけ掃除）。ホストへの変更：無し。
+
 ## 0.114.3 — 2026-11-26
 
 BellTeam のコード工程表が止まったまま戻らなかった不具合を直した版（アリス #269、計画 `lattice-chart-edit-slow-20261126` の e5）。ホストへの変更：無し。止まっていた工程表は、この版の最初の sync で最新へ進む。

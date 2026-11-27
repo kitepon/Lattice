@@ -53,7 +53,8 @@ export async function prepareLifecycleDirectory(root) {
     if (!match) continue;
     let alive = true;
     try { process.kill(Number(match[1]), 0); } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
+      // EPERM: the writer pid now belongs to another user, so our writer is gone.
+      if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error;
       alive = false;
     }
     if (!alive) {
