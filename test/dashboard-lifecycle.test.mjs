@@ -438,3 +438,22 @@ test('親journalは6つのstore診断を有限phaseとして保持する', async
   assert.deepEqual((await readLifecycleRuns(root))[0], run);
   assert.doesNotMatch(JSON.stringify(run), /secret-/u);
 });
+
+test('a recorded pid now owned by another user (kill-zero EPERM) is not ours: reconcile marks the run lost, never throws (BugHub 92b367ad)', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'lattice-dashboard-foreign-pid-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const run = await createLifecycleRun(root, 'fixture');
+  run.supervisor = { pid: 424242, birth: 'Thu Nov 26 20:46:00 2026' };
+  run.child = { pid: 424243, birth: 'Thu Nov 26 20:46:01 2026' };
+  await writeLifecycleRun(root, run);
+  const kill = process.kill;
+  t.after(() => { process.kill = kill; });
+  process.kill = (pid, signal) => {
+    if (signal === 0 && (pid === 424242 || pid === 424243)) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+    return kill.call(process, pid, signal);
+  };
+  assert.equal(await observeDashboardProcess(424242), null);
+  const [observed] = await reconcileLifecycleRuns(root, observeDashboardProcess);
+  assert.equal(observed.state, 'supervisor_lost');
+  assert.equal(observed.child_at_reconciliation, 'absent');
+});

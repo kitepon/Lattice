@@ -5,11 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 const execute = promisify(execFile);
 
-/** A missing process and an unavailable birth observation are different. */
+/**
+ * A missing process and an unavailable birth observation are different. EPERM on the kill-zero probe means the pid
+ * now belongs to another user; our dashboard processes run as us, so that pid is not ours = missing (BugHub 92b367ad).
+ */
 export async function observeDashboardProcess(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) throw new TypeError('invalid dashboard pid');
   try { process.kill(pid, 0); } catch (error) {
-    if (error.code === 'ESRCH') return null;
+    if (error.code === 'ESRCH' || error.code === 'EPERM') return null;
     throw error;
   }
   try {
@@ -30,7 +33,7 @@ export async function observeDashboardProcess(pid) {
   } catch (error) {
     // Recheck death after a racing exit. An observation failure never licenses a kill.
     try { process.kill(pid, 0); } catch (probeError) {
-      if (probeError.code === 'ESRCH') return null;
+      if (probeError.code === 'ESRCH' || probeError.code === 'EPERM') return null;
       throw probeError;
     }
     return { pid, birth: null, observation: 'unavailable' };
