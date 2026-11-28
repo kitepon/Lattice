@@ -174,10 +174,15 @@ No product reads another product's store: BellTeam's schedule store is never rea
 ## JSON contract for BellTeam (n1)
 
 Connection entry (existing list `connections` of `todo show` `prerequisites`, status, session-context, display read), additive fields in bold:
-`{kind: 'task'|'schedule'|'priority', ref, state: 'open'|'settled'|'gone', reason, since, event_digest, settled_at?, evidence?, **state_reason?**, **changed?**}`.
+`{kind: 'task'|'schedule'|'priority', ref, state: 'open'|'settled'|'gone', reason, since, event_digest, settled_at?, evidence?, **state_reason?**, **changed?**, **target_content_digest?**}`.
 A reader that treats only `state === 'open'` as waiting needs no change. `state_reason`: for `open` `chart_not_read`, `charts_root_unset` or `chart_unreadable`; for `settled` `target_done` or
 `schedule_resolved`; for `gone` `target_retired`, `target_missing` or `schedule_removed`. `changed` (task kind): `{kind: 'done'|'retire'|'reopen'|…, event_digest, recorded_at}` = the
 target's latest journal event, `null` when unread or missing: a stable key a host can keep its own "already told" record on.
+`target_content_digest` (task kind; Tronie with the Owner 11/28, named by Snow White for Flora's c3-content-digest-name): sha256 hex of the canonical JSON
+`{title, done_condition, lane, split: {children, function_split}}` of the target task as its chart reads now, where `children` = the sorted ids of the target plan's tasks whose
+`parent_task_id` is the target (`todo split` extracts them and rewrites the target's title/lane) and `function_split` = the target's mark or `null`; `null` when the target is unread or missing.
+It covers those four fields only: design memo, notes, evidence and status do not move it (status is `state`/`changed`). A host keeps its own `{state, target_content_digest}` per 接続 and
+announces when either differs; Lattice sends nothing. The waiting chart's K2 token moves when it changes (n2).
 **Wire change:** a retired target used to read `settled` (成立); it reads `gone` with `target_retired`. Readiness is unchanged (it never blocked).
 
 Waiter entry: `{project_id, plan_key, task_id, title, lane, status, kind: 'task', state, state_reason?, reason, since, event_digest}` where `project_id/plan_key/task_id` name the
