@@ -188,11 +188,11 @@ The key is always present on a task entry. The same content gives the same diges
 
 Waiter entry: `{project_id, plan_key, task_id, kind: 'task', state, state_reason?, reason, since, event_digest}` where `project_id/plan_key/task_id` name the
 **waiting** task (title, lane and status are read from that chart, which the three ids name; the target's chart does not replay another chart for them), and `state` is the judgment of the 接続 (`open` = it still waits; `settled`, `gone` = history, kept so the writer of a done sees whom it released).
-Sorted by `project_id, plan_key, task_id`. Schedule 接続 are not waiters of a task (their target is BellTeam's). With no `LATTICE_CHARTS_ROOT` the chart is single: `waiters: []`, `waiters_unread: []`.
+Sorted by `project_id, plan_key, task_id`. Schedule 接続 are not waiters of a task (their target is BellTeam's). With no `LATTICE_CHARTS_ROOT` the chart is single: `todo waiters` answers `tasks: []`, and `todo show`, `todo display read` and the mutation results leave the fields out (their shape is unchanged).
 
 `lattice.todo_waiters_result.v1`: `{schema, project_id, tasks: [{plan_key, task_id, waiters: [waiter]}], unread: [{project_id, reason}], result_digest}`. `--open` keeps only `state: 'open'`
 waiters (and drops tasks left with none). `todo display read --open` ships the same `waiters: [{plan_key, task_id, waiters}]` and `waiters_unread` (open entries only).
-`todo show`: `waiters` (all states) and `waiters_unread`. Mutation result of `done|retire|reopen`: `waiters` (all states) or `null` with `waiters_unavailable`; added only when `LATTICE_CHARTS_ROOT` is set (a single chart keeps its result shape).
+`todo show`: `waiters` (all states) and `waiters_unread`. Mutation result of `done|retire|reopen`: `waiters` (all states) or `null` with `waiters_unavailable`; like the other results, the fields are present only when `LATTICE_CHARTS_ROOT` is set.
 
 Telling the lane (Flora): the waiting task's lane is told by BellTeam from what Lattice reports. A task that became startable already opens a notice (`todo notice list`, exactly once per
 `todo notice ack`, [startable notices](dfd-done-notice.md)); the notice trigger for a target done in another chart is the target's `done` event. `reopen`, `retire` and `missing` do not open a notice

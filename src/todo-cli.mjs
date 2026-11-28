@@ -1292,7 +1292,7 @@ async function displayRead(repoRoot, env, { compact = false, open = false } = {}
     trees: display.store ? projectTodoTrees(display.store) : [],
     ...(display.store && splitLabels(display.store).length > 0 ? { labels: splitLabels(display.store) } : {}),
     connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [],
-    ...(display.store ? await waitersFields(display.store, env, { open }) : { waiters: [], waiters_unread: [] }) };
+    ...(display.store ? await waitersFields(display.store, env, { open }) : {}) };
   // trees, labels and connections are read from the full view above; only the shipped store is compacted
   const light = compact || open ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
   if (!open) return light;
@@ -2898,7 +2898,7 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
 /** n2: `waiters` (all states) and `waiters_unread` of one task; a failed scan is `waiters: null` + the reason. */
 async function taskWaiters(store, env, planKey, taskId) {
   const fields = await waitersFields(store, env, { planKey, taskId });
-  return fields.waiters === null ? fields : { ...fields, waiters: fields.waiters[0]?.waiters ?? [] };
+  return fields.waiters == null ? fields : { ...fields, waiters: fields.waiters[0]?.waiters ?? [] };
 }
 
 /** xchart: what a task waits on, by the readiness predicate (`ready` is the start path's own answer). */
@@ -5068,6 +5068,8 @@ async function blockerList({ repoRoot }) {
 
 /** n2: the waiters of every task of `store` as result fields; a failed scan is named, never "no waiters". */
 async function waitersFields(store, env, options = {}) {
+  // A single chart (no charts root) has no other chart to wait from: results keep their shape, `todo waiters` answers empty.
+  if (options.always !== true && !(typeof env?.[TODO_CHARTS_ROOT_ENV] === 'string' && env[TODO_CHARTS_ROOT_ENV] !== '')) return {};
   try {
     const { waiters, unread } = await listTodoConnectionWaiters(store, env);
     return { waiters: waitersByTask(waiters, options), waiters_unread: unread };
@@ -5080,7 +5082,7 @@ async function waitersFields(store, env, options = {}) {
 async function todoWaiters({ repoRoot, env, planKey = null, taskId = null, open = false }) {
   const store = await readTodoStoreOrNull(repoRoot);
   const fields = store === null ? { waiters: [], waiters_unread: [] }
-    : await waitersFields(store, env, { open, planKey, taskId });
+    : await waitersFields(store, env, { open, planKey, taskId, always: true });
   const result = { schema: 'lattice.todo_waiters_result.v1', project_id: store?.project_id ?? null,
     tasks: fields.waiters ?? [], unread: fields.waiters_unread ?? [],
     ...(fields.waiters === null ? { waiters_unavailable: fields.waiters_unavailable } : {}), result_digest: '' };
@@ -5092,11 +5094,10 @@ async function todoWaiters({ repoRoot, env, planKey = null, taskId = null, open 
 async function withWaiters(repoRoot, result, env) {
   if (result === null || typeof result !== 'object' || typeof result.result_digest !== 'string'
     || typeof result.plan_key !== 'string' || typeof result.task_id !== 'string') return result;
-  // A single chart (no charts root) has no other chart to wait from: its results keep their shape.
-  if (typeof env?.[TODO_CHARTS_ROOT_ENV] !== 'string' || env[TODO_CHARTS_ROOT_ENV] === '') return result;
   const store = await readTodoStoreOrNull(repoRoot);
   const fields = store === null ? { waiters: null, waiters_unavailable: 'store_missing' }
     : await waitersFields(store, env, { planKey: result.plan_key, taskId: result.task_id });
+  if (!('waiters' in fields)) return result;
   const carried = { ...result, ...fields, waiters: fields.waiters === null ? null : (fields.waiters[0]?.waiters ?? []),
     result_digest: '' };
   carried.result_digest = todoSelfDigest(carried, 'result_digest');
