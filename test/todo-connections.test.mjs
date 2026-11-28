@@ -77,7 +77,8 @@ test('resolving or removing the 接続 makes the task startable; each add has on
   const [settled] = await connections('A');
   assert.deepEqual({ state: settled.state, evidence: settled.evidence }, { state: 'settled', evidence: 'exit 0: CI green' });
   assert.ok(settled.settled_at);
-  assert.deepEqual(await connections('B'), []);
+  // n2: a removed schedule is listed as gone, so a reader tells it from "never connected".
+  assert.deepEqual((await connections('B')).map(({ state, state_reason: reason }) => [state, reason]), [['gone', 'schedule_removed']]);
   ok(['todo', 'start', '--plan', 'p1', '--task', 'A']);
   // Retries replay to the same state: nothing is appended, the first evidence wins.
   const head = async () => (await readTodoStore({ repoRoot: root })).members[0].plan_scoped.events.length;
@@ -88,7 +89,6 @@ test('resolving or removing the 接続 makes the task startable; each add has on
   assert.equal((await add('A', 'sch-1')).unchanged, undefined, 'a settled add may be added again');
   assert.equal(await head(), before + 1);
   assert.equal((await connections('A')).find(({ state }) => state === 'settled').evidence, 'exit 0: CI green');
-  assert.deepEqual((await connections('B', { includeRemoved: true })).map(({ state }) => state), ['removed']);
   for (const [kind, payload, reason] of [
     ['connection_resolved', { target_event_digest: b.event_digest, evidence: 'x' }, 'connection_already_removed'],
     ['connection_resolved', { target_event_digest: 'f'.repeat(64), evidence: 'x' }, 'connection_not_found'],

@@ -171,11 +171,12 @@ import { compileSeamProposalArtifact, declaredConcernSymbols } from './seam-prop
 import { collectSensorEvidence } from './sensor-adapter.mjs';
 import { newTodoNotices, projectTodoNotices, waitInEffect, withTodoPriorityWaits } from './todo-notices.mjs';
 import {
-  externalCycle, readTodoExternalChart, readTodoExternalTasks, withTodoExternalTasks,
+  externalCycle, readTodoExternalChart, readTodoExternalTasks, TODO_CHARTS_ROOT_ENV, withTodoExternalTasks,
 } from './todo-external.mjs';
 import { projectTodoTrees } from './todo-trees.mjs';
 import { closedDisplayHistory, compactDisplayStore, decodeHistoryCursor, openDisplayResult } from './todo-store-view.mjs';
 import { projectTodoBlockers, todoBlockerKey } from './todo-blockers.mjs';
+import { listTodoConnectionWaiters, waitersByTask } from './todo-waiters.mjs';
 import {
   ackTodoNotices, cancelTodoNoticeWait, readAllTodoNoticeAcks, readAllTodoNoticeWaits, readTodoNoticeAcks, writeTodoNoticeWait,
 } from './todo-notice-store.mjs';
@@ -312,7 +313,7 @@ const TODO_COMMAND_NAMES = Object.freeze([
   'status', 'show', 'note', 'bindings', 'display', 'independence', 'structure', 'seam-profile', 'seam-proposal',
   'verify', 'repair-eol', 'snapshot', 'gantt', 'dashboard', 'phase', 'migrate', 'start', 'block',
   'unblock', 'retire', 'done', 'reopen', 'split', 'revise', 'revise-phase', 'revise-set',
-  'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers', 'compact', 'function-split',
+  'retract', 'dependency', 'predecessor', 'connect', 'add', 'notice', 'wait', 'blockers', 'waiters', 'compact', 'function-split',
 ]);
 
 function typedArgumentFailure(stderr, code, message, detail, context = {}) {
@@ -383,6 +384,7 @@ const TODO_FLAG_SPECS = Object.freeze({
   'notice list': Object.freeze({ known: ['lane', 'include-acked', 'json'], required: [], booleans: ['include-acked', 'json'] }),
   'notice ack': Object.freeze({ known: ['lane', 'notice', 'json'], required: ['lane', 'notice'], booleans: ['json'] }),
   blockers: Object.freeze({ known: ['json'], required: [], booleans: ['json'] }),
+  waiters: Object.freeze({ known: ['plan', 'task', 'open', 'json'], required: [], booleans: ['open', 'json'] }),
   compact: Object.freeze({ known: ['plan', 'limit', 'json'], required: [], booleans: ['json'] }),
   'connect priority': Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
   wait: Object.freeze({ known: ['plan', 'task', 'reason', 'cancel', 'json'], required: ['plan', 'task'], booleans: ['cancel', 'json'] }),
@@ -1289,7 +1291,8 @@ async function displayRead(repoRoot, env, { compact = false, open = false } = {}
   const result = { schema: 'lattice.todo_display_read_result.v1', ...display, external_tasks: externalTasks,
     trees: display.store ? projectTodoTrees(display.store) : [],
     ...(display.store && splitLabels(display.store).length > 0 ? { labels: splitLabels(display.store) } : {}),
-    connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [] };
+    connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [],
+    ...(display.store ? await waitersFields(display.store, env, { open }) : { waiters: [], waiters_unread: [] }) };
   // trees, labels and connections are read from the full view above; only the shipped store is compacted
   const light = compact || open ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
   if (!open) return light;
@@ -2217,7 +2220,7 @@ async function connectCondition({ repoRoot, env, operation, planKey, taskId, to,
     }
   }
   // Store is idempotent (appendTodoEvent answers `unchanged`), so no pre-check; the newest entry for this ref names the target.
-  const shown = listTodoConnections(store, planKey, taskId, { includeRemoved: true })
+  const shown = listTodoConnections(store, planKey, taskId)
     .filter((entry) => entry.kind === 'schedule' && entry.ref === target.id)
     .sort((left, right) => (left.since < right.since ? 1 : left.since > right.since ? -1 : 0))[0] ?? null;
   if (operation !== 'add' && shown === null) throw notFound();
@@ -2880,6 +2883,7 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
     design_memo: designMemoProjection(task),
     state,
     prerequisites: taskPrerequisites(store, member, task.task_id),
+    ...await taskWaiters(store, env, planKey, task.task_id),
     note_context: context,
     ...(relations === null ? {} : { relations }),
     ...(labels.length === 0 ? {} : { labels }),
@@ -2889,6 +2893,12 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
   };
   result.result_digest = todoSelfDigest(result, 'result_digest');
   return result;
+}
+
+/** n2: `waiters` (all states) and `waiters_unread` of one task; a failed scan is `waiters: null` + the reason. */
+async function taskWaiters(store, env, planKey, taskId) {
+  const fields = await waitersFields(store, env, { planKey, taskId });
+  return fields.waiters === null ? fields : { ...fields, waiters: fields.waiters[0]?.waiters ?? [] };
 }
 
 /** xchart: what a task waits on, by the readiness predicate (`ready` is the start path's own answer). */
@@ -5056,6 +5066,43 @@ async function blockerList({ repoRoot }) {
   return result;
 }
 
+/** n2: the waiters of every task of `store` as result fields; a failed scan is named, never "no waiters". */
+async function waitersFields(store, env, options = {}) {
+  try {
+    const { waiters, unread } = await listTodoConnectionWaiters(store, env);
+    return { waiters: waitersByTask(waiters, options), waiters_unread: unread };
+  } catch (error) {
+    return { waiters: null, waiters_unavailable: error?.detail?.reason ?? error?.message ?? 'waiters_unreadable' };
+  }
+}
+
+/** `todo waiters [--plan <key>] [--task <id>] [--open]`: who waits on tasks of this chart through 接続, from other charts. */
+async function todoWaiters({ repoRoot, env, planKey = null, taskId = null, open = false }) {
+  const store = await readTodoStoreOrNull(repoRoot);
+  const fields = store === null ? { waiters: [], waiters_unread: [] }
+    : await waitersFields(store, env, { open, planKey, taskId });
+  const result = { schema: 'lattice.todo_waiters_result.v1', project_id: store?.project_id ?? null,
+    tasks: fields.waiters ?? [], unread: fields.waiters_unread ?? [],
+    ...(fields.waiters === null ? { waiters_unavailable: fields.waiters_unavailable } : {}), result_digest: '' };
+  result.result_digest = todoSelfDigest(result, 'result_digest');
+  return result;
+}
+
+/** n2: a done, retire or reopen names who waits on that task (all states), so its writer sees whom the change re-judged. */
+async function withWaiters(repoRoot, result, env) {
+  if (result === null || typeof result !== 'object' || typeof result.result_digest !== 'string'
+    || typeof result.plan_key !== 'string' || typeof result.task_id !== 'string') return result;
+  // A single chart (no charts root) has no other chart to wait from: its results keep their shape.
+  if (typeof env?.[TODO_CHARTS_ROOT_ENV] !== 'string' || env[TODO_CHARTS_ROOT_ENV] === '') return result;
+  const store = await readTodoStoreOrNull(repoRoot);
+  const fields = store === null ? { waiters: null, waiters_unavailable: 'store_missing' }
+    : await waitersFields(store, env, { planKey: result.plan_key, taskId: result.task_id });
+  const carried = { ...result, ...fields, waiters: fields.waiters === null ? null : (fields.waiters[0]?.waiters ?? []),
+    result_digest: '' };
+  carried.result_digest = todoSelfDigest(carried, 'result_digest');
+  return carried;
+}
+
 /** Open notices with their waiters (wait-design); an unreadable wait file is named, its waits read as none. */
 async function openNoticeView(repoRoot, env) {
   const store = await readTodoStoreForReadiness({ repoRoot, env });
@@ -5540,6 +5587,11 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     }
   } else if (argv[0] === 'blockers' && matchFlagCommand(argv, ['blockers'], TODO_FLAG_SPECS.blockers) !== null) {
     action = (repoRoot) => blockerList({ repoRoot });
+  } else if (argv[0] === 'waiters' && matchFlagCommand(argv, ['waiters'], TODO_FLAG_SPECS.waiters) !== null) {
+    const flags = matchFlagCommand(argv, ['waiters'], TODO_FLAG_SPECS.waiters);
+    if ((flags.plan === undefined || isTodoIdentifier(flags.plan)) && (flags.task === undefined || isTodoIdentifier(flags.task))) {
+      action = (repoRoot) => todoWaiters({ repoRoot, env, planKey: flags.plan ?? null, taskId: flags.task ?? null, open: flags.open === true });
+    }
   } else if ((argv[0] === 'connect' && argv[1] === 'priority' || argv[0] === 'wait')
     && matchFlagCommand(argv, argv[0] === 'wait' ? ['wait'] : ['connect', 'priority'], TODO_FLAG_SPECS[argv[0] === 'wait' ? 'wait' : 'connect priority']) !== null) {
     const flags = matchFlagCommand(argv, argv[0] === 'wait' ? ['wait'] : ['connect', 'priority'], TODO_FLAG_SPECS[argv[0] === 'wait' ? 'wait' : 'connect priority']);
@@ -5949,7 +6001,8 @@ export async function runTodoCli({ argv, cwd, stdout, stderr, env = process.env,
     const written = atomicCommit
       ? await commitTodoStoreMutation({ repoRoot, argv, action, env })
       : await action(repoRoot);
-    const result = releasesTasks(argv) ? await withNotices(repoRoot, written, before, env) : written;
+    const noticed = releasesTasks(argv) ? await withNotices(repoRoot, written, before, env) : written;
+    const result = ['done', 'retire', 'reopen'].includes(argv[0]) ? await withWaiters(repoRoot, noticed, env) : noticed;
     if (result !== null) stdout.write(`${plainVerify ? verifyVerdictLine(result) : JSON.stringify(result)}\n`);
     if (!atomicCommit && revisesPlan(argv)) await carryIndependenceAfterRevision({ cwd });
     if (!atomicCommit && ['done', 'retire'].includes(argv[0]) && typeof result?.plan_key === 'string') {

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+接続先が変わった時に待ちをその場で判定し直し、待っている工程を一覧で返す（アリス、計画 `lattice-connect-rejudge-20261128` の n2。図は `dfd-connect.md`、n1 #273）。ホストへの変更：接続の `state` に `gone` が加わり、retired の相手は `settled` ではなく `gone/target_retired` と読める（待ちの判定は変わらない）。
+
+- 接続 (n2, Alice): a 接続's state is `open|settled|gone` with `state_reason`. A target that is retired, or missing from a readable chart, or a schedule removed with `connect condition remove`, is `gone`; a missing target no longer blocks (as in-chart); an unreadable chart stays open and named. Task 接続 also carry `changed` (the target's latest event) and `target_content_digest` (sha256 of title, done condition, lane and split mark).
+- `todo waiters [--plan] [--task] [--open]`, and `waiters` / `waiters_unread` in `todo show`, `todo display read` and the `done|retire|reopen` result: who waits on a task through 接続 from other charts and projects (read through the Store's outgoing-connections reader, no replay of the other charts).
+- K1/K2 chart tokens also move when a cross-chart 接続 at the chart's border changes (target done/retired/reopened/revised/renamed/gone; a waiter appears or goes). A chart with no cross-chart 接続 keeps its token.
 ## 0.114.4 — 2026-11-27
 
 `todo dashboard ensure` が、古い記録のプロセス番号が別のユーザーに使われている時に落ちていた不具合を直した版（#271、BugHub `92b367ad`）。ホストへの変更：無し。

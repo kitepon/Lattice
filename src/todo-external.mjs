@@ -5,7 +5,7 @@
 import path from 'node:path';
 
 import { createTodoReadiness } from './todo-readiness.mjs';
-import { isFinishedTodoTaskState, projectTodoCrossPlanDependencies } from './todo-store-view.mjs';
+import { isFinishedTodoTaskState, projectTodoCrossPlanDependencies, todoTaskContentDigest } from './todo-store-view.mjs';
 import { readTodoStoreReadOnly, TodoStoreError } from './todo-store.mjs';
 
 export const TODO_CHARTS_ROOT_ENV = 'LATTICE_CHARTS_ROOT';
@@ -72,6 +72,7 @@ export async function readTodoExternalTasks(store, env) {
     const chart = charts.get(from.project_id);
     const member = chart.store?.members.find(({ plan }) => plan.plan_key === from.plan_key);
     const state = member?.tasks.find(({ task_id: id }) => id === from.task_id);
+    const planTask = member?.plan.tasks?.find(({ task_id: id }) => id === from.task_id);
     const reason = chart.store === undefined ? chart.reason : state === undefined ? 'endpoint_missing' : null;
     if (reason !== null) {
       findings.push({ owner_plan_key: dependency.to.plan_key, event_digest: dependency.event_digest,
@@ -80,6 +81,10 @@ export async function readTodoExternalTasks(store, env) {
     tasks.set(`${from.project_id}\0${from.plan_key}\0${from.task_id}`, {
       project_id: from.project_id, plan_key: from.plan_key, task_id: from.task_id,
       status: state?.status ?? null, finished: isFinishedTodoTaskState(state), reason,
+      // n2: a readable chart without the task is gone (never blocks, as in-chart A24); an unreadable chart stays unknown.
+      missing: reason === 'endpoint_missing',
+      // n2: what a reader sees of the target's content (title, done condition, lane, split); null when unread or missing.
+      content_digest: planTask === undefined ? null : todoTaskContentDigest(planTask, member.plan.tasks),
       trigger: state === undefined ? null : taskTrigger(member, from.task_id),
     });
   }
