@@ -52,10 +52,11 @@ const CONNECTION_TARGET = Object.freeze({ task: '工程', schedule: '予定' });
 function connectionLine(entry) {
   const label = CONNECTION_LABEL[entry.kind] ?? '接続';
   const settled = entry.state === 'settled';
+  const gone = entry.state === 'gone';
   const target = entry.kind === 'priority'
     ? `${entry.agent}（着手できるようになったら知らせを受ける）`
     : `${CONNECTION_TARGET[entry.kind] ?? ''} <code>${escapeHtmlText(entry.ref)}</code>`;
-  const state = entry.kind === 'priority' ? '' : settled ? ' — 成立' : entry.state_reason === 'chart_not_read' ? ' — 開いている（その工程表を読めません）' : ' — 開いている';
+  const state = entry.kind === 'priority' ? '' : settled ? ' — 成立' : gone ? ' — 消えた（完了していません）' : entry.state_reason === 'chart_not_read' ? ' — 開いている（その工程表を読めません）' : ' — 開いている';
   const note = [entry.reason, settled ? entry.evidence : null].filter((text) => typeof text === 'string' && text.length > 0).map(escapeHtmlText).join(' / ');
   return `<li class="connection connection-${escapeHtmlAttribute(entry.kind)}" data-state="${escapeHtmlAttribute(entry.state ?? 'open')}"><strong>${label}</strong> ${target}${state}${note === '' ? '' : ` — ${note}`}${entry.since ? ` <time>${escapeHtmlText(entry.since)}</time>` : ''}</li>`;
 }
@@ -68,7 +69,7 @@ export function renderConnectionArea(connections = []) {
 
 /** The chip row: one chip per kind, counting the open 他条件に接続 and the 優先接続. */
 export function renderConnectionChips(connections = []) {
-  const open = connections.filter((entry) => entry.kind !== 'priority' && entry.state !== 'settled').length;
+  const open = connections.filter((entry) => entry.kind !== 'priority' && (entry.state ?? 'open') === 'open').length;
   const priority = connections.filter((entry) => entry.kind === 'priority').length;
   return `${open === 0 ? '' : `<span class="connection-chip">他条件に接続 ${open}</span>`}${priority === 0 ? '' : '<span class="connection-chip">優先接続</span>'}`;
 }

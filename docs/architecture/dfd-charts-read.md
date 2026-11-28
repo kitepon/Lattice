@@ -74,7 +74,7 @@ silently:
   cross-plan dependencies (tombstones applied) and `parent_task_id`; a predecessor on another chart never joins; a task
   with no link is a tree of one; retired tasks stay members. `finished` = done or retired. `tree_id` = the smallest
   `plan_key/task_id` in the tree; `trees` sorted by tree_id, `tasks` by (plan_key, task_id).
-- `source`: opaque string; compare for equality only.
+- `source`: opaque string; compare for equality only. n2: a chart's `source` also moves when a cross-chart 接続 at its border changes (its target's plan changes, a waiter appears or goes; [design](dfd-connect.md#re-judge-on-a-target-change-and-waiters-n1-2026-11-28)), so a host that pulls tokens re-reads the waiting chart the moment its target is done, retired, reopened, renamed or gone. A chart with no cross-chart 接続 keeps the token it had.
 
 ## Implementation binding: CLI side (host-cli, Alice)
 
@@ -94,7 +94,7 @@ whole); `initializeAuthoredTodoStore({..., chartCreator})` stamps the creator ri
 ## Speed
 
 K1 and K2 run in one process for all charts (a95: in-process reads of 37 charts took 10-40 ms in production). They read
-only the manifest-level display source and `.lattice/chart.json`, never full Stores.
+only the manifest-level display source and `.lattice/chart.json`, never full Stores (n2: plus, for a chart with a plan-scoped chain, the Store's cheap `readTodoOutgoingConnections`: manifest and plan-scoped chain, no replay).
 
 ## Release
 

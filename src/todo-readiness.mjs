@@ -54,7 +54,7 @@ export function createTodoReadiness(store) {
   }
   // xchart: predecessors on other charts, as their chart reports them (`withTodoExternalTasks`); never phase-gated.
   for (const entry of store.external_tasks ?? []) {
-    nodes.set(taskKey(entry), { status: entry.status, task_id: entry.task_id, finished: entry.finished === true,
+    nodes.set(taskKey(entry), { status: entry.status, task_id: entry.task_id, finished: entry.finished === true || entry.missing === true,
       schema: null, plan_key: entry.plan_key, project_id: entry.project_id, phase_id: null, reason: entry.reason });
   }
   // An external edge whose state was not loaded waits (fail closed), named `chart_not_read`.
@@ -229,15 +229,11 @@ function blockingConnection({ kind, ref, reason, since, state_reason: stateReaso
   return { kind, ref, reason, since, ...(stateReason === undefined ? {} : { state_reason: stateReason }) };
 }
 /** The read-contract `connections` of one task (他条件に接続 open and settled, plus 優先接続 when `store.priority_waits` is loaded), for `todo show` and the CLI (call withTodoExternalTasks first). */
-export function listTodoConnections(store, planKey, taskId, { includeRemoved = false } = {}) {
+export function listTodoConnections(store, planKey, taskId) {
   const member = store.members.find(({ plan }) => plan.plan_key === planKey);
   if (member === undefined) return [];
-  const listed = createTodoReadiness(store).allConnections(`${member.plan.project_id}\0${planKey}\0${taskId}`);
-  if (!includeRemoved) return listed;
-  // A removed entry is history; a retry of remove needs it to answer `unchanged` rather than not-found.
-  const removed = projectTodoScheduleConnections(member.plan_scoped?.events).filter((entry) => entry.state === 'removed'
-    && entry.task_id === taskId).map(({ task_id: _task, actor: _actor, provenance: _provenance, ended: _ended, ...shown }) => shown);
-  return [...listed, ...removed];
+  // A removed schedule entry is listed as `gone`, so a retry of remove answers `unchanged` rather than not-found.
+  return createTodoReadiness(store).allConnections(`${member.plan.project_id}\0${planKey}\0${taskId}`);
 }
 function byRef(left, right) {
   return refId(left) < refId(right) ? -1 : refId(left) > refId(right) ? 1 : 0;

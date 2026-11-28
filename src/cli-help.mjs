@@ -95,6 +95,7 @@ Read commands:
   note list --plan <key> [--task <id>] --json  # note全履歴の診断面（通常read/startでは不要）
   notice list [--lane <lane>] [--include-acked] [--json]  # 着手できるようになった工程の知らせ（既定は未ackだけ。lane省略で全lane）
   blockers [--json]  # ブロック中の工程を全部返す（題・担当・理由の全文・ブロックした時刻と者・外すコマンド。読むだけ。外すのは誰でも todo unblock）
+  waiters [--plan <key>] [--task <id>] [--open] [--json]  # 他の工程表から接続でこの工程表の工程を待っている工程の一覧（読むだけ。--open は今も待っているものだけ。LATTICE_CHARTS_ROOT 配下の他の工程表を読む）
   bindings [--plan <key>] [--json]   # compile_binding付きTaskをTODO identityつきで投影する
   display read [--json] [--compact] [--open]  # host表示用の工程表読取（lattice.todo_display_read_result.v1）。不整合でも断らずstateで返す。--compact は journal を activity、plan_scoped を cross_plan_dependencies に絞った lattice.todo_display_compact_result.v1（大きさは task と生きた線に比例）。--open は --compact を含み、task ごとの一覧を開いた木の task だけに絞って closed {trees, tasks} を足す lattice.todo_display_open_result.v2（member の revision と、検証済み member の snapshot を持たない。next_ready は state が verified の時だけ todo status と同じ一覧、他は null）
   display history [--json] [--limit <n>] [--before <cursor>]  # 閉じた木の task を終了の新しい順に1ページ返す（lattice.todo_display_history_result.v1。limit 既定50・最大500、next_cursor を --before へ渡して次頁）
@@ -345,6 +346,7 @@ const SUBCOMMAND_USAGE = Object.freeze({
   'todo notice list': 'todo notice list [--lane <lane>] [--include-acked] [--json]  # lattice.todo_notice_list_result.v1',
   'todo notice ack': 'todo notice ack --lane <lane> --notice <id>[,<id>...] [--json]  # lattice.todo_notice_ack_result.v1 {acked, already, closed}',
   'todo compact': 'todo compact [--plan <key>] [--limit <n>] [--json]  # lattice.todo_compact_result.v1 {plans: [{plan_key, compacted, stopped, next_version}]}',
+  'todo waiters': 'todo waiters [--plan <key>] [--task <id>] [--open] [--json]  # lattice.todo_waiters_result.v1 {tasks: [{plan_key, task_id, waiters: [{project_id, plan_key, task_id, kind, state, state_reason, reason, since, event_digest}]}], unread: [{project_id, reason}]}; project/plan/task name the WAITING task',
   'todo blockers': 'todo blockers [--json]  # lattice.todo_blockers_result.v1 {blockers: [{plan_key, task_id, title, lane, reason, blocked_at, blocked_by, unblock_action}]}',
   'todo wait': 'todo wait --plan <key> --task <id> [--reason <text>] | --cancel [--json]  # 廃止予定の別名: todo connect priority',
   'todo bindings': 'todo bindings [--plan <key>] [--json]',
