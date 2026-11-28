@@ -2420,6 +2420,44 @@ export async function readTodoStoreDisplaySource({ repoRoot = process.cwd() } = 
   return observeDisplaySource(root, manifest);
 }
 
+/**
+ * n2-store-outgoing: the live cross-project edges a chart waits on, `{project_id, edges}`, without a Store replay.
+ * Edges live only in each member's plan-scoped chain (the consumer's); this reads the manifest and those chains
+ * (`verify: false`, as every read) and skips the lifecycle replay, snapshots, phases and graph validation. An edge is
+ * the same record as `projectTodoCrossPlanDependencies` (tombstones applied, same order) whose `from` is another
+ * project. A chart with no Store is `{project_id: null, edges: []}`; a corrupt chain throws the typed Store error, so a
+ * caller can tell "unread" from "no edges". Read-only, no on-disk change; the filtered events are memoized per process.
+ */
+export async function readTodoOutgoingConnections({ repoRoot = process.cwd() } = {}) {
+  try {
+    const { project_id: projectId, edges } = await readStoreStableWith({ repoRoot: path.resolve(repoRoot) }, readOutgoingConnections);
+    return { project_id: projectId, edges };
+  } catch (error) {
+    if (error?.code === 'STORE_UNINITIALIZED') return { project_id: null, edges: [] };
+    throw error;
+  }
+}
+
+const OUTGOING_EVENT_KINDS = new Set(['cross_plan_dependency', 'cross_plan_dependency_removed']);
+
+async function readOutgoingConnections({ repoRoot }) {
+  const manifest = await readManifest(repoRoot);
+  const members = [];
+  for (const { journal_ref: journalRef } of manifest.members) {
+    const files = [path.resolve(repoRoot, planScopedJournalRef(journalRef)),
+      path.resolve(repoRoot, path.dirname(journalRef), PLAN_SCOPED_SEALED_DIRECTORY)];
+    const events = await memoByFileIdentity(files, async () => (
+      await readPlanScopedJournal(repoRoot, journalRef, { verify: false })
+    ).events.filter(({ kind }) => OUTGOING_EVENT_KINDS.has(kind)), 'outgoing');
+    members.push({ plan_scoped: { events } });
+  }
+  const edges = projectTodoCrossPlanDependencies(members)
+    .filter(({ from }) => from.project_id !== manifest.project_id)
+    .map(({ from, to, reason, event_digest: eventDigest, connected_at: connectedAt }) => (
+      { from, to, reason, event_digest: eventDigest, connected_at: connectedAt }));
+  return { project_id: manifest.project_id, manifest, edges };
+}
+
 /** Display-only envelope: verified > unverified current raw > last_verified > unavailable. */
 export async function readTodoStoreForDisplay({ repoRoot = process.cwd(), now } = {}) {
   const root = path.resolve(repoRoot);
