@@ -2,7 +2,8 @@
 
 - Status: accepted（Decision 9 と、Consequences の「Windowsの端末からは送れない」は
   [ADR 0194](0194-runtime-error-store-on-windows.md) が置き換える。`observed_at`の作り方と`reporting verify`は
-  [ADR 0195](0195-report-observation-time-and-verify.md) が足す）
+  [ADR 0195](0195-report-observation-time-and-verify.md) が足す。Decision 2 と 4 の合鍵のfile、Decision 5 のHMAC署名、
+  Decision 6 の応答のHMAC署名は、[ADR 0207](0207-runtime-error-report-signed-by-signer-command.md) が置き換える）
 - Date: 2026-10-03
 - Supersedes: runtime error storeの「reporting（BugHub送信）はdotagents adapter所有」
   （`docs/01_integration-package.md` 5.5、`src/runtime-errors.mjs`冒頭）

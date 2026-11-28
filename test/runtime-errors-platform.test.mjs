@@ -15,7 +15,6 @@ import {
   runtimeErrorsSnapshot,
   runtimeErrorsStatePath,
 } from '../src/runtime-errors.mjs';
-import { productCredentialPath } from '../src/runtime-error-reporting.mjs';
 import { daclIsOwnerOnly, readWindowsDacl, windowsSelfSid } from '../src/windows-owner-only.mjs';
 
 // このOSで実際に起きることを確かめる試験。storeを本人だけに絞る方法がOSごとに違う（POSIXはmode、
@@ -85,14 +84,12 @@ test('置き場: Windowsは%LOCALAPPDATA%の下、ほかはXDGの場所。XDGの
   const local = path.join(env.LOCALAPPDATA, 'Lattice');
   assert.equal(runtimeErrorsStatePath(env, 'win32'), path.join(local, 'runtime-errors', 'runtime-errors.json'));
   assert.equal(runtimeErrorReportingConfigPath(env, 'win32'), path.join(local, 'runtime-error-reporting.json'));
-  assert.equal(productCredentialPath(env, 'win32'), path.join(env.LOCALAPPDATA, 'bughub', 'product-credentials', 'lattice.json'));
   // `LOCALAPPDATA`が無い時は、利用者のフォルダから組む。
   assert.equal(runtimeErrorsStatePath({ USERPROFILE: env.USERPROFILE }, 'win32'),
     path.join(env.USERPROFILE, 'AppData', 'Local', 'Lattice', 'runtime-errors', 'runtime-errors.json'));
 
   assert.equal(runtimeErrorsStatePath(env, 'linux'), path.join('/home/u', '.local', 'state', 'lattice', 'runtime-errors.json'));
   assert.equal(runtimeErrorReportingConfigPath(env, 'darwin'), path.join('/home/u', '.config', 'lattice', 'runtime-error-reporting.json'));
-  assert.equal(productCredentialPath(env, 'linux'), path.join('/home/u', '.config', 'bughub', 'product-credentials', 'lattice.json'));
 
   for (const platform of ['win32', 'linux']) {
     const xdg = { ...env, XDG_STATE_HOME: path.join('x', 'state'), XDG_CONFIG_HOME: path.join('x', 'config') };
@@ -186,7 +183,7 @@ windowsTest('Windows: CLIは既定の置き場（%LOCALAPPDATA%\\Lattice）へ�
     assert.equal(existsSync(lattice), false);
 
     const enabled = await runJson(['reporting', 'enable'], env);
-    assert.deepEqual([enabled.reporting, enabled.collection, enabled.store_status, enabled.credential],
+    assert.deepEqual([enabled.reporting, enabled.collection, enabled.store_status, enabled.signer],
       ['enabled', 'enabled', 'ready', 'missing']);
     assert.equal(existsSync(path.join(lattice, 'runtime-error-reporting.json')), true);
 

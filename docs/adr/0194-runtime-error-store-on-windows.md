@@ -4,6 +4,8 @@
 - Date: 2026-10-03
 - Supersedes: [ADR 0193](0193-product-owned-runtime-error-reporting.md) の Decision 9
   （Windowsは収集に対応しない）と、`src/runtime-errors.mjs`冒頭の「POSIX専用」
+- Amended by: [ADR 0207](0207-runtime-error-report-signed-by-signer-command.md)（Decision 5の合鍵の置き場と
+  Decision 6の合鍵のACL確認は無くなった。合鍵のfileは読まない）
 
 ## Context
 
