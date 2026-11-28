@@ -77,10 +77,10 @@ export function projectTodoCrossPlanDependencies(members) {
 }
 
 /**
- * A member's journal as the host reads it: `{first: {at, agent}|null, last_at, tasks: [{task_id, changed_at, started: {at, agent}|null}]}`
- * (`started` = the last `start`; only tasks with an event). One loop for the compact read and the closed history.
+ * A member's journal as the host reads it: `{first: {at, agent}|null, last_at, tasks: [{task_id, changed_at, started: {at, agent}|null, added: {at, agent}|null}]}`
+ * (`started` = the last `start`; a task with an event or an add record; `added` = who added it and when, from `added`). One loop for the compact read and the closed history.
  */
-function journalActivity(events) {
+function journalActivity(events, added = new Map()) {
   const tasks = new Map();
   let first = null;
   let last = null;
@@ -88,10 +88,15 @@ function journalActivity(events) {
     if (first === null || event.recorded_at < first.recorded_at) first = event;
     if (last === null || event.recorded_at > last) last = event.recorded_at;
     if (event.task_id === undefined || event.task_id === null) continue;
-    const entry = tasks.get(event.task_id) ?? { task_id: event.task_id, changed_at: event.recorded_at, started: null };
+    const entry = tasks.get(event.task_id) ?? { task_id: event.task_id, changed_at: event.recorded_at, started: null,
+      added: added.get(event.task_id) ?? null };
     if (event.recorded_at > entry.changed_at) entry.changed_at = event.recorded_at;
     if (event.kind === 'start') entry.started = { at: event.recorded_at, agent: event.actor?.agent ?? null };
     tasks.set(event.task_id, entry);
+  }
+  // n3: an add is a plan revision, not a journal event, so a task with an add record and no event still gets an entry.
+  for (const [taskId, record] of added) {
+    if (!tasks.has(taskId)) tasks.set(taskId, { task_id: taskId, changed_at: record.at, started: null, added: record });
   }
   return { first: first === null ? null : { at: first.recorded_at, agent: first.actor?.agent ?? null },
     last_at: last, tasks: [...tasks.values()] };
@@ -104,13 +109,13 @@ function journalActivity(events) {
  * `[{event_digest, from, to}]` of the member's plan-scoped chain (a removal in any member's chain drops it).
  * A member with neither (the unverified raw read) is returned as it is.
  */
-export function compactDisplayStore(store) {
+export function compactDisplayStore(store, { addedByPlan = new Map() } = {}) {
   const removed = new Set(store.members.flatMap((member) => (member.plan_scoped?.events ?? [])
     .filter((event) => event.kind === 'cross_plan_dependency_removed').map((event) => event.payload.target_event_digest)));
   return { ...store, members: store.members.map(({ journal, plan_scoped: planScoped, ...member }) => {
     if (journal === undefined && planScoped === undefined) return member;
     return { ...member,
-      activity: journalActivity(journal?.events ?? []),
+      activity: journalActivity(journal?.events ?? [], addedByPlan.get(member.plan?.plan_key) ?? new Map()),
       cross_plan_dependencies: (planScoped?.events ?? [])
         .filter((event) => event.kind === 'cross_plan_dependency' && !removed.has(event.event_digest))
         .map((event) => ({ event_digest: event.event_digest, from: event.payload.from, to: event.payload.to })) };

@@ -82,7 +82,7 @@ import {
   readTodoStructureSource,
   todoStructureSourceRef,
   resolveTodoStartRetractionBinding,
-  readTodoCarriedBlocks,
+  readTodoCarriedBlocks, readTodoTaskAdded,
   readTodoWitnessSet,
   todoWitnessRef,
   writeTodoWitnessSet,
@@ -1294,13 +1294,25 @@ async function displayRead(repoRoot, env, { compact = false, open = false } = {}
     connections: display.store ? await displayConnections(repoRoot, { ...display.store, external_tasks: externalTasks }) : [],
     ...(display.store ? await waitersFields(display.store, env, { open }) : {}) };
   // trees, labels and connections are read from the full view above; only the shipped store is compacted
-  const light = compact || open ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store) } : result;
+  // n3: who added each task (a plan revision, not a journal event), per verified member; a failed read is an empty map.
+  const addedByPlan = compact || open ? await tasksAdded(repoRoot, result.store) : new Map();
+  const light = compact || open ? { ...result, schema: 'lattice.todo_display_compact_result.v1', store: result.store && compactDisplayStore(result.store, { addedByPlan }) } : result;
   if (!open) return light;
   // next_ready (open v2): `todo status`'s list from this same verified read, so a host needs no second process or Store verification.
   const nextReady = display.state === 'verified'
     ? projectTodoStatus(externalTasks.length > 0 ? { ...display.store, external_tasks: externalTasks } : display.store,
       { planNotes: [], parallelCandidates: [], structureFinalizations: [] }).next_ready : null;
   return openDisplayResult({ ...light, next_ready: nextReady });
+}
+
+/** n3: `Map<plan_key, Map<task_id, {at, agent}>>` of the members that have a journal (a raw unverified member has none). */
+async function tasksAdded(repoRoot, store) {
+  const byPlan = new Map();
+  for (const member of store?.members ?? []) {
+    if (member.journal === undefined) continue;
+    byPlan.set(member.plan.plan_key, await readTodoTaskAdded({ repoRoot, member }).catch(() => new Map()));
+  }
+  return byPlan;
 }
 
 const HISTORY_DEFAULT_LIMIT = 50;
@@ -2879,7 +2891,8 @@ async function todoDetail({ repoRoot, env, planKey, taskId }) {
     plan_key: planKey,
     plan_version: member.plan.plan_version,
     // v7以前のtaskは欄を持たないのでnullで投影する（u12）。
-    task: { ...task, done_condition: task.done_condition ?? null },
+    task: { ...task, done_condition: task.done_condition ?? null,
+      added: (await readTodoTaskAdded({ repoRoot, member }).catch(() => new Map())).get(task.task_id) ?? null },
     design_memo: designMemoProjection(task),
     state,
     prerequisites: taskPrerequisites(store, member, task.task_id),

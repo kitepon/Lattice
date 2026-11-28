@@ -355,6 +355,17 @@ test('todo display read/source expose the envelope over the CLI; inconsistency i
 // Compact host read (`todo display read --compact`): the same facts the host reads, in a size that does not grow with payloads.
 const lifecycle = (kind, taskId, agent, at, payload = {}) => ({ kind, task_id: taskId, recorded_at: at, actor: { agent }, payload, event_digest: `d-${kind}-${taskId}-${at}` });
 
+test('compactDisplayStore (n3): a task with an add record and no event gets an entry; an event task carries its added; others null', () => {
+  const store = { schema: 's', project_id: 'project-1', manifest: { m: 1 }, members: [
+    { descriptor: { plan_key: 'alpha' }, plan: { plan_key: 'alpha' }, tasks: [],
+      journal: { events: [lifecycle('start', 'T1', 'a1', '2026-01-02T00:00:00.000Z')] }, plan_scoped: { ref: 'r', events: [] } }] };
+  const added = new Map([['alpha', new Map([['T1', { at: '2026-01-01T00:00:00.000Z', agent: 'x' }], ['T3', { at: '2026-01-03T00:00:00.000Z', agent: 'y' }]])]]);
+  const { tasks } = compactDisplayStore(store, { addedByPlan: added }).members[0].activity;
+  assert.deepEqual(tasks, [
+    { task_id: 'T1', changed_at: '2026-01-02T00:00:00.000Z', started: { at: '2026-01-02T00:00:00.000Z', agent: 'a1' }, added: { at: '2026-01-01T00:00:00.000Z', agent: 'x' } },
+    { task_id: 'T3', changed_at: '2026-01-03T00:00:00.000Z', started: null, added: { at: '2026-01-03T00:00:00.000Z', agent: 'y' } }]);
+});
+
 test('compactDisplayStore: activity is the earliest/latest event and per-task latest + last start; live cross-plan edges only', () => {
   const edge = (digest, from, to) => ({ kind: 'cross_plan_dependency', event_digest: digest, payload: { from, to, reason: 'long text '.repeat(50) } });
   const ref = (plan, taskId) => ({ project_id: 'project-1', plan_key: plan, task_id: taskId });
@@ -375,8 +386,8 @@ test('compactDisplayStore: activity is the earliest/latest event and per-task la
   assert.equal(alpha.journal, undefined);
   assert.equal(alpha.plan_scoped, undefined);
   assert.deepEqual(alpha.activity, { first: { at: '2026-01-01T00:00:00.000Z', agent: 'a1' }, last_at: '2026-01-05T00:00:00.000Z',
-    tasks: [{ task_id: 'T1', changed_at: '2026-01-04T00:00:00.000Z', started: { at: '2026-01-03T00:00:00.000Z', agent: 'a2' } },
-      { task_id: 'T2', changed_at: '2026-01-01T00:00:00.000Z', started: { at: '2026-01-01T00:00:00.000Z', agent: 'a1' } }] });
+    tasks: [{ task_id: 'T1', changed_at: '2026-01-04T00:00:00.000Z', started: { at: '2026-01-03T00:00:00.000Z', agent: 'a2' }, added: null },
+      { task_id: 'T2', changed_at: '2026-01-01T00:00:00.000Z', started: { at: '2026-01-01T00:00:00.000Z', agent: 'a1' }, added: null }] });
   // e2 is removed by a tombstone in another member's chain; only the live edge stays, without its reason
   assert.deepEqual(alpha.cross_plan_dependencies, [{ event_digest: 'e1', from: ref('beta', 'B1'), to: ref('alpha', 'T1') }]);
   assert.deepEqual(beta.activity, { first: null, last_at: null, tasks: [] });
