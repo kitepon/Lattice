@@ -2053,7 +2053,8 @@ async function readTaskAddedCache(root, planKey) {
   } catch { return null; }
 }
 
-async function publishTaskAddedCache(root, plan, added) {
+async function publishTaskAddedCache(repoRoot, plan, added) {
+  const root = await canonicalRepoRoot(repoRoot); // macOS tmp is a symlink: ensureGeneratedDirectory wants the real path
   const ref = `${TASK_ADDED_CACHE_DIRECTORY}/${plan.plan_key}.json`;
   await ensureGeneratedDirectory(root, ref);
   const body = { schema: TASK_ADDED_CACHE_SCHEMA, plan_key: plan.plan_key, head_plan_digest: plan.plan_digest,
