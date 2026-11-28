@@ -9,6 +9,7 @@ import { renamePublishedFile, syncPublishedFile } from './fs-publish.mjs';
 import { normalizeCheckoutEol } from './todo-store-view.mjs';
 import { memoByFileIdentity } from './todo-version-memo.mjs';
 import { TODO_VERSION_COMPACT_FILE, readVersionCompact } from './todo-version-compact.mjs';
+import { publishDerivedPlanCache, readDerivedPlanCache } from './todo-store.mjs';
 
 import {
   TODO_LIMITS,
@@ -338,50 +339,83 @@ function noteProjectionEntry(event, supersededBy) {
   };
 }
 
-function migrationIndex(migrations) {
+/**
+ * One migration's entries that change a task, `[from, to | null]` (null: removed). A migration lists every task of its
+ * predecessor (the writer refuses an incomplete one: predecessor_task_migration_incomplete), so an entry that keeps the id
+ * says nothing and is left out; this is what keeps the lineage small on a plan with thousands of tasks and versions.
+ */
+function changedTaskMoves(taskMigration, planVersion) {
+  const seen = new Set();
+  const moves = [];
+  for (const entry of taskMigration) {
+    const to = entry?.to_task_id === 'removed' ? null : entry?.to_task_id;
+    if (!isTodoIdentifier(entry?.from_task_id) || !(to === null || isTodoIdentifier(to)) || seen.has(entry.from_task_id)) {
+      fail('NOTE_PROJECTION_INVALID', 'note_task_migration_invalid', { plan_version: planVersion });
+    }
+    seen.add(entry.from_task_id);
+    if (to !== entry.from_task_id) moves.push([entry.from_task_id, to]);
+  }
+  return moves;
+}
+
+/**
+ * w2-impl: where a note's origin (plan version, task) ends up at the head, without walking every later version per note.
+ * `versions` runs from the oldest version to the head along the predecessor chain; `moves` are `[index, from, to | null]`:
+ * the migration from versions[index] to versions[index + 1] renamed or removed `from`, in ascending index order.
+ */
+class NoteLineage {
+  constructor(versions, moves) {
+    this.versions = versions;
+    this.positions = new Map(versions.map((version, index) => [version, index]));
+    this.moves = new Map();
+    for (const [index, from, to] of moves) {
+      if (!this.moves.has(from)) this.moves.set(from, []);
+      this.moves.get(from).push([index, to]);
+    }
+  }
+
+  /** The head task id that `taskId` of `version` became (callers check it is still in the plan), or null: removed, or a version off the chain. */
+  resolve(version, taskId) {
+    let index = this.positions.get(version);
+    if (index === undefined) return null;
+    for (let task = taskId; ;) {
+      // shortcut: linear in the task's own moves (a few), upgrade if one task is renamed thousands of times
+      const move = this.moves.get(task)?.find(([at]) => at >= index);
+      if (move === undefined) return task;
+      if (move[1] === null) return null;
+      [index, task] = [move[0] + 1, move[1]];
+    }
+  }
+}
+
+/** The lineage of a hand-made migration list (the pure projector's input): its chain ending at `head`; versions off that chain resolve to null. */
+function lineageFromMigrations(migrations, head) {
   if (!Array.isArray(migrations)) throw new TypeError('todo note migrations must be an array');
-  const index = new Map();
+  const byTo = new Map();
+  const froms = new Set();
   for (const migration of migrations) {
     if (!exactRecord(migration, ['from_plan_version', 'to_plan_version', 'task_migration'])
       || !isTodoIdentifier(migration.from_plan_version)
       || !isTodoIdentifier(migration.to_plan_version)
       || migration.from_plan_version === migration.to_plan_version
       || !Array.isArray(migration.task_migration)
-      || index.has(migration.from_plan_version)) {
+      || froms.has(migration.from_plan_version) || byTo.has(migration.to_plan_version)) {
       fail('NOTE_PROJECTION_INVALID', 'note_migration_history_invalid');
     }
-    const taskMap = new Map();
-    for (const entry of migration.task_migration) {
-      if (!exactRecord(entry, ['from_task_id', 'to_task_id'])
-        || !isTodoIdentifier(entry.from_task_id)
-        || !(entry.to_task_id === null || isTodoIdentifier(entry.to_task_id))
-        || taskMap.has(entry.from_task_id)) {
-        fail('NOTE_PROJECTION_INVALID', 'note_task_migration_invalid');
-      }
-      taskMap.set(entry.from_task_id, entry.to_task_id === 'removed' ? null : entry.to_task_id);
-    }
-    index.set(migration.from_plan_version, {
-      toPlanVersion: migration.to_plan_version, taskMap,
-    });
+    froms.add(migration.from_plan_version);
+    byTo.set(migration.to_plan_version, { from: migration.from_plan_version,
+      moves: changedTaskMoves(migration.task_migration, migration.to_plan_version) });
   }
-  return index;
-}
-
-function resolveNoteTarget(event, { currentPlanVersion, currentTaskIds, migrations }) {
-  let version = event.plan_version;
-  let taskId = event.task_id;
-  const seen = new Set();
-  while (version !== currentPlanVersion) {
-    if (seen.has(version)) fail('NOTE_PROJECTION_INVALID', 'note_migration_cycle');
-    seen.add(version);
-    const step = migrations.get(version);
-    if (step === undefined) return { kind: 'archived' };
-    const nextTaskId = step.taskMap.get(taskId);
-    if (nextTaskId === undefined || nextTaskId === null) return { kind: 'archived' };
-    version = step.toPlanVersion;
-    taskId = nextTaskId;
+  const versions = [head];
+  const steps = [];
+  for (let version = head; byTo.has(version);) {
+    const step = byTo.get(version);
+    if (versions.includes(step.from)) fail('NOTE_PROJECTION_INVALID', 'note_migration_cycle');
+    versions.unshift(step.from);
+    steps.unshift(step.moves);
+    version = step.from;
   }
-  return currentTaskIds.has(taskId) ? { kind: 'active', taskId } : { kind: 'archived' };
+  return new NoteLineage(versions, steps.flatMap((moves, index) => moves.map(([from, to]) => [index, from, to])));
 }
 
 /**
@@ -401,7 +435,8 @@ export function projectTodoNoteContext(options = {}) {
     throw new TypeError('todo note projection options invalid');
   }
   const currentTaskIds = new Set(options.currentTaskIds);
-  const migrations = migrationIndex(options.migrations);
+  const lineage = options.migrations instanceof NoteLineage
+    ? options.migrations : lineageFromMigrations(options.migrations, options.currentPlanVersion);
   // 訂正はscopeを跨げないので、supersedeの追跡もchainごとに閉じる。
   const supersededBy = new Map();
   for (const event of [...options.events, ...options.planEvents]) {
@@ -418,11 +453,9 @@ export function projectTodoNoteContext(options = {}) {
   const planSequence = sequenceOf(options.planEvents);
   for (const event of options.events) {
     const entry = noteProjectionEntry(event, supersededBy.get(event.event_digest));
-    const target = resolveNoteTarget(event, {
-      currentPlanVersion: options.currentPlanVersion, currentTaskIds, migrations,
-    });
-    if (target.kind === 'archived') archived.push(entry);
-    else if (target.taskId === options.currentTaskId) taskCurrent.push(entry);
+    const target = lineage.resolve(event.plan_version, event.task_id);
+    if (target === null || !currentTaskIds.has(target)) archived.push(entry);
+    else if (target === options.currentTaskId) taskCurrent.push(entry);
   }
   // plan noteは特定のtaskに属さないので、task migrationで宛先を失うことがない。全taskの
   // contextへ載せる——工程レベルの義務は「次に着手する誰か」へ届くべきもので、誰が着手するかは
@@ -498,80 +531,125 @@ async function readCanonicalJson(ref, { missing = false } = {}) {
   return value;
 }
 
-async function readNoteMigrations(repoRoot, planKey, eventVersions) {
-  const base = path.resolve(repoRoot, '.lattice/todo/plans', planKey);
-  let entries;
-  try { entries = await readdir(base, { withFileTypes: true }); }
-  catch (error) {
-    if (error?.code === 'ENOENT' && eventVersions.size === 0) return [];
-    fail('NOTE_PROJECTION_INVALID', 'note_plan_history_unreadable', { plan_key: planKey });
-  }
-  const versions = new Set();
-  const migrations = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isTodoIdentifier(entry.name)) {
-      fail('NOTE_PROJECTION_INVALID', 'note_plan_history_inventory_invalid', { plan_key: planKey });
+/**
+ * One retained version as the lineage needs it: `{predecessor, moves}` (its predecessor's version name, null for the first
+ * version, and `changedTaskMoves` of the migration into it), or null when the version does not exist.
+ */
+function readVersionMigration(base, name, planKey) {
+  const versionRoot = path.join(base, name);
+  const planPath = path.join(versionRoot, 'plan.json');
+  const revisionPath = path.join(versionRoot, 'revision.json');
+  const compactPath = path.join(versionRoot, TODO_VERSION_COMPACT_FILE);
+  // perf-store: validated once per process while the files are unchanged (todo-version-memo). w2: the memo holds only the
+  // moves, not the whole 3,321-entry task_migration (that array times 4,204 versions was the 1.6 GB).
+  return memoByFileIdentity([planPath, revisionPath, compactPath], async () => {
+    const record = (predecessor, taskMigration) => {
+      if (predecessor === name) fail('NOTE_PROJECTION_INVALID', 'note_migration_history_invalid');
+      return { predecessor, moves: changedTaskMoves(taskMigration, name) };
+    };
+    // b10: a superseded version keeps compact.json.gz (its revision, minus the plan it repeats) instead of plan.json/revision.json.
+    const compact = await readVersionCompact(versionRoot, undefined, { verify: false }).catch(() => fail('NOTE_PROJECTION_INVALID',
+      'note_historical_plan_invalid', { plan_version: name }));
+    if (compact !== null) {
+      if (compact.plan_key !== planKey || compact.plan_version !== name) {
+        fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: name });
+      }
+      if (compact.revision === null) return { predecessor: null, moves: [] };
+      if (compact.predecessor_plan_version === null || !Array.isArray(compact.revision?.task_migration)) {
+        fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: name });
+      }
+      return record(compact.predecessor_plan_version, compact.revision.task_migration);
     }
-    const versionRoot = path.join(base, entry.name);
-    const planPath = path.join(versionRoot, 'plan.json');
-    const revisionPath = path.join(versionRoot, 'revision.json');
-    const compactPath = path.join(versionRoot, TODO_VERSION_COMPACT_FILE);
-    // perf-store: validated once per process while the files are unchanged (todo-version-memo).
-    const version = await memoByFileIdentity([planPath, revisionPath, compactPath], async () => {
-      // b10: a superseded version keeps compact.json.gz (its revision, minus the plan it repeats) instead of plan.json/revision.json.
-      const compact = await readVersionCompact(versionRoot, undefined, { verify: false }).catch(() => fail('NOTE_PROJECTION_INVALID',
-        'note_historical_plan_invalid', { plan_version: entry.name }));
-      if (compact !== null) {
-        if (compact.plan_key !== planKey || compact.plan_version !== entry.name) {
-          fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: entry.name });
-        }
-        const migration = compact.revision?.task_migration;
-        if (compact.revision === null) return { migration: null };
-        if (compact.predecessor_plan_version === null || !Array.isArray(migration)) {
-          fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: entry.name });
-        }
-        return { migration: { from_plan_version: compact.predecessor_plan_version, to_plan_version: entry.name,
-          task_migration: migration.map(({ from_task_id: fromTaskId, to_task_id: toTaskId }) => ({
-            from_task_id: fromTaskId, to_task_id: toTaskId })) } };
-      }
-      // A revision directory is published before manifest activation.  A crash during
-      // that window can leave an unreferenced directory containing only a journal
-      // stub.  It is not a historical plan until its canonical plan artifact exists.
-      // Do not make that unreachable residue poison note projection; if a note event
-      // names this version, the origin-version check below still fails closed.
-      const plan = await readCanonicalJson(planPath, { missing: true });
-      if (plan === null) return null;
-      if (!validateTodoPlan(plan) || plan.plan_key !== planKey || plan.plan_version !== entry.name) {
-        fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: entry.name });
-      }
-      const revision = await readCanonicalJson(revisionPath, { missing: true });
-      if (revision === null) return { migration: null };
-      if (!(validateTodoRevision(revision) || validatePhaseTodoRevision(revision))
-        || revision.plan_key !== planKey || revision.predecessor?.plan_version === undefined
-        || !Array.isArray(revision.task_migration)) {
-        fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: entry.name });
-      }
-      return { migration: {
-        from_plan_version: revision.predecessor.plan_version,
-        to_plan_version: entry.name,
-        task_migration: revision.task_migration.map(({ from_task_id: fromTaskId, to_task_id: toTaskId }) => ({
-          from_task_id: fromTaskId, to_task_id: toTaskId,
-        })),
-      } };
-    });
-    if (version === null) continue;
-    versions.add(entry.name);
-    // The memoized migration is only read (migrationIndex copies it into its own Map), so it is shared, not cloned.
-    if (version.migration !== null) migrations.push(version.migration);
-  }
-  if ([...eventVersions].some((version) => !versions.has(version))) {
-    fail('NOTE_PROJECTION_INVALID', 'note_origin_plan_version_unknown');
-  }
-  return migrations;
+    // A revision directory is published before manifest activation.  A crash during
+    // that window can leave an unreferenced directory containing only a journal
+    // stub.  It is not a historical plan until its canonical plan artifact exists.
+    // Do not make that unreachable residue poison note projection; if a note event
+    // names this version, the origin-version check below still fails closed.
+    const plan = await readCanonicalJson(planPath, { missing: true });
+    if (plan === null) return null;
+    if (!validateTodoPlan(plan) || plan.plan_key !== planKey || plan.plan_version !== name) {
+      fail('NOTE_PROJECTION_INVALID', 'note_historical_plan_invalid', { plan_version: name });
+    }
+    const revision = await readCanonicalJson(revisionPath, { missing: true });
+    if (revision === null) return { predecessor: null, moves: [] };
+    if (!(validateTodoRevision(revision) || validatePhaseTodoRevision(revision))
+      || revision.plan_key !== planKey || revision.predecessor?.plan_version === undefined
+      || !Array.isArray(revision.task_migration)) {
+      fail('NOTE_PROJECTION_INVALID', 'note_historical_revision_invalid', { plan_version: name });
+    }
+    return record(revision.predecessor.plan_version, revision.task_migration);
+  });
 }
 
-/** active store memberと歴史revisionから、通常供給用contextを一回で読む。 */
-export async function readTodoNoteContext(options = {}) {
+const LINEAGE_CACHE_DIRECTORY = '.lattice/generated/store-note-lineage';
+const LINEAGE_CACHE_SCHEMA = 'lattice.todo_note_lineage_cache.v1';
+// shortcut: a shorter chain reads in well under 0.1 s, so an ordinary `todo start` on a small plan leaves no file in a user's git tree; upgrade if a short chain gets slow
+const LINEAGE_CACHE_MIN_VERSIONS = 32;
+
+/** The cached `{versions, moves}` of a plan's lineage up to some head, or null for any miss (absent, unreadable, wrong plan, bad digest, bad shape). */
+async function readLineageCache(root, planKey) {
+  const body = await readDerivedPlanCache(root, LINEAGE_CACHE_DIRECTORY, LINEAGE_CACHE_SCHEMA, planKey);
+  if (body === null || !Array.isArray(body.versions) || body.versions.length === 0
+    || !body.versions.every(isTodoIdentifier) || new Set(body.versions).size !== body.versions.length
+    || !Array.isArray(body.moves) || !body.moves.every((move, at) => Array.isArray(move) && move.length === 3
+      && Number.isInteger(move[0]) && move[0] >= 0 && move[0] < body.versions.length - 1
+      && (at === 0 || move[0] >= body.moves[at - 1][0])
+      && isTodoIdentifier(move[1]) && (move[2] === null || isTodoIdentifier(move[2])))) return null;
+  return body;
+}
+
+/**
+ * w2-impl: the lineage of `headVersion`, from the head back along its predecessors. Derived cache
+ * `.lattice/generated/store-note-lineage/<plan_key>.json` (best effort, never truth: any miss reads the chain; a failed write
+ * never fails the read; written only for a chain of at least LINEAGE_CACHE_MIN_VERSIONS versions): a cached head equal
+ * to this one costs no version read, a head some revisions later reads only the versions after the cached head. Only a chain
+ * that reaches the first version (or the cached head, itself rooted) is cached, so a version directory that is missing for a
+ * while can never leave a short lineage behind. Versions off the head's chain
+ * (unpublished residue) are not read; a note naming a version that does not exist at all is still refused.
+ */
+async function readNoteLineage(repoRoot, planKey, headVersion, eventVersions) {
+  const base = path.resolve(repoRoot, '.lattice/todo/plans', planKey);
+  const lineage = await memoByFileIdentity([path.join(base, headVersion, 'plan.json')], async () => {
+    const cached = await readLineageCache(repoRoot, planKey);
+    const stop = cached?.versions.at(-1) ?? null;
+    if (stop === headVersion) return new NoteLineage(cached.versions, cached.moves);
+    const fresh = []; // newest first
+    for (let name = headVersion, seen = new Set(); name !== null && name !== stop;) {
+      if (seen.has(name)) fail('NOTE_PROJECTION_INVALID', 'note_migration_cycle');
+      seen.add(name);
+      const record = await readVersionMigration(base, name, planKey);
+      if (record === null) break;
+      fresh.push({ name, ...record });
+      name = record.predecessor;
+    }
+    fresh.reverse();
+    const extends_ = stop !== null && fresh[0]?.predecessor === stop;
+    const rooted = extends_ || fresh[0]?.predecessor === null;
+    const versions = [...(extends_ ? cached.versions : []), ...fresh.map(({ name }) => name)];
+    const moves = extends_ ? [...cached.moves] : [];
+    fresh.forEach(({ moves: changed }, at) => {
+      const index = (extends_ ? cached.versions.length : 0) + at - 1; // the migration into this version
+      if (index >= 0) for (const [from, to] of changed) moves.push([index, from, to]);
+    });
+    if (rooted && fresh.length > 0 && versions.length >= LINEAGE_CACHE_MIN_VERSIONS) {
+      await publishDerivedPlanCache(repoRoot, LINEAGE_CACHE_DIRECTORY, { schema: LINEAGE_CACHE_SCHEMA, plan_key: planKey,
+        versions, moves }).catch(() => {});
+    }
+    return new NoteLineage(versions, moves);
+  }, 'note-lineage');
+  for (const version of eventVersions) {
+    if (!lineage.positions.has(version) && await readVersionMigration(base, version, planKey) === null) {
+      fail('NOTE_PROJECTION_INVALID', 'note_origin_plan_version_unknown');
+    }
+  }
+  return lineage;
+}
+
+/**
+ * active store memberと歴史revisionから、1 taskのnote contextの素材を一回で読む。`project(extra)`がcontextを作る。
+ * `extra`は読んだ後に積んだtask note（appendNoteが今書いたもの）で、素材を読み直さずに入れる。
+ */
+export async function readTodoNoteSource(options = {}) {
   if (!exactRecord(options, ['repoRoot', 'store', 'planKey', 'taskId'])
     || !isTodoIdentifier(options.planKey) || !isTodoIdentifier(options.taskId)
     || options.store === null || typeof options.store !== 'object') {
@@ -590,18 +668,22 @@ export async function readTodoNoteContext(options = {}) {
   });
   const chain = await readTodoNoteEvents({ repoRoot, planKey: options.planKey });
   const planChain = await readTodoNoteEvents({ repoRoot, planKey: options.planKey, scope: 'plan' });
-  const migrations = await readNoteMigrations(repoRoot, options.planKey,
+  const lineage = await readNoteLineage(repoRoot, options.planKey, member.plan.plan_version,
     new Set(chain.events.map(({ plan_version: version }) => version)));
-  return projectTodoNoteContext({
+  return { project: (extra = []) => projectTodoNoteContext({
     projectId: member.plan.project_id,
     planKey: options.planKey,
     currentPlanVersion: member.plan.plan_version,
     currentTaskId: task.task_id,
     currentTaskIds: member.plan.tasks.map(({ task_id: taskId }) => taskId),
-    events: chain.events,
+    events: [...chain.events, ...extra],
     planEvents: planChain.events,
-    migrations,
-  });
+    migrations: lineage,
+  }) };
+}
+
+export async function readTodoNoteContext(options = {}) {
+  return (await readTodoNoteSource(options)).project();
 }
 
 /**
@@ -676,7 +758,7 @@ export async function readTodoNoteContextsForPlan(options = {}) {
   });
   const chain = await readTodoNoteEvents({ repoRoot, planKey: options.planKey });
   const planChain = await readTodoNoteEvents({ repoRoot, planKey: options.planKey, scope: 'plan' });
-  const migrations = await readNoteMigrations(repoRoot, options.planKey,
+  const migrations = await readNoteLineage(repoRoot, options.planKey, member.plan.plan_version,
     new Set(chain.events.map(({ plan_version: version }) => version)));
   const currentTaskIds = member.plan.tasks.map(({ task_id: taskId }) => taskId);
   const projected = member.plan.tasks.map((task) => projectTodoNoteContext({

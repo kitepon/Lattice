@@ -200,6 +200,7 @@ import {
   appendTodoNote,
   readTodoNoteContext,
   readTodoNoteContextsForPlan,
+  readTodoNoteSource,
   readTodoNoteEvents,
   readTodoPlanNotesForStatus,
 } from './todo-note-store.mjs';
@@ -2935,11 +2936,16 @@ async function appendNote({ repoRoot, env, planKey, taskId, message, inputRef, s
   const body = inputRef === null ? message : await readNoteTextInput(repoRoot, inputRef);
   // 訂正はscopeを跨げない。plan noteはplan chainの中だけ、task noteは自分のtaskの中だけを
   // 訂正できる。contextはplan noteも載せるので、task側はscopeで絞らないと跨げてしまう。
-  const eligibleSupersedes = task === null
-    ? (await readTodoNoteEvents({ repoRoot, planKey, scope: 'plan' })).events
-      .map(({ event_digest: digest }) => digest)
-    : (await readTodoNoteContext({ repoRoot, store, planKey, taskId: task.task_id }))
-      .history.filter(({ scope }) => scope === 'task').map(({ event_digest: digest }) => digest);
+  // w2: the note chains and the version lineage are read once, before anything is written (a broken history still refuses first),
+  // and the context is projected once, after the append. Only a correction needs the history before it (eligibleSupersedes
+  // is read only when supersedes is set).
+  const source = task === null ? null : await readTodoNoteSource({ repoRoot, store, planKey, taskId: task.task_id });
+  let eligibleSupersedes = [];
+  if (supersedes !== null) {
+    eligibleSupersedes = task === null
+      ? (await readTodoNoteEvents({ repoRoot, planKey, scope: 'plan' })).events.map(({ event_digest: digest }) => digest)
+      : source.project().history.filter(({ scope }) => scope === 'task').map(({ event_digest: digest }) => digest);
+  }
   const event = await appendTodoNote({
     repoRoot,
     projectId: store.project_id,
@@ -2954,8 +2960,7 @@ async function appendNote({ repoRoot, env, planKey, taskId, message, inputRef, s
   });
   // plan noteはどのtaskのcontextにも載るので、1つを選んで返すと嘘になる。全部読むなら
   // `note list --plan <k>`。書けたことの証拠はeventそのものが持つ。
-  const context = task === null
-    ? null : (await readTodoNoteContext({ repoRoot, store, planKey, taskId: task.task_id })).context;
+  const context = source === null ? null : source.project([event]).context;
   const result = {
     schema: 'lattice.todo_note_append_result.v2',
     project_id: store.project_id,

@@ -2041,26 +2041,39 @@ function taskAddedGenesis(event) {
 const TASK_ADDED_CACHE_DIRECTORY = '.lattice/generated/store-task-added';
 const TASK_ADDED_CACHE_SCHEMA = 'lattice.todo_task_added_cache.v2'; // v1 held null for plan-create tasks; a v1 file is a miss
 
-/** The cached `task_id -> [at, agent] | null` of one plan head, or null for any miss (absent, unreadable, wrong plan, bad digest). */
-async function readTaskAddedCache(root, planKey) {
+/**
+ * A derived per-plan cache file `<directory>/<plan_key>.json` (a body plus its `cache_digest`), or null for any miss: absent,
+ * unreadable, wrong schema or plan, bad digest. Derived data is never truth: a miss is a recomputation (n3, w2).
+ */
+export async function readDerivedPlanCache(root, directory, schema, planKey) {
   try {
-    const bytes = await readFile(path.resolve(root, TASK_ADDED_CACHE_DIRECTORY, `${planKey}.json`));
+    const bytes = await readFile(path.resolve(root, directory, `${planKey}.json`));
     if (bytes.length > TODO_LIMITS.snapshotBytes) return null;
     const { cache_digest: digest, ...body } = JSON.parse(bytes.toString('utf8'));
-    if (body.schema !== TASK_ADDED_CACHE_SCHEMA || body.plan_key !== planKey || typeof body.head_plan_digest !== 'string'
-      || body.tasks === null || typeof body.tasks !== 'object' || digest !== sha256Bytes(Buffer.from(JSON.stringify(body), 'utf8'))) return null;
-    return { head: body.head_plan_digest, tasks: new Map(Object.entries(body.tasks)) };
+    return body.schema === schema && body.plan_key === planKey && digest === sha256Bytes(Buffer.from(JSON.stringify(body), 'utf8')) ? body : null;
   } catch { return null; }
 }
 
-async function publishTaskAddedCache(repoRoot, plan, added) {
+/** Atomically writes `body` (with `schema` and `plan_key`) as the derived cache of its plan. Callers ignore a failure: a lost write is a later recomputation. */
+export async function publishDerivedPlanCache(repoRoot, directory, body) {
   const root = await canonicalRepoRoot(repoRoot); // macOS tmp is a symlink: ensureGeneratedDirectory wants the real path
-  const ref = `${TASK_ADDED_CACHE_DIRECTORY}/${plan.plan_key}.json`;
+  const ref = `${directory}/${body.plan_key}.json`;
   await ensureGeneratedDirectory(root, ref);
-  const body = { schema: TASK_ADDED_CACHE_SCHEMA, plan_key: plan.plan_key, head_plan_digest: plan.plan_digest,
-    tasks: Object.fromEntries(plan.tasks.map(({ task_id: id }) => [id, added.has(id) ? [added.get(id).at, added.get(id).agent] : null])) };
   const text = JSON.stringify(body);
   await atomicWrite(path.resolve(root, ref), Buffer.from(`${text.slice(0, -1)},"cache_digest":"${sha256Bytes(Buffer.from(text, 'utf8'))}"}`, 'utf8'));
+}
+
+/** The cached `task_id -> [at, agent] | null` of one plan head, or null for any miss. */
+async function readTaskAddedCache(root, planKey) {
+  const body = await readDerivedPlanCache(root, TASK_ADDED_CACHE_DIRECTORY, TASK_ADDED_CACHE_SCHEMA, planKey);
+  if (body === null || typeof body.head_plan_digest !== 'string' || body.tasks === null || typeof body.tasks !== 'object') return null;
+  return { head: body.head_plan_digest, tasks: new Map(Object.entries(body.tasks)) };
+}
+
+function publishTaskAddedCache(repoRoot, plan, added) {
+  return publishDerivedPlanCache(repoRoot, TASK_ADDED_CACHE_DIRECTORY, { schema: TASK_ADDED_CACHE_SCHEMA, plan_key: plan.plan_key,
+    head_plan_digest: plan.plan_digest,
+    tasks: Object.fromEntries(plan.tasks.map(({ task_id: id }) => [id, added.has(id) ? [added.get(id).at, added.get(id).agent] : null])) });
 }
 
 /**
