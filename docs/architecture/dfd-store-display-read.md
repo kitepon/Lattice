@@ -319,7 +319,7 @@ every entry of a member's `activity.tasks[]` in `todo display read --compact` an
 | `openDisplayResult` | Plan/lifecycle | as before | filters `activity.tasks` to open trees; `added` rides unchanged | none |
 | `todo show` (`todoDetail`) | Plan/lifecycle | the same map for the shown task | `task.added` = the value or `null` | a failed read is `null` |
 
-`added: null` means "the task came with plan create": a host then uses `activity.first.agent` (the creator of the first version of the plan as it reads now; the contract's own rule). The closed-tree history
+`added: null` means "the task came with plan create": the read names no creator for it. `activity.first` is **not** that creator: it is the first event of the **current** plan version, which after a `todo add` is the adder of that revision (Flora checked this on 0.115.0, 2026-11-28); a host reads `added.agent` only. The closed-tree history
 (`closedDisplayHistory`) is unchanged. `changed_at` of a no-event task is its add time, so the entry sorts with other changes; `activity.last_at` still means the last journal event.
 
 Verification: a `todo add` by agent X shows `added.agent = X` in the compact and the open read and in `todo show`, also after two later revisions (carry); a plan-create task shows `null`; a task added with no later event is listed in `activity.tasks`; a rename by revision keeps the record; notes written later do not change the result.
