@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.116.0 — 2026-11-28
+
+大きな計画で工程を見る・始める・メモを読み書きする時間を、版の数に比例しないようにし、BugHub への故障報告を認証仲介の鍵で署名するようにした版（ルドミラ #281・#282、トーブ #283、計画 `lattice-pending-hidden-20261128`・`lattice-added-creator-20261128`・`lattice-bughub-es256-20261128`）。ホストへの変更：計画を作った時からある工程にも `added` に計画の作成者が入る（`null` は記録が読めない時だけ）。版を上げた後の最初の `todo show` と表示の読み出しは、大きな計画で一度だけ時間がかかる（bellteam-dev-added の写しで約26秒、その後は約1秒）。故障報告を送る端末は `runtime-errors reporting enable --key-id … -- <signer argv>` で署名者を設定するまで送らない（`signer_missing`）。
+
+- Note context (w2, Ludmila #282): note targets resolve from a sparse lineage (only the task_migration moves that rename or remove a task) kept in the derived cache `.lattice/generated/store-note-lineage/<plan>.json` (written only for chains of 32+ versions; a miss re-reads, a failed write never fails the read). `appendNote` reads and projects once. Output byte-identical. bellteam-dev-added copy (4,204 versions): `todo show` 17 s / 1.6 GB -> 1.1 s / 0.31 GB warm; `todo note list --task` 19 s -> 1.2-2.1 s; `todo note --task` 26 s -> 1.3-1.5 s. First read after install pays one chain read per big plan.
+- Display read (a1, Ludmila #281): a task that came with `plan create` gets `added` = the plan's first version `{at, agent}` (the plan creator); derived cache `lattice.todo_task_added_cache.v2` (old v1 caches are rebuilt). `activity.tasks[]` therefore lists every task (`changed_at` = add time when no journal event). bellteam copy: `--open` size unchanged (730,088 bytes), `--compact` +4.4 KB.
+- Runtime error reports (e2, Tobe #283, ADR 0207): `runtime-errors report` signs `BugHub-ES256` through a configured signer command (`signer: {key_id, command, cwd}` in runtime-error-reporting.json, set by `reporting enable --key-id <id> [--signer-cwd <dir>] [--url <url>] -- <argv...>`); the input `<ts>\n<sha256 hex of body>` is fed from a file in the store folder; the 200 receipt must carry `sig_alg: ES256` and verify against BugHub's response key. The HMAC path and the product-credentials file are gone. A signer failure keeps the records and retries like a failed send. `status` reports `signer` and `key_id` instead of `credential`.
+
 ## 0.115.0 — 2026-11-28
 
 接続先が終わる・取り下げられる・消える・再開した時に待ちをその場で判定し直し、待っている工程を一覧で返し、工程を足した人を表示の読み出しに載せた版（アリス #276・#278、ルドミラ #274・#277、計画 `lattice-connect-rejudge-20261128`。図は `dfd-connect.md`・`dfd-store-display-read.md`）。ホストへの変更：接続の `state` に `gone` が加わり、retired の相手は `settled` ではなく `gone/target_retired` と読める（待ちの判定は変わらない）。表示の読み出し `--compact`/`--open` の `activity.tasks[]` に `added` が加わる。版を上げた後の最初の表示の読み出しは、大きな計画で一度だけ数秒かかる（作り置きを作るため）。
