@@ -2039,7 +2039,7 @@ function taskAddedGenesis(event) {
 }
 
 const TASK_ADDED_CACHE_DIRECTORY = '.lattice/generated/store-task-added';
-const TASK_ADDED_CACHE_SCHEMA = 'lattice.todo_task_added_cache.v1';
+const TASK_ADDED_CACHE_SCHEMA = 'lattice.todo_task_added_cache.v2'; // v1 held null for plan-create tasks; a v1 file is a miss
 
 /** The cached `task_id -> [at, agent] | null` of one plan head, or null for any miss (absent, unreadable, wrong plan, bad digest). */
 async function readTaskAddedCache(root, planKey) {
@@ -2068,7 +2068,7 @@ async function publishTaskAddedCache(repoRoot, plan, added) {
  * new in a version when it is not a `to_task_id` of that version's genesis `task_migration`; a carried one follows
  * `to_task_id` -> `from_task_id` into the predecessor (two from ids onto one id: the first wins). One pass back along
  * `predecessor_plan_digest` resolves every task: `{at, agent}` = that genesis's `recorded_at` and `actor.agent` (null
- * when absent). A task that came with plan create has no entry. Read only for the Store: a missing or unreadable version ends
+ * when absent). A task that came with plan create gets the first version's genesis (the plan's creator). Read only for the Store: a missing or unreadable version ends
  * the walk and leaves the tasks not yet resolved without an entry. A walk that reached the first version is kept in the
  * derived `.lattice/generated/store-task-added/<plan_key>.json` (best effort, never truth: a miss walks), so the next
  * revision's read stops at the cached head after its own genesis. Memoized per process by the active plan.json's identity.
@@ -2079,7 +2079,9 @@ export async function readTodoTaskAdded({ repoRoot = process.cwd(), member }) {
   return memoByFileIdentity([path.resolve(root, member.descriptor.plan_ref)], async () => {
     const added = new Map();
     let genesis = taskAddedGenesis(member.journal.events[0]);
-    if (genesis === null || genesis.predecessor === null) return added;
+    if (genesis === null) return added;
+    const created = (tasks) => { for (const task of tasks) added.set(task, { at: genesis.at, agent: genesis.agent }); };
+    if (genesis.predecessor === null) { created(plan.tasks.map(({ task_id: id }) => id)); return added; }
     const cache = await readTaskAddedCache(root, plan.plan_key);
     const fromCache = (id, tasks) => {
       const entry = cache.tasks.get(id);
@@ -2112,8 +2114,8 @@ export async function readTodoTaskAdded({ repoRoot = process.cwd(), member }) {
         const predecessor = byDigest.get(genesis.predecessor);
         const prior = predecessor === undefined || steps > byDigest.size ? null : await readRetainedGenesis(root, predecessor.journalRef);
         if (prior === null) break;
-        if (prior.predecessor === null) { complete = true; break; } // the first version holds no add: its tasks came with plan create
         genesis = prior;
+        if (prior.predecessor === null) { created([...open.values()].flat()); complete = true; break; } // the first version: its tasks came with plan create, by its creator
       }
     } catch { /* an unreadable version leaves the tasks not yet resolved without an entry */ }
     if (complete) await publishTaskAddedCache(root, plan, added).catch(() => {}); // derived: a lost write is a later walk
