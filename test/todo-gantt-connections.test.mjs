@@ -33,6 +33,15 @@ test('the chip row counts the open 他条件に接続 and marks 優先接続', (
   assert.equal(renderConnectionChips([connections[1]]), '');
 });
 
+test('a gone 接続 is not drawn as open and adds no chip', () => {
+  const gone = { kind: 'task', ref: 'alpha/a/P', state: 'gone', state_reason: 'target_retired', reason: 'R uses P', since: '2026-11-28T10:00:00.000Z', event_digest: 'd'.repeat(64) };
+  const area = renderConnectionArea([gone]);
+  assert.match(area, /alpha\/a\/P.*消えた/u);
+  assert.doesNotMatch(area, /開いている/u);
+  assert.match(area, /data-state="gone"/u);
+  assert.equal(renderConnectionChips([gone]), '');
+});
+
 test('a 接続 to a task on another chart is not a tree edge; a 前工程 inside one chart is', () => {
   const ref = (project, plan, task) => ({ project_id: project, plan_key: plan, task_id: task });
   const member = (planKey, taskIds, events = []) => ({

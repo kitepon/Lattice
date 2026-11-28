@@ -1,58 +1,76 @@
-// n3: who added each task rides activity.tasks[] of the compact and open display reads, and todo show.
-// docs/architecture/dfd-store-display-read.md#who-added-a-task-added-n3-2026-11-28
+// n3-store-task-added: readTodoTaskAdded names who added each task, from the retained revisions.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { readTodoStore, readTodoTaskAdded } from '../src/todo-store.mjs';
+
 const CLI = path.resolve(import.meta.dirname, '../bin/lattice.mjs');
 
-async function chart(context) {
+function run(cwd, agent, args) {
+  const result = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8',
+    env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0', LATTICE_RUNTIME_ERROR_REPORTING: '0',
+      LATTICE_TODO_ACTOR_HOST: 'fixture', LATTICE_TODO_ACTOR_SESSION: 'fixture', LATTICE_TODO_ACTOR_AGENT: agent } });
+  assert.equal(result.status, 0, `${args.join(' ')}\n${result.stderr}\n${result.stdout}`);
+  return JSON.parse(result.stdout);
+}
+
+const add = (root, agent, id, extra = []) => run(root, agent, ['todo', 'add', '--plan', 'work', '--task', id, '--title', id,
+  '--phase', 'p1', '--lane', 'bot-c', '--design-memo', 'NO_PLAN', '--reason', 'test', ...extra]);
+
+test('a task has an entry from the revision that added it; tasks of plan create have none; the walk follows carried ids', async (context) => {
   const root = await mkdtemp(path.join(tmpdir(), 'lattice-added-'));
   context.after(() => rm(root, { recursive: true, force: true }));
   execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
-  const ok = (args, agent = 'bot-creator') => {
-    const result = spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8',
-      env: { ...process.env, NO_COLOR: '1', LATTICE_DASHBOARD_AUTOSTART: '0', LATTICE_RUNTIME_ERROR_REPORTING: '0',
-        LATTICE_TODO_ACTOR_HOST: 'fixture', LATTICE_TODO_ACTOR_SESSION: 'fixture', LATTICE_TODO_ACTOR_AGENT: agent } });
-    assert.equal(result.status, 0, `${args.join(' ')}\n${result.stderr}\n${result.stdout}`);
-    return JSON.parse(result.stdout);
-  };
   await writeFile(path.join(root, 'plan.json'), JSON.stringify({
-    schema: 'lattice.plan_create_input.v5', plan_key: 'p', phases: [{ phase_id: 'ph', title: 'phase' }],
-    tasks: [{ task_id: 'A', title: 'A', phase_id: 'ph', lane: 'bot-c', design_memo: 'NO_PLAN' }], hard_dependencies: [],
+    schema: 'lattice.plan_create_input.v5', plan_key: 'work', phases: [{ phase_id: 'p1', title: 'phase' }],
+    tasks: ['a', 'b'].map((id) => ({ task_id: id, title: id, phase_id: 'p1', lane: 'bot-c', design_memo: 'NO_PLAN' })),
+    hard_dependencies: [],
   }));
-  ok(['plan', 'create', '--input', 'plan.json']);
-  const add = (id, agent) => ok(['todo', 'add', '--plan', 'p', '--task', id, '--title', id, '--phase', 'ph', '--design-memo', 'NO_PLAN'], agent);
-  const activity = (flag) => Object.fromEntries(ok(['todo', 'display', 'read', flag, '--json']).store.members[0].activity.tasks
-    .map(({ task_id: id, added, started, changed_at: changedAt }) => [id, { added, started, changedAt }]));
-  return { ok, add, activity };
-}
-
-test('a todo add by agent X is added.agent X in the compact and open reads and in todo show; plan create is null; a task with no event is listed', async (context) => {
-  const { ok, add, activity } = await chart(context);
-  ok(['todo', 'start', '--plan', 'p', '--task', 'A']);
-  add('B', 'bot-x');
-  for (const flag of ['--compact', '--open']) {
-    const seen = activity(flag);
-    assert.equal(seen.A.added, null, 'a task from plan create');
-    assert.equal(seen.B.added.agent, 'bot-x', 'B has no event yet and is listed');
-    assert.match(seen.B.added.at, /^\d{4}-\d\d-\d\dT/u);
-    assert.equal(seen.B.started, null);
-    assert.equal(seen.B.changedAt, seen.B.added.at);
-  }
-  assert.equal(ok(['todo', 'show', '--plan', 'p', '--task', 'B', '--json']).task.added.agent, 'bot-x');
-  assert.equal(ok(['todo', 'show', '--plan', 'p', '--task', 'A', '--json']).task.added, null);
-  // later revisions carry the record; notes and events do not change it
-  const first = activity('--open').B.added;
-  add('C', 'bot-y');
-  ok(['todo', 'note', '--plan', 'p', '--task', 'B', '--message', 'a note']);
-  ok(['todo', 'start', '--plan', 'p', '--task', 'B'], 'bot-z');
-  const later = activity('--open');
-  assert.deepEqual(later.B.added, first);
-  assert.equal(later.C.added.agent, 'bot-y');
-  assert.equal(later.B.started.agent, 'bot-z');
-  assert.deepEqual(activity('--compact').B.added, first);
+  run(root, 'creator', ['plan', 'create', '--input', 'plan.json']);
+  const read = async () => {
+    const store = await readTodoStore({ repoRoot: root });
+    return readTodoTaskAdded({ repoRoot: root, member: store.members[0] });
+  };
+  assert.equal((await read()).size, 0);
+  add(root, 'x', 'c');
+  add(root, 'y', 'd', ['--after', 'c']);
+  add(root, 'z', 'e');
+  const added = await read();
+  assert.deepEqual([...added.keys()].sort(), ['c', 'd', 'e']);
+  assert.deepEqual(['c', 'd', 'e'].map((id) => added.get(id).agent), ['x', 'y', 'z']);
+  assert.ok(added.get('c').at < added.get('e').at && /^\d{4}-\d\d-\d\dT/u.test(added.get('c').at));
+  // Reading again after another revision does not serve the memoized map.
+  add(root, 'w', 'f');
+  assert.equal((await read()).get('f').agent, 'w');
+  assert.equal((await read()).get('c').agent, 'x');
+  // The cache of the head one revision back is used: a planted value (with a valid digest) shows through; a bad digest is a miss.
+  const cacheFile = path.join(root, '.lattice/generated/store-task-added/work.json');
+  const cache = JSON.parse(await readFile(cacheFile, 'utf8'));
+  assert.equal(cache.tasks.a, null);
+  assert.deepEqual(Object.keys(cache.tasks).sort(), ['a', 'b', 'c', 'd', 'e', 'f']);
+  const plant = async (mutate, digest = true) => {
+    const { cache_digest: _old, ...body } = JSON.parse(await readFile(cacheFile, 'utf8'));
+    mutate(body);
+    const text = JSON.stringify(body);
+    await writeFile(cacheFile, digest ? `${text.slice(0, -1)},"cache_digest":"${createHash('sha256').update(text).digest('hex')}"}` : text);
+  };
+  await plant((body) => { body.tasks.c = ['2000-01-01T00:00:00.000Z', 'planted']; });
+  add(root, 'v', 'g');
+  const next = await read();
+  assert.deepEqual([next.get('c').agent, next.get('g').agent], ['planted', 'v']);
+  await plant((body) => { body.tasks.c = ['2000-01-01T00:00:00.000Z', 'planted']; }, false);
+  add(root, 'u', 'h');
+  const rebuilt = await read();
+  assert.deepEqual([rebuilt.get('c').agent, rebuilt.get('h').agent], ['x', 'u']);
+  // A cache that cannot be written never fails the read.
+  await rm(path.join(root, '.lattice/generated/store-task-added'), { recursive: true });
+  await writeFile(path.join(root, '.lattice/generated/store-task-added'), 'not a directory');
+  add(root, 't', 'i');
+  assert.equal((await read()).get('i').agent, 't');
+  assert.equal((await read()).get('c').agent, 'x');
 });

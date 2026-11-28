@@ -1,5 +1,5 @@
 /* Pure projections shared by Store and Plan; no I/O or lifecycle mutation. */
-import { canonicalizeTodoArtifact } from './todo-contracts.mjs';
+import { canonicalizeTodoArtifact, digestTodoArtifact } from './todo-contracts.mjs';
 
 /**
  * u03 A6: undo a Git autocrlf checkout of canonical LF bytes in memory. Only a pure
@@ -246,6 +246,30 @@ export function projectTodoScheduleConnections(events) {
   });
 }
 
+/**
+ * n2 (Snow White, dfd-connect.md "JSON contract"): the digest of a target task's content as its chart reads it now, over
+ * `{title, done_condition, lane, split: {children, function_split}}`: `children` = the sorted ids of the plan's tasks whose
+ * `parent_task_id` is the target (what `todo split` extracts), `function_split` = the plan task's mark or null.
+ * Design memo, notes, evidence and status are not part of it. `tasks` is the target plan's `tasks`.
+ */
+export function todoTaskContentDigest(task, tasks = []) {
+  const children = tasks.filter(({ parent_task_id: parent }) => parent === task.task_id).map(({ task_id: id }) => id).sort();
+  return digestTodoArtifact({ title: task.title ?? null, done_condition: task.done_condition ?? null, lane: task.lane ?? null,
+    split: { children, function_split: task.function_split ?? null } });
+}
+
+/**
+ * n2: one judgment of a task 接続 from its target's state `{status, missing?, reason?}` (undefined = the chart was not read):
+ * done settles; retired and missing are gone; anything else waits (open), naming why when the target could not be read.
+ */
+export function judgeTaskConnection(source) {
+  if (source?.status === 'done') return { state: 'settled', state_reason: 'target_done' };
+  if (source?.status === 'retired') return { state: 'gone', state_reason: 'target_retired' };
+  if (source?.missing === true) return { state: 'gone', state_reason: 'target_missing' };
+  const unread = source === undefined || source.status === null || source.status === undefined;
+  return unread ? { state: 'open', state_reason: source?.reason ?? 'chart_not_read' } : { state: 'open' };
+}
+
 const connectionTaskKey = (projectId, planKey, taskId) => `${projectId}\0${planKey}\0${taskId}`;
 export { connectionTaskKey as todoConnectionTaskKey };
 
@@ -262,22 +286,27 @@ export function projectTodoConnections(members, externalTasks = []) {
   for (const member of members) {
     const { plan } = member;
     for (const entry of projectTodoScheduleConnections(member.plan_scoped?.events)) {
-      if (entry.state === 'removed') continue;
       const { task_id: taskId, actor: _actor, provenance: _provenance, ended: _ended, ...shown } = entry;
-      push(connectionTaskKey(plan.project_id, plan.plan_key, taskId), shown);
+      // n2: a removed schedule is listed as gone (a reader tells it from "never connected"); a settled one keeps its history.
+      push(connectionTaskKey(plan.project_id, plan.plan_key, taskId), entry.state === 'removed'
+        ? { ...shown, state: 'gone', state_reason: 'schedule_removed' }
+        : entry.state === 'settled' ? { ...shown, state_reason: 'schedule_resolved' } : shown);
     }
   }
   for (const dependency of projectTodoCrossPlanDependencies(members)) {
     if (dependency.from.project_id === dependency.to.project_id) continue;
     const { from, to } = dependency;
     const source = external.get(connectionTaskKey(from.project_id, from.plan_key, from.task_id));
-    const settled = source?.finished === true;
+    // n2: waits only while the target exists and is not done; retired and missing targets are gone, not settled.
+    const { state, state_reason: stateReason } = judgeTaskConnection(source);
+    const { kind: changedKind, event_digest: changedDigest, recorded_at: changedAt } = source?.trigger ?? {};
     push(connectionTaskKey(to.project_id, to.plan_key, to.task_id), {
       kind: 'task', ref: `${from.project_id}/${from.plan_key}/${from.task_id}`,
-      state: settled ? 'settled' : 'open', reason: dependency.reason, since: dependency.connected_at,
+      state, reason: dependency.reason, since: dependency.connected_at,
       event_digest: dependency.event_digest,
-      ...(!settled && (source === undefined || source.status === null || source.status === undefined)
-        ? { state_reason: source?.reason ?? 'chart_not_read' } : {}) });
+      ...(stateReason === undefined ? {} : { state_reason: stateReason }),
+      target_content_digest: source?.content_digest ?? null,
+      ...(changedDigest === undefined ? {} : { changed: { kind: changedKind, event_digest: changedDigest, recorded_at: changedAt } }) });
   }
   for (const [key, entries] of byTask) {
     byTask.set(key, entries.sort((left, right) => (left.since + left.event_digest < right.since + right.event_digest ? -1 : 1)));

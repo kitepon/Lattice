@@ -12,7 +12,7 @@ import { parseFlagMap } from './todo-authoring-input.mjs';
 import { isTodoIdentifier } from './todo-contracts.mjs';
 import { TODO_CHARTS_ROOT_ENV } from './todo-external.mjs';
 import {
-  readTodoChartMeta, readTodoStoreDisplaySource, TodoStoreError, writeTodoChartMeta,
+  readTodoChartMeta, readTodoOutgoingConnections, readTodoStoreDisplaySource, TodoStoreError, writeTodoChartMeta,
 } from './todo-store.mjs';
 
 export const PROJECT_ID_ENV = 'LATTICE_PROJECT_ID';
@@ -106,11 +106,52 @@ async function readChart(root, id) {
   try { display = await readTodoStoreDisplaySource({ repoRoot: dir }); } catch (error) {
     findings.push({ project_id: id, reason: reasonOf(error) });
   }
-  return { meta, findings, source: meta === null || display === null ? null : digest([display, meta]) };
+  return { meta, findings, display };
+}
+
+/** The change token of one chart: its display source, its meta, and (n2) the 接続 links that cross its border. */
+const chartToken = ({ meta, display }, links = []) => (meta === null || display === null ? null
+  : digest(links.length === 0 ? [display, meta] : [display, meta, links]));
+
+/**
+ * n2: the cross-chart 接続 each chart's token also digests, so a host that pulls tokens sees at that moment what it
+ * must re-read: `out` = a live 接続 of this chart to a task elsewhere, with that task's plan as its chart shows it
+ * (moves when the target is done, retired, reopened, revised or gone); `in` = a 接続 of another chart onto this
+ * chart (moves when a waiter appears or goes). Charts with no plan-scoped chain cost no read; the others one cheap
+ * Store read. shortcut: the target is digested per plan, not per task (one extra re-read on a sibling's change);
+ * upgrade to the task's own last event if a sweep measures it.
+ */
+async function chartLinks(root, observed) {
+  const links = new Map([...observed.keys()].map((id) => [id, []]));
+  const planOf = (project, planKey) => {
+    const member = observed.get(project)?.display?.members?.find((entry) => entry.plan_key === planKey);
+    return member === undefined ? null : [member.active_plan_version, member.plan_digest, member.lifecycle_head, member.topology_digest];
+  };
+  for (const [id, chart] of observed) {
+    if (!(chart.display?.members ?? []).some((member) => member.plan_scoped_head !== null)) continue;
+    let outgoing;
+    try { outgoing = await readTodoOutgoingConnections({ repoRoot: path.join(root, id) }); } catch (error) {
+      chart.findings.push({ project_id: id, reason: reasonOf(error) });
+      continue;
+    }
+    for (const edge of outgoing.edges) {
+      links.get(id).push(['out', edge.event_digest, edge.from.project_id, edge.from.plan_key, edge.from.task_id,
+        planOf(edge.from.project_id, edge.from.plan_key)]);
+      links.get(edge.from.project_id)?.push(['in', edge.event_digest, id, edge.to.plan_key, edge.to.task_id]);
+    }
+  }
+  for (const list of links.values()) list.sort((left, right) => (JSON.stringify(left) < JSON.stringify(right) ? -1 : 1));
+  return links;
+}
+
+async function observeCharts(root, ids) {
+  const observed = new Map();
+  for (const id of ids) observed.set(id, await readChart(root, id));
+  return { observed, links: await chartLinks(root, observed) };
 }
 
 /** Direct children of the root that hold a Store manifest, sorted; a missing root has none. */
-async function chartIds(root) {
+export async function chartIds(root) {
   let entries;
   try { entries = await readdir(root, { withFileTypes: true }); } catch (error) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return [];
@@ -137,11 +178,11 @@ export async function listCharts(env) {
   }
   const charts = [];
   const findings = [];
-  for (const id of await chartIds(root)) {
-    const chart = await readChart(root, id);
+  const { observed, links } = await observeCharts(root, await chartIds(root));
+  for (const [id, chart] of observed) {
     findings.push(...chart.findings);
     charts.push({ project_id: id, name: chart.meta?.name ?? null, created_by: chart.meta?.created_by ?? null,
-      created_at: chart.meta?.created_at ?? null, source: chart.source });
+      created_at: chart.meta?.created_at ?? null, source: chartToken(chart, links.get(id)) });
   }
   return { schema: 'lattice.charts_list_result.v1', charts_root: root, charts, findings };
 }
@@ -151,9 +192,11 @@ export async function chartSources(env, ids) {
   const root = chartsRoot(env);
   const chosen = ids.length > 0 ? ids : root === null ? [] : await chartIds(root);
   const charts = {};
+  // A chart's token also digests links from other charts, so every chart is observed once, then the chosen ones are answered.
+  const { observed, links } = root === null ? { observed: new Map(), links: new Map() } : await observeCharts(root, await chartIds(root));
   for (const id of chosen) {
     const present = root !== null && isChartId(id) && await lstatOrNull(path.join(root, id, MANIFEST)) !== null;
-    charts[id] = present ? (await readChart(root, id)).source : null;
+    charts[id] = present && observed.has(id) ? chartToken(observed.get(id), links.get(id)) : null;
   }
   return { schema: 'lattice.charts_source_result.v1', charts };
 }
