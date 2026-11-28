@@ -31,20 +31,20 @@ async function chart(context) {
   return { ok, add, activity };
 }
 
-test('a todo add by agent X is added.agent X in the compact and open reads and in todo show; plan create is null; a task with no event is listed', async (context) => {
+test('a todo add by agent X is added.agent X in the compact and open reads and in todo show; plan create is its creator; a task with no event is listed', async (context) => {
   const { ok, add, activity } = await chart(context);
   ok(['todo', 'start', '--plan', 'p', '--task', 'A']);
   add('B', 'bot-x');
   for (const flag of ['--compact', '--open']) {
     const seen = activity(flag);
-    assert.equal(seen.A.added, null, 'a task from plan create');
+    assert.equal(seen.A.added.agent, 'bot-creator', 'a task from plan create: the plan creator');
     assert.equal(seen.B.added.agent, 'bot-x', 'B has no event yet and is listed');
     assert.match(seen.B.added.at, /^\d{4}-\d\d-\d\dT/u);
     assert.equal(seen.B.started, null);
     assert.equal(seen.B.changedAt, seen.B.added.at);
   }
   assert.equal(ok(['todo', 'show', '--plan', 'p', '--task', 'B', '--json']).task.added.agent, 'bot-x');
-  assert.equal(ok(['todo', 'show', '--plan', 'p', '--task', 'A', '--json']).task.added, null);
+  assert.equal(ok(['todo', 'show', '--plan', 'p', '--task', 'A', '--json']).task.added.agent, 'bot-creator');
   // later revisions carry the record; notes and events do not change it
   const first = activity('--open').B.added;
   add('C', 'bot-y');

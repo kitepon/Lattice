@@ -421,13 +421,14 @@ test('todo display read --compact: every field the host uses equals the full rea
     const events = member.journal.events;
     assert.equal(light.activity.first?.at ?? null, events.length === 0 ? null : events.map(({ recorded_at: at }) => at).sort()[0]);
     assert.equal(light.activity.last_at, events.length === 0 ? null : events.map(({ recorded_at: at }) => at).sort().at(-1));
-    for (const { task_id: id, changed_at: changed, started } of light.activity.tasks) {
+    for (const { task_id: id, changed_at: changed, started, added } of light.activity.tasks) {
       const own = events.filter(({ task_id: taskId }) => taskId === id);
-      assert.equal(changed, own.map(({ recorded_at: at }) => at).sort().at(-1));
+      // a task with no event is listed through its add record (plan create: the creator), changed at its add time
+      assert.equal(changed, own.length === 0 ? added.at : own.map(({ recorded_at: at }) => at).sort().at(-1));
       const last = own.filter(({ kind }) => kind === 'start').at(-1);
       assert.deepEqual(started, last === undefined ? null : { at: last.recorded_at, agent: last.actor.agent });
     }
-    assert.deepEqual(light.activity.tasks.map(({ task_id: id }) => id).sort(), [...new Set(events.map(({ task_id: id }) => id).filter(Boolean))].sort());
+    assert.deepEqual(light.activity.tasks.map(({ task_id: id }) => id).sort(), [...new Set([...events.map(({ task_id: id }) => id).filter(Boolean), ...member.plan.tasks.map(({ task_id: id }) => id)])].sort());
   }
   assert.equal(compact.store.members[0].activity.tasks[0].started.agent, 'agent-7');
   // more payload and repeated events on the same task: the compact read keeps its size (timestamps have fixed width)
@@ -535,7 +536,7 @@ test('todo display read --open / display history over the CLI: a closed tree lea
   assert.deepEqual(same(['--compact', '--open', '--json']), { ...open, verified_at: null }, '--open implies --compact');
   assert.deepEqual(ids(open), ['alpha/T2', 'beta/T2']);
   for (const member of open.store.members) {
-    assert.deepEqual([member.tasks.map(({ task_id: id }) => id), member.activity.tasks.map(({ task_id: id }) => id)], [['T2'], []]);
+    assert.deepEqual([member.tasks.map(({ task_id: id }) => id), member.activity.tasks.map(({ task_id: id }) => id)], [['T2'], ['T2']]);
     assert.equal(member.journal, undefined);
     assert.deepEqual([member.revision, member.snapshot], [undefined, undefined], 'open v2 ships neither revision nor a verified member\'s snapshot');
   }
