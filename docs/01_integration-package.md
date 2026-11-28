@@ -246,24 +246,27 @@ native Windowsでは`HOST_PLATFORM_UNSUPPORTED`を返し、設定やstateへ書�
 - runtime errorの送信（ADR 0193）: `lattice runtime-errors report --json`と
   `lattice runtime-errors reporting <status|enable|disable|verify> --json`。Lattice自身が、未受領の記録を
   BugHubの製品報告の受け口へ送る。正典は`src/runtime-error-reporting.mjs`
-  - **既定では通信しない。** `reporting enable`を打った端末（設定は
-    `${XDG_CONFIG_HOME:-~/.config}/lattice/runtime-error-reporting.json`）で、BugHubの持ち主が置いた合鍵のfile
-    （`~/.config/bughub/product-credentials/lattice.json`、本人所有・0600・symlinkでない）がある時だけ送る。
-    dotagentsの設定は読まない。宛先は合鍵のfileの`url`。
-  - Windowsの置き場は、設定が`%LOCALAPPDATA%\Lattice\runtime-error-reporting.json`、合鍵が
-    `%LOCALAPPDATA%\bughub\product-credentials\lattice.json`（symlinkでなく、DACLが本人・SYSTEM・
-    Administratorsだけ。他のaccountが読めれば`credential_unsafe`・理由`acl_not_owner_only`）。
-    Windowsで収集を有効にするのはこの送信設定で、dotagentsがWindowsで使う設定の置き場は読まない。
-  - 秘密は通信に載せない。`Authorization: BugHub-HMAC-SHA256 key_id=…, ts=…, sig=…`
-    （`sig = HMAC-SHA256(secret, ts + "\n" + SHA-256(送るバイト列))`）。
+  - **既定では通信しない。** 署名者を設定して有効にした端末だけが送る（ADR 0207）:
+    `reporting enable --key-id <key_id> [--signer-cwd <dir>] [--url <url>] -- <署名者のargv...>`
+    （設定は`${XDG_CONFIG_HOME:-~/.config}/lattice/runtime-error-reporting.json`）。署名者が無ければ`signer_missing`で、
+    networkへ触れない。`--key-id`と署名者のargvは対で、無ければ今の署名者を引き継ぐ。dotagentsの設定は読まない。
+    宛先は既定でBugHubのLAN内の受け口（`http://192.168.1.2:39310/api/products/v1/runtime-errors`）。`--url`で差し替える。
+  - Windowsの置き場は、設定が`%LOCALAPPDATA%\Lattice\runtime-error-reporting.json`。Windowsで収集を有効にするのは
+    この送信設定で、dotagentsがWindowsで使う設定の置き場は読まない。
+  - 端末に秘密は無い（合鍵のfileは読まない）。署名の鍵は認証仲介の中だけにあり、署名者commandを介して使う。
+    Latticeは`<ts>\n<本文のSHA-256の16進>`を、storeのフォルダに置いたfileから署名者の標準入力へ渡し（pipeは使わない）、
+    exit 0の標準出力（base64の生r‖s、または生の64バイト）を`Authorization: BugHub-ES256 key_id=…, ts=…, sig=…`に付ける。
+    exit 1は`signer_refused`、それ以外・30秒の時間切れ・形の違う出力は`signer_failed`。署名できなければ送らず、
+    記録は残り、届かなかった送信と同じく後から送り直す。
   - 本文は`schema_version`・`report_id`・`product_id`・`installed_version`・`observed_at`・`runtime_errors`・
     `resolutions`の7項目で、各記録は`snapshot`が出す項目のまま。端末名は入れない。
   - `observed_at`は、送る時刻と、載せる記録の`last_seen`・`resolved_at`のうち最も後の時刻（ADR 0195）。
     BugHubは、記録の時刻が`observed_at`より後の報告を断る。秒へ切り捨てない。
-  - `reporting verify`は、記録を載せない空の報告を1通送って、合鍵・署名・受け口までの経路を確かめる。
+  - `reporting verify`は、記録を載せない空の報告を1通送って、署名者・署名・受け口までの経路を確かめる。
     storeの記録と受領の印には触れない。受け口は受領を記録するだけで、issueも通知も動かさない。
     受領まで確かめられた時だけ`verified`・exit 0。受け口は端末×製品ごとに1分に1回まで受ける。
-  - 受領済み（storeのack）にするのは、200・`accepted: true`・`report_id`一致・応答の署名一致がそろった時だけ。
+  - 受領済み（storeのack）にするのは、200・`accepted: true`・`report_id`一致・`sig_alg: "ES256"`・応答の`sig`が
+    BugHubの応答用公開鍵（製品に組み込む定数）で`report_id + "\n" + received_at`に合うこと、がそろった時だけ。
     そろわなければ未受領のまま残し、後から新しい`report_id`でその時点の累計を送り直す。
   - 送る時機: 故障を記録した直後と、以後のCLI実行（`hooks`を除く）の終わりに、切り離した子processで送る。
     1分に1回まで、同じ中身の送り直しは1時間に1回まで。手で打つ`report`はこの制限を見ない。

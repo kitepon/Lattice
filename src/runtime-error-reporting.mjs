@@ -1,10 +1,10 @@
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+  closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import { homedir, platform as hostPlatform } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
@@ -12,6 +12,7 @@ import {
   acknowledgeRuntimeErrors,
   ensureSafeDir,
   ensureSafeFile,
+  readRuntimeErrorReportingConfig,
   replaceStoreFile,
   runtimeErrorCollectionSupported,
   runtimeErrorReportingConfigPath,
@@ -19,19 +20,22 @@ import {
   runtimeErrorsDiagnostics,
   runtimeErrorsSnapshot,
   runtimeErrorsStatePath,
-  windowsLocalAppData,
+  validReportingSigner,
+  validReportingUrl,
 } from './runtime-errors.mjs';
 
 /**
- * runtime error記録を、Lattice自身がBugHubの製品報告の受け口へ送る（ADR 0193）。
+ * runtime error記録を、Lattice自身がBugHubの製品報告の受け口へ送る（ADR 0193・0197）。
  *
- * - 既定では通信しない。端末で`runtime-errors reporting enable`を打ち、BugHubの持ち主が合鍵のfileを
- *   置いた端末だけが送る。どちらかが欠ければ、networkへ触れない。
- * - 秘密は通信に載せない。本文のSHA-256と時刻へのHMAC-SHA256署名だけを`Authorization`に付ける。
- * - 受領済みにするのは、200・`accepted: true`・`report_id`一致・応答の署名一致がそろった時だけ。
- *   そろわなければ「届いたか不明」として記録を未受領のまま残し、後から今の累計を送り直す。
+ * - 既定では通信しない。端末で`runtime-errors reporting enable`を打ち、署名者（`--key-id`と署名commandの
+ *   argv）を設定した端末だけが送る。どちらかが欠ければ、networkへ触れない。
+ * - 秘密は端末に無い。署名の鍵は認証仲介の中だけにある。Latticeは「ts + LF + 本文SHA-256のhex」を
+ *   署名者commandへ渡し、返る生r‖s（ES256）を`Authorization: BugHub-ES256`に付ける。
+ * - 受領済みにするのは、200・`accepted: true`・`report_id`一致・応答のES256署名がBugHubの応答用公開鍵で
+ *   合うことがそろった時だけ。そろわなければ「届いたか不明」として記録を未受領のまま残し、後から今の累計を送り直す。
+ * - 署名できなければ送らない。記録は残り、届かなかった送信と同じく後から送り直す。
  * - 送るのは`runtime-errors snapshot`が出す項目だけ。message本文・path・引数・stackは記録に無い。
- * - `reporting verify`は、記録を載せない空の報告を1通送って、合鍵・署名・受け口までの経路を確かめる。
+ * - `reporting verify`は、記録を載せない空の報告を1通送って、署名者・署名・受け口までの経路を確かめる。
  *   受け口は受領を記録するだけで、issueも通知も動かない。storeの記録と受領の印には触れない。
  */
 
@@ -40,6 +44,16 @@ const RESULT_SCHEMA = 'lattice.runtime_error_report_result.v1';
 const STATUS_SCHEMA = 'lattice.runtime_error_reporting_status.v1';
 const DELIVERY_SCHEMA = 'lattice.runtime_error_delivery.v1';
 const PRODUCT_ID = 'lattice';
+// BugHubの製品報告の受け口（LAN内。製品共通の1本）。設定の`url`で差し替えられる。
+const DEFAULT_INTAKE_URL = 'http://192.168.1.2:39310/api/products/v1/runtime-errors';
+// BugHubの応答用公開鍵（ES256）。BugHubの応答署名はこの鍵でだけ確かめる。鍵が替わる時は新版を出す。
+const BUGHUB_RESPONSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEX+kilvDhn190l4Z+iR5J4KusmOSJ
+ZVBQjMaLGOshDFzUwB7IxiJsgLMpQzOdoEWM21DCBpL1QyY1COU2cmuE1g==
+-----END PUBLIC KEY-----
+`;
+const SIGNER_TIMEOUT_MS = 30_000;
+const SIGNER_OUTPUT_MAX_BYTES = 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
 const RESPONSE_MAX_BYTES = 64 * 1024;
 const REPORT_MAX_BYTES = 512 * 1024;
@@ -47,95 +61,85 @@ const REPORT_MAX_RECORDS = 256;
 // BugHubは端末×製品ごとに1分に1回まで受ける。届かなかった同じ中身の送り直しは1時間に1回まで。
 const MIN_ATTEMPT_INTERVAL_MS = 60_000;
 const RETRY_INTERVAL_MS = 60 * 60_000;
-const KEY_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const REJECTION_CODE = /^[a-z][a-z0-9_]{0,63}$/;
-const OUTCOMES = Object.freeze(['delivered', 'nothing_pending', 'disabled', 'unsupported', 'credential_missing',
-  'credential_unsafe', 'throttled', 'rejected', 'unconfirmed', 'store_unavailable']);
+const OUTCOMES = Object.freeze(['delivered', 'nothing_pending', 'disabled', 'unsupported', 'signer_missing',
+  'signer_refused', 'signer_failed', 'throttled', 'rejected', 'unconfirmed', 'store_unavailable']);
 
 const plain = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
-/** 合鍵の置き場（BugHubの契約）。Windowsは`%LOCALAPPDATA%\bughub\product-credentials\`。 */
-export function productCredentialPath(env = process.env, platform = hostPlatform()) {
-  const base = platform === 'win32' ? join(windowsLocalAppData(env), 'bughub') : join(env.HOME || homedir(), '.config', 'bughub');
-  return join(base, 'product-credentials', `${PRODUCT_ID}.json`);
-}
-
-/**
- * Windowsの合鍵が本人・SYSTEM・Administratorsだけのものか。DACLの読み取りは出力fileを置く場所が要るので、
- * 絞ったstoreのフォルダを使う（無ければ作る）。合鍵のフォルダへは何も書かない。
- */
-function windowsCredentialUnsafeReason(path, options) {
-  const storeDir = dirname(options.storePath ?? runtimeErrorsStatePath(options.env ?? process.env));
-  try {
-    ensureSafeDir(storeDir);
-  } catch {
-    return 'acl_unverifiable';
-  }
-  try {
-    ensureSafeFile(path, storeDir);
-    return null;
-  } catch {
-    return 'acl_not_owner_only';
-  }
-}
-
-/**
- * 合鍵のfileを読む。BugHubの持ち主が置く形（symlinkでなく、POSIXは本人所有・0600、Windowsは
- * 本人・SYSTEM・Administratorsだけに権限）以外は使わない。秘密は戻り値の中だけに留め、結果や記録へ写さない。
- */
-export function readProductCredential(options = {}) {
-  const path = options.credentialPath ?? productCredentialPath(options.env ?? process.env);
-  let stats;
-  try {
-    stats = lstatSync(path);
-  } catch (error) {
-    return error?.code === 'ENOENT' ? { status: 'missing' } : { status: 'unsafe', reason: 'unreadable' };
-  }
-  if (!stats.isFile() || stats.isSymbolicLink()) return { status: 'unsafe', reason: 'not_regular_file' };
-  if (hostPlatform() === 'win32') {
-    const reason = windowsCredentialUnsafeReason(path, options);
-    if (reason !== null) return { status: 'unsafe', reason };
-  } else {
-    if ((stats.mode & 0o777) !== 0o600) return { status: 'unsafe', reason: 'mode_not_0600' };
-    if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) return { status: 'unsafe', reason: 'owner_mismatch' };
-  }
-  let value;
-  try {
-    value = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return { status: 'unsafe', reason: 'not_json' };
-  }
-  if (!plain(value) || !exact(value, ['url', 'key_id', 'secret'])
-    || typeof value.url !== 'string' || typeof value.key_id !== 'string' || typeof value.secret !== 'string'
-    || !KEY_ID.test(value.key_id) || value.secret.length < 16 || value.secret.length > 1024) {
-    return { status: 'unsafe', reason: 'invalid_shape' };
-  }
-  let url;
-  try {
-    url = new URL(value.url);
-  } catch {
-    return { status: 'unsafe', reason: 'invalid_url' };
-  }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
-    return { status: 'unsafe', reason: 'invalid_url' };
-  }
-  return { status: 'ok', credential: { url, keyId: value.key_id, secret: value.secret } };
-}
-
 const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const hmacHex = (secret, text) => createHmac('sha256', Buffer.from(secret, 'utf8')).update(text, 'utf8').digest('hex');
 
-/** `sig = HMAC-SHA256(secret, ts + "\n" + SHA-256(送るバイト列の16進))`。秘密は文字列のままUTF-8で鍵にする。 */
-export function signReport(secret, ts, bodyBytes) {
-  return hmacHex(secret, `${ts}\n${sha256Hex(bodyBytes)}`);
+/** 署名者へ渡す文字列: `ts + "\n" + SHA-256(送るバイト列)の16進`。末尾に改行は付けない。 */
+export function reportSigningText(ts, bodyBytes) {
+  return `${ts}\n${sha256Hex(bodyBytes)}`;
 }
 
-/** 応答の署名: `HMAC-SHA256(secret, report_id + "\n" + received_at)`。別の機器が返した200を受領済みにしない。 */
-export function receiptSignatureMatches(secret, reportId, receivedAt, sig) {
-  if (typeof receivedAt !== 'string' || typeof sig !== 'string' || !/^[0-9a-f]{64}$/.test(sig)) return false;
-  const expected = Buffer.from(hmacHex(secret, `${reportId}\n${receivedAt}`), 'hex');
-  return timingSafeEqual(expected, Buffer.from(sig, 'hex'));
+/** 生r‖s（64バイト）か、そのbase64（パディングあり）を、64バイトへ直す。 */
+function signatureBytes(output) {
+  if (output.length === 64) return output;
+  const text = output.toString('utf8').trim();
+  return /^[A-Za-z0-9+/]{86}==$/.test(text) ? Buffer.from(text, 'base64') : null;
+}
+
+/** 応答の署名: BugHubの応答用公開鍵で`report_id + "\n" + received_at`へのES256署名を確かめる。別の機器が返した200を受領済みにしない。 */
+export function receiptSignatureValid(publicKeyPem, reportId, receivedAt, sig) {
+  if (typeof receivedAt !== 'string' || typeof sig !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(sig)) return false;
+  try {
+    return verify('sha256', Buffer.from(`${reportId}\n${receivedAt}`, 'utf8'),
+      { key: createPublicKey(publicKeyPem), dsaEncoding: 'ieee-p1363' }, Buffer.from(sig, 'base64'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 署名者commandを走らせて署名を得る。入力は、storeの（本人だけの）folderに置いたfileから標準入力へ渡す
+ * ——pipeでは、Windowsのsshが固まる。入力fileは必ず消す。exit 1は断られた、それ以外・時間切れ・起動できない
+ * ・形の違う出力は失敗。結果に署名者の出力は載せない。
+ */
+async function signWithSigner(signer, signingText, options) {
+  const env = options.env ?? process.env;
+  const dir = dirname(options.storePath ?? runtimeErrorsStatePath(env));
+  const input = join(dir, `.signer-input-${process.pid}-${randomBytes(6).toString('hex')}`);
+  let fd = null;
+  try {
+    ensureSafeDir(dir);
+    writeFileSync(input, signingText, { mode: 0o600, flag: 'wx' });
+    fd = openSync(input, 'r');
+  } catch {
+    if (fd !== null) closeSync(fd);
+    rmSync(input, { force: true });
+    return { outcome: 'signer_failed', reason: 'input_not_written' };
+  }
+  try {
+    const run = await new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(signer.command[0], signer.command.slice(1), { cwd: signer.cwd ?? undefined,
+          stdio: [fd, 'pipe', 'ignore'], windowsHide: true });
+      } catch {
+        resolve({ reason: 'spawn_failed' });
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ reason: 'timeout' }); }, options.signerTimeoutMs ?? SIGNER_TIMEOUT_MS);
+      child.stdout.on('data', (chunk) => {
+        size += chunk.length;
+        if (size <= SIGNER_OUTPUT_MAX_BYTES) chunks.push(chunk);
+      });
+      child.once('error', () => { clearTimeout(timer); resolve({ reason: 'spawn_failed' }); });
+      child.once('close', (code) => { clearTimeout(timer); resolve({ code, stdout: size > SIGNER_OUTPUT_MAX_BYTES ? null : Buffer.concat(chunks) }); });
+    });
+    if (run.code === 1) return { outcome: 'signer_refused', reason: 'signer_refused' };
+    if (run.code !== 0) return { outcome: 'signer_failed', reason: run.reason ?? 'signer_exit' };
+    const sig = run.stdout === null ? null : signatureBytes(run.stdout);
+    return sig === null ? { outcome: 'signer_failed', reason: 'signature_malformed' } : { sig };
+  } finally {
+    closeSync(fd);
+    rmSync(input, { force: true });
+  }
 }
 
 /** snapshotの未受領分から、受け口へ送る本文を組む。項目はsnapshotが出すものをそのまま載せる。 */
@@ -205,14 +209,14 @@ function throttleReason(options, delivery, highWatermark) {
 export function runtimeErrorReportingStatus(options = {}) {
   const supported = runtimeErrorCollectionSupported(options);
   const enabled = runtimeErrorReportingEnabled(options);
-  const credential = supported ? readProductCredential(options) : { status: 'missing' };
+  const signer = supported ? readRuntimeErrorReportingConfig(options)?.signer ?? null : null;
   const diagnostics = runtimeErrorsDiagnostics(options);
   const delivery = supported ? readDelivery(options) : emptyDelivery();
   return {
     schema: STATUS_SCHEMA,
     reporting: !supported ? 'unsupported' : enabled ? 'enabled' : 'disabled',
-    credential: credential.status === 'ok' ? 'present' : credential.status,
-    credential_reason: credential.status === 'unsafe' ? credential.reason : null,
+    signer: signer === null ? 'missing' : 'configured',
+    key_id: signer?.key_id ?? null,
     collection: diagnostics.collection,
     store_status: diagnostics.status,
     pending_count: diagnostics.pending_count,
@@ -221,12 +225,20 @@ export function runtimeErrorReportingStatus(options = {}) {
   };
 }
 
-/** 送信の設定をLattice自身のfileへ書く。dotagentsの設定は読みも書きもしない。 */
-export function setRuntimeErrorReporting(enabled, options = {}) {
+/**
+ * 送信の設定をLattice自身のfileへ書く。dotagentsの設定は読みも書きもしない。
+ * `change.signer`・`change.url`を渡した時だけ署名者・宛先を置き換え、渡さなければ今の設定を引き継ぐ。
+ */
+export function setRuntimeErrorReporting(enabled, options = {}, change = {}) {
   if (typeof enabled !== 'boolean') throw Error('invalid_enabled');
   if (!runtimeErrorCollectionSupported(options)) throw Error('reporting_unsupported');
+  if (change.signer !== undefined && !validReportingSigner(change.signer)) throw Error('invalid_signer');
+  if (change.url !== undefined && !validReportingUrl(change.url)) throw Error('invalid_url');
   const env = options.env ?? process.env;
   const path = options.reportingConfigPath ?? runtimeErrorReportingConfigPath(env);
+  const current = readRuntimeErrorReportingConfig({ ...options, reportingConfigPath: path });
+  const signer = change.signer ?? current?.signer ?? null;
+  const url = change.url ?? current?.url ?? null;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   try {
     if (lstatSync(path).isSymbolicLink()) throw Error('config_unsafe');
@@ -235,7 +247,8 @@ export function setRuntimeErrorReporting(enabled, options = {}) {
   }
   const temporary = join(dirname(path), `.runtime-error-reporting-${process.pid}-${randomBytes(6).toString('hex')}`);
   try {
-    writeFileSync(temporary, `${JSON.stringify({ schema: REPORTING_CONFIG_SCHEMA, enabled })}\n`, { mode: 0o600, flag: 'wx' });
+    const config = { schema: REPORTING_CONFIG_SCHEMA, enabled, ...(signer && { signer }), ...(url && { url }) };
+    writeFileSync(temporary, `${JSON.stringify(config)}\n`, { mode: 0o600, flag: 'wx' });
     replaceStoreFile(temporary, path);
   } finally {
     rmSync(temporary, { force: true });
@@ -279,9 +292,9 @@ function parseJson(text) {
 
 /**
  * 報告を1通、署名して送り、受領を確かめる。`accepted`を返すのは、200・`accepted: true`・`report_id`一致・
- * 応答の署名一致がそろった時だけ。戻り値に秘密・key_id・宛先は入れない。
+ * 応答のES256署名一致がそろった時だけ。署名できなければ送らない。戻り値に署名・key_id・宛先は入れない。
  */
-async function sendReport({ url, keyId, secret }, snapshot, options) {
+async function sendReport(config, snapshot, options) {
   const now = nowMs(options);
   const ts = Math.floor(now / 1000);
   // `observed_at`は、載せる記録のどの時刻よりも前にしない（BugHubは観測より後の記録を断る）。秒へ切り捨てると、
@@ -293,17 +306,21 @@ async function sendReport({ url, keyId, secret }, snapshot, options) {
   const bodyBytes = Buffer.from(JSON.stringify(report), 'utf8');
   if (bodyBytes.length > REPORT_MAX_BYTES) return { outcome: 'too_large', reason: 'report_too_large', http_status: null };
 
-  const response = await post(url, {
+  const signed = await signWithSigner(config.signer, reportSigningText(ts, bodyBytes), options);
+  if (signed.sig === undefined) return { outcome: signed.outcome, reason: signed.reason, http_status: null };
+
+  const response = await post(new URL(options.url ?? config.url ?? DEFAULT_INTAKE_URL), {
     'Content-Type': 'application/json',
     'Content-Length': String(bodyBytes.length),
-    Authorization: `BugHub-HMAC-SHA256 key_id=${keyId}, ts=${ts}, sig=${signReport(secret, String(ts), bodyBytes)}`,
+    Authorization: `BugHub-ES256 key_id=${config.signer.key_id}, ts=${ts}, sig=${signed.sig.toString('base64')}`,
   }, bodyBytes, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
 
   if (response.status === null) return { outcome: 'unconfirmed', reason: response.reason, http_status: null };
   const body = parseJson(response.body);
   if (response.status === 200) {
     if (body === null || body.accepted !== true || body.report_id !== report.report_id
-      || !receiptSignatureMatches(secret, report.report_id, body.received_at, body.sig)) {
+      || body.sig_alg !== 'ES256'
+      || !receiptSignatureValid(options.responseKeyPem ?? BUGHUB_RESPONSE_PUBLIC_KEY, report.report_id, body.received_at, body.sig)) {
       return { outcome: 'unconfirmed', reason: 'receipt_not_verified', http_status: 200 };
     }
     return { outcome: 'accepted', reason: null, http_status: 200 };
@@ -319,9 +336,8 @@ async function sendReport({ url, keyId, secret }, snapshot, options) {
 export async function reportRuntimeErrors(options = {}) {
   if (!runtimeErrorCollectionSupported(options)) return result('unsupported');
   if (!runtimeErrorReportingEnabled(options)) return result('disabled');
-  const credential = readProductCredential(options);
-  if (credential.status === 'missing') return result('credential_missing');
-  if (credential.status !== 'ok') return result('credential_unsafe', { reason: credential.reason });
+  const config = readRuntimeErrorReportingConfig(options);
+  if (!config?.signer) return result('signer_missing');
 
   let pending;
   let delivery;
@@ -350,7 +366,7 @@ export async function reportRuntimeErrors(options = {}) {
     return result(outcome, { sent, acknowledged_through: pending.cursor.acknowledged_through, ...extra });
   };
 
-  const answer = await sendReport(credential.credential, pending, options);
+  const answer = await sendReport(config, pending, options);
   if (answer.outcome === 'too_large') return result('rejected', { reason: 'report_too_large', sent });
   if (answer.outcome !== 'accepted') return finish(answer.outcome, { reason: answer.reason, http_status: answer.http_status });
   try {
@@ -363,26 +379,24 @@ export async function reportRuntimeErrors(options = {}) {
 }
 
 /**
- * 記録を載せない空の報告を1通送り、合鍵・署名・受け口までの経路を確かめる（`reporting verify`）。
- * 送る条件は`report`と同じで、送信を有効にしていない端末と合鍵の無い端末はnetworkへ触れない。
+ * 記録を載せない空の報告を1通送り、署名者・署名・受け口までの経路を確かめる（`reporting verify`）。
+ * 送る条件は`report`と同じで、送信を有効にしていない端末と署名者の無い端末はnetworkへ触れない。
  * storeの記録・受領の印・送る時機の記録には触れない。受け口は端末×製品ごとに1分に1回まで受けるので、
  * 直前に送っていれば429で断られる。
  */
 export async function verifyRuntimeErrorReporting(options = {}) {
   if (!runtimeErrorCollectionSupported(options)) return result('unsupported');
   if (!runtimeErrorReportingEnabled(options)) return result('disabled');
-  const credential = readProductCredential(options);
-  if (credential.status === 'missing') return result('credential_missing');
-  if (credential.status !== 'ok') return result('credential_unsafe', { reason: credential.reason });
-  const answer = await sendReport(credential.credential, { runtime_errors: [], resolutions: [] }, options);
+  const config = readRuntimeErrorReportingConfig(options);
+  if (!config?.signer) return result('signer_missing');
+  const answer = await sendReport(config, { runtime_errors: [], resolutions: [] }, options);
   if (answer.outcome === 'accepted') return result('verified', { http_status: 200 });
   return result(answer.outcome, { reason: answer.reason, http_status: answer.http_status });
 }
 
 /**
  * 自動送信の入口が、子processを起こす前に見る軽い判定。設定が無い端末（外の利用者）では、
- * 設定fileの有無を1回見るだけで終わる。合鍵は、送るものがある時だけ確かめる——Windowsでは
- * 合鍵の確認が外のprogramを起こすので、毎回のCLI実行には載せない。
+ * 設定fileの有無を1回見るだけで終わる。署名者commandは、送る時だけ走らせる——毎回のCLI実行には載せない。
  */
 export function runtimeErrorAutoReportDue(options = {}) {
   if (!runtimeErrorReportingEnabled(options)) return false;
@@ -390,7 +404,7 @@ export function runtimeErrorAutoReportDue(options = {}) {
     const diagnostics = runtimeErrorsDiagnostics(options);
     if (diagnostics.status !== 'ready' || diagnostics.pending_count === 0) return false;
     if (throttleReason(options, readDelivery(options), diagnostics.high_watermark) !== null) return false;
-    return readProductCredential(options).status === 'ok';
+    return readRuntimeErrorReportingConfig(options)?.signer != null;
   } catch {
     return false;
   }

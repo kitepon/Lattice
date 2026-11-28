@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-10-03
 - Amends: [ADR 0193](0193-product-owned-runtime-error-reporting.md)（送信の本文の作り方と、送信のcommand）
+- Amended by: [ADR 0207](0207-runtime-error-report-signed-by-signer-command.md)（合鍵・HMACは無くなり、署名者commandが署名する）
 
 ## Context
 

@@ -344,10 +344,27 @@ function workingDirectory() {
   }
 }
 
+// `enable`の署名者の指定: `--key-id <id> [--signer-cwd <dir>] [--url <url>] -- <署名者argv...>`。key-idとargvは対で、
+// どちらも無ければ今の署名者を引き継ぐ。形の違いは null（usage）。
+function reportingChange(flags) {
+  const dash = flags.indexOf('--');
+  const head = dash < 0 ? flags : flags.slice(0, dash);
+  const command = dash < 0 ? [] : flags.slice(dash + 1);
+  const values = {};
+  for (let index = 0; index < head.length; index += 2) {
+    if (head[index + 1] === undefined || !['--key-id', '--signer-cwd', '--url'].includes(head[index])) return null;
+    values[head[index]] = head[index + 1];
+  }
+  if ((values['--key-id'] === undefined) !== (command.length === 0)) return null;
+  if (values['--key-id'] === undefined && values['--signer-cwd'] !== undefined) return null;
+  return { ...(values['--key-id'] !== undefined && { signer: { key_id: values['--key-id'], command, cwd: values['--signer-cwd'] ?? null } }),
+    ...(values['--url'] !== undefined && { url: values['--url'] }) };
+}
+
 async function runRuntimeErrorsCli(rest) {
   const runtimeErrors = await import('../src/runtime-errors.mjs');
   const usage = () => {
-    process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: 'USAGE', message: 'usage: lattice runtime-errors <snapshot [--after-cursor N] [--limit N]|ack <cursor>|diagnostics|resolve <fingerprint>|reopen <fingerprint>|compact|report|reporting <status|enable|disable|verify>> --json' })}\n`);
+    process.stderr.write(`${JSON.stringify({ schema: 'lattice.cli_error.v2', code: 'USAGE', message: 'usage: lattice runtime-errors <snapshot [--after-cursor N] [--limit N]|ack <cursor>|diagnostics|resolve <fingerprint>|reopen <fingerprint>|compact|report|reporting <status|enable [--key-id <id> [--signer-cwd <dir>] [--url <url>] -- <signer argv...>]|disable|verify>> --json' })}\n`);
     return 2;
   };
   const options = { version: packageJson.version };
@@ -382,10 +399,12 @@ async function runRuntimeErrorsCli(rest) {
       result = await reporting.verifyRuntimeErrorReporting(options);
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return result.outcome === 'verified' ? 0 : 1;
-    } else if (words[0] === 'reporting' && words.length === 2 && ['status', 'enable', 'disable'].includes(words[1])) {
+    } else if (words[0] === 'reporting' && (words[1] === 'enable' || (words.length === 2 && ['status', 'disable'].includes(words[1])))) {
       const reporting = await import('../src/runtime-error-reporting.mjs');
+      const change = words[1] === 'enable' ? reportingChange(words.slice(2)) : {};
+      if (change === null) return usage();
       result = words[1] === 'status' ? reporting.runtimeErrorReportingStatus(options)
-        : reporting.setRuntimeErrorReporting(words[1] === 'enable', options);
+        : reporting.setRuntimeErrorReporting(words[1] === 'enable', options, change);
     } else if (words[0] === 'report' && (words.length === 1 || (words.length === 2 && words[1] === '--auto'))) {
       // 送れなかった時も結果は1行で返す。受領まで済んだ時と、送るものが無い時だけexit 0。
       const reporting = await import('../src/runtime-error-reporting.mjs');

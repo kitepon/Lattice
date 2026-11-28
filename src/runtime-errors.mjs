@@ -114,25 +114,53 @@ export function runtimeErrorReportingConfigPath(env = process.env, platform = ho
   return join(env.HOME || homedir(), '.config', 'lattice', 'runtime-error-reporting.json');
 }
 
-/**
- * Lattice自身の送信設定（ADR 0193）。端末で`runtime-errors reporting enable`を打った時だけ有効になる。
- * `LATTICE_RUNTIME_ERROR_REPORTING=0`は既定の置き場を読まない——試験と自動化が、その端末の本物の設定を
- * 拾って送信しないための口。`options.reportingConfigPath`を明示した呼び出しはそのfileを読む。
- */
-export function runtimeErrorReportingEnabled(options = {}) {
-  if (!collectionSupported(options)) return false;
-  const env = options.env ?? process.env;
-  if (options.reportingConfigPath === undefined && env.LATTICE_RUNTIME_ERROR_REPORTING === '0') return false;
+/** 署名者の設定（秘密なし）。key_idはBugHubの発行名、commandはargv（shellを通さない）、cwdは認証仲介が呼び出し元として見るfolder。 */
+const SIGNER_KEY_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const text = (value) => typeof value === 'string' && value.length >= 1 && value.length <= 4096 && !value.includes('\0');
+export function validReportingSigner(value) {
+  return plain(value) && exact(value, ['key_id', 'command', 'cwd'])
+    && typeof value.key_id === 'string' && SIGNER_KEY_ID.test(value.key_id)
+    && Array.isArray(value.command) && value.command.length >= 1 && value.command.length <= 64 && value.command.every(text)
+    && (value.cwd === null || text(value.cwd));
+}
+
+export function validReportingUrl(value) {
   try {
-    const path = options.reportingConfigPath ?? runtimeErrorReportingConfigPath(env);
-    const stats = lstatSync(path);
-    if (!stats.isFile() || stats.isSymbolicLink()) return false;
-    const config = JSON.parse(readFileSync(path, 'utf8'));
-    return plain(config) && exact(config, ['schema', 'enabled'])
-      && config.schema === REPORTING_CONFIG_SCHEMA && config.enabled === true;
+    const url = new URL(value);
+    return typeof value === 'string' && value.length <= 2048 && ['http:', 'https:'].includes(url.protocol) && url.username === '' && url.password === '';
   } catch {
     return false;
   }
+}
+
+/**
+ * Lattice自身の送信設定（ADR 0193・0197）。端末で`runtime-errors reporting enable`を打った時だけ有効になる。
+ * `signer`（BugHub-ES256の署名者）と`url`（既定の受け口の差し替え）は任意。形の違う`signer`・`url`は無いものとして読む。
+ * `LATTICE_RUNTIME_ERROR_REPORTING=0`は既定の置き場を読まない——試験と自動化が、その端末の本物の設定を
+ * 拾って送信しないための口。`options.reportingConfigPath`を明示した呼び出しはそのfileを読む。
+ * 設定が無い・読めない・形が違う時は`null`。
+ */
+export function readRuntimeErrorReportingConfig(options = {}) {
+  if (!collectionSupported(options)) return null;
+  const env = options.env ?? process.env;
+  if (options.reportingConfigPath === undefined && env.LATTICE_RUNTIME_ERROR_REPORTING === '0') return null;
+  try {
+    const path = options.reportingConfigPath ?? runtimeErrorReportingConfigPath(env);
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    if (!plain(config) || !Object.keys(config).every((key) => ['schema', 'enabled', 'signer', 'url'].includes(key))
+      || config.schema !== REPORTING_CONFIG_SCHEMA || typeof config.enabled !== 'boolean') return null;
+    return { enabled: config.enabled,
+      signer: validReportingSigner(config.signer) ? config.signer : null,
+      url: validReportingUrl(config.url) ? config.url : null };
+  } catch {
+    return null;
+  }
+}
+
+export function runtimeErrorReportingEnabled(options = {}) {
+  return readRuntimeErrorReportingConfig(options)?.enabled === true;
 }
 
 function collectionEnabled(options = {}) {
@@ -240,7 +268,7 @@ export function ensureSafeDir(dir) {
 
 /**
  * `scratchDir`はWindowsだけが使う: DACLの読み取りが出力fileを置くフォルダ。既定はそのfileのフォルダ。
- * storeの外のfile（合鍵）を確かめる時は、絞ってあるstoreのフォルダを渡す。
+ * storeの外のfileを確かめる時は、絞ってあるfolderを渡す。
  */
 export function ensureSafeFile(path, scratchDir = dirname(path)) {
   const stats = lstatSync(path);
