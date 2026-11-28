@@ -26,9 +26,10 @@ A reader older than this release meets the unknown kind and answers `UNSUPPORTED
 
 `projectTodoScheduleConnections(events)` (todo-store-view, pure): one entry per `connection_added` with its end.
 `projectTodoConnections(members, externalTasks)` (pure): per task `{kind: 'task'|'schedule', ref, state: 'open'|'settled', reason, since, event_digest, settled_at?, evidence?, state_reason?}`.
-`ref` is `<project>/<plan>/<task>` for a task and the schedule id for a schedule. A removed connection is not listed.
+`ref` is `<project>/<plan>/<task>` for a task and the schedule id for a schedule. A removed connection is not listed (superseded: it is listed as `gone`, see n1).
 A schedule connection is settled by `connection_resolved`; a task connection is settled when that task is done or
 retired. If its chart cannot be read it stays open and `state_reason` names why (`chart_not_read`, `endpoint_missing`).
+**Superseded by [re-judge and waiters (n1)](dfd-connect.md#re-judge-on-a-target-change-and-waiters-n1-2026-11-28):** the state is `open|settled|gone`; a retired or missing target and a removed schedule are `gone` (a removed schedule is listed, not dropped); only an unreadable chart stays open.
 `listTodoConnections(store, planKey, taskId)` (todo-readiness) returns one task's entries; call `withTodoExternalTasks` first.
 
 ## Readiness (`todo-readiness.mjs`)
