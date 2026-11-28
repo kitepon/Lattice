@@ -2011,6 +2011,117 @@ export async function readTodoCarriedBlocks({ repoRoot = process.cwd(), member, 
 }
 
 /**
+ * A retained version's genesis, shape-only (a read never re-validates history, k4): the first line of its first journal
+ * segment (a sealed one when the journal was split, else the active file, plain or gzip-packed). Null when unreadable.
+ */
+async function readRetainedGenesis(repoRoot, journalRef) {
+  const directory = path.posix.dirname(journalRef);
+  const sealed = (await readdir(path.resolve(repoRoot, directory, 'sealed')).catch(() => [])).sort()[0];
+  let bytes;
+  if (sealed !== undefined) bytes = normalizeCheckoutEol(await readFile((await pathState(repoRoot, path.posix.join(directory, 'sealed', sealed), 'STORE_CORRUPT')).absolute));
+  else {
+    const plain = await pathState(repoRoot, journalRef, 'STORE_CORRUPT', { missing: true });
+    bytes = plain === null ? gunzipSync(await readFile((await pathState(repoRoot, `${journalRef}.gz`, 'STORE_CORRUPT')).absolute),
+      { maxOutputLength: TODO_LIMITS.snapshotBytes }) : normalizeCheckoutEol(await readFile(plain.absolute));
+  }
+  // The line's weight is `state_migration` (one state per task); canonical keys put it after everything this needs, so cut it off unparsed.
+  const end = bytes.indexOf('\n');
+  const cut = bytes.indexOf(',"state_migration":', 0, 'utf8');
+  return taskAddedGenesis(JSON.parse(cut >= 0 && cut < end ? `${bytes.toString('utf8', 0, cut)}}` : bytes.toString('utf8', 0, end)));
+}
+
+/** What the added-by walk needs of a plan_genesis: `{at, agent, predecessor, moves}`, or null when it is not one. */
+function taskAddedGenesis(event) {
+  const moves = event?.payload?.task_migration;
+  if (event?.kind !== 'plan_genesis' || typeof event.recorded_at !== 'string' || !Array.isArray(moves)) return null;
+  return { at: event.recorded_at, agent: typeof event.actor?.agent === 'string' ? event.actor.agent : null,
+    predecessor: event.payload.predecessor_plan_digest ?? null, moves };
+}
+
+const TASK_ADDED_CACHE_DIRECTORY = '.lattice/generated/store-task-added';
+const TASK_ADDED_CACHE_SCHEMA = 'lattice.todo_task_added_cache.v1';
+
+/** The cached `task_id -> [at, agent] | null` of one plan head, or null for any miss (absent, unreadable, wrong plan, bad digest). */
+async function readTaskAddedCache(root, planKey) {
+  try {
+    const bytes = await readFile(path.resolve(root, TASK_ADDED_CACHE_DIRECTORY, `${planKey}.json`));
+    if (bytes.length > TODO_LIMITS.snapshotBytes) return null;
+    const { cache_digest: digest, ...body } = JSON.parse(bytes.toString('utf8'));
+    if (body.schema !== TASK_ADDED_CACHE_SCHEMA || body.plan_key !== planKey || typeof body.head_plan_digest !== 'string'
+      || body.tasks === null || typeof body.tasks !== 'object' || digest !== sha256Bytes(Buffer.from(JSON.stringify(body), 'utf8'))) return null;
+    return { head: body.head_plan_digest, tasks: new Map(Object.entries(body.tasks)) };
+  } catch { return null; }
+}
+
+async function publishTaskAddedCache(repoRoot, plan, added) {
+  const root = await canonicalRepoRoot(repoRoot); // macOS tmp is a symlink: ensureGeneratedDirectory wants the real path
+  const ref = `${TASK_ADDED_CACHE_DIRECTORY}/${plan.plan_key}.json`;
+  await ensureGeneratedDirectory(root, ref);
+  const body = { schema: TASK_ADDED_CACHE_SCHEMA, plan_key: plan.plan_key, head_plan_digest: plan.plan_digest,
+    tasks: Object.fromEntries(plan.tasks.map(({ task_id: id }) => [id, added.has(id) ? [added.get(id).at, added.get(id).agent] : null])) };
+  const text = JSON.stringify(body);
+  await atomicWrite(path.resolve(root, ref), Buffer.from(`${text.slice(0, -1)},"cache_digest":"${sha256Bytes(Buffer.from(text, 'utf8'))}"}`, 'utf8'));
+}
+
+/**
+ * n3-store-task-added: who added each task and when, for the member's active plan, from the retained revisions. A task is
+ * new in a version when it is not a `to_task_id` of that version's genesis `task_migration`; a carried one follows
+ * `to_task_id` -> `from_task_id` into the predecessor (two from ids onto one id: the first wins). One pass back along
+ * `predecessor_plan_digest` resolves every task: `{at, agent}` = that genesis's `recorded_at` and `actor.agent` (null
+ * when absent). A task that came with plan create has no entry. Read only for the Store: a missing or unreadable version ends
+ * the walk and leaves the tasks not yet resolved without an entry. A walk that reached the first version is kept in the
+ * derived `.lattice/generated/store-task-added/<plan_key>.json` (best effort, never truth: a miss walks), so the next
+ * revision's read stops at the cached head after its own genesis. Memoized per process by the active plan.json's identity.
+ */
+export async function readTodoTaskAdded({ repoRoot = process.cwd(), member }) {
+  const { plan } = member;
+  const root = path.resolve(repoRoot);
+  return memoByFileIdentity([path.resolve(root, member.descriptor.plan_ref)], async () => {
+    const added = new Map();
+    let genesis = taskAddedGenesis(member.journal.events[0]);
+    if (genesis === null || genesis.predecessor === null) return added;
+    const cache = await readTaskAddedCache(root, plan.plan_key);
+    const fromCache = (id, tasks) => {
+      const entry = cache.tasks.get(id);
+      if (Array.isArray(entry)) for (const task of tasks) added.set(task, { at: entry[0], agent: entry[1] });
+    };
+    if (cache?.head === plan.plan_digest) {
+      for (const { task_id: id } of plan.tasks) fromCache(id, [id]);
+      return added;
+    }
+    let complete = false;
+    try {
+      let byDigest = null;
+      let open = new Map(plan.tasks.map(({ task_id: id }) => [id, [id]]));
+      for (let steps = 0; ; steps += 1) {
+        const from = new Map();
+        for (const move of genesis.moves) if (open.has(move.to_task_id) && !from.has(move.to_task_id)) from.set(move.to_task_id, move.from_task_id);
+        const next = new Map();
+        for (const [id, tasks] of open) {
+          if (from.has(id)) next.set(from.get(id), [...(next.get(from.get(id)) ?? []), ...tasks]);
+          else for (const task of tasks) added.set(task, { at: genesis.at, agent: genesis.agent });
+        }
+        open = next;
+        if (cache?.head === genesis.predecessor) {
+          for (const [id, tasks] of open) fromCache(id, tasks);
+          complete = true;
+          break;
+        }
+        if (open.size === 0) { complete = true; break; }
+        byDigest ??= await retainedPlanVersions(root, plan);
+        const predecessor = byDigest.get(genesis.predecessor);
+        const prior = predecessor === undefined || steps > byDigest.size ? null : await readRetainedGenesis(root, predecessor.journalRef);
+        if (prior === null) break;
+        if (prior.predecessor === null) { complete = true; break; } // the first version holds no add: its tasks came with plan create
+        genesis = prior;
+      }
+    } catch { /* an unreadable version leaves the tasks not yet resolved without an entry */ }
+    if (complete) await publishTaskAddedCache(root, plan, added).catch(() => {}); // derived: a lost write is a later walk
+    return added;
+  }, 'task-added');
+}
+
+/**
  * Composes the source plan's recorded task migrations back to the version whose topology the
  * connection names (u03): returns the source task id it maps to now, 'removed', or null (unknown).
  */
@@ -2368,10 +2479,10 @@ async function publishDisplayCheckpointHead(repoRoot, source) {
   }), 'utf8'));
 }
 
-async function publishDisplayCheckpoint(repoRoot, { verified_at: verifiedAt, source, store }) {
-  const root = await canonicalRepoRoot(repoRoot);
+/** The derived directory `dirname(ref)` under `root`, made when absent; a symlink or alias on the way is refused. */
+async function ensureGeneratedDirectory(root, ref) {
   let directory = root;
-  for (const segment of path.posix.dirname(DISPLAY_CHECKPOINT_REF).split('/')) {
+  for (const segment of path.posix.dirname(ref).split('/')) {
     directory = path.join(directory, segment);
     if (segment !== '.lattice') await mkdir(directory).catch((error) => { if (error?.code !== 'EEXIST') throw error; });
     const stats = await lstat(directory);
@@ -2379,6 +2490,11 @@ async function publishDisplayCheckpoint(repoRoot, { verified_at: verifiedAt, sou
       fail('STORE_DISPLAY_CHECKPOINT_UNSAFE', 'unsafe_checkpoint_directory', { ref: path.relative(root, directory) });
     }
   }
+}
+
+async function publishDisplayCheckpoint(repoRoot, { verified_at: verifiedAt, source, store }) {
+  const root = await canonicalRepoRoot(repoRoot);
+  await ensureGeneratedDirectory(root, DISPLAY_CHECKPOINT_REF);
   // s5: the store is serialized once (37.8 MB on bellteam): the digest covers the object without checkpoint_digest, the file adds it last.
   const body = JSON.stringify({ schema: DISPLAY_CHECKPOINT_SCHEMA, verified_at: verifiedAt, source, store });
   const digest = sha256Bytes(Buffer.from(body, 'utf8'));
