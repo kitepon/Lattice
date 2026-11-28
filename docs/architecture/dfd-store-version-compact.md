@@ -41,7 +41,7 @@ revision ids (the version directory name and `plan_version` stay; other records 
 | `retainedPlanVersion` (coordination inheritance, carried blocks, cross-plan rebind lookup) | parse and validate each retained `plan.json` | identity (3 digests) from the record when compacted |
 | `readRetainedVersion(repoRoot, base, version, activePlan)` (exported) | n/a | full `{plan, revision}` from its own files or by walking `anchor_plan_version` to the active plan |
 | cross-plan rebind predecessor read, `predecessorSourceInventory` | `plan.json` / scan of every version directory | `readRetainedVersion`; the inventory walks the revision bindings instead of parsing every version |
-| `readNoteMigrations` (`todo-note-store`) | `plan.json` + `revision.json` of each version | the record's `revision.task_migration` and `predecessor_plan_version` |
+| `readVersionMigration` (`todo-note-store`, was `readNoteMigrations`) | `plan.json` + `revision.json` of each version | the record's `revision.task_migration` (reduced to the entries that change a task) and `predecessor_plan_version`; only the head's chain is read, and only back to the cached head of the note lineage ([notes](dfd-store-notes.md#note-target-lineage-w2-impl-2026-11-28)) |
 | `readJournal` | `journal/active.jsonl` | also `active.jsonl.gz` when the plain file is absent |
 
 A read pays this per retained version, per process (`bellteam-dev-added`: 888 versions in a day, one `todo note` took 4.4 s, `status` 1.9 s, on a copy of the production Store).
@@ -49,19 +49,19 @@ w1-store-write-slow follows the k4 rule (a read no longer re-verifies history; `
 
 | Read | Before | Now |
 |---|---|---|
-| `readVersionCompact(dir, max, {verify})` | every read: gunzip, parse, canonical re-serialization, `compact_digest` self digest | `verify: false` (`retainedPlanVersion`, `readNoteMigrations`): gunzip, parse, shape check. Default `verify: true` (the compaction writers' `readRetainedVersion`): unchanged. The record is not memoized (m1, below): each caller memoizes the small value it derives |
+| `readVersionCompact(dir, max, {verify})` | every read: gunzip, parse, canonical re-serialization, `compact_digest` self digest | `verify: false` (`retainedPlanVersion`, `readVersionMigration`): gunzip, parse, shape check. Default `verify: true` (the compaction writers' `readRetainedVersion`): unchanged. The record is not memoized (m1, below): each caller memoizes the small value it derives |
 | `readPlanScopedJournal(repoRoot, ref, {verify})` | every read: per-event canonical re-check and the whole hash chain | `verify: false` (the member's chain on a read, the inherited-coordination walk): sealed-segment digest, per-event schema and event self digest, kind check. `verifyHistory: true` (`todo verify`) restores the canonical re-check and the hash chain |
-| `readNoteMigrations` | one `structuredClone` of every version's task migration per call | the memoized migration is shared; `migrationIndex` only reads it |
+| `readVersionMigration` | one `structuredClone` of every version's task migration per call | w2: the memo holds the moves that change a task, not the whole migration (the old shared array of 3,321 entries per version was 1.6 GB on bellteam-dev-added); the note lineage cache means a read normally reads no retained version |
 
 w4 (same day): one command reads the Store about a dozen times (`todo add`: 16 `manifest.json` reads). `parseJournalSegment` and `parseCanonicalJsonLine` remember, per process, the bytes they accepted, keyed by sha256 of the bytes, the ref (artifacts) and the mode; a repeat read of the same bytes only runs `JSON.parse`, so callers still get fresh objects. Changed bytes miss the key and are validated again; a failure is never remembered; a strict (`verifyHistory`) read is not satisfied by a read-mode entry.
 
-Still per retained version on every read: one `lstat` (memo identity), one gunzip + parse of `compact.json.gz`, and one entry of the note migration index. Nothing else walks history.
+Still per retained version on a read that misses the caches: one `lstat` (memo identity) and one gunzip + parse of `compact.json.gz` (w2: the note lineage is cached under `.lattice/generated/store-note-lineage/`, so a note read normally touches no retained version). Nothing else walks history.
 
 m1-read-skips-retained-revisions (2026-11-20, Flora a466: module CLI children 450-560 MB each on bellteam, 1,649 retained versions of `bellteam-dev-added`). Measured on a copy of the production Store: one `session-context` opened 1,795 `compact.json.gz` and 979 `plan-scoped.jsonl`, because the inherited-coordination walk (`inheritedTodoCoordination`) reached a declaration made 975 revisions back and scanned every version for each predecessor digest. Two changes, no format change:
 
 | Step | Before | Now |
 |---|---|---|
-| `readVersionCompact` | memoized the whole record per version (a revision's per-task migration: the RSS grew with the revision count) | not memoized. `retainedPlanVersion` memoizes only the three digests by file identity; `readNoteMigrations` already memoizes its small migration |
+| `readVersionCompact` | memoized the whole record per version (a revision's per-task migration: the RSS grew with the revision count) | not memoized. `retainedPlanVersion` memoizes only the three digests by file identity; `readVersionMigration` memoizes only its moves |
 | `carriedPlanScopedChain` (every revision writer) | carried live cross-plan edges and open schedule connections | also carries the predecessor's effective coordination (its own declaration, else the inherited one) as one `coordination_mode` event with the original actor, time and reason, so the new version's own chain holds it and the walk ends at the version itself ([phase revision flow](dfd-store-phase-revision.md)) |
 
 A plan whose version has no declaration in its own chain still walks its lineage once per read (an undeclared plan, or a version written before this release): exit = declare the mode once (`todo independence mode`) or the next revision carries it. On the production copy: `session-context` 454 MB / 2.8 s to 234 MB / 0.9 s (the two undeclared plans, 84 and 62 versions, remain).
